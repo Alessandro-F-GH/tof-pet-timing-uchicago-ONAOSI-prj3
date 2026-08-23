@@ -1,0 +1,49 @@
+\begin{frame}{Why timing matters in TOF-PET}
+\small
+
+\begin{columns}[T,totalwidth=\textwidth]
+
+\begin{column}{0.48\textwidth}
+
+\begin{block}{TOF-PET imaging}
+A positron annihilation produces two photons emitted in opposite directions.
+Two detectors measure the corresponding signals and estimate the
+\textbf{difference in photon arrival time (TOF)}.
+\end{block}
+
+\vspace{0.25em}
+
+\begin{alertblock}{Why better timing helps}
+The arrival-time difference constrains the annihilation position along the line connecting the two detectors:
+
+\[
+\Delta x = \frac{c\,\Delta t}{2}.
+\]
+
+\vspace{0.15em}
+A more precise estimate of $\Delta t$ means a more precise localization of the event.
+\end{alertblock}
+
+\end{column}
+
+
+\begin{column}{0.48\textwidth}
+\centering
+
+\smartimage[0.94\linewidth]{0.57\textheight}
+{figures/TOF.png}
+{TOF-PET principle: the difference in photon arrival times localizes the annihilation event along the line of response.}
+
+\vspace{0.3em}
+
+\begin{block}{Project question}
+\centering
+What is the best timing performance achievable,
+and how can we approach it with a practical and scalable method?
+\end{block}
+
+\end{column}
+
+\end{columns}
+
+\end{frame}

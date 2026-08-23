@@ -1,0 +1,43 @@
+\begin{frame}{Windowing and target correction}
+\small
+
+\begin{center}
+\smartimage[0.96\textwidth]{0.52\textheight}
+{figures/windowing_native_grid.pdf}
+{Native-grid windowing around the interpolated LED time.}
+\end{center}
+
+\vspace{-0.45em}
+
+\begin{columns}[T,totalwidth=\textwidth]
+
+\begin{column}{0.48\textwidth}
+\begin{block}{Windowing}
+LED time is interpolated, but waveform samples remain on the native grid:
+\[
+\delta_j=t_{\LED,j}-t_{a,j}.
+\]
+\end{block}
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\begin{alertblock}{Target}
+Correct for the discrete anchor shift:
+\large
+\[
+\boxed{
+y_{\mathrm{target}}
+=
+\Delta t_{\LED}
+-
+\Delta\delta
+-
+TOF
+}
+\]
+\end{alertblock}
+\end{column}
+
+\end{columns}
+
+\end{frame}

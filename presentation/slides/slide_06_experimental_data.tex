@@ -1,0 +1,87 @@
+\begin{frame}{Experimental data}
+\small
+
+\begin{columns}[T,totalwidth=\textwidth]
+
+% ---------------------------------------------------------
+\begin{column}{0.45\textwidth}
+\begin{block}{Oscilloscope}
+\begin{itemize}
+    \item \textbf{Bias voltage:} 45--49 V, 1 V steps
+    \item \textbf{Acquisition:} 100 ns waveforms at 80 GS/s
+ 
+\end{itemize}
+\end{block}
+
+\begin{table}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.95}
+
+\begin{tabular}{rrr}
+\toprule
+\textbf{Bias [V]} &
+\textbf{Raw events} &
+\textbf{Photopeak events} \\
+\midrule
+45 & 20\,135 & 6\,763 \\
+46 & 21\,510 & 8\,037 \\
+47 & 20\,073 & 8\,482 \\
+48 & 20\,264 & 7\,049 \\
+49 & 25\,054 & 7\,078 \\
+\bottomrule
+\end{tabular}
+
+\end{table}
+
+\end{column}
+
+% ---------------------------------------------------------
+\begin{column}{0.45\textwidth}
+\begin{block}{Pico-TDC}
+\begin{itemize}
+    \item \textbf{Bias voltage:} 42--49 V, 1 V steps
+    \item \textbf{Timing threshold:} 20--200 mV
+    \item \textbf{Acquisition:} trigger-matching mode
+
+\end{itemize}
+\end{block}
+
+\begin{table}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{0.95}
+
+\begin{tabular}{rrrr}
+\toprule
+\textbf{Bias [V]} &
+\textbf{$T_{\mathrm{th}}$ [mV]} &
+\textbf{Raw events} &
+\textbf{Photopeak events} \\
+\midrule
+42 & 40 & 79\,127 & 11\,514 \\
+43 & 40 & 84\,586 & 11\,470 \\
+44 & 40 & 90\,229 & 11\,554 \\
+45 & 40 & 96\,008 & 11\,552 \\
+45 & 40 & 96\,001 & 11\,658 \\
+46 & 20 & 49\,348 & 5\,793 \\
+46 & 30 & 49\,688 & 5\,909 \\
+46 & 40 & 100\,916 & 11\,847 \\
+46 & 50 & 50\,245 & 5\,931 \\
+46 & 60 & 50\,271 & 5\,800 \\
+46 & 70 & 50\,410 & 5\,981 \\
+47 & 40 & 104\,916 & 11\,881 \\
+48 & 40 & 107\,613 & 12\,182 \\
+49 & 40 & 111\,406 & 12\,434 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{column}
+
+\end{columns}
+
+
+\end{frame}

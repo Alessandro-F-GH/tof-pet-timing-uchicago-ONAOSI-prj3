@@ -1,0 +1,40 @@
+\begin{frame}{Models as controlled information probes}
+\small
+
+\begin{block}{Machine learning models}
+\begin{tabularx}{\linewidth}{@{}p{0.22\linewidth}p{0.32\linewidth}X@{}}
+\toprule
+\textbf{Model} & \textbf{Description} & \textbf{Scientific question}\\
+\midrule
+Linear SVR
+& Weighted sum of waveform samples
+& Is the correction mostly linear?\\[1em]
+
+CNN
+& Learns local waveform patterns
+& Does nonlinear waveform structure contain additional timing information?\\[2.em]
+
+Fixed-threshold SVR
+& Uses only a few crossing times
+& How much timing information survives a TDC-like readout?\\
+\bottomrule
+\end{tabularx}
+\end{block}
+\vspace{0.3em}
+
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.26\textwidth}
+\begin{block}{Performance}
+A model is useful if it reduces CTR on the independent blind set.
+\end{block}
+\end{column}
+
+\begin{column}{0.66\textwidth}
+\begin{alertblock}{Interpretation}
+If different models learn similar event-by-event corrections,
+performance is likely limited by the information in the signal,
+rather than by model complexity.
+\end{alertblock}
+\end{column}
+\end{columns}
+\end{frame}

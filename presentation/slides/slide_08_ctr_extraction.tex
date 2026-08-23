@@ -1,0 +1,28 @@
+\begin{frame}{CTR extraction}
+\small
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.62\textwidth}
+\centering
+\vspace{0.5cm}
+\smartimage[0.98\linewidth]{0.71\textheight}{figures/timing_fit.png}{Representative Gaussian timing fit.}
+\end{column}
+
+\begin{column}{0.36\textwidth}
+\begin{block}{Timing difference}
+For each selected coincidence event:
+\[
+\Delta t = t_1-t_2 .
+\]
+The selected events form the coincidence time distribution.
+\end{block}
+
+\begin{block}{CTR definition}
+\[
+\CTR = \mathrm{FWHM}=2\sqrt{2\ln2}\,\sigma \simeq 2.35\,\sigma .
+\]
+Lower CTR means a narrower coincidence-time distribution and better timing precision.
+\end{block}
+\end{column}
+\end{columns}
+\mainmsg{The same Gaussian-fit CTR definition is used for every timing method.}
+\end{frame}

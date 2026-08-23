@@ -1,0 +1,61 @@
+\begin{frame}{What should the model learn?}
+\small
+
+% ---------------------------------------------------------
+\begin{block}{Start from standard leading-edge timing}
+For each coincidence event, the measured time difference is:  $\Delta t_{\LED}=t_{\LED,1}-t_{\LED,2}$.
+
+\end{block}
+
+\vspace{-0.15em}
+
+% ---------------------------------------------------------
+\begin{alertblock}{My modeling proposal}
+\large
+\[
+\boxed{
+\Delta t_{\LED}
+=
+\underbrace{\TOF}_{\text{true time of flight}}
++
+\underbrace{C_{1,2}}_{\text{calibration bias}}
++
+\underbrace{\delta(s_1,s_2)}_{\text{waveform-dependent error}}
++
+\underbrace{\epsilon}_{\text{random noise}}
+}
+\]
+\small
+
+\end{alertblock}
+
+\vspace{0.1em}
+
+% ---------------------------------------------------------
+\begin{columns}[T,totalwidth=\textwidth]
+
+\begin{column}{0.32\textwidth}
+\begin{block}{ML target}
+\Large
+\[
+\boxed{\delta(s_1,s_2)}
+\]
+\small
+Where $(s_1,s_2)$ is a signal pair.
+
+\end{block}
+\end{column}
+
+\begin{column}{0.64\textwidth}
+\begin{block}{Derived properties}
+\begin{itemize}
+    \item The physical TOF remains outside the ML model.
+    \item Fixed channel offsets are handled by calibration.
+    \item ML is used to correct waveform-dependent timing effects.
+\end{itemize}
+\end{block}
+\end{column}
+
+\end{columns}
+
+\end{frame}

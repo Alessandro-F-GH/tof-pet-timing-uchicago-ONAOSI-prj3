@@ -1,0 +1,44 @@
+\begin{frame}{Physically constrained correction}
+\small
+
+\begin{block}{Proposed model architecture: same model for all signals}
+
+\large
+\[
+\boxed{y_\theta(s_1,s_2)=g_\theta(s_1)-g_\theta(s_2)}
+\]
+\small
+
+\end{block}
+
+\vspace{0.15em}
+
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.48\textwidth}
+\begin{alertblock}{Corrected timing estimate}
+\large
+\[
+\boxed{
+\widehat{\Delta t}=\Delta t_{\LED}-\widehat C_{1,2}-y_\theta(s_1,s_2)
+}
+\]
+\small
+The final output is still a corrected arrival-time difference, so it can be evaluated with the same CTR metric.
+\end{alertblock}
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\begin{block}{Why this is safer than generic pair-ML}
+\begin{itemize}
+  \item Same pulse scorer for every detector.
+  \item Learns a timing-error correction, not an absolute position label.
+  \item No need for multiple source positions: a single central source is sufficient.
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+
+\vspace{0.25em}
+\mainmsg{Constraining the model gives a translation-invariant, antisymmetric,
+and more general timing correction.}
+\end{frame}

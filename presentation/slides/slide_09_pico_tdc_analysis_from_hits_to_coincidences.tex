@@ -1,0 +1,28 @@
+\begin{frame}{Pico-TDC analysis: from hits to coincidences}
+\small
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.6\textwidth}
+\centering
+\smartimage[0.98\linewidth]{0.41\textheight}{figures/peak_selection_ch5.png}{ToT photopeak selection.}
+\vspace{0.25em}
+\smartimage[0.98\linewidth]{0.44\textheight}{figures/alignment_plot_ch5.png}{Alignment and mismatch rejection.}
+\end{column}
+
+\begin{column}{0.34\textwidth}
+\begin{block}{Pipeline}
+\begin{enumerate}
+    \item Raw timestamp lists
+    \item Leading/trailing pairs
+    \item ToT-based photopeak selection
+    \item Timing-hit matching
+    \item Mismatch rejection
+    \item Gaussian CTR fit
+\end{enumerate}
+\end{block}
+
+\begin{alertblock}{Personal contribution}
+Causal signal matching and filtering strategy to reject mismatched or noisy events while keeping lower timing thresholds usable.
+\end{alertblock}
+\end{column}
+\end{columns}
+\end{frame}

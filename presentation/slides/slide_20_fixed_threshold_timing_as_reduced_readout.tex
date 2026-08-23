@@ -1,0 +1,28 @@
+\begin{frame}{Fixed-threshold timing as reduced readout}
+\small
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.50\textwidth}
+\centering
+\smartimage[0.92\linewidth]{0.42\textheight}{figures/multithreshold_waveform_crossings.pdf}{Interpolated crossing times at fixed thresholds.}
+\vspace{0.25em}
+\smartimage[0.92\linewidth]{0.4\textheight}{figures/results_multithreshold_ctr_vs_threshold_count_energy_to_energy.pdf}{CTR improvement versus number of thresholds.}
+\end{column}
+
+\begin{column}{0.46\textwidth}
+\begin{block}{Reduced feature vector}
+\[
+\tau_k=t_1(V_k)-t_2(V_k), \qquad x=[\tau_{k_1},\ldots,\tau_{k_m}] .
+\]
+Only $m$ signal crossing times are passed to SVR.
+\end{block}
+
+\begin{block}{Result}
+On energy channels, the first few thresholds recover much of the correction and can outperform standard single-time estimators.
+\end{block}
+
+\begin{alertblock}{Connection to Pico-TDC}
+This tests how much information can survive a TDC-like representation, without considering the ToT information.
+\end{alertblock}
+\end{column}
+\end{columns}
+\end{frame}

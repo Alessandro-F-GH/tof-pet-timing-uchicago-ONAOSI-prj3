@@ -1,0 +1,59 @@
+\begin{frame}{Two ways to acquire the detector signal}
+\small
+
+\begin{columns}[T,totalwidth=\textwidth]
+
+% ---------------------------------------------------------
+\begin{column}{0.45\textwidth}
+
+\begin{block}{Oscilloscope: Full waveform}
+
+The voltage signal is sampled as a function of time.
+
+\begin{itemize}
+    \item complete signal shape available offline;
+    \item flexible timing analysis;
+
+\end{itemize}
+\end{block}
+
+\vspace{0.15em}
+
+\centering
+\smartimage[0.94\linewidth]{0.34\textheight}
+{figures/waveform.png}
+{Example of sampled oscilloscope waveforms.}
+
+\end{column}
+
+\begin{column}{0.45\textwidth}
+
+\begin{block}{Pico-TDC: Threshold-based}
+
+Records the times at which the signal crosses a fixed threshold.
+
+\begin{itemize}
+    \item leading and trailing crossing times;
+    \item Time-over-Threshold (ToT);
+\end{itemize}
+\end{block}
+
+\vspace{0.15em}
+
+\centering
+\smartimage[0.82\linewidth]{0.34\textheight}
+{figures/txt_list.png}
+{Example of Pico-TDC timestamp data.}
+
+\end{column}
+
+\end{columns}
+
+\vspace{0.25em}
+
+\mainmsg{
+Same detector signals, two different levels of information:
+full waveforms versus a small set of timestamps.
+}
+
+\end{frame}

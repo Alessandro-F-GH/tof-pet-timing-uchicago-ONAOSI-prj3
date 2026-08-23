@@ -1,0 +1,44 @@
+\begin{frame}{Analysis workflow: from detector data to result}
+\small
+
+\begin{alertblock}{One reproducible chain}
+\centering
+Raw data $\rightarrow$ event selection $\rightarrow$ LED/CFD timing $\rightarrow$ ML correction $\rightarrow$ blind CTR $\rightarrow$ interpretation
+\end{alertblock}
+
+\vspace{0.35em}
+\begin{columns}[T,totalwidth=\textwidth]
+\begin{column}{0.31\textwidth}
+\begin{block}{1. Clean events}
+\begin{itemize}
+  \item Select photopeak events.
+  \item Reject mismatched timing hits.
+  \item Freeze standard LED/CFD references.
+\end{itemize}
+\end{block}
+\end{column}
+
+\begin{column}{0.31\textwidth}
+\begin{block}{2. Compare readouts}
+\begin{itemize}
+  \item Full oscilloscope waveform.
+  \item Pico-TDC timestamp readout.
+  \item Reduced fixed-threshold representation.
+\end{itemize}
+\end{block}
+\end{column}
+
+\begin{column}{0.31\textwidth}
+\begin{block}{3. Test fairly}
+\begin{itemize}
+  \item Tune on development data.
+  \item Retrain selected configuration.
+  \item Report one independent blind CTR.
+\end{itemize}
+\end{block}
+\end{column}
+\end{columns}
+
+\vspace{1.45em}
+\centering\normalsize Repository: \repo
+\end{frame}
