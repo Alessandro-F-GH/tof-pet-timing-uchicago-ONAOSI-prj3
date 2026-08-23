@@ -19,19 +19,37 @@ def plot_gaussian_fit(
 ) -> None:
     if result is None or not result.success or result.edges_ps.size < 2:
         return
+
     edges = np.asarray(result.edges_ps, dtype=np.float64)
     counts = np.asarray(result.counts, dtype=np.float64)
     expected = np.asarray(result.expected, dtype=np.float64)
+
     widths = np.diff(edges)
     centers = 0.5 * (edges[:-1] + edges[1:])
+
     if counts.size != widths.size or expected.size != centers.size:
         raise ValueError("Malformed FitResult histogram arrays")
 
     fig, ax = plt.subplots(figsize=(9.2, 6.1))
-    bars = ax.bar(edges[:-1], counts, width=widths, align="edge", alpha=0.65, label="Data")
-    error_text = f" ± {result.ctr_error_ps:.1f}" if np.isfinite(result.ctr_error_ps) else ""
+
+    ax.bar(
+        edges[:-1],
+        counts,
+        width=widths,
+        align="edge",
+        alpha=0.65,
+    )
+
+    error_text = (
+        f" ± {result.ctr_error_ps:.1f}"
+        if np.isfinite(result.ctr_error_ps)
+        else ""
+    )
+
     line, = ax.plot(
-        centers, expected, linewidth=2.2,
+        centers,
+        expected,
+        linewidth=2.2,
         label=(
             "Gaussian fit\n"
             f"μ={result.mean_ps:.1f} ps\n"
@@ -40,29 +58,51 @@ def plot_gaussian_fit(
             f"D/ndof={result.chi2_ndof:.3g}"
         ),
     )
+
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Events / bin")
-    ax.set_title(title or f"{result.method} — parameter {result.parameter:g} — timing fit")
+    ax.set_title(
+        title
+        or f"{result.method} — parameter {result.parameter:g} — timing fit"
+    )
     ax.grid(alpha=0.2)
-    first = ax.legend(handles=[bars], labels=["Data"], loc="upper left")
-    ax.add_artist(first)
+
+    # Fit information only
     ax.legend(handles=[line], loc="upper right")
 
-    selected_fraction = 100.0 * result.n_selected / result.n_total if result.n_total else 0.0
-    ax.text(
-        0.02, 0.04,
-        f"selected={result.n_selected} ({selected_fraction:.1f}%)\n"
-        f"valid timing pairs={result.n_valid}\n"
-        f"bin={result.bin_width_ps:g} ps, phase={result.bin_phase_ps:g} ps",
-        transform=ax.transAxes, ha="left", va="bottom", fontsize=10.5,
-        bbox={"boxstyle": "round,pad=0.35", "facecolor": "white", "alpha": 0.9},
+    # Selection / histogram information in place of the old Data legend
+    selected_fraction = (
+        100.0 * result.n_selected / result.n_total
+        if result.n_total
+        else 0.0
     )
+
+    ax.text(
+        0.02,
+        0.96,
+        (
+            f"Selected: {result.n_selected} ({selected_fraction:.1f}%)\n"
+            f"Valid timing pairs: {result.n_valid}\n"
+            f"Bin width: {result.bin_width_ps:.2f} ps\n"
+            f"Bin phase: {result.bin_phase_ps:.2f} ps"
+        ),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=10.5,
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "facecolor": "white",
+            "alpha": 0.9,
+        },
+    )
+
     fig.tight_layout()
+
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
-
 
 def plot_ctr_comparison(
     pico_rows: list[dict[str, Any]],

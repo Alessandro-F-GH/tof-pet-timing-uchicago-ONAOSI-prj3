@@ -8,7 +8,7 @@
     "recursive": false
   },
   "runs": {
-    "include": [],
+    "include": ["Run4940"],
     "overwrite": []
   },
   "tasks": {
@@ -42,7 +42,7 @@
     },
     "fit": {
       "enabled": true,
-      "overwrite": true
+      "overwrite": false
     }
   },
   "channels": {
@@ -109,24 +109,28 @@
       "min_bin_ps": 1.0,
       "max_bin_ps": 25.0,
       "phase_count": 8
+    },
+    "led_outlier_rejection": {
+      "enabled": true,
+      "zscore_limit": 4.0
     }
   },
   "plots": {
     "matching_train": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     },
     "matching_total": {
-      "enabled": true,
+      "enabled": false,
       "overwrite": false
     },
     "peak_selection": {
       "enabled": true,
-      "overwrite": true
+      "overwrite": false
     },
     "timing_fit": {
       "enabled": true,
-      "overwrite": true
+      "overwrite": false
     },
     "dpi": 180,
     "max_histogram_bins": 120,

@@ -37,6 +37,10 @@ def _finite_number(value: Any, name: str) -> float:
 
 
 def _apply_defaults_and_migrations(cfg: dict[str, Any]) -> None:
+    fit = cfg.setdefault("fit", {})
+    led_rejection = fit.setdefault("led_outlier_rejection", {})
+    led_rejection.setdefault("enabled", True)
+    led_rejection.setdefault("zscore_limit", 4.0)
     output = cfg.setdefault("analysis_output", {})
     output.setdefault("large_table_format", "csv")
     output.setdefault("diagnostic_mode", "compact")
@@ -309,6 +313,16 @@ def validate_config(cfg: dict[str, Any]) -> None:
     )
 
     fit = cfg["fit"]
+    led_rejection = fit.get("led_outlier_rejection", {})
+    if not isinstance(led_rejection, dict):
+        raise ConfigError("fit.led_outlier_rejection must be an object")
+    if not isinstance(led_rejection.get("enabled"), bool):
+        raise ConfigError("fit.led_outlier_rejection.enabled must be true or false")
+    _positive_number(
+        led_rejection.get("zscore_limit"),
+        "fit.led_outlier_rejection.zscore_limit",
+        1e-9,
+    )
     _positive_int(fit.get("min_events"), "fit.min_events", 4)
     _positive_int(fit.get("min_bin_width_lsb"), "fit.min_bin_width_lsb", 1)
     _positive_int(

@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from utils_fit import fit_delta_times_ps
+from utils_fit.outliers import robust_mad_filter
 from utils_fit.io import load_fit_csv, write_fit_csv
 from utils_fit.plotting import plot_gaussian_fit
 
@@ -1073,16 +1074,30 @@ def run_pipeline(cfg: dict) -> None:
                 raise RuntimeError("Fit is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
-                timing_ps = (
+                timing_ps_all = (
                     measurements.timing_lsb[selection.final_mask].astype(np.float64)
                     * float(toa_lsb_ps)
+                )
+                led_rejection_cfg = cfg["fit"].get("led_outlier_rejection", {})
+                led_rejection = robust_mad_filter(
+                    timing_ps_all,
+                    enabled=bool(led_rejection_cfg.get("enabled", True)),
+                    zscore_limit=float(led_rejection_cfg.get("zscore_limit", 4.0)),
+                )
+                timing_ps = timing_ps_all[led_rejection.mask]
+                lambda message: _log(run.run_id, "fit", message)(
+                    f"LED 4σ rejection: retained={timing_ps.size}/{timing_ps_all.size}, "
+                    f"rejected={led_rejection.rejected}, "
+                    f"median={led_rejection.center:.3f} ps, "
+                    f"robust_sigma={led_rejection.robust_sigma:.3f} ps, "
+                    f"limit=±{led_rejection.max_distance:.3f} ps"
                 )
                 fit = fit_delta_times_ps(
                     timing_ps,
                     method="Pico-TDC LED",
                     parameter=float(run_info.timing_threshold_mv),
                     n_total=int(measurements.size),
-                    n_selected=int(np.count_nonzero(selection.final_mask)),
+                    n_selected=int(timing_ps.size),
                     config=cfg["fit"],
                 )
                 if not fit.success:

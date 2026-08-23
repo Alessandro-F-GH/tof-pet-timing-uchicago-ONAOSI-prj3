@@ -1,0 +1,13 @@
+{
+  "pico_timing_threshold_mV": 40.0,
+  "pico_duplicate_policy": "For duplicate rows at the same voltage and requested timing threshold, choose the run with minimum nominal CTR_ps, then bootstrap that run.",
+  "scope_min_led_threshold_mV": 20.0,
+  "scope_led_outlier_z": 4.0,
+  "outlier_bootstrap_policy": "4-sigma robust MAD rejection is applied exactly once to the final selected event cohort; bootstrap resamples only from retained events.",
+  "bootstrap_samples": 100,
+  "bootstrap_error_definition": "sample standard deviation (ddof=1) of successful bootstrap CTR fits",
+  "plotted_central_value": "mean of successful bootstrap CTR fits",
+  "residual_definition": "(mean_pico - mean_scope) / sqrt(std_bootstrap_pico^2 + std_bootstrap_scope^2)",
+  "threshold_selection_stage": "blind",
+  "seed": 20260813
+}

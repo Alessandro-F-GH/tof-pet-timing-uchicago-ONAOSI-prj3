@@ -12,6 +12,8 @@ from .gaussian import (
 from .io import load_fit_csv, write_fit_csv
 
 __all__ = [
+    "RobustOutlierResult",
+    "robust_mad_filter",
     "DEFAULT_FIT_CONFIG",
     "DEFAULT_INVALID_TIME_FS",
     "FS_PER_PS",
@@ -24,3 +26,5 @@ __all__ = [
     "load_fit_csv",
     "write_fit_csv",
 ]
+
+from .outliers import RobustOutlierResult, robust_mad_filter
