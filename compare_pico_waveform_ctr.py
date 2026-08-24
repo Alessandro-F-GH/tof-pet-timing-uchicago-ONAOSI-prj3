@@ -31,6 +31,16 @@ from utils_fit.plotting import plot_gaussian_fit
 INVALID_TIME_FS = np.iinfo(np.int64).min
 FS_PER_PS = 1000.0
 
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 16,
+    "axes.labelsize": 15,
+    "xtick.labelsize": 13,
+    "ytick.labelsize": 13,
+    "legend.fontsize": 12,
+    "figure.titlesize": 17,
+})
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

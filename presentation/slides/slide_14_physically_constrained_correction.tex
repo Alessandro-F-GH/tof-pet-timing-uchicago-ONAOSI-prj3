@@ -7,8 +7,17 @@
 \[
 \boxed{y_\theta(s_1,s_2)=g_\theta(s_1)-g_\theta(s_2)}
 \]
-\small
 
+\small
+\[
+\theta^\star
+=
+\arg\min_\theta
+\frac{1}{N}\sum_{i=1}^{N}
+\left(
+y_\theta(s_{1,i},s_{2,i})-(\Delta t_{\LED}-\widehat C_{1,2}-TOF)
+\right)^2
+\]
 \end{block}
 
 \vspace{0.15em}
