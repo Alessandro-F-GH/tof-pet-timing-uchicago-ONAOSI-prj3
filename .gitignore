@@ -11,7 +11,7 @@ presentation/*.snm
 presentation/*.synctex.gz
 presentation/*.toc
 
-comparison_pico_scope\scope_feature_cache
+comparison_pico_scope/scope_feature_cache
 
 # Uncomment if compiled presentations should not be committed
 # presentation/*.pdf
