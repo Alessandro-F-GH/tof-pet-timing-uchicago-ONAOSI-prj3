@@ -4,7 +4,7 @@
   "scope_min_led_threshold_mV": 20.0,
   "scope_led_outlier_z": 4.0,
   "outlier_bootstrap_policy": "4-sigma robust MAD rejection is applied exactly once to the final selected event cohort; bootstrap resamples only from retained events.",
-  "bootstrap_samples": 100,
+  "bootstrap_samples": 10,
   "bootstrap_error_definition": "sample standard deviation (ddof=1) of successful bootstrap CTR fits",
   "plotted_central_value": "mean of successful bootstrap CTR fits",
   "residual_definition": "(mean_pico - mean_scope) / sqrt(std_bootstrap_pico^2 + std_bootstrap_scope^2)",

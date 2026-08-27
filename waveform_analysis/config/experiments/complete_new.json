@@ -1,14 +1,14 @@
 {
   "extends": "../profiles/ctr_default.json",
-  "data_config": "../data/converted_runs_07_13.json",
+  "data_config": "../data/full.json",
   "preprocessing_config": "../preprocessing/default_ctr.json",
 
   "experiment": {
-    "name": "complete_new",
-    "output_dir": "results/studies/complete_new_07-13"
+    "name": "full_waveform_new",
+    "output_dir": "results/studies/full_waveform_new"
   },
 
-  "models": ["linear_svr", "cnn"],
+  "models": ["linear_svr"],
 
   "modes": {
     "energy_to_energy": {

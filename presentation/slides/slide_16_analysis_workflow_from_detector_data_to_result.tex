@@ -1,44 +1,163 @@
-\begin{frame}{Analysis workflow: from detector data to result}
+\begin{frame}{Waveform ML analysis pipeline}
+
 \small
+\vspace{-0.5em}
 
-\begin{alertblock}{One reproducible chain}
+% =========================================================
+% Main pipeline
+% =========================================================
+
 \centering
-Raw data $\rightarrow$ event selection $\rightarrow$ LED/CFD timing $\rightarrow$ ML correction $\rightarrow$ blind CTR $\rightarrow$ interpretation
-\end{alertblock}
 
-\vspace{0.35em}
-\begin{columns}[T,totalwidth=\textwidth]
-\begin{column}{0.31\textwidth}
-\begin{block}{1. Clean events}
-\begin{itemize}
-  \item Select photopeak events.
-  \item Reject mismatched timing hits.
-  \item Freeze standard LED/CFD references.
-\end{itemize}
+\begin{tikzpicture}[
+    node distance=0.38cm,
+    pipelinebox/.style={
+        draw=UChicagoMaroon,
+        fill=PaleMaroon,
+        line width=1.0pt,
+        rounded corners,
+        align=center,
+        text width=2.0cm,
+        minimum height=1.4cm,
+        inner sep=4pt,
+        font=\scriptsize,
+        text=DarkText
+    },
+    flowarrow/.style={
+        -{Latex[length=2mm]},
+        draw=UChicagoMaroon,
+        line width=1.1pt
+    }
+]
+
+\node[pipelinebox] (raw) {
+    \textbf{Raw waveforms}\\
+    Energy OR
+    Timing
+    Channels
+};
+
+\node[pipelinebox, right=of raw] (prep) {
+    \textbf{Preprocessing}\\
+    selection + LED
+};
+
+\node[pipelinebox, right=of prep] (dataset) {
+    \textbf{ML dataset}\\
+    windows + targets
+};
+
+\node[pipelinebox, right=of dataset] (train) {
+    \textbf{Model \\development}\\
+    train + validation
+};
+
+\node[pipelinebox, right=of train] (eval) {
+    \textbf{Blind evaluation}\\
+    CTR
+};
+
+\draw[flowarrow] (raw) -- (prep);
+\draw[flowarrow] (prep) -- (dataset);
+\draw[flowarrow] (dataset) -- (train);
+\draw[flowarrow] (train) -- (eval);
+
+\end{tikzpicture}
+
+\vspace{0.2em}
+
+\begin{block}{Input data}
+    Previous studies mainly considered energy-channel waveforms only. I applied the pipeline also on timing channel data, using the energy channel for the photopeak selection.
 \end{block}
-\end{column}
+% =========================================================
+% Dataset split
+% =========================================================
+\begin{block}{Holdout validation}
 
-\begin{column}{0.31\textwidth}
-\begin{block}{2. Compare readouts}
-\begin{itemize}
-  \item Full oscilloscope waveform.
-  \item Pico-TDC timestamp readout.
-  \item Reduced fixed-threshold representation.
-\end{itemize}
+\centering
+
+\begin{tikzpicture}[
+    every node/.style={
+        font=\scriptsize,
+        text=DarkText
+    }
+]
+
+% ---------------------------------------------------------
+% Original dataset
+% ---------------------------------------------------------
+\draw[
+    draw=UChicagoMaroon,
+    fill=white,
+    line width=1pt,
+    rounded corners
+] (0,1.55) rectangle (3.0,2.45);
+
+\node at (1.5,2.0) {\textbf{Original dataset}};
+
+% Arrow to split
+\draw[
+    -{Latex[length=2mm]},
+    draw=UChicagoMaroon,
+    line width=1.1pt
+] (3.15,2.0) -- (4.1,2.0);
+
+% ---------------------------------------------------------
+% Development set
+% ---------------------------------------------------------
+\draw[
+    draw=UChicagoMaroon,
+    fill=PaleMaroon,
+    line width=1pt,
+    rounded corners
+] (4.3,1.55) rectangle (7.8,2.45);
+
+\node at (6.05,2.0) {\textbf{Development set}};
+
+% Blind test
+\draw[
+    draw=UChicagoMaroon,
+    fill=white,
+    line width=1pt,
+    rounded corners
+] (8.2,1.55) rectangle (10.8,2.45);
+
+\node at (9.5,2.0) {\textbf{Blind test}};
+
+% Plus sign
+\node[font=\normalsize\bfseries] at (8.0,2.0) {$+$};
+
+% ---------------------------------------------------------
+% Development -> Train + Validation
+% ---------------------------------------------------------
+\draw[
+    -{Latex[length=2mm]},
+    draw=UChicagoMaroon,
+    line width=1.1pt
+] (6.05,1.45) -- (6.05,0.95);
+
+\draw[
+    draw=UChicagoMaroon,
+    fill=PaleMaroon,
+    line width=1pt,
+    rounded corners
+] (4.4,0.0) rectangle (7.7,0.8);
+
+\draw[
+    draw=UChicagoMaroon,
+    line width=0.9pt
+] (6.1,0.0) -- (6.1,0.8);
+
+\node at (5.25,0.4) {\textbf{Train}};
+\node at (6.9,0.4) {\textbf{Validation}};
+
+\end{tikzpicture}
+
+\vspace{0.3em}
+
+\scriptsize
+The \textbf{original dataset} is split into a \textbf{development set} and a \textbf{blind test}.  
+Only the \textbf{development set} is used for training and model selection.
+
 \end{block}
-\end{column}
-
-\begin{column}{0.31\textwidth}
-\begin{block}{3. Test fairly}
-\begin{itemize}
-  \item Tune on development data.
-  \item Retrain selected configuration.
-  \item Report one independent blind CTR.
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-
-\vspace{1.45em}
-\centering\normalsize Repository: \repo
 \end{frame}

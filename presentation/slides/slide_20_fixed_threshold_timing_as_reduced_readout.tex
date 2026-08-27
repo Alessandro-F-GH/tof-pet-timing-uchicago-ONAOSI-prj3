@@ -1,28 +1,59 @@
-\begin{frame}{Fixed-threshold timing as reduced readout}
+\begin{frame}{Fixed-threshold timing with ML}
+
 \small
+\vspace{-0.2cm}
 \begin{columns}[T,totalwidth=\textwidth]
-\begin{column}{0.50\textwidth}
+
+\begin{column}{0.45\textwidth}
+
 \centering
-\smartimage[0.92\linewidth]{0.42\textheight}{figures/multithreshold_waveform_crossings.pdf}{Interpolated crossing times at fixed thresholds.}
-\vspace{0.25em}
-\smartimage[0.92\linewidth]{0.4\textheight}{figures/results_multithreshold_ctr_vs_threshold_count_energy_to_energy.pdf}{CTR improvement versus number of thresholds.}
+\vspace{0.4cm}
+
+\smartimage[0.92\linewidth]{0.45\textheight}
+{figures/multithreshold_waveform_crossings.pdf}
+{Interpolated crossing times at fixed thresholds.}
+
+\vspace{0.75em}
+
+\smartimage[0.92\linewidth]{0.45\textheight}
+{figures/results_multithreshold_ctr_vs_threshold_count_energy_to_energy.pdf}
+{CTR improvement versus number of thresholds.}
+
 \end{column}
 
-\begin{column}{0.46\textwidth}
-\begin{block}{Reduced feature vector}
+\begin{column}{0.5\textwidth}
+
+\begin{block}{SVR on reduced waveform information}
+\vspace{-0.5em}
 \[
-\tau_k=t_1(V_k)-t_2(V_k), \qquad x=[\tau_{k_1},\ldots,\tau_{k_m}] .
+\tau_k=t_1(V_k)-t_2(V_k),
+\qquad
+x=[\tau_{k_1},\ldots,\tau_{k_m}]
 \]
-Only $m$ signal crossing times are passed to SVR.
+\vspace{-2em}
+
+\[
+\boxed{\hat{y}=f_{\mathrm{SVR}}(x)}
+\]
+
+Instead of the full waveform, the ML model receives only $m$ fixed-threshold crossing-time differences.
+
 \end{block}
 
 \begin{block}{Result}
-On energy channels, the first few thresholds recover much of the correction and can outperform standard single-time estimators.
+
+The SVR can recover much of the timing correction from only a few thresholds and outperform standard single-time estimators on energy channels.
+
 \end{block}
 
 \begin{alertblock}{Connection to Pico-TDC}
-This tests how much information can survive a TDC-like representation, without considering the ToT information.
+
+This tests how much ML-based timing correction survives after compressing the waveform into a TDC-like representation, without using ToT information.
+
 \end{alertblock}
+
 \end{column}
+
 \end{columns}
+
 \end{frame}

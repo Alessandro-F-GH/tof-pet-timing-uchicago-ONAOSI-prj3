@@ -35,10 +35,10 @@ plt.rcParams.update({
     "font.size": 14,
     "axes.titlesize": 16,
     "axes.labelsize": 15,
-    "xtick.labelsize": 13,
-    "ytick.labelsize": 13,
-    "legend.fontsize": 12,
-    "figure.titlesize": 17,
+    "xtick.labelsize": 15,
+    "ytick.labelsize": 15,
+    "legend.fontsize": 15,
+    "figure.titlesize": 20,
 })
 
 
@@ -757,8 +757,9 @@ def _plot_comparison(
         voltage,
         pico_mean,
         marker="o",
+        alpha=0.7,
         linestyle="none",
-        markersize=10,
+        markersize=15,
         label=f"Pico-TDC · T_th={pico_threshold_mV:g} mV",
     )
 
@@ -766,8 +767,9 @@ def _plot_comparison(
         voltage,
         scope_mean,
         marker="s",
+        alpha=0.7,
         linestyle="none",
-        markersize=10,
+        markersize=15,
         label="Oscilloscope adaptive LED",
     )
 
@@ -775,11 +777,19 @@ def _plot_comparison(
         "CTR [ps]",
         fontsize=18,
     )
+
+    integer_voltages = sorted(
+        {int(v) for v in voltage if float(v).is_integer()}
+    )
+    residual_ax.set_xticks(integer_voltages)
+
     ax.tick_params(
         axis="both",
         labelsize=15,
     )
     ax.grid(alpha=0.3)
+
+    ax.set_ylim(0,70)
 
     ax.legend(
         loc="lower left",

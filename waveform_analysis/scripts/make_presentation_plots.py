@@ -14,8 +14,7 @@ Default output:
     waveform_analysis/results/presentation/plots/
 
 Generated LaTeX-facing filenames:
-    data_energy_waveform_example.pdf
-    data_timing_waveform_example.pdf
+    data_full_waveform_example.pdf
     led_cfd_waveform_schematic.pdf
     windowing_native_grid.pdf
     multithreshold_waveform_crossings.pdf
@@ -42,6 +41,8 @@ from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import awkward as ak
+import uproot
 from matplotlib.lines import Line2D
 import numpy as np
 
@@ -80,9 +81,19 @@ from ml_pipeline.reporting import short_model_label, short_mode_label, format_ct
 from ml_pipeline.prepared_data import input_variant_dataset_view
 from ml_pipeline.prediction import prediction_window_dataset_view
 from ml_pipeline.study_config import CHANNEL_MODES
+from ml_pipeline.signal import timing_channel_waveform_config
+from utils.signal import baseline_and_basic_features
 
 
 FEMTOSECONDS_PER_PICOSECOND = 1000.0
+
+_PRESENTATION_MODEL_COLORS = {
+    "led": "tab:blue",
+    "cfd": "tab:orange",
+    "linear_svr": "tab:green",
+    "cnn": "tab:red",
+    "fixed_threshold_svr": "tab:purple",
+}
 
 
 # -----------------------------------------------------------------------------
@@ -405,50 +416,149 @@ def _crossing_xlim(
 # Real waveform examples
 # -----------------------------------------------------------------------------
 
-def plot_energy_waveform_example(
-    dataset: PreparedDataset, event: int, output: Path, dpi: int
-) -> None:
-    t_ps = np.asarray(dataset.relative_time_ps, dtype=np.float64)
-    t_ns = t_ps / 1000.0
-    waves = np.asarray(dataset.windows_mV[event], dtype=np.float64)
-
-    fig, ax = plt.subplots(figsize=(8.8, 4.0))
-    ax.plot(t_ns, waves[0], linewidth=1.7, label="Detector 1")
-    ax.set_xlabel("Time [ns]")
-    ax.set_ylabel("Voltage [mV]")
-    ax.set_title("Energy-channel signal example")
-    ax.grid(alpha=0.20)
-    _save(fig, output / "data_energy_waveform_example.pdf", dpi)
+def _source_root_path(dataset: PreparedDataset) -> Path:
+    source = str(dataset.manifest.get("source_root", "")).strip()
+    if not source:
+        raise RuntimeError("Prepared dataset manifest does not contain source_root")
+    path = Path(source)
+    if not path.is_absolute():
+        path = (PROJECT / path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Source ROOT file required for the full-waveform example was not found: {path}"
+        )
+    return path
 
 
-def plot_timing_waveform_example(
-    dataset: PreparedDataset, event: int, output: Path, dpi: int
-) -> None:
-    if dataset.timing_windows_mV is None or dataset.timing_relative_time_ps is None:
-        print("warning: timing waveform arrays are unavailable; timing example not generated", file=sys.stderr)
-        return
+def _full_waveforms_for_event(
+    dataset: PreparedDataset, event: int
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """Load all four complete acquisition waveforms for one prepared event.
 
-    t_ps = np.asarray(dataset.timing_relative_time_ps, dtype=np.float64)
-    t_ns = t_ps / 1000.0
-    waves = np.asarray(dataset.timing_windows_mV[event], dtype=np.float64)
-    left, right = _rising_edge_xlim(
-        t_ps,
-        waves,
-        low_fraction=0.03,
-        high_fraction=0.60,
-        pad_before_ns=0.35,
-        pad_after_ns=0.8,
-        fallback_before_ns=1.0,
-        fallback_after_ns=4.0,
+    The permanent prepared dataset contains only the materialized ML windows.
+    For the presentation example, reopen the original ROOT entry identified by
+    ``dataset.event_index[event]`` and reconstruct the same calibrated,
+    baseline-corrected, polarity-oriented signals used by preprocessing.
+    """
+    source_root = _source_root_path(dataset)
+    root_event_index = int(np.asarray(dataset.event_index)[event])
+
+    raw_manifest = dataset.manifest.get("raw_cache_manifest", {}) or {}
+    preprocessing = raw_manifest.get("preprocessing", {}) or {}
+    channel_config = preprocessing.get("channels", {}) or {}
+    waveform_config = preprocessing.get("waveform", {}) or {}
+
+    energy_channels = tuple(
+        int(v) for v in channel_config.get(
+            "energy", raw_manifest.get("energy_channels_one_based", [])
+        )
     )
+    timing_channels = tuple(
+        int(v) for v in channel_config.get(
+            "timing", raw_manifest.get("timing_channels_one_based", [])
+        )
+    )
+    if len(energy_channels) != 2 or len(timing_channels) != 2:
+        raise RuntimeError(
+            "Full-waveform presentation plot requires exactly two energy and two "
+            "timing channels in the prepared dataset manifest"
+        )
 
-    fig, ax = plt.subplots(figsize=(8.8, 4.0))
-    ax.plot(t_ns, waves[0], linewidth=1.7, label="Detector 1")
-    ax.set_xlabel("Time [ns]")
+    energy_polarities = tuple(int(v) for v in channel_config.get("polarities", (1, 1)))
+    timing_polarities = tuple(
+        int(v) for v in channel_config.get("timing_polarities", (1, 1))
+    )
+    if len(energy_polarities) != 2 or len(timing_polarities) != 2:
+        raise RuntimeError("Expected two polarity values for each waveform family")
+
+    channel_numbers = (*energy_channels, *timing_channels)
+    branch_names = [f"samples_ch{channel}" for channel in channel_numbers]
+    metadata_branches = [
+        "vertical_gain_v_per_count",
+        "vertical_offset_v",
+        "horizontal_interval_s",
+        "horizontal_offset_s",
+    ]
+
+    with uproot.open(source_root) as root_file:
+        if "events" not in root_file:
+            raise KeyError(f"{source_root} does not contain the 'events' TTree")
+        tree = root_file["events"]
+        available = set(tree.keys())
+        required = [*metadata_branches, *branch_names]
+        missing = [name for name in required if name not in available]
+        if missing:
+            raise KeyError(
+                "ROOT events tree is missing branches required for the full-waveform "
+                "example: " + ", ".join(missing)
+            )
+        if root_event_index < 0 or root_event_index >= int(tree.num_entries):
+            raise IndexError(
+                f"Prepared event points to ROOT entry {root_event_index}, outside "
+                f"[0, {int(tree.num_entries) - 1}]"
+            )
+        arrays = tree.arrays(
+            required,
+            entry_start=root_event_index,
+            entry_stop=root_event_index + 1,
+            library="ak",
+        )
+
+    gains = np.asarray(ak.to_numpy(arrays["vertical_gain_v_per_count"][0]), dtype=np.float64)
+    offsets = np.asarray(ak.to_numpy(arrays["vertical_offset_v"][0]), dtype=np.float64)
+    intervals = np.asarray(ak.to_numpy(arrays["horizontal_interval_s"][0]), dtype=np.float64)
+    horizontal_offsets = np.asarray(ak.to_numpy(arrays["horizontal_offset_s"][0]), dtype=np.float64)
+
+    timing_waveform_config = timing_channel_waveform_config(waveform_config)
+    descriptors = [
+        ("energy_1", energy_channels[0], energy_polarities[0], waveform_config),
+        ("energy_2", energy_channels[1], energy_polarities[1], waveform_config),
+        ("timing_1", timing_channels[0], timing_polarities[0], timing_waveform_config),
+        ("timing_2", timing_channels[1], timing_polarities[1], timing_waveform_config),
+    ]
+
+    output: list[tuple[str, np.ndarray, np.ndarray]] = []
+    for label, channel_one_based, polarity, extraction_config in descriptors:
+        index = int(channel_one_based) - 1
+        raw = np.asarray(
+            ak.to_numpy(arrays[f"samples_ch{channel_one_based}"][0]),
+            dtype=np.float64,
+        )
+        voltage_mV = (raw * float(gains[index]) - float(offsets[index])) * 1000.0
+        basic = baseline_and_basic_features(
+            voltage_mV,
+            baseline_samples=int(extraction_config["baseline_samples"]),
+            polarity=int(polarity),
+            trigger_threshold_mV=float(extraction_config["search_trigger_threshold_mV"]),
+            horizontal_interval_s=float(intervals[index]),
+            horizontal_offset_s=float(horizontal_offsets[index]),
+        )
+        time_ns = (
+            float(horizontal_offsets[index])
+            + np.arange(raw.size, dtype=np.float64) * float(intervals[index])
+        ) * 1.0e9
+        output.append(
+            (label, time_ns, np.asarray(basic.corrected_signal_mV, dtype=np.float64))
+        )
+
+    return output
+
+
+def plot_full_waveform_example(
+    dataset: PreparedDataset, event: int, output: Path, dpi: int
+) -> None:
+    waveforms = _full_waveforms_for_event(dataset, event)
+
+    fig, ax = plt.subplots(figsize=(9.2, 4.5))
+    for label, time_ns, signal_mV in waveforms:
+        ax.plot(time_ns, signal_mV, linewidth=1.35, label=label)
+
+    ax.set_xlabel("Acquisition time [ns]")
     ax.set_ylabel("Voltage [mV]")
-    ax.set_title("Timing-channel signal example")
+    ax.set_title("Full waveform example")
     ax.grid(alpha=0.20)
-    _save(fig, output / "data_timing_waveform_example.pdf", dpi)
+    ax.legend(frameon=False, ncol=2)
+    _save(fig, output / "data_full_waveform_example.pdf", dpi)
 
 def plot_led_cfd_example(
     dataset: PreparedDataset,
@@ -457,7 +567,7 @@ def plot_led_cfd_example(
     dpi: int,
 ) -> None:
     if dataset.energy_led_time_fs is None or dataset.energy_cfd_time_fs is None:
-        raise RuntimeError("Prepared dataset has no energy LED/CFD timestamps")
+        raise RuntimeError("Prepared dataset has no energy LED timestamps")
 
     anchors = dataset.energy_window_anchor_time_fs
     if anchors is None:
@@ -479,15 +589,9 @@ def plot_led_cfd_example(
     # LED / CFD settings
     # ------------------------------------------------------------------
     led_threshold = _energy_led_threshold(dataset)
-    cfd_fraction = _energy_cfd_fraction(dataset)
-
-    amplitude = np.asarray(dataset.amplitude_mV, dtype=np.float64)
-    cfd_threshold_1 = float(amplitude[event, 0]) * cfd_fraction
-    cfd_threshold_2 = float(amplitude[event, 1]) * cfd_fraction
 
     anchor_fs = np.asarray(anchors, dtype=np.float64)[event]
     led_fs = np.asarray(dataset.energy_led_time_fs, dtype=np.float64)[event]
-    cfd_fs = np.asarray(dataset.energy_cfd_time_fs, dtype=np.float64)[event]
 
     # ------------------------------------------------------------------
     # Common event-time reference
@@ -504,14 +608,11 @@ def plot_led_cfd_example(
     led_1_ns = (float(led_fs[0]) - reference_fs) / 1.0e6
     led_2_ns = (float(led_fs[1]) - reference_fs) / 1.0e6
 
-    cfd_1_ns = (float(cfd_fs[0]) - reference_fs) / 1.0e6
-    cfd_2_ns = (float(cfd_fs[1]) - reference_fs) / 1.0e6
-
     # ------------------------------------------------------------------
     # Compact presentation window around all four crossings
     # ------------------------------------------------------------------
     crossings_ns = np.asarray(
-        [led_1_ns, led_2_ns, cfd_1_ns, cfd_2_ns],
+        [led_1_ns, led_2_ns],
         dtype=np.float64,
     )
 
@@ -534,9 +635,7 @@ def plot_led_cfd_example(
     local_max = max(
         float(np.nanmax(y1[local1])) if np.any(local1) else float(np.nanmax(y1)),
         float(np.nanmax(y2[local2])) if np.any(local2) else float(np.nanmax(y2)),
-        led_threshold,
-        cfd_threshold_1,
-        cfd_threshold_2,
+        led_threshold
     )
 
     amplitude_span = max(1.0, local_max - local_min)
@@ -553,7 +652,6 @@ def plot_led_cfd_example(
 
     # Crossing/estimator colors deliberately differ from waveform colors.
     led_color = "crimson"
-    cfd_color = "forestgreen"
 
     # ------------------------------------------------------------------
     # Plot
@@ -603,21 +701,6 @@ def plot_led_cfd_example(
     )
 
     # ------------------------------------------------------------------
-    # CFD crossings
-    # ------------------------------------------------------------------
-    ax.scatter(
-        [cfd_1_ns, cfd_2_ns],
-        [cfd_threshold_1, cfd_threshold_2],
-        s=60,
-        marker="s",
-        color=cfd_color,
-        edgecolors="white",
-        linewidths=0.8,
-        zorder=6,
-        label="CFD crossings",
-    )
-
-    # ------------------------------------------------------------------
     # Vertical guides from the crossing points
     # ------------------------------------------------------------------
     for x in (led_1_ns, led_2_ns):
@@ -627,21 +710,6 @@ def plot_led_cfd_example(
             led_threshold,
             color=led_color,
             linestyle="--",
-            linewidth=2,
-            alpha=0.45,
-            zorder=0,
-        )
-
-    for x, level in (
-        (cfd_1_ns, cfd_threshold_1),
-        (cfd_2_ns, cfd_threshold_2),
-    ):
-        ax.vlines(
-            x,
-            ymin,
-            level,
-            color=cfd_color,
-            linestyle=":",
             linewidth=2,
             alpha=0.45,
             zorder=0,
@@ -676,29 +744,6 @@ def plot_led_cfd_example(
         fontweight="bold",
     )
 
-    ax.annotate(
-        "",
-        xy=(cfd_1_ns, y_cfd_arrow),
-        xytext=(cfd_2_ns, y_cfd_arrow),
-        arrowprops=dict(
-            arrowstyle="<->",
-            color=cfd_color,
-            linewidth=1.7,
-        ),
-        zorder=5,
-    )
-
-    ax.text(
-        0.5 * (cfd_1_ns + cfd_2_ns),
-        y_cfd_arrow + 0.025 * amplitude_span,
-        r"$\Delta t_{\mathrm{CFD}}$",
-        color=cfd_color,
-        ha="center",
-        va="bottom",
-        fontsize=14,
-        fontweight="bold",
-    )
-
     # ------------------------------------------------------------------
     # Final formatting
     # ------------------------------------------------------------------
@@ -707,7 +752,7 @@ def plot_led_cfd_example(
 
     ax.set_xlabel("Time [ns]")
     ax.set_ylabel("Voltage [mV]")
-    ax.set_title("LED/CFD timing example")
+    ax.set_title("LED timing example")
 
     ax.grid(alpha=0.18)
 
@@ -722,7 +767,7 @@ def plot_led_cfd_example(
 
     _save(
         fig,
-        output / "led_cfd_waveform_schematic.pdf",
+        output / "led_waveform_schematic.pdf",
         dpi,
     )
 
@@ -770,7 +815,6 @@ def _selected_window_from_run(
     return None
 
 
-
 def plot_windowing_example(
     dataset: PreparedDataset,
     event: int,
@@ -782,82 +826,231 @@ def plot_windowing_example(
 ) -> None:
     if dataset.energy_led_time_fs is None:
         raise RuntimeError("Prepared dataset has no energy LED timestamps")
+
     anchors = dataset.energy_window_anchor_time_fs
     if anchors is None:
         anchors = dataset.window_anchor_time_fs
     if anchors is None:
         raise RuntimeError("Prepared dataset has no energy window anchors")
 
-    y = np.asarray(dataset.windows_mV[event, detector], dtype=np.float64)
-    rel_anchor_ps = np.asarray(dataset.relative_time_ps, dtype=np.float64)
-    anchor_fs = float(np.asarray(anchors)[event, detector])
-    led_fs = float(np.asarray(dataset.energy_led_time_fs)[event, detector])
+    # ------------------------------------------------------------------
+    # Load ORIGINAL waveform from ROOT, not the ML-prepared window
+    # ------------------------------------------------------------------
+    full_waveforms = _full_waveforms_for_event(dataset, event)
 
-    # Exact interpolated LED becomes t=0; waveform samples remain on the native grid.
-    anchor_minus_led_ps = (anchor_fs - led_fs) / FEMTOSECONDS_PER_PICOSECOND
-    t_led_ns = (rel_anchor_ps + anchor_minus_led_ps) / 1000.0
-    anchor_ns = anchor_minus_led_ps / 1000.0
-    chosen_window = _selected_window_from_run(run_manifest, rows, dataset)
+    raw_label, raw_time_ns, raw_signal_mV = full_waveforms[detector]
 
-    # Presentation figure: one close-up for the discrete shift and one compact
-    # rising-edge view for the ML window.  The long waveform tail is omitted.
+    led_fs = float(
+        np.asarray(dataset.energy_led_time_fs)[event, detector]
+    )
+    anchor_fs = float(
+        np.asarray(anchors)[event, detector]
+    )
+
+    # Convert absolute LED time to ns
+    led_ns = led_fs / 1.0e6
+
+    # Position of the discrete/native anchor relative to exact LED crossing
+    anchor_ns = (anchor_fs - led_fs) / 1.0e6
+
+    # Exact LED crossing is t = 0
+    t_led_ns = raw_time_ns - led_ns
+    t_led_ps = t_led_ns * 1e3
+
+    chosen_window = _selected_window_from_run(
+        run_manifest,
+        rows,
+        dataset,
+    )
+
     fig, (ax_local, ax_window) = plt.subplots(
-        1, 2, figsize=(10.2, 4.0), gridspec_kw={"width_ratios": [0.9, 1.35]}
+        1,
+        2,
+        figsize=(10.8, 4.2),
+        gridspec_kw={"width_ratios": [0.9, 1.35]},
     )
 
-    # Left: show the native grid around the interpolation anchor.
-    local_half_width_ns = 0.075
-    local = np.abs(t_led_ns) <= local_half_width_ns
-    if np.count_nonzero(local) < 8:
-        nearest = int(np.argmin(np.abs(t_led_ns)))
-        lo = max(0, nearest - 6)
-        hi = min(t_led_ns.size, nearest + 7)
-        local = np.zeros(t_led_ns.size, dtype=bool)
-        local[lo:hi] = True
-    ax_local.plot(t_led_ns[local], y[local], linewidth=1.3)
-    ax_local.scatter(t_led_ns[local], y[local], s=28, zorder=4, label="native samples")
-    ax_local.axvline(0.0, linestyle="--", linewidth=1.2, label="interpolated LED")
-    ax_local.axvline(anchor_ns, linestyle=":", linewidth=1.2, label="nearest sample")
+    # ==================================================================
+    # LEFT: native sampling around exact LED crossing
+    # ==================================================================
+
+    # Display interval
+    x_left_ps = -8.0
+    x_right_ps = 12.0
+
+    # Points inside the interval
+    core_idx = np.flatnonzero((t_led_ps >= x_left_ps) & (t_led_ps <= x_right_ps))
+
+    if core_idx.size == 0:
+        raise RuntimeError(
+            "No waveform samples fall inside the requested "
+            "[-20, +20] ps anchor-view interval"
+        )
+
+    # Include one previous and one successive point so the line is not
+    # visually interrupted at the boundaries
+    plot_start = max(0, int(core_idx[0]) - 1)
+    plot_stop = min(t_led_ps.size, int(core_idx[-1]) + 2)
+
+    plot_idx = np.arange(plot_start, plot_stop)
+    local = np.zeros(t_led_ps.size, dtype=bool)
+    local[plot_idx] = True
+
+    ax_local.plot(
+        t_led_ps[local],
+        raw_signal_mV[local],
+        linewidth=1.3,
+    )
+
+    ax_local.scatter(
+        t_led_ps[local],
+        raw_signal_mV[local],
+        s=30,
+        zorder=4,
+        label="native samples",
+    )
+
+    # ------------------------------------------------------------------
+    # LED threshold
+    # ------------------------------------------------------------------
+    led_threshold = _energy_led_threshold(dataset)
+
+    ax_local.axhline(
+        led_threshold,
+        linestyle="--",
+        linewidth=1.2,
+        color="red",
+        label=f"LED threshold ({led_threshold:g} mV)",
+    )
+
+    # ------------------------------------------------------------------
+    # Exact interpolated LED crossing
+    # ------------------------------------------------------------------
+    ax_local.axvline(
+        0.0,
+        linestyle="--",
+        color="black",
+        linewidth=1.2,
+        label="interpolated LED",
+    )
+
+    # ------------------------------------------------------------------
+    # Native sample corresponding to the discrete anchor
+    # ------------------------------------------------------------------
+    anchor_ps = anchor_ns * 1e3
+
+    reference_index = int(np.argmin(np.abs(t_led_ps - anchor_ps)))
+    reference_x = float(t_led_ps[reference_index])
+    reference_y = float(raw_signal_mV[reference_index])
+
+    ax_local.scatter(
+        [reference_x],
+        [reference_y],
+        s=75,
+        zorder=6,
+        label="reference sample",
+    )
+
+    # ------------------------------------------------------------------
+    # Delta between discrete reference and exact LED crossing
+    # ------------------------------------------------------------------
+    delta_ps = abs(reference_x)
+
+    y_local = raw_signal_mV[local]
+    y_min = float(np.nanmin(y_local))
+    y_max = float(np.nanmax(y_local))
+    y_span = max(1.0, y_max - y_min)
+
+    # Put arrow a bit lower for readability
+    y_arrow = reference_y
+
+    ax_local.annotate(
+        "",
+        xy=(0, y_arrow),
+        xytext=(reference_x+0.5, y_arrow),
+        arrowprops=dict(
+            arrowstyle="<->",
+            linewidth=1.8,
+        ),
+        zorder=5,
+    )
+
+    ax_local.text(
+        0.5 * reference_x,
+        y_arrow - 0.20 * y_span,
+        rf"$\delta = {delta_ps:.1f}\,\mathrm{{ps}}$",
+        ha="center",
+        va="bottom",
+        fontsize=20,
+    )
+
+    # ------------------------------------------------------------------
+    # Left formatting
+    # ------------------------------------------------------------------
+    ax_local.set_xlim(x_left_ps, x_right_ps)
+
     ax_local.set_title("Anchor shift")
-    ax_local.set_xlabel("LED-relative time [ns]")
+    ax_local.set_xlabel("LED-relative time [ps]")
     ax_local.set_ylabel("Voltage [mV]")
-    ax_local.grid(alpha=0.20)
-    ax_local.legend(frameon=False, fontsize=8)
 
-    # Right: show only the informative early waveform region, not the full pulse.
-    left, right = _rising_edge_xlim(
-        rel_anchor_ps + anchor_minus_led_ps,
-        y,
-        low_fraction=0.02,
-        high_fraction=0.55,
-        pad_before_ns=0.8,
-        pad_after_ns=1.4,
-        fallback_before_ns=2.0,
-        fallback_after_ns=8.0,
+    ax_local.grid(alpha=0.20)
+
+    legend  = ax_local.legend(
+        frameon=True,
+        fontsize=12,
     )
+    legend.get_frame().set_alpha(1)
+
+    # ==================================================================
+    # RIGHT: complete original waveform + selected ML window
+    # ==================================================================
+
+    ax_window.plot(
+        t_led_ns,
+        raw_signal_mV,
+        linewidth=1.6,
+        label=f"{raw_label} full waveform",
+    )
+
+    ax_window.axvline(
+        0.0,
+        linestyle="--",
+        linewidth=1.1,
+        label="LED anchor",
+    )
+
     if chosen_window is not None:
         before_ns, after_ns = chosen_window
-        left = min(left, max(-before_ns, -2.5))
-        right = min(right, 12.0)
-        visible_left = max(left, -before_ns)
-        visible_right = min(right, after_ns)
-        if visible_right > visible_left:
-            label = f"ML window [−{before_ns:g}, +{after_ns:g}] ns"
-            if after_ns > right + 1e-9:
-                label += " (cropped view)"
-            ax_window.axvspan(visible_left, visible_right, alpha=0.12, label=label)
 
-    ax_window.plot(t_led_ns, y, linewidth=1.6, label="native waveform")
-    ax_window.axvline(0.0, linestyle="--", linewidth=1.1, label="LED anchor")
-    ax_window.set_xlim(left, right)
-    ax_window.set_title("Window passed to ML")
+        ax_window.axvspan(
+            -before_ns,
+            after_ns,
+            alpha=0.14,
+            label=f"ML window [−{before_ns:g}, +{after_ns:g}] ns",
+        )
+
+    # Show the COMPLETE original waveform
+    ax_window.set_xlim(
+        float(np.nanmin(t_led_ns)),
+        float(np.nanmax(t_led_ns)),
+    )
+
+    ax_window.set_title("Original signal with ML window")
     ax_window.set_xlabel("LED-relative time [ns]")
+    ax_window.set_ylabel("Voltage [mV]")
+
     ax_window.grid(alpha=0.20)
-    ax_window.legend(frameon=False, fontsize=8)
 
-    fig.suptitle("Discrete windowing: shift the grid reference, not the samples", fontsize=13)
-    _save(fig, output / "windowing_native_grid.pdf", dpi)
+    ax_window.legend(
+        frameon=True,
+        fontsize=12,
+    )
 
+    _save(
+        fig,
+        output / "windowing_native_grid.pdf",
+        dpi,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -2050,8 +2243,8 @@ def _gaussian_blind_ctr_rows(
 # -----------------------------------------------------------------------------
 _PRESENTATION_MODEL_ORDER = [
     "led", "cfd", "linear_svr", "constructive_mlp", "cnn",
-    "multithreshold_svr",
-]
+    
+] # "multithreshold_svr",
 _PRESENTATION_MODEL_LABELS = {
     "led": "LED",
     "cfd": "CFD",
@@ -2061,6 +2254,13 @@ _PRESENTATION_MODEL_LABELS = {
     "multithreshold_svr": "Fixed-threshold SVR",
 }
 
+_PRESENTATION_MODEL_COLORS = {
+    "led": "tab:blue",
+    "cfd": "tab:orange",
+    "linear_svr": "tab:green",
+    "cnn": "tab:red",
+    "multithreshold_svr": "tab:purple",
+}
 
 def _report_rows(run_dir: Path) -> list[dict[str, str]]:
     path = run_dir / "report_results.csv"
@@ -2119,7 +2319,6 @@ def _blind_ctr_rows(
             })
     return out
 
-
 def plot_ctr_vs_voltage_presentation(
     run_dir: Path,
     rows: list[dict[str, str]],
@@ -2135,6 +2334,7 @@ def plot_ctr_vs_voltage_presentation(
     # rows is retained in the signature for backward compatibility with callers;
     # final blind CTR values are intentionally recomputed from residual artifacts.
     _ = rows
+
     data = _gaussian_blind_ctr_rows(
         run_dir,
         run_manifest,
@@ -2142,6 +2342,7 @@ def plot_ctr_vs_voltage_presentation(
         bootstrap_samples=bootstrap_samples,
         bootstrap_seed=bootstrap_seed,
     )
+
     if not data:
         print(
             f"warning: no blind evaluation artifacts for {mode}; "
@@ -2150,49 +2351,115 @@ def plot_ctr_vs_voltage_presentation(
         )
         return
 
+    # Fixed colors across all presentation plots.
+    model_colors = {
+        "led": "tab:blue",
+        "cfd": "tab:orange",
+        "linear_svr": "tab:green",
+        "cnn": "tab:red",
+        "multihreshold_svr": "tab:purple",
+    }
+
     fig, ax = plt.subplots(figsize=(9.0, 4.2))
+
     for model in _PRESENTATION_MODEL_ORDER:
         points = sorted(
             [row for row in data if row["model"] == model],
             key=lambda row: float(row["voltage"]),
         )
+
         if not points:
             continue
 
-        x = np.asarray([row["voltage"] for row in points], dtype=np.float64)
-        y = np.asarray([row["ctr"] for row in points], dtype=np.float64)
-        yerr = np.asarray([row["ctr_err"] for row in points], dtype=np.float64)
+        x = np.asarray(
+            [row["voltage"] for row in points],
+            dtype=np.float64,
+        )
+        y = np.asarray(
+            [row["ctr"] for row in points],
+            dtype=np.float64,
+        )
+        yerr = np.asarray(
+            [row["ctr_err"] for row in points],
+            dtype=np.float64,
+        )
 
         label = short_model_label(model)
+        color = model_colors.get(model)
+
+        plot_kwargs = {
+            "marker": "o",
+            "linewidth": 1.2,
+            "markersize": 5.5,
+            "label": label,
+        }
+
+        if color is not None:
+            plot_kwargs["color"] = color
+
         if np.all(np.isfinite(yerr)):
             ax.errorbar(
                 x,
                 y,
                 yerr=yerr,
-                marker="o",
-                linewidth=1.2,
-                markersize=5.5,
                 capsize=2.5,
-                elinewidth=1.0,
-                label=label,
+                elinewidth=1.5,
+                **plot_kwargs,
             )
         else:
             ax.plot(
                 x,
                 y,
-                marker="o",
-                linewidth=1.2,
-                markersize=5.5,
-                label=label,
+                **plot_kwargs,
             )
+
+    # Show labels only at actually evaluated discrete voltages.
+    discrete_voltages = sorted(
+        {
+            float(row["voltage"])
+            for row in data
+            if np.isfinite(float(row["voltage"]))
+        }
+    )
+
+    if discrete_voltages:
+        ax.set_xticks(discrete_voltages)
+        ax.set_xticklabels(
+            [f"{value:g}" for value in discrete_voltages]
+        )
 
     ax.set_title(short_mode_label(mode))
     ax.set_xlabel("Bias voltage [V]")
     ax.set_ylabel("Blind Gaussian-fit CTR [ps]")
-    ax.grid(alpha=0.22)
-    ax.legend(frameon=False, ncol=2, fontsize=8, loc="best")
-    _save(fig, output / filename, dpi)
 
+    # Horizontal reference grid.
+    ax.yaxis.grid(True, alpha=0.22)
+    ax.xaxis.grid(False)
+
+    # Vertical grid lines only at integer measured voltages.
+    for voltage in discrete_voltages:
+        if np.isclose(
+            voltage,
+            round(voltage),
+            rtol=0.0,
+            atol=1.0e-9,
+        ):
+            ax.axvline(
+                voltage,
+                linewidth=0.8,
+                alpha=0.22,
+                color="0.5",
+                zorder=0,
+            )
+
+    ax.legend(
+        frameon=False,
+        ncol=2,
+        fontsize=8,
+        loc="best",
+    )
+
+    _save(fig, output / filename, dpi)
 
 def _evaluation_artifact(
     run_dir: Path,
@@ -2560,8 +2827,7 @@ def main() -> None:
     print(f"output:   {output}")
     print(f"bootstrap:{bootstrap_samples} Gaussian-refit draws")
 
-    plot_energy_waveform_example(dataset, event, output, args.dpi)
-    plot_timing_waveform_example(dataset, event, output, args.dpi)
+    plot_full_waveform_example(dataset, event, output, args.dpi)
     plot_led_cfd_example(dataset, event, output, args.dpi)
     plot_windowing_example(dataset, event, output, args.dpi, run_manifest, rows)
     plot_multithreshold_example(dataset, event, output, args.dpi, run_manifest)

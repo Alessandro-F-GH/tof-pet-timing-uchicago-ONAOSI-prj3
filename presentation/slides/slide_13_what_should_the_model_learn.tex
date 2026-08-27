@@ -34,22 +34,25 @@ For each coincidence event, the measured time difference is:  $\Delta t_{\LED}=t
 % ---------------------------------------------------------
 \begin{columns}[T,totalwidth=\textwidth]
 
-\begin{column}{0.32\textwidth}
-\begin{block}{ML target}
-\Large
+\begin{column}{0.4\textwidth}
+\begin{block}{Ideal ML target}
+\vspace{-0.3em}
+\normalsize
 \[
 \boxed{\delta(s_1,s_2)}
 \]
 \small
-Where $(s_1,s_2)$ is a signal pair.
+\vspace{-1em}
+
+Where $(s_1,s_2)$ is a signal pair. In real applications, the target includes the noise $\epsilon$.
 
 \end{block}
 \end{column}
 
-\begin{column}{0.64\textwidth}
+\begin{column}{0.56\textwidth}
 \begin{block}{Derived properties}
 \begin{itemize}
-    \item The physical TOF remains outside the ML model.
+    \item The correction is independent of TOF.
     \item Fixed channel offsets are handled by calibration.
     \item ML is used to correct waveform-dependent timing effects.
 \end{itemize}

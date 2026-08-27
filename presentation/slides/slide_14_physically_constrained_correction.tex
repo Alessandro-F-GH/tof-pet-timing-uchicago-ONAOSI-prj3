@@ -10,13 +10,10 @@
 
 \small
 \[
-\theta^\star
-=
-\arg\min_\theta
-\frac{1}{N}\sum_{i=1}^{N}
-\left(
-y_\theta(s_{1,i},s_{2,i})-(\Delta t_{\LED}-\widehat C_{1,2}-TOF)
-\right)^2
+\theta^\star=\arg\min_\theta\frac{1}{N}\sum_{i=1}^{N}\left(y_\theta(s_{1}^i,s_{2}^i)-y^i_{\mathrm{true}}\right)^2,
+\qquad
+y^i_{\mathrm{true}}=\delta(s_{1}^i,s_{2}^i)+\varepsilon^i
+=\Delta t_{\LED}^i-\widehat C_{1,2}-TOF
 \]
 \end{block}
 
@@ -48,6 +45,6 @@ The final output is still a corrected arrival-time difference, so it can be eval
 \end{columns}
 
 \vspace{0.25em}
-\mainmsg{Constraining the model gives a translation-invariant, antisymmetric,
+\mainmsg{The proposed formulation gives a translation-invariant, antisymmetric,
 and more general timing correction.}
 \end{frame}

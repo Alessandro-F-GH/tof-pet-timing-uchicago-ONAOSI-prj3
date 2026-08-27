@@ -1,30 +1,54 @@
 \begin{frame}{Experimental setup}
+
 \small
+
 \begin{columns}[T,totalwidth=\textwidth]
+
 \begin{column}{0.44\textwidth}
+
 \centering
-\smartimage[0.96\linewidth]{0.84\textheight}{figures/Board-img.png}{Detector modules and front-end boards.}
+
+\smartimage[0.96\linewidth]{0.84\textheight}
+{figures/Board-img.png}
+{Detector modules and front-end boards.}
+
 \end{column}
 
 \begin{column}{0.53\textwidth}
+
 \begin{block}{Detector system}
+
 \begin{itemize}
-  \item Two opposing LYSO--SiPM detector modules.
-  \item LYSO crystal: $2\times2\times3~\mathrm{mm^3}$.
-  \item BC SiPM: $4\times4~\mathrm{mm^2}$.
-  \item FBK-HF front-end / amplifier.
-  \item $^{22}$Na positron-emitting source centered between the two detectors.
+
+    \item Two opposing LYSO--SiPM detector modules.
+
+    \item $^{22}$Na positron-emitting source centered between the two detectors.
+
 \end{itemize}
+
 \end{block}
 
+\begin{alertblock}{Principle}
+  A 511-keV photon produces scintillation light in the LYSO crystal, which the SiPM converts into an electrical pulse.
+
+\end{alertblock}
+
 \begin{block}{Analog outputs}
+
 For both detectors:
+
 \begin{itemize}
-  \item \textbf{energy} channel: first stage of amplification.
-  \item \textbf{timing} channel: second stage of amplification, designed for timing.
+
+    \item \textbf{energy} channel: first stage of amplification. Necessary for event selection, but can also be used for timing.
+
+    \item \textbf{timing} channel: second stage of amplification, specifically designed for timing.
+
 \end{itemize}
+
 \end{block}
 
 \end{column}
+
 \end{columns}
+
 \end{frame}

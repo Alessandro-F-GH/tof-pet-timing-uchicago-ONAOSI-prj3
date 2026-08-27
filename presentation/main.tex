@@ -18,6 +18,9 @@
 \usepackage{adjustbox}
 \usepackage{hyperref}
 \usepackage{ragged2e}
+\usepackage{tikz}
+
+\usetikzlibrary{positioning,arrows.meta}
 
 \definecolor{UChicagoMaroon}{RGB}{128,0,0}
 \definecolor{SoftGray}{RGB}{245,245,245}
@@ -73,6 +76,22 @@
 }
 
 \newcommand{\repo}{\href{https://github.com/Alessandro-F-GH/tof-pet-timing-uchicago-ONAOSI-prj3.git}{\texttt{tof-pet-timing-uchicago-ONAOSI-prj3}}}
+
+% ---------------------------------------------------------
+% UChicago logo in the top-right corner of each frame title
+% ---------------------------------------------------------
+
+\addtobeamertemplate{frametitle}{}{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[
+            anchor=north east,
+            inner sep=0pt
+        ] at ([xshift=-0.30cm,yshift=-0mm]current page.north east)
+        {%
+            \includegraphics[height=0.75cm]{figures/reverse_logo.png}%
+        };
+    \end{tikzpicture}%
+}
 
 \title[CTR timing analysis]{\LARGE Performance characterization of PET detectors and systems}
 \subtitle{\large Oscilloscope baseline, Pico-TDC performance, and waveform-ML correction}
@@ -157,6 +176,11 @@
 % ---------------------------------------------------------
 \input{slides/slide_25_references_and_source_material.tex}
 
+% ---------------------------------------------------------
+\input{slides/slide_26_backup_window_scan.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_27_backup_top_corrections.tex}
 
 
 \end{document}
