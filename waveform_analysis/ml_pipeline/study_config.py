@@ -410,14 +410,59 @@ def load_study_config(path: str | Path, project_root: str | Path) -> dict[str, A
     minimum_events = int(selection.get("minimum_events", 100))
     if minimum_events < 3:
         raise MLConfigError("preprocessing.selection.minimum_events must be >= 3")
-    led_outlier = selection.get("led_outlier_rejection", {}) or {}
-    if not isinstance(led_outlier, dict):
-        raise MLConfigError("preprocessing.selection.led_outlier_rejection must be an object")
-    if bool(led_outlier.get("enabled", False)):
-        if "zscore_limit" in led_outlier:
-            _finite(led_outlier.get("zscore_limit"), "led_outlier_rejection.zscore_limit", positive=True)
-        else:
-            _finite(led_outlier.get("max_distance_ps", 300.0), "led_outlier_rejection.max_distance_ps", positive=True)
+
+    if "led_outlier_rejection" in selection:
+        raise MLConfigError(
+            "preprocessing.selection.led_outlier_rejection is obsolete; "
+            "use standard_methods.search_time_outlier_rejection"
+        )
+
+    standard_methods = cfg.setdefault("standard_methods", {})
+    if not isinstance(standard_methods, dict):
+        raise MLConfigError("standard_methods must be an object")
+
+    standard_methods.setdefault("enabled", True)
+    standard_methods.setdefault("led_grid_points", 121)
+    standard_methods.setdefault("led_refine_points", 41)
+    standard_methods.setdefault("cfd_grid_points", 81)
+    standard_methods.setdefault("cfd_refine_points", 41)
+    standard_methods.setdefault("waveform_scan_chunk_size", 1024)
+
+    for key in (
+        "led_grid_points",
+        "led_refine_points",
+        "cfd_grid_points",
+        "cfd_refine_points",
+        "waveform_scan_chunk_size",
+    ):
+        if int(standard_methods[key]) <= 0:
+            raise MLConfigError(
+                f"standard_methods.{key} must be positive"
+            )
+
+    search_rejection = standard_methods.setdefault(
+        "search_time_outlier_rejection",
+        {
+            "enabled": True,
+            "zscore_limit": 4.0,
+        },
+    )
+
+    if not isinstance(search_rejection, dict):
+        raise MLConfigError(
+            "standard_methods.search_time_outlier_rejection "
+            "must be an object"
+        )
+
+    search_rejection.setdefault("enabled", True)
+    search_rejection.setdefault("zscore_limit", 4.0)
+
+    if bool(search_rejection["enabled"]):
+        _finite(
+            search_rejection["zscore_limit"],
+            "standard_methods.search_time_outlier_rejection.zscore_limit",
+            positive=True,
+        )
 
     photopeak = preprocessing.setdefault("photopeak", {"enabled": False})
     if not isinstance(photopeak, dict):

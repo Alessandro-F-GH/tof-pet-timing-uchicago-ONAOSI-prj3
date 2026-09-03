@@ -86,6 +86,7 @@ def timing_channel_waveform_config(waveform_config: dict[str, Any]) -> dict[str,
         raise ValueError("waveform.timing_channel_led must be an object")
     keys = (
         "baseline_samples",
+        "subtract_baseline",
         "search_trigger_threshold_mV",
         "analysis_crop_ns",
         "led_threshold_mV",
@@ -133,6 +134,68 @@ def _first_rising_crossing_ns(
         return np.nan
     return x0 + fraction * (x1 - x0)
 
+
+
+def _search_trigger_anchored_rising_crossing_ns(
+    time_ns: np.ndarray,
+    signal_mV: np.ndarray,
+    threshold_mV: float,
+    anchor_index: int,
+) -> float:
+    """Interpolate the LED crossing on the edge reaching the search trigger."""
+
+    x = np.asarray(time_ns, dtype=np.float64)
+    y = np.asarray(signal_mV, dtype=np.float64)
+    threshold = float(threshold_mV)
+    anchor = int(anchor_index)
+
+    if x.ndim != 1 or y.ndim != 1 or x.size != y.size or x.size < 2:
+        return np.nan
+    if not np.isfinite(threshold) or threshold <= 0.0:
+        return np.nan
+    if anchor <= 0 or anchor >= x.size:
+        return np.nan
+    if not np.isfinite(x[anchor]) or not np.isfinite(y[anchor]):
+        return np.nan
+    if y[anchor] < threshold:
+        return np.nan
+
+    upper = anchor
+    while upper > 0:
+        previous = upper - 1
+
+        if not (
+            np.isfinite(x[previous])
+            and np.isfinite(x[upper])
+            and np.isfinite(y[previous])
+            and np.isfinite(y[upper])
+        ):
+            return np.nan
+
+        if y[previous] < threshold:
+            break
+
+        upper = previous
+
+    if upper <= 0:
+        return np.nan
+
+    lower = upper - 1
+    x0 = float(x[lower])
+    x1 = float(x[upper])
+    y0 = float(y[lower])
+    y1 = float(y[upper])
+
+    if x1 <= x0 or y1 == y0:
+        return np.nan
+    if not (y0 < threshold <= y1):
+        return np.nan
+
+    fraction = (threshold - y0) / (y1 - y0)
+    if not 0.0 <= fraction <= 1.0:
+        return np.nan
+
+    return x0 + fraction * (x1 - x0)
 
 def _last_rising_crossing_before_peak_ns(
     time_ns: np.ndarray,
@@ -201,6 +264,7 @@ def _basic_features(
     basic = baseline_and_basic_features(
         voltage_mV,
         baseline_samples=int(extraction_config["baseline_samples"]),
+        subtract_baseline=bool(extraction_config.get("subtract_baseline", False)),
         polarity=int(polarity),
         trigger_threshold_mV=float(extraction_config["search_trigger_threshold_mV"]),
         horizontal_interval_s=float(horizontal_interval_s),
@@ -219,6 +283,7 @@ def _basic_features(
         basic = baseline_and_basic_features(
             denoised_signal,
             baseline_samples=int(extraction_config["baseline_samples"]),
+            subtract_baseline=False,
             polarity=1,
             trigger_threshold_mV=float(
                 extraction_config["search_trigger_threshold_mV"]
@@ -270,10 +335,11 @@ def _timing_from_basic(
     if not np.isfinite(amplitude_mV) or amplitude_mV <= 0.0:
         return invalid
     led_ns = (
-        _first_rising_crossing_ns(
+        _search_trigger_anchored_rising_crossing_ns(
             crop_time,
             crop_signal,
             float(extraction_config["led_threshold_mV"]),
+            int(basic.trigger_index - start_index),
         )
         if compute_led
         else np.nan

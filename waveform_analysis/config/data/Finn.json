@@ -1,6 +1,6 @@
 {
-  "root_folder": "processed_data/converted_runs_07-13",
-  "root_glob": "49V-*.root",
+  "root_folder": "processed_data/converted_Finn",
+  "root_glob": "*-*.root",
   "recursive": false,
   "true_tof_ps": 0.0,
   "channels": {

@@ -36,10 +36,25 @@
     "xai": {
       "enabled": true,
       "max_events": 1024,
-      "integrated_gradient_steps": 16
+      "integrated_gradient_steps": 16,
+      "region_window_ns": 1.0,
+      "n_levels": 6,
+      "contrast_gamma": 0.55
     }
   },
   "logging": {
     "level": "INFO"
+  },
+  "standard_methods": {
+    "enabled": true,
+    "led_grid_points": 121,
+    "led_refine_points": 41,
+    "cfd_grid_points": 81,
+    "cfd_refine_points": 41,
+    "waveform_scan_chunk_size": 1024,
+    "search_time_outlier_rejection": {
+      "enabled": true,
+      "zscore_limit": 4.0
+    }
   }
 }

@@ -40,7 +40,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
-import matplotlib as mpl
 import awkward as ak
 import uproot
 from matplotlib.lines import Line2D
@@ -83,6 +82,7 @@ from ml_pipeline.prediction import prediction_window_dataset_view
 from ml_pipeline.study_config import CHANNEL_MODES
 from ml_pipeline.signal import timing_channel_waveform_config
 from utils.signal import baseline_and_basic_features
+from utils.plots import plot_xai_waveform_importance as plot_xai_waveform_importance_figure
 
 
 FEMTOSECONDS_PER_PICOSECOND = 1000.0
@@ -1246,95 +1246,6 @@ def _xai_profile_from_final_cache(
     return time_ps, importance, meta
 
 
-def _normalize_abs_importance(values: np.ndarray) -> np.ndarray:
-    values = np.asarray(values, dtype=np.float64).reshape(-1)
-    values = np.abs(values)
-    peak = float(np.max(values)) if values.size else 0.0
-    if not np.isfinite(peak) or peak <= 0.0:
-        return np.zeros_like(values)
-    return values / peak
-
-
-def _contrast_enhanced_unit_values(
-    values: np.ndarray | list[float],
-    *,
-    gamma: float,
-    n_levels: int,
-) -> np.ndarray:
-    """Boost visual separation and quantize to a small number of discrete levels.
-
-    gamma < 1 expands low/mid values so they are not all visually washed out.
-    Quantization then creates clearly distinct background bands for slides.
-    """
-    x = np.asarray(values, dtype=np.float64).reshape(-1)
-    if x.size == 0:
-        return x
-    x = np.clip(x, 0.0, 1.0)
-
-    gamma = float(gamma)
-    if not np.isfinite(gamma) or gamma <= 0.0:
-        gamma = 1.0
-    x = np.power(x, gamma)
-
-    levels = max(2, int(n_levels))
-    # Convert to discrete band centers in [0, 1].
-    idx = np.minimum((x * levels).astype(int), levels - 1)
-    return (idx + 0.5) / levels
-
-
-def _regional_importance(
-    time_ns: np.ndarray,
-    importance: np.ndarray,
-    *,
-    window_ns: float,
-) -> list[tuple[float, float, float]]:
-    """Fixed-width time windows with mean absolute normalized importance."""
-    time_ns = np.asarray(time_ns, dtype=np.float64).reshape(-1)
-    importance = _normalize_abs_importance(importance)
-
-    if time_ns.size != importance.size or time_ns.size < 2:
-        raise ValueError("XAI time and importance arrays must have matching length >= 2")
-    if not np.isfinite(window_ns) or float(window_ns) <= 0.0:
-        raise ValueError("window_ns must be positive")
-
-    dt = np.diff(time_ns)
-    finite_dt = dt[np.isfinite(dt) & (dt > 0)]
-    half_step = (
-        0.5 * float(np.median(finite_dt))
-        if finite_dt.size
-        else 0.0
-    )
-    left = float(time_ns[0]) - half_step
-    right = float(time_ns[-1]) + half_step
-
-    window_ns = float(window_ns)
-    n_bins = max(1, int(np.ceil((right - left) / window_ns)))
-    edges = left + window_ns * np.arange(n_bins + 1, dtype=np.float64)
-    if edges[-1] < right:
-        edges = np.append(edges, right)
-    else:
-        edges[-1] = right
-
-    regions: list[tuple[float, float, float]] = []
-
-    for index, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])):
-        if index == len(edges) - 2:
-            mask = (time_ns >= lo) & (time_ns <= hi)
-        else:
-            mask = (time_ns >= lo) & (time_ns < hi)
-
-        if np.any(mask):
-            mean_importance = float(np.mean(np.abs(importance[mask])))
-        else:
-            center = 0.5 * (lo + hi)
-            nearest = int(np.argmin(np.abs(time_ns - center)))
-            mean_importance = float(abs(importance[nearest]))
-
-        regions.append((float(lo), float(hi), mean_importance))
-
-    return regions
-
-
 def _selected_waveform_view_for_xai(
     dataset: PreparedDataset,
     *,
@@ -1365,6 +1276,7 @@ def _selected_waveform_view_for_xai(
     )
 
 
+
 def plot_xai_waveform_importance(
     run_dir: Path,
     dataset: PreparedDataset,
@@ -1379,7 +1291,7 @@ def plot_xai_waveform_importance(
     n_levels: int,
     contrast_gamma: float,
 ) -> None:
-    """Waveform over regional XAI background + normalized importance subplot."""
+    """Load selected-model XAI data and delegate rendering to utils."""
     loaded = _xai_profile_from_final_cache(
         run_dir,
         dataset,
@@ -1396,145 +1308,26 @@ def plot_xai_waveform_importance(
         return
 
     xai_time_ps, raw_importance, meta = loaded
-    importance = _normalize_abs_importance(raw_importance)
-    xai_time_ns = np.asarray(xai_time_ps, dtype=np.float64) / 1000.0
-
-    view = _selected_waveform_view_for_xai(
-        dataset,
-        mode=mode,
-        meta=meta,
-    )
+    view = _selected_waveform_view_for_xai(dataset, mode=mode, meta=meta)
     if not 0 <= int(event) < int(view.event_id.size):
-        raise IndexError(
-            f"event index {event} is outside the selected XAI view"
-        )
-
-    waveform_time_ns = (
-        np.asarray(view.relative_time_ps, dtype=np.float64) / 1000.0
-    )
-    waves = np.asarray(view.windows_mV[event], dtype=np.float64)
-    if waves.ndim != 2 or waves.shape[0] != 2:
-        raise ValueError(
-            f"Expected two detector waveforms, got shape {waves.shape}"
-        )
-
-    regions = _regional_importance(
-        xai_time_ns,
-        importance,
-        window_ns=region_window_ns,
-    )
-
-    fig, (ax_wave, ax_importance) = plt.subplots(
-        2,
-        1,
-        figsize=(9.2, 5.4),
-        sharex=True,
-        gridspec_kw={
-            "height_ratios": [2.8, 1.0],
-            "hspace": 0.08,
-        },
-        constrained_layout=True,
-    )
-
-    cmap = mpl.colormaps["YlOrRd"]
-
-    # Stronger visual separation for presentation:
-    # 1) contrast expansion (gamma < 1),
-    # 2) discretization into a small number of distinct levels.
-    region_strength = _contrast_enhanced_unit_values(
-        [region_mean for _lo, _hi, region_mean in regions],
-        gamma=contrast_gamma,
-        n_levels=n_levels,
-    )
-
-    boundaries = np.linspace(0.0, 1.0, int(n_levels) + 1)
-    norm = mpl.colors.BoundaryNorm(boundaries, cmap.N, clip=True)
-
-    for (lo, hi, _region_mean), display_strength in zip(regions, region_strength):
-        ax_wave.axvspan(
-            lo,
-            hi,
-            color=cmap(norm(float(display_strength))),
-            alpha=0.12 + 0.58 * float(display_strength),
-            linewidth=0.0,
-            zorder=0,
-        )
-
-    ax_wave.plot(
-        waveform_time_ns,
-        waves[0],
-        linewidth=1.55,
-        label="Detector 1",
-        zorder=3,
-    )
-    ax_wave.plot(
-        waveform_time_ns,
-        waves[1],
-        linewidth=1.55,
-        label="Detector 2",
-        zorder=3,
-    )
-    ax_wave.axvline(
-        0.0,
-        linestyle="--",
-        linewidth=0.9,
-        color="0.25",
-        alpha=0.8,
-        label="LED anchor",
-        zorder=2,
-    )
-
-    # Both panels use exactly the XAI support. This avoids showing waveform
-    # regions that were not inputs to the selected model.
-    x_left = min(region[0] for region in regions)
-    x_right = max(region[1] for region in regions)
-    ax_wave.set_xlim(x_left, x_right)
-
-    ax_wave.set_ylabel("Voltage [mV]")
-    ax_wave.set_title(
-        f"{short_model_label(model)} · {short_mode_label(mode)}"
-    )
-    ax_wave.grid(alpha=0.18)
-  
-
-    ax_importance.plot(
-        xai_time_ns,
-        importance,
-        linewidth=1.55,
-    )
-    ax_importance.fill_between(
-        xai_time_ns,
-        0.0,
-        importance,
-        alpha=0.15,
-    )
-    ax_importance.set_ylim(0.0, 1.05)
-    ax_importance.set_ylabel("Normalized\n|importance|")
-    ax_importance.set_xlabel("LED-relative time [ns]")
-    ax_importance.grid(alpha=0.18)
-
-    # Side scale for the background levels.
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cbar = fig.colorbar(
-        sm,
-        ax=[ax_wave, ax_importance],
-        location="right",
-        fraction=0.055,
-        pad=0.02,
-        boundaries=boundaries,
-        ticks=0.5 * (boundaries[:-1] + boundaries[1:]),
-        spacing="proportional",
-    )
-    cbar.ax.set_yticklabels([f"{v:.2f}" for v in 0.5 * (boundaries[:-1] + boundaries[1:])])
-    cbar.set_label("Regional mean normalized |importance|")
+        raise IndexError(f"event index {event} is outside the selected XAI view")
 
     filename = (
         f"xai_{mode}_{_artifact_model_key(model)}_"
         "waveform_importance.pdf"
     )
-    _save(fig, output / filename, dpi)
-
+    plot_xai_waveform_importance_figure(
+        output / filename,
+        waveform_time_ps=np.asarray(view.relative_time_ps, dtype=np.float64),
+        waveforms_mV=np.asarray(view.windows_mV[event], dtype=np.float64),
+        xai_time_ps=np.asarray(xai_time_ps, dtype=np.float64),
+        importance=np.asarray(raw_importance, dtype=np.float64),
+        title=f"{short_model_label(model)} · {short_mode_label(mode)}",
+        dpi=int(dpi),
+        region_window_ns=float(region_window_ns),
+        n_levels=int(n_levels),
+        contrast_gamma=float(contrast_gamma),
+    )
 
 def plot_xai_waveform_importance_examples(
     run_dir: Path,

@@ -25,9 +25,7 @@ from .signal import (
 )
 from .standard_methods.cfd import select_precomputed_cfd_times
 
-CACHE_FORMAT_VERSION = 9
-
-
+CACHE_FORMAT_VERSION = 10
 @dataclass(frozen=True)
 class EnergyCache:
     directory: Path

@@ -3,7 +3,7 @@
   "prepared_dir": "processed_data/ml_prepared",
   "materialized_window_ns": {
     "before": 5.0,
-    "after": 60.0
+    "after": 40.0
   },
   "cleanup_raw_cache": true,
   "materialization_chunk_size": 4096,
@@ -16,13 +16,13 @@
   ],
   "common": {
     "baseline_samples": 500,
-    "subtract_baseline": false,
+    "subtract_baseline": true,
     "search_trigger_threshold_mV": 50.0,
     "analysis_crop_ns": {
       "before": 5.0,
-      "after": 60.0
+      "after": 40.0
     },
-    "led_threshold_mV": 10.0,
+    "led_threshold_mV": 40.0,
     "cfd_fraction": 0.045
   },
   "energy": {},

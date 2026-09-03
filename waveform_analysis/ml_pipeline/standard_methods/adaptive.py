@@ -273,6 +273,73 @@ def _pulse_peak_after_reference(
     return start, stop, ref_sample, float(y[peak])
 
 
+
+def _interpolate_level_crossings_into(
+    output_fs: np.ndarray,
+    output_indices: np.ndarray,
+    levels_mV: np.ndarray,
+    relative_time_ps: np.ndarray,
+    signal_mV: np.ndarray,
+    lower_indices: np.ndarray,
+) -> None:
+    targets = np.asarray(output_indices, dtype=np.int64).reshape(-1)
+    levels = np.asarray(levels_mV, dtype=np.float64).reshape(-1)
+    lower = np.asarray(lower_indices, dtype=np.int64).reshape(-1)
+
+    if targets.size == 0:
+        return
+
+    t = np.asarray(relative_time_ps, dtype=np.float64)
+    y = np.asarray(signal_mV, dtype=np.float64)
+    upper = lower + 1
+
+    y0 = y[lower]
+    y1 = y[upper]
+    t0 = t[lower]
+    t1 = t[upper]
+    denominator = y1 - y0
+
+    valid = (
+        np.isfinite(levels)
+        & np.isfinite(y0)
+        & np.isfinite(y1)
+        & np.isfinite(t0)
+        & np.isfinite(t1)
+        & (denominator != 0.0)
+        & (t1 > t0)
+        & (y0 < levels)
+        & (levels <= y1)
+    )
+
+    if not np.any(valid):
+        return
+
+    fraction = np.full(levels.shape, np.nan, dtype=np.float64)
+    fraction[valid] = (
+        (levels[valid] - y0[valid])
+        / denominator[valid]
+    )
+
+    valid &= (
+        np.isfinite(fraction)
+        & (fraction >= 0.0)
+        & (fraction <= 1.0)
+    )
+
+    if not np.any(valid):
+        return
+
+    crossing_ps = (
+        t0[valid]
+        + fraction[valid]
+        * (t1[valid] - t0[valid])
+    )
+
+    output_fs[targets[valid]] = np.rint(
+        crossing_ps * 1000.0
+    ).astype(np.int64)
+
+
 def _same_edge_level_times_fs(
     signal_mV: np.ndarray,
     relative_time_ps: np.ndarray,
@@ -283,23 +350,32 @@ def _same_edge_level_times_fs(
     before_ns: float,
     after_ns: float,
 ) -> np.ndarray:
-    """Cross arbitrary levels on the SAME rising edge as the fixed reference.
-
-    No time-distance constraint is applied:
-      * level <= Tref: last rising crossing before the reference crossing;
-      * level >  Tref: first rising crossing after the reference crossing and
-        before the associated pulse peak;
-      * level == Tref: exact preprocessing reference timestamp.
-
-    Hence a very low LED threshold may legitimately occur several ns before the
-    reference threshold while remaining on the same physical rise.
-    """
+    # Vectorized over all LED/CFD candidate levels.
     y = np.asarray(signal_mV, dtype=np.float64)
     t = np.asarray(relative_time_ps, dtype=np.float64)
     levels = np.asarray(levels_mV, dtype=np.float64).reshape(-1)
-    result = np.full(levels.shape, INVALID_TIME_FS, dtype=np.int64)
 
-    start, stop, ref_sample, _peak_value = _pulse_peak_after_reference(
+    result = np.full(
+        levels.shape,
+        INVALID_TIME_FS,
+        dtype=np.int64,
+    )
+
+    if (
+        y.ndim != 1
+        or t.ndim != 1
+        or y.size != t.size
+        or y.size < 3
+        or levels.size == 0
+    ):
+        return result
+
+    (
+        start,
+        stop,
+        ref_sample,
+        _peak_value,
+    ) = _pulse_peak_after_reference(
         y,
         t,
         reference_time_ps=reference_time_ps,
@@ -307,244 +383,537 @@ def _same_edge_level_times_fs(
         after_ns=after_ns,
     )
 
-    # The associated pulse peak is the largest post-reference sample inside the
-    # exact configured analysis crop.
-    peak_search_start = min(stop - 1, ref_sample + 1)
-    peak = peak_search_start + int(
-        np.nanargmax(y[peak_search_start:stop])
+    ref_upper = int(
+        np.searchsorted(
+            t,
+            float(reference_time_ps),
+            side="right",
+        )
+    )
+    ref_upper = int(
+        np.clip(
+            ref_upper,
+            max(1, start + 1),
+            stop - 1,
+        )
     )
 
-    tolerance_ps = (
-        1.5 * abs(float(np.median(np.diff(t))))
-        if t.size >= 2
-        else 0.0
+    peak_search_start = min(
+        stop - 1,
+        max(ref_sample + 1, ref_upper),
+    )
+    peak_region = y[peak_search_start:stop]
+
+    if (
+        peak_region.size == 0
+        or not np.all(np.isfinite(peak_region))
+    ):
+        return result
+
+    peak = (
+        peak_search_start
+        + int(np.argmax(peak_region))
     )
 
-    for output_index, level in enumerate(levels):
-        if not np.isfinite(level):
-            continue
+    finite_levels = (
+        np.isfinite(levels)
+        & (levels > 0.0)
+    )
 
-        if np.isclose(
-            float(level),
+    equal_mask = (
+        finite_levels
+        & np.isclose(
+            levels,
             float(reference_threshold_mV),
             rtol=0.0,
             atol=1e-12,
+        )
+    )
+    result[equal_mask] = np.int64(
+        np.rint(float(reference_time_ps) * 1000.0)
+    )
+
+    low_mask = (
+        finite_levels
+        & (levels < float(reference_threshold_mV))
+    )
+
+    if np.any(low_mask):
+        segment = y[start:ref_upper + 1]
+
+        if (
+            segment.size >= 2
+            and np.all(np.isfinite(segment))
         ):
-            result[output_index] = np.int64(
-                np.rint(float(reference_time_ps) * 1000.0)
+            # Monotonic suffix minimum:
+            # first position with suffix_min >= L is the beginning of the
+            # continuous above-L excursion connected to Tsearch.
+            suffix_min = np.minimum.accumulate(
+                segment[::-1]
+            )[::-1]
+
+            low_levels = levels[low_mask]
+            positions = np.searchsorted(
+                suffix_min,
+                low_levels,
+                side="left",
             )
-            continue
 
-        if float(level) <= float(reference_threshold_mV):
-            # Search the complete stored waveform before Tref.
-            # The crossing may be several ns before Tref and is still
-            # valid as long as it belongs to the same rising edge.
-            seg_start = 0
-            seg_stop = min(ref_sample + 1, y.size - 1)
-            if seg_stop <= seg_start:
-                continue
-            indices = np.arange(
-                seg_start, seg_stop, dtype=np.int64
+            low_indices = np.flatnonzero(low_mask)
+            valid_position = (
+                (positions > 0)
+                & (positions < segment.size)
             )
-            prefer_last = True
-        else:
-            seg_start = max(start, ref_sample)
-            seg_stop = min(peak, y.size - 1)
-            if seg_stop <= seg_start:
-                continue
-            indices = np.arange(
-                seg_start, seg_stop, dtype=np.int64
+
+            if np.any(valid_position):
+                target_indices = low_indices[
+                    valid_position
+                ]
+                upper = (
+                    start
+                    + positions[valid_position]
+                )
+                lower = upper - 1
+
+                _interpolate_level_crossings_into(
+                    result,
+                    target_indices,
+                    levels[target_indices],
+                    t,
+                    y,
+                    lower,
+                )
+
+    high_mask = (
+        finite_levels
+        & (levels > float(reference_threshold_mV))
+    )
+
+    if np.any(high_mask) and peak >= ref_upper:
+        post = y[ref_upper:peak + 1]
+
+        if (
+            post.size >= 1
+            and np.all(np.isfinite(post))
+        ):
+            # Monotonic prefix maximum:
+            # first position with prefix_max >= L is the first crossing after
+            # the search-threshold reference.
+            prefix_max = np.maximum.accumulate(post)
+
+            high_levels = levels[high_mask]
+            positions = np.searchsorted(
+                prefix_max,
+                high_levels,
+                side="left",
             )
-            prefer_last = False
 
-        y0 = y[indices]
-        y1 = y[indices + 1]
-        finite = np.isfinite(y0) & np.isfinite(y1)
-        crossing = finite & (
-            ((y0 < level) & (y1 >= level))
-            | ((y0 == level) & (y1 > level))
-        )
-        candidates = indices[np.flatnonzero(crossing)]
-        if candidates.size == 0:
-            continue
+            high_indices = np.flatnonzero(high_mask)
+            valid_position = positions < post.size
 
-        if prefer_last:
-            # Same low-level rise: closest crossing from below to the reference.
-            candidate_times = t[candidates]
-            eligible = candidates[
-                candidate_times
-                <= float(reference_time_ps) + tolerance_ps
-            ]
-            if eligible.size == 0:
-                continue
-            lower = int(eligible[-1])
-        else:
-            # Same high-level rise: first crossing after the reference.
-            candidate_times = t[candidates]
-            eligible = candidates[
-                candidate_times
-                >= float(reference_time_ps) - tolerance_ps
-            ]
-            if eligible.size == 0:
-                continue
-            lower = int(eligible[0])
+            if np.any(valid_position):
+                target_indices = high_indices[
+                    valid_position
+                ]
+                upper = (
+                    ref_upper
+                    + positions[valid_position]
+                )
+                lower = upper - 1
 
-        y0v = float(y[lower])
-        y1v = float(y[lower + 1])
-        if y1v == y0v:
-            continue
-        fraction = (float(level) - y0v) / (y1v - y0v)
-        if not np.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
-            continue
-
-        crossing_ps = float(t[lower]) + fraction * (
-            float(t[lower + 1]) - float(t[lower])
-        )
-        result[output_index] = np.int64(
-            np.rint(crossing_ps * 1000.0)
-        )
+                valid_lower = lower >= start
+                if np.any(valid_lower):
+                    _interpolate_level_crossings_into(
+                        result,
+                        target_indices[valid_lower],
+                        levels[
+                            target_indices[
+                                valid_lower
+                            ]
+                        ],
+                        t,
+                        y,
+                        lower[valid_lower],
+                    )
 
     return result
 
-def _first_crossing_levels_fs(relative_time_ps: np.ndarray, signal_mV: np.ndarray, levels_mV: np.ndarray) -> np.ndarray:
-    t = np.asarray(relative_time_ps, dtype=np.float64)
-    y = np.asarray(signal_mV, dtype=np.float64)
-    levels = np.asarray(levels_mV, dtype=np.float64).reshape(-1)
-    out = np.full(levels.shape, INVALID_TIME_FS, dtype=np.int64)
-    if t.size < 2 or y.size != t.size:
-        return out
-    y0, y1 = y[:-1], y[1:]
-    finite = np.isfinite(y0) & np.isfinite(y1)
-    for j, level in enumerate(levels):
-        if not np.isfinite(level) or level <= 0.0:
-            continue
-        candidates = np.flatnonzero(finite & (((y0 < level) & (y1 >= level)) | ((y0 == level) & (y1 > level))))
-        for lower in candidates:
-            denom = float(y1[lower] - y0[lower])
-            if not np.isfinite(denom) or denom == 0.0:
-                continue
-            f = (float(level) - float(y0[lower])) / denom
-            if np.isfinite(f) and 0.0 <= f <= 1.0:
-                ps = float(t[lower]) + f * (float(t[lower + 1]) - float(t[lower]))
-                out[j] = np.int64(np.rint(ps * 1000.0))
-                break
-    return out
-
-
-def _last_crossing_before_peak_levels_fs(relative_time_ps: np.ndarray, signal_mV: np.ndarray, levels_mV: np.ndarray) -> np.ndarray:
-    t = np.asarray(relative_time_ps, dtype=np.float64)
-    y = np.asarray(signal_mV, dtype=np.float64)
-    levels = np.asarray(levels_mV, dtype=np.float64).reshape(-1)
-    out = np.full(levels.shape, INVALID_TIME_FS, dtype=np.int64)
-    if t.size < 2 or y.size != t.size or not np.any(np.isfinite(y)):
-        return out
-    peak = int(np.nanargmax(y))
-    if peak <= 0:
-        return out
-    y0, y1 = y[:peak], y[1:peak + 1]
-    finite = np.isfinite(y0) & np.isfinite(y1)
-    for j, level in enumerate(levels):
-        if not np.isfinite(level) or level <= 0.0:
-            continue
-        candidates = np.flatnonzero(finite & (((y0 < level) & (y1 >= level)) | ((y0 == level) & (y1 > level))))
-        if candidates.size == 0:
-            continue
-        lower = int(candidates[-1])
-        denom = float(y1[lower] - y0[lower])
-        if not np.isfinite(denom) or denom == 0.0:
-            continue
-        f = (float(level) - float(y0[lower])) / denom
-        if np.isfinite(f) and 0.0 <= f <= 1.0:
-            ps = float(t[lower]) + f * (float(t[lower + 1]) - float(t[lower]))
-            out[j] = np.int64(np.rint(ps * 1000.0))
-    return out
-
 def _family_arrays(
     dataset: PreparedDataset, family: str
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if family == "energy":
         waves = dataset.windows_mV
         times = dataset.relative_time_ps
         anchors = dataset.energy_window_anchor_time_fs
-        references = dataset.energy_led_time_fs
     elif family == "timing":
-        if (
-            dataset.timing_windows_mV is None
-            or dataset.timing_relative_time_ps is None
-        ):
-            raise ValueError(
-                "Adaptive timing standard methods require timing waveforms"
-            )
+        if dataset.timing_windows_mV is None or dataset.timing_relative_time_ps is None:
+            raise ValueError("Adaptive timing standard methods require timing waveforms")
         waves = dataset.timing_windows_mV
         times = dataset.timing_relative_time_ps
         anchors = dataset.timing_window_anchor_time_fs
-        references = dataset.timing_led_time_fs
     else:
-        raise ValueError(
-            f"Unknown standard-method family {family!r}"
-        )
+        raise ValueError(f"Unknown standard-method family {family!r}")
 
-    if anchors is None or references is None:
+    if anchors is None:
         raise ValueError(
-            f"{family} preprocessing reference timestamps/anchors are "
-            "unavailable; rebuild preprocessing"
+            f"{family} waveform anchors are unavailable; rebuild preprocessing"
         )
 
     return (
         np.asarray(waves),
         np.asarray(times, dtype=np.float64),
         np.asarray(anchors, dtype=np.int64),
-        np.asarray(references, dtype=np.int64),
     )
 
-def _edge_slice(
-    relative_time_ps: np.ndarray, before_ns: float, after_ns: float
-) -> tuple[int, int, int]:
+
+def _first_rising_level_time_fs(
+    relative_time_ps: np.ndarray,
+    signal_mV: np.ndarray,
+    threshold_mV: float,
+) -> np.int64:
     t = np.asarray(relative_time_ps, dtype=np.float64)
-    zero = int(np.argmin(np.abs(t)))
-    start = max(
-        0,
-        int(np.searchsorted(t, -float(before_ns) * 1000.0, side="left")),
+    y = np.asarray(signal_mV, dtype=np.float64)
+    threshold = float(threshold_mV)
+
+    if t.ndim != 1 or y.ndim != 1 or t.size != y.size or t.size < 2:
+        return np.int64(INVALID_TIME_FS)
+    if not np.isfinite(threshold) or threshold <= 0.0:
+        return np.int64(INVALID_TIME_FS)
+
+    finite = (
+        np.isfinite(t[:-1])
+        & np.isfinite(t[1:])
+        & np.isfinite(y[:-1])
+        & np.isfinite(y[1:])
     )
-    stop = min(
-        t.size,
-        int(np.searchsorted(t, float(after_ns) * 1000.0, side="right")),
+    mask = finite & (
+        ((y[:-1] < threshold) & (y[1:] >= threshold))
+        | ((y[:-1] == threshold) & (y[1:] > threshold))
     )
-    if stop - start < 4 or not start <= zero < stop:
-        raise ValueError(
-            "Prepared waveform does not contain the configured standard-method edge-search crop"
+    candidates = np.flatnonzero(mask)
+    if candidates.size == 0:
+        return np.int64(INVALID_TIME_FS)
+
+    lower = int(candidates[0])
+    y0, y1 = float(y[lower]), float(y[lower + 1])
+    t0, t1 = float(t[lower]), float(t[lower + 1])
+
+    if y1 == y0 or t1 <= t0:
+        return np.int64(INVALID_TIME_FS)
+
+    fraction = (threshold - y0) / (y1 - y0)
+    if not np.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+        return np.int64(INVALID_TIME_FS)
+
+    return np.int64(np.rint((t0 + fraction * (t1 - t0)) * 1000.0))
+
+
+
+def _search_reference_times_fs(
+    waves: np.ndarray,
+    relative_time_ps: np.ndarray,
+    anchors_fs: np.ndarray,
+    *,
+    reference_threshold_mV: float,
+    chunk_size: int,
+) -> np.ndarray:
+    # Vectorized first search-threshold crossing per event/detector.
+    t = np.asarray(relative_time_ps, dtype=np.float64)
+    anchors = np.asarray(anchors_fs, dtype=np.int64)
+    threshold = float(reference_threshold_mV)
+
+    n_events = int(waves.shape[0])
+    result = np.full((n_events, 2), INVALID_TIME_FS, dtype=np.int64)
+
+    if t.ndim != 1 or t.size < 2:
+        return result
+    if not np.isfinite(threshold) or threshold <= 0.0:
+        return result
+
+    step = max(1, int(chunk_size))
+
+    for first in range(0, n_events, step):
+        stop = min(n_events, first + step)
+        block = np.asarray(waves[first:stop])
+
+        if (
+            block.ndim != 3
+            or block.shape[1] != 2
+            or block.shape[2] != t.size
+        ):
+            raise RuntimeError(
+                "Prepared standard-method waveform shape does not match "
+                "relative_time_ps"
+            )
+
+        y0 = block[:, :, :-1]
+        y1 = block[:, :, 1:]
+
+        finite = np.isfinite(y0) & np.isfinite(y1)
+        crossing = finite & (
+            ((y0 < threshold) & (y1 >= threshold))
+            | ((y0 == threshold) & (y1 > threshold))
         )
-    return start, stop, zero
+
+        has_crossing = np.any(crossing, axis=2)
+        if not np.any(has_crossing):
+            continue
+
+        lower = np.argmax(crossing, axis=2).astype(
+            np.int64,
+            copy=False,
+        )
+
+        row = np.arange(stop - first, dtype=np.int64)[:, None]
+        detector = np.arange(2, dtype=np.int64)[None, :]
+
+        y0_sel = block[row, detector, lower].astype(
+            np.float64,
+            copy=False,
+        )
+        y1_sel = block[row, detector, lower + 1].astype(
+            np.float64,
+            copy=False,
+        )
+        t0 = t[lower]
+        t1 = t[lower + 1]
+
+        denominator = y1_sel - y0_sel
+        fraction = np.full(
+            denominator.shape,
+            np.nan,
+            dtype=np.float64,
+        )
+
+        good = (
+            has_crossing
+            & np.isfinite(denominator)
+            & (denominator != 0.0)
+            & np.isfinite(t0)
+            & np.isfinite(t1)
+            & (t1 > t0)
+        )
+
+        fraction[good] = (
+            (threshold - y0_sel[good])
+            / denominator[good]
+        )
+
+        good &= (
+            np.isfinite(fraction)
+            & (fraction >= 0.0)
+            & (fraction <= 1.0)
+        )
+
+        local_fs = np.full(
+            denominator.shape,
+            INVALID_TIME_FS,
+            dtype=np.int64,
+        )
+        local_fs[good] = np.rint(
+            (
+                t0[good]
+                + fraction[good]
+                * (t1[good] - t0[good])
+            )
+            * 1000.0
+        ).astype(np.int64)
+
+        absolute = anchors[first:stop] + local_fs
+        out = result[first:stop]
+        out[good] = absolute[good]
+        result[first:stop] = out
+
+    return result
+
+def _robust_center_sigma(values: np.ndarray) -> tuple[float, float]:
+    data = np.asarray(values, dtype=np.float64)
+    data = data[np.isfinite(data)]
+    if data.size == 0:
+        return float("nan"), float("nan")
+
+    center = float(np.median(data))
+    mad = float(np.median(np.abs(data - center)))
+    sigma = 1.4826 * mad
+
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        sigma = float(np.std(data, ddof=1)) if data.size > 1 else 0.0
+
+    return center, sigma
+
+
+def filter_search_time_outliers(
+    config: dict[str, Any],
+    dataset: PreparedDataset,
+    development: np.ndarray,
+    blind: np.ndarray,
+    *,
+    family: str,
+    logger: Any,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    standard = config.get("standard_methods", {}) or {}
+    rejection = standard.get("search_time_outlier_rejection", {}) or {}
+    enabled = bool(rejection.get("enabled", True))
+    z_limit = float(rejection.get("zscore_limit", 4.0))
+
+    waves, times, anchors = _family_arrays(dataset, family)
+    _before_ns, _after_ns, reference_threshold_mV = _family_timing_config(
+        config, family
+    )
+    chunk_size = int(standard.get("waveform_scan_chunk_size", 1024))
+
+    references = _search_reference_times_fs(
+        waves,
+        times,
+        anchors,
+        reference_threshold_mV=reference_threshold_mV,
+        chunk_size=chunk_size,
+    )
+
+    valid = np.all(references != INVALID_TIME_FS, axis=1)
+    residual_ps = (
+        (
+            references[:, 0].astype(np.float64)
+            - references[:, 1].astype(np.float64)
+        )
+        / 1000.0
+        - float(dataset.true_tof_ps)
+    )
+    valid &= np.isfinite(residual_ps)
+
+    development = np.asarray(development, dtype=np.int64)
+    blind = np.asarray(blind, dtype=np.int64)
+
+    fit_indices = development[valid[development]]
+    if fit_indices.size < 3:
+        raise RuntimeError(
+            f"Too few finite {family} search-threshold timing pairs in development"
+        )
+
+    center, sigma = _robust_center_sigma(residual_ps[fit_indices])
+    if not np.isfinite(center):
+        raise RuntimeError(f"Cannot estimate {family} search-time center")
+
+    if enabled:
+        if not np.isfinite(z_limit) or z_limit <= 0.0:
+            raise ValueError(
+                "standard_methods.search_time_outlier_rejection.zscore_limit "
+                "must be positive"
+            )
+        half_width = z_limit * sigma if sigma > 0.0 else 0.0
+        accepted = valid & (np.abs(residual_ps - center) <= half_width)
+    else:
+        half_width = float("inf")
+        accepted = valid
+
+    dev_filtered = development[accepted[development]]
+    blind_filtered = blind[accepted[blind]]
+
+    if dev_filtered.size < 3:
+        raise RuntimeError(
+            f"Only {dev_filtered.size} {family} development events remain "
+            "after search-time rejection"
+        )
+    if blind_filtered.size < 3:
+        raise RuntimeError(
+            f"Only {blind_filtered.size} {family} blind events remain "
+            "after search-time rejection"
+        )
+
+    summary = {
+        "family": family,
+        "enabled": enabled,
+        "reference_threshold_mV": float(reference_threshold_mV),
+        "fit_population": "development_only",
+        "blind_used_for_fit": False,
+        "median_ps": center,
+        "robust_sigma_ps": sigma,
+        "zscore_limit": z_limit if enabled else None,
+        "effective_half_width_ps": half_width if enabled else None,
+        "development_before": int(development.size),
+        "development_after": int(dev_filtered.size),
+        "blind_before": int(blind.size),
+        "blind_after": int(blind_filtered.size),
+    }
+
+    logger.info(
+        "Search-time rejection | %s | Tref=%.3f mV | dev %d->%d | "
+        "blind %d->%d | center=%.1f ps | robust sigma=%.1f ps",
+        family,
+        reference_threshold_mV,
+        development.size,
+        dev_filtered.size,
+        blind.size,
+        blind_filtered.size,
+        center,
+        sigma,
+    )
+
+    return dev_filtered, blind_filtered, summary
 
 
 def _led_support(
     waves: np.ndarray,
-    relative_time_ps: np.ndarray,
-    anchors_fs: np.ndarray,
-    reference_times_fs: np.ndarray,
     indices: np.ndarray,
     *,
-    before_ns: float,
-    after_ns: float,
+    reference_threshold_mV: float,
     chunk_size: int,
     configured_range: tuple[float, float] | None = None,
 ) -> tuple[float, float]:
-    """Full stored-waveform LED range; independent of preprocessing Tref/crop."""
-    del relative_time_ps, anchors_fs, reference_times_fs, before_ns, after_ns
     idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+    if idx.size == 0:
+        raise RuntimeError(
+            "Cannot determine LED support from an empty development cohort"
+        )
+
     common_peak = np.inf
     step = max(1, int(chunk_size))
+
     for first in range(0, idx.size, step):
-        block = np.asarray(waves[idx[first:first + step]], dtype=np.float64)
+        block = np.asarray(
+            waves[idx[first:first + step]],
+            dtype=np.float64,
+        )
         peaks = np.nanmax(block, axis=2)
+
         if np.any(~np.isfinite(peaks)):
-            raise RuntimeError("Non-finite pulse maximum in development cohort")
+            raise RuntimeError(
+                "Non-finite pulse maximum in development cohort"
+            )
+
         common_peak = min(common_peak, float(np.min(peaks)))
-    low = 1.0 if configured_range is None else max(0.0, float(configured_range[0]))
-    high = common_peak if configured_range is None else min(common_peak, float(configured_range[1]))
+
+    low = (
+        1.0
+        if configured_range is None
+        else max(0.0, float(configured_range[0]))
+    )
+
+    epsilon = max(
+        1e-6,
+        1e-8 * max(1.0, abs(float(reference_threshold_mV))),
+    )
+    search_cap = float(reference_threshold_mV) - epsilon
+
+    high = (
+        min(common_peak, search_cap)
+        if configured_range is None
+        else min(
+            common_peak,
+            search_cap,
+            float(configured_range[1]),
+        )
+    )
+
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-        raise RuntimeError(f"No common LED scan range: {low:.6g}..{high:.6g} mV")
-    return max(1e-6, low), high - max(1e-6, 1e-8 * max(1.0, abs(high)))
+        raise RuntimeError(
+            f"No valid LED scan range below search threshold: "
+            f"{low:.6g}..{high:.6g} mV "
+            f"(Tsearch={reference_threshold_mV:.6g} mV)"
+        )
+
+    return max(1e-6, low), high
+
 
 def _extract_grids(
     waves: np.ndarray,
@@ -560,33 +929,107 @@ def _extract_grids(
     chunk_size: int,
     indices: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Scan LED/CFD over the complete stored native waveform."""
-    del reference_times_fs, reference_threshold_mV, before_ns, after_ns
-    thresholds = np.asarray(led_thresholds_mV, dtype=np.float64).reshape(-1)
-    fractions = np.asarray(cfd_fractions, dtype=np.float64).reshape(-1)
-    n = int(waves.shape[0])
-    led = np.full((n, 2, thresholds.size), INVALID_TIME_FS, dtype=np.int64)
-    cfd = np.full((n, 2, fractions.size), INVALID_TIME_FS, dtype=np.int64)
-    selected = np.arange(n, dtype=np.int64) if indices is None else np.asarray(indices, dtype=np.int64).reshape(-1)
+    thresholds = np.asarray(
+        led_thresholds_mV,
+        dtype=np.float64,
+    ).reshape(-1)
+    fractions = np.asarray(
+        cfd_fractions,
+        dtype=np.float64,
+    ).reshape(-1)
+
+    n_events = int(waves.shape[0])
+    led = np.full(
+        (n_events, 2, thresholds.size),
+        INVALID_TIME_FS,
+        dtype=np.int64,
+    )
+    cfd = np.full(
+        (n_events, 2, fractions.size),
+        INVALID_TIME_FS,
+        dtype=np.int64,
+    )
+
+    selected = (
+        np.arange(n_events, dtype=np.int64)
+        if indices is None
+        else np.asarray(indices, dtype=np.int64).reshape(-1)
+    )
+
     t = np.asarray(relative_time_ps, dtype=np.float64)
     step = max(1, int(chunk_size))
+
     for first in range(0, selected.size, step):
         block_idx = selected[first:first + step]
         block = np.asarray(waves[block_idx], dtype=np.float64)
+
         for local_row, event_value in enumerate(block_idx):
             event = int(event_value)
+
             for detector in range(2):
-                signal = block[local_row, detector]
                 anchor_fs = np.int64(anchors_fs[event, detector])
+                reference_fs = np.int64(
+                    reference_times_fs[event, detector]
+                )
+
+                if (
+                    anchor_fs == INVALID_TIME_FS
+                    or reference_fs == INVALID_TIME_FS
+                ):
+                    continue
+
+                reference_time_ps = (
+                    float(reference_fs - anchor_fs) / 1000.0
+                )
+                signal = block[local_row, detector]
+
                 if thresholds.size:
-                    local_led = _first_crossing_levels_fs(t, signal, thresholds)
+                    local_led = _same_edge_level_times_fs(
+                        signal,
+                        t,
+                        thresholds,
+                        reference_threshold_mV=reference_threshold_mV,
+                        reference_time_ps=reference_time_ps,
+                        before_ns=before_ns,
+                        after_ns=after_ns,
+                    )
                     good = local_led != INVALID_TIME_FS
-                    led[event, detector, good] = anchor_fs + local_led[good]
-                if fractions.size and np.any(np.isfinite(signal)):
-                    levels = float(np.nanmax(signal)) * fractions
-                    local_cfd = _last_crossing_before_peak_levels_fs(t, signal, levels)
+                    led[event, detector, good] = (
+                        anchor_fs + local_led[good]
+                    )
+
+                if fractions.size:
+                    try:
+                        (
+                            _start,
+                            _stop,
+                            _reference_sample,
+                            peak_value,
+                        ) = _pulse_peak_after_reference(
+                            signal,
+                            t,
+                            reference_time_ps=reference_time_ps,
+                            before_ns=before_ns,
+                            after_ns=after_ns,
+                        )
+                    except RuntimeError:
+                        continue
+
+                    levels = float(peak_value) * fractions
+                    local_cfd = _same_edge_level_times_fs(
+                        signal,
+                        t,
+                        levels,
+                        reference_threshold_mV=reference_threshold_mV,
+                        reference_time_ps=reference_time_ps,
+                        before_ns=before_ns,
+                        after_ns=after_ns,
+                    )
                     good = local_cfd != INVALID_TIME_FS
-                    cfd[event, detector, good] = anchor_fs + local_cfd[good]
+                    cfd[event, detector, good] = (
+                        anchor_fs + local_cfd[good]
+                    )
+
     return led, cfd
 
 def _candidate_score(
@@ -652,6 +1095,7 @@ def _refined_axis(values: np.ndarray, best_index: int, points: int) -> np.ndarra
     return np.linspace(float(lo), float(hi), int(points), dtype=np.float64)
 
 
+
 def optimize_family(
     config: dict[str, Any],
     dataset: PreparedDataset,
@@ -660,42 +1104,58 @@ def optimize_family(
     *,
     family: str,
     logger: Any,
+    application_indices: np.ndarray | None = None,
 ) -> FamilySelection:
     standard = config.get("standard_methods", {}) or {}
     cfd_enabled = cfd_enabled_for_family(config, family)
 
-    (
-        waves,
-        times,
-        anchors,
-        reference_times,
-    ) = _family_arrays(dataset, family)
-    development = np.asarray(
-        development, dtype=np.int64
-    )
+    waves, times, anchors = _family_arrays(dataset, family)
+    development = np.asarray(development, dtype=np.int64)
 
-    before_ns, after_ns, reference_threshold_mV = (
-        _family_timing_config(config, family)
+    before_ns, after_ns, reference_threshold_mV = _family_timing_config(
+        config,
+        family,
     )
     chunk_size = int(
         standard.get("waveform_scan_chunk_size", 1024)
     )
 
+    reference_times = _search_reference_times_fs(
+        waves,
+        times,
+        anchors,
+        reference_threshold_mV=reference_threshold_mV,
+        chunk_size=chunk_size,
+    )
+
+    if np.any(reference_times[development] == INVALID_TIME_FS):
+        raise RuntimeError(
+            f"{family} development cohort contains missing search-threshold "
+            "references after search-time filtering"
+        )
+
     configured_range = None
     ranges = standard.get("led_range_mV_by_family")
+
     if isinstance(ranges, dict) and family in ranges:
         values = np.asarray(
-            ranges[family], dtype=np.float64
+            ranges[family],
+            dtype=np.float64,
         ).reshape(-1)
-        if values.size != 2 or not (
-            np.isfinite(values[0])
-            and np.isfinite(values[1])
-            and values[1] > values[0]
+
+        if (
+            values.size != 2
+            or not (
+                np.isfinite(values[0])
+                and np.isfinite(values[1])
+                and values[1] > values[0]
+            )
         ):
             raise ValueError(
                 f"standard_methods.led_range_mV_by_family.{family} "
                 "must be [low, high]"
             )
+
         configured_range = (
             float(values[0]),
             float(values[1]),
@@ -703,26 +1163,27 @@ def optimize_family(
 
     low, high = _led_support(
         waves,
-        times,
-        anchors,
-        reference_times,
         development,
-        before_ns=before_ns,
-        after_ns=after_ns,
+        reference_threshold_mV=reference_threshold_mV,
         chunk_size=chunk_size,
         configured_range=configured_range,
     )
 
     led_points = max(
-        3, int(standard.get("led_grid_points", 121))
+        3,
+        int(standard.get("led_grid_points", 121)),
     )
     led_axis = np.linspace(
-        low, high, led_points, dtype=np.float64
+        low,
+        high,
+        led_points,
+        dtype=np.float64,
     )
 
     if cfd_enabled:
         cfd_points = max(
-            3, int(standard.get("cfd_grid_points", 81))
+            3,
+            int(standard.get("cfd_grid_points", 81)),
         )
         cfd_axis = np.linspace(
             float(standard.get("cfd_min_fraction", 0.02)),
@@ -731,30 +1192,27 @@ def optimize_family(
             dtype=np.float64,
         )
         if not (
-            0.0 < float(cfd_axis[0])
+            0.0
+            < float(cfd_axis[0])
             < float(cfd_axis[-1])
             <= 1.0
         ):
             raise ValueError(
-                "standard_methods CFD range must satisfy "
-                "0 < min < max <= 1"
+                "standard_methods CFD range must satisfy 0 < min < max <= 1"
             )
     else:
         cfd_axis = np.empty(0, dtype=np.float64)
 
     logger.info(
         "Adaptive standards coarse scan | %s | Tref=%.6g mV | "
-        "analysis crop=-%.3f..+%.3f ns | LED %.3f..%.3f mV (%d) | CFD %s",
+        "LED %.3f..%.3f mV (%d) | CFD %s",
         family,
         reference_threshold_mV,
-        before_ns,
-        after_ns,
         low,
         high,
         led_axis.size,
         (
-            f"{cfd_axis[0]:.4f}..{cfd_axis[-1]:.4f} "
-            f"({cfd_axis.size})"
+            f"{cfd_axis[0]:.4f}..{cfd_axis[-1]:.4f} ({cfd_axis.size})"
             if cfd_enabled
             else "disabled"
         ),
@@ -773,25 +1231,22 @@ def optimize_family(
         chunk_size=chunk_size,
         indices=development,
     )
-    led_index, _led_score, _led_folds = (
-        _best_candidate(
-            led_grid,
-            led_axis,
-            development,
-            splits,
-            dataset.true_tof_ps,
-        )
+
+    led_index, _led_score, _led_folds = _best_candidate(
+        led_grid,
+        led_axis,
+        development,
+        splits,
+        dataset.true_tof_ps,
     )
 
     if cfd_enabled:
-        cfd_index, _cfd_score, _cfd_folds = (
-            _best_candidate(
-                cfd_grid,
-                cfd_axis,
-                development,
-                splits,
-                dataset.true_tof_ps,
-            )
+        cfd_index, _cfd_score, _cfd_folds = _best_candidate(
+            cfd_grid,
+            cfd_axis,
+            development,
+            splits,
+            dataset.true_tof_ps,
         )
     else:
         cfd_index = -1
@@ -801,35 +1256,15 @@ def optimize_family(
         led_index,
         max(3, int(standard.get("led_refine_points", 41))),
     )
+
     cfd_fine = (
         _refined_axis(
             cfd_axis,
             cfd_index,
-            max(
-                3,
-                int(
-                    standard.get(
-                        "cfd_refine_points", 41
-                    )
-                ),
-            ),
+            max(3, int(standard.get("cfd_refine_points", 41))),
         )
         if cfd_enabled
         else np.empty(0, dtype=np.float64)
-    )
-
-    logger.info(
-        "Adaptive standards refine | %s | LED %.3f..%.3f mV (%d) | CFD %s",
-        family,
-        led_fine[0],
-        led_fine[-1],
-        led_fine.size,
-        (
-            f"{cfd_fine[0]:.5f}..{cfd_fine[-1]:.5f} "
-            f"({cfd_fine.size})"
-            if cfd_enabled
-            else "disabled"
-        ),
     )
 
     led_grid_fine, cfd_grid_fine = _extract_grids(
@@ -855,26 +1290,24 @@ def optimize_family(
     )
 
     if cfd_enabled:
-        cfd_index, cfd_score, cfd_folds = (
-            _best_candidate(
-                cfd_grid_fine,
-                cfd_fine,
-                development,
-                splits,
-                dataset.true_tof_ps,
-            )
+        cfd_index, cfd_score, cfd_folds = _best_candidate(
+            cfd_grid_fine,
+            cfd_fine,
+            development,
+            splits,
+            dataset.true_tof_ps,
         )
-        selected_cfd_fraction = float(
-            cfd_fine[cfd_index]
-        )
+        selected_cfd_fraction = float(cfd_fine[cfd_index])
     else:
         cfd_score = float("nan")
         cfd_folds = tuple()
         selected_cfd_fraction = float("nan")
 
-    # ------------------------------------------------------------
-    # Final selected LED timestamps: always extract for all events
-    # ------------------------------------------------------------
+    active = (
+        np.arange(int(waves.shape[0]), dtype=np.int64)
+        if application_indices is None
+        else np.asarray(application_indices, dtype=np.int64).reshape(-1)
+    )
 
     selected_led_grid, _ = _extract_grids(
         waves,
@@ -890,7 +1323,7 @@ def optimize_family(
         before_ns=before_ns,
         after_ns=after_ns,
         chunk_size=chunk_size,
-        indices=None,
+        indices=active,
     )
 
     selected_led = np.asarray(
@@ -898,24 +1331,37 @@ def optimize_family(
         dtype=np.int64,
     )
 
-    if np.any(selected_led == INVALID_TIME_FS):
-        missing_led = int(
-            np.count_nonzero(
-                np.any(
-                    selected_led == INVALID_TIME_FS,
-                    axis=1,
-                )
-            )
-        )
+    missing_led = np.any(
+        selected_led[active] == INVALID_TIME_FS,
+        axis=1,
+    )
+
+    if np.any(missing_led):
         raise RuntimeError(
-            f"Selected {family} LED threshold is missing a crossing "
-            f"for {missing_led} prepared events."
+            f"Selected {family} LED threshold "
+            f"{float(led_fine[led_index]):.6g} mV is missing a same-edge "
+            f"crossing for {int(np.count_nonzero(missing_led))} events "
+            "that passed search-time rejection. No LED-derived event "
+            "rejection or fallback is allowed."
         )
 
+    inactive = np.ones(selected_led.shape[0], dtype=bool)
+    inactive[active] = False
 
-    # ------------------------------------------------------------
-    # Final selected CFD timestamps
-    # ------------------------------------------------------------
+    if np.any(inactive):
+        bootstrap_led = (
+            dataset.energy_led_time_fs
+            if family == "energy"
+            else dataset.timing_led_time_fs
+        )
+        if bootstrap_led is None:
+            raise RuntimeError(
+                f"{family} bootstrap LED timestamps unavailable"
+            )
+        selected_led[inactive] = np.asarray(
+            bootstrap_led,
+            dtype=np.int64,
+        )[inactive]
 
     if cfd_enabled:
         _, selected_cfd_grid = _extract_grids(
@@ -924,10 +1370,7 @@ def optimize_family(
             anchors,
             reference_times,
             reference_threshold_mV=reference_threshold_mV,
-            led_thresholds_mV=np.empty(
-                0,
-                dtype=np.float64,
-            ),
+            led_thresholds_mV=np.empty(0, dtype=np.float64),
             cfd_fractions=np.asarray(
                 [selected_cfd_fraction],
                 dtype=np.float64,
@@ -935,7 +1378,7 @@ def optimize_family(
             before_ns=before_ns,
             after_ns=after_ns,
             chunk_size=chunk_size,
-            indices=None,
+            indices=active,
         )
 
         selected_cfd = np.asarray(
@@ -943,37 +1386,30 @@ def optimize_family(
             dtype=np.int64,
         )
 
-        # If CFD fails for either detector, use LED for BOTH
-        # detectors for that event.
-        cfd_fallback_events = np.any(
-            selected_cfd == INVALID_TIME_FS,
+        cfd_fallback_events = np.zeros(
+            selected_cfd.shape[0],
+            dtype=bool,
+        )
+        cfd_fallback_events[active] = np.any(
+            selected_cfd[active] == INVALID_TIME_FS,
             axis=1,
         )
 
-        n_fallback = int(
-            np.count_nonzero(cfd_fallback_events)
-        )
+        n_fallback = int(np.count_nonzero(cfd_fallback_events))
 
         if n_fallback:
             selected_cfd[cfd_fallback_events, :] = (
                 selected_led[cfd_fallback_events, :]
             )
-
             logger.warning(
                 "Adaptive standards | %s | CFD fallback to LED "
-                "for %d/%d events (%.3f%%)",
+                "for %d active events",
                 family,
                 n_fallback,
-                selected_cfd.shape[0],
-                100.0
-                * n_fallback
-                / max(1, selected_cfd.shape[0]),
             )
 
+        selected_cfd[inactive] = selected_led[inactive]
     else:
-        # CFD disabled for this family.
-        # Keep a valid placeholder internally, but no CFD result
-        # should be reported/evaluated for this family.
         selected_cfd = selected_led.copy()
 
     selection = FamilySelection(
@@ -983,12 +1419,8 @@ def optimize_family(
         cfd_fraction=selected_cfd_fraction,
         led_validation_sctr_ps=float(led_score),
         cfd_validation_sctr_ps=float(cfd_score),
-        led_fold_sctr_ps=tuple(
-            float(v) for v in led_folds
-        ),
-        cfd_fold_sctr_ps=tuple(
-            float(v) for v in cfd_folds
-        ),
+        led_fold_sctr_ps=tuple(float(v) for v in led_folds),
+        cfd_fold_sctr_ps=tuple(float(v) for v in cfd_folds),
         led_times_fs=selected_led,
         cfd_times_fs=selected_cfd,
         led_search_low_mV=float(low),
@@ -999,27 +1431,14 @@ def optimize_family(
         cfd_refine_points=int(cfd_fine.size),
     )
 
-    if cfd_enabled:
-        logger.info(
-            "Adaptive standards selected | %s | Tref %.6g mV | "
-            "LED %.6g mV -> %.3f ps s-CTR | "
-            "CFD %.6g -> %.3f ps s-CTR",
-            family,
-            reference_threshold_mV,
-            selection.led_threshold_mV,
-            selection.led_validation_sctr_ps,
-            selection.cfd_fraction,
-            selection.cfd_validation_sctr_ps,
-        )
-    else:
-        logger.info(
-            "Adaptive standards selected | %s | Tref %.6g mV | "
-            "LED %.6g mV -> %.3f ps s-CTR | CFD disabled",
-            family,
-            reference_threshold_mV,
-            selection.led_threshold_mV,
-            selection.led_validation_sctr_ps,
-        )
+    logger.info(
+        "Adaptive standards selected | %s | Tsearch %.6g mV | "
+        "LED %.6g mV -> %.3f ps s-CTR",
+        family,
+        reference_threshold_mV,
+        selection.led_threshold_mV,
+        selection.led_validation_sctr_ps,
+    )
 
     return selection
 
@@ -1038,11 +1457,11 @@ def apply_selections(
             "analysis_crop_before_ns": _family_timing_config(config, family)[0],
             "analysis_crop_after_ns": _family_timing_config(config, family)[1],
             "reference_threshold_mV": _family_timing_config(config, family)[2],
-            "led_edge_rule": "same rising edge; lower levels before reference, higher levels after reference",
+            "led_edge_rule": "continuous rising excursion anchored to search threshold",
         }
         for family in selections
     }
-    manifest["ml_window_alignment_source"] = "adaptive_selected_led_native_anchor"
+    manifest["ml_window_alignment_source"] = "adaptive_selected_led_search_anchored"
     manifest["window_anchor_shift_factored"] = True
 
     kwargs: dict[str, Any] = {"manifest": manifest}
@@ -1133,6 +1552,7 @@ def apply_selections(
     return replace(dataset, **kwargs)
 
 
+
 def optimize_standard_methods(
     config: dict[str, Any],
     dataset: PreparedDataset,
@@ -1141,10 +1561,15 @@ def optimize_standard_methods(
     *,
     families: Iterable[str],
     logger: Any,
+    application_indices: np.ndarray | None = None,
 ) -> tuple[PreparedDataset, dict[str, FamilySelection]]:
-    if not bool((config.get("standard_methods", {}) or {}).get("enabled", True)):
+    if not bool(
+        (config.get("standard_methods", {}) or {}).get("enabled", True)
+    ):
         return dataset, {}
+
     selections: dict[str, FamilySelection] = {}
+
     for family in sorted(set(str(v) for v in families)):
         selections[family] = optimize_family(
             config,
@@ -1153,9 +1578,10 @@ def optimize_standard_methods(
             splits,
             family=family,
             logger=logger,
+            application_indices=application_indices,
         )
-    return apply_selections(config, dataset, selections), selections
 
+    return apply_selections(config, dataset, selections), selections
 
 def parameter_payload(
     selections: dict[str, FamilySelection],

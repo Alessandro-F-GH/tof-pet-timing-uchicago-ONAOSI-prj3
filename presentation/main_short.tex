@@ -1,0 +1,187 @@
+\documentclass[aspectratio=169,10pt]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{adjustbox}
+\usepackage{hyperref}
+\usepackage{ragged2e}
+\usepackage{tikz}
+
+\usetikzlibrary{positioning,arrows.meta}
+
+\definecolor{UChicagoMaroon}{RGB}{128,0,0}
+\definecolor{SoftGray}{RGB}{245,245,245}
+\definecolor{PaleMaroon}{RGB}{250,238,238}
+\definecolor{DarkText}{RGB}{35,35,35}
+\definecolor{MutedBlue}{RGB}{40,80,130}
+
+\setbeamercolor{structure}{fg=UChicagoMaroon}
+\setbeamercolor{block title}{fg=white,bg=UChicagoMaroon}
+\setbeamercolor{block body}{bg=SoftGray,fg=black}
+\setbeamercolor{alerted text}{fg=UChicagoMaroon}
+\setbeamerfont{frametitle}{size=\large,series=\bfseries}
+\setbeamerfont{block title}{size=\small,series=\bfseries}
+\setbeamerfont{block body}{size=\small}
+
+\newcommand{\TOF}{\operatorname{TOF}}
+\newcommand{\LED}{\operatorname{LED}}
+\newcommand{\CFD}{\operatorname{CFD}}
+\newcommand{\CTR}{\operatorname{CTR}}
+\newcommand{\ps}{\,\mathrm{ps}}
+\newcommand{\ns}{\,\mathrm{ns}}
+
+% Figure paths are resolved relative to \figroot.
+% Use "." when main.tex and figures/ are in the same directory.
+% If needed, change ONLY this line, e.g.:
+%   \renewcommand{\figroot}{..}
+%   \renewcommand{\figroot}{presentation}
+\newcommand{\figroot}{.}
+
+% Figure wrapper: keeps compilation robust when a plot is missing.
+\newcommand{\smartimage}[4][\linewidth]{%
+  \edef\resolvedfigure{\figroot/#3}%
+  \IfFileExists{\resolvedfigure}{%
+    \includegraphics[width=#1,height=#2,keepaspectratio]{\resolvedfigure}%
+  }{%
+    \fbox{\parbox[c][#2][c]{#1}{\centering\color{DarkText}\small
+    \textbf{Missing figure}\\[0.3em]
+    \texttt{\detokenize\expandafter{\resolvedfigure}}\\[0.3em]
+    #4}}
+  }%
+}
+
+\newcommand{\takeaway}[1]{%
+  \vspace{0.25em}
+  {\footnotesize\color{UChicagoMaroon}\textbf{Takeaway:} #1\par}
+}
+
+\newcommand{\mainmsg}[1]{%
+  \vspace{0.2em}
+  \begin{center}
+  \color{UChicagoMaroon}\bfseries\large #1
+  \end{center}
+}
+
+\newcommand{\repo}{\href{https://github.com/Alessandro-F-GH/tof-pet-timing-uchicago-ONAOSI-prj3.git}{\texttt{tof-pet-timing-uchicago-ONAOSI-prj3}}}
+
+% ---------------------------------------------------------
+% UChicago logo in the top-right corner of each frame title
+% ---------------------------------------------------------
+
+\addtobeamertemplate{frametitle}{}{%
+    \begin{tikzpicture}[remember picture,overlay]
+        \node[
+            anchor=north east,
+            inner sep=0pt
+        ] at ([xshift=-0.30cm,yshift=-0mm]current page.north east)
+        {%
+            \includegraphics[height=0.75cm]{figures/reverse_logo.png}%
+        };
+    \end{tikzpicture}%
+}
+
+\title[CTR timing analysis]{\LARGE Performance characterization of PET detectors and systems}
+\subtitle{\large Oscilloscope baseline, Pico-TDC performance, and waveform-ML correction}
+\author{\Large Alessandro Falcetta}
+\institute{\large University of Chicago\\[0.45em]\large \textbf{PI:} Chien-Min Kao\\[0.15em]\large \textbf{Tutor:} Hee-Jong Kim}
+\date{\large August 2026}
+
+\begin{document}
+
+% ---------------------------------------------------------
+\input{slides/slide_01_title.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_02_why_timing_matters_in_tof_pet.tex}
+% ---------------------------------------------------------
+\input{slides/slide_03_experimental_setup.tex}
+
+
+% ---------------------------------------------------------
+\input{slides/slide_04_two_ways_to_acquire_the_detector_signal.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_05_why_use_the_pico_tdc.tex}
+% ---------------------------------------------------------
+
+\input{slides/slide_06_experimental_data.tex}
+% ----------------------------------------------------------
+\input{slides/slide_07_standard_methods_for_oscilloscope_waveforms.tex}
+%---------------------------------------------------------
+
+% ---------------------------------------------------------
+\input{slides/slide_08_ctr_extraction.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_09_pico_tdc_analysis_from_hits_to_coincidences.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_10_pico_tdc_threshold_scan.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_11_pico_tdc_versus_oscilloscope_reference.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_12_second_question_can_we_do_better.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_13_what_should_the_model_learn.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_14_physically_constrained_correction.tex}
+
+% --------------------------------------------------------------
+\input{slides/slide_15_windowing_and_target_correction.tex}
+% ---------------------------------------------------------
+\input{slides/slide_16_analysis_workflow_from_detector_data_to_result.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_17_models_as_controlled_information_probes_short.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_18_waveform_ml_results_energy_channel_timing.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_19_waveform_ml_results_timing_channel_timing.tex}
+
+% ---------------------------------------------------------
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+%\input{slides/slide_21_xai_do_different_models_find_the_same_correction.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_22_xai_energy_channel_information.tex}
+% ---------------------------------------------------------
+\input{slides/slide_23_xai_timing_channel_information.tex}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+\input{slides/slide_24_conclusions.tex}
+% ---------------------------------------------------------
+\input{slides/slide_25_references_and_source_material.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_26_backup_window_scan.tex}
+
+% ---------------------------------------------------------
+\input{slides/slide_27_backup_top_corrections.tex}
+
+\input{slides/slide_28_backup_correlation.tex}
+
+
+\end{document}

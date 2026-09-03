@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from .dataset import DATASET_FORMAT_VERSION, PreparedDataset, load_prepared_dataset
 from .selection_store import load_or_compute_selection, selection_request_fingerprint
 
-PREPARED_SELECTION_VERSION = 3
+PREPARED_SELECTION_VERSION = 4
 _COPY_ARRAYS = (
     "event_id",
     "event_index",
@@ -82,11 +82,6 @@ def _copy_selected(source: np.ndarray, selected: np.ndarray, path: Path, chunk_s
         mmap.close()
 
 
-def _timing_pair_ps(times_fs: np.ndarray) -> np.ndarray:
-    values = np.asarray(times_fs, dtype=np.int64)
-    return (values[:, 0].astype(np.float64) - values[:, 1].astype(np.float64)) / 1000.0
-
-
 def _robust_location_scale(values: np.ndarray) -> tuple[float, float]:
     """Return median and MAD-derived robust sigma for finite values only."""
     data = np.asarray(values, dtype=np.float64).reshape(-1)
@@ -106,9 +101,9 @@ def _physical_photopeak_selection(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Define the reusable physical cohort.
 
-    Photopeak is the first event-selection cut. Baseline information is used only
-    afterwards as a quality metric: ``noise_rms_mV`` is the baseline RMSE about
-    the event's own baseline mean, and no baseline translation is applied to the
+    Photopeak is the first event-selection cut. ``noise_rms_mV`` is always the
+    baseline RMSE about the event's own baseline mean. Event-wise baseline
+    subtraction, when requested by preprocessing, is applied upstream to the
     waveform. Timing validity and LED mismatch rejection remain downstream.
     """
     amplitudes_all = np.asarray(cache.amplitude_mV, dtype=np.float64)
@@ -222,6 +217,8 @@ def _physical_photopeak_selection(
     return selected, summary
 
 
+
+
 def _dataset_level_selection(
     cache: "EnergyCache",
     config: dict[str, Any],
@@ -230,78 +227,51 @@ def _dataset_level_selection(
     physical_selected: np.ndarray | None = None,
     physical_summary: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
+    # Permanent preprocessing contains only physical / signal-computability
+    # selection. Statistical timing-outlier rejection is fitted later on the
+    # DEVELOPMENT split using the search-threshold arrival-time difference.
     valid = np.zeros(int(cache.event_id.size), dtype=bool)
     if physical_selected is None:
-        physical_selected, physical_summary = _physical_photopeak_selection(cache, config, logger)
-    valid[np.asarray(physical_selected, dtype=np.int64)] = True
-    # One frozen population for all standard and ML modes. Timing validity is
-    # applied after the reusable photopeak cohort because it depends on LED/CFD
-    # configuration rather than the physical energy population.
-    valid &= np.asarray(cache.valid, dtype=bool)
-    for name in ("energy_led_time_fs", "energy_cfd_time_fs"):
-        array = getattr(cache, name, None)
-        if array is not None:
-            valid &= np.all(np.asarray(array) != INVALID_TIME_FS, axis=1)
-    if cache.timing_led_time_fs is not None:
-        valid &= np.all(np.asarray(cache.timing_led_time_fs) != INVALID_TIME_FS, axis=1)
-    if cache.timing_cfd_time_fs is not None:
-        valid &= np.all(np.asarray(cache.timing_cfd_time_fs) != INVALID_TIME_FS, axis=1)
-    selection = copy.deepcopy(config.get("selection", {}))
-    summary: dict[str, Any] = {
-        "scope": "complete_file_before_any_ml_split",
-        "physical_selection": physical_summary or {},
-        "valid_after_timing": int(np.count_nonzero(valid)),
-    }
-    led_cfg = selection.get("led_outlier_rejection", {}) or {}
-    led_summary: dict[str, Any] = {"enabled": bool(led_cfg.get("enabled", False))}
-    if led_summary["enabled"]:
-        use_robust_z = "zscore_limit" in led_cfg
-        zscore_limit = float(led_cfg.get("zscore_limit", 4.0))
-        max_distance_ps = float(led_cfg.get("max_distance_ps", 300.0))
-        families: list[tuple[str, np.ndarray]] = [("energy", np.asarray(cache.energy_led_time_fs))]
-        if cache.timing_led_time_fs is not None:
-            families.append(("timing", np.asarray(cache.timing_led_time_fs)))
-        family_rows: list[dict[str, Any]] = []
-        for name, times in families:
-            delta = _timing_pair_ps(times)
-            base = valid & np.isfinite(delta)
-            if np.count_nonzero(base) < 3:
-                raise RuntimeError(f"Too few valid {name} LED pairs for dataset-level outlier rejection")
-            center, robust_sigma = _robust_location_scale(delta[base])
-            if use_robust_z:
-                sigma = robust_sigma
-                if not np.isfinite(sigma) or sigma <= 0.0:
-                    sigma = 1.0
-                distance = zscore_limit * sigma
-                accepted = np.isfinite(delta) & (np.abs(delta - center) <= distance)
-            else:
-                sigma = float("nan")
-                distance = max_distance_ps
-                accepted = np.isfinite(delta) & (np.abs(delta - center) <= distance)
-            rejected = int(np.count_nonzero(valid & ~accepted))
-            valid &= accepted
-            row = {
-                "family": name, "median_ps": center, "rejected": rejected,
-                "effective_max_distance_ps": float(distance),
-            }
-            if use_robust_z:
-                row.update({"zscore_limit": zscore_limit, "robust_sigma_ps": sigma})
-            else:
-                row["max_distance_ps"] = max_distance_ps
-            family_rows.append(row)
-        led_summary["families"] = family_rows
-        logger.info(
-            "Dataset LED mismatch rejection | %s",
-            ", ".join(f"{row['family']} rejected={row['rejected']}" for row in family_rows),
+        physical_selected, physical_summary = _physical_photopeak_selection(
+            cache, config, logger
         )
-    summary["led_outlier_rejection"] = led_summary
-    minimum = int(selection.get("minimum_events", selection.get("minimum_events_per_split", 100)))
-    selected = np.flatnonzero(valid).astype(np.int64)
-    summary["selected_events"] = int(selected.size)
-    if selected.size < minimum:
-        raise RuntimeError(f"Only {selected.size} events remain after dataset preparation; need {minimum}")
-    return selected, summary
+    valid[np.asarray(physical_selected, dtype=np.int64)] = True
 
+    # cache.valid already guarantees that the configured channels and stored
+    # waveform windows are usable. Do not apply another LED-derived population
+    # cut here.
+    valid &= np.asarray(cache.valid, dtype=bool)
+
+    selection = copy.deepcopy(config.get("selection", {}))
+    minimum = int(
+        selection.get(
+            "minimum_events",
+            selection.get("minimum_events_per_split", 100),
+        )
+    )
+    selected = np.flatnonzero(valid).astype(np.int64)
+
+    summary: dict[str, Any] = {
+        "scope": "physical_and_signal_quality_before_ml_split",
+        "physical_selection": physical_summary or {},
+        "valid_after_waveform_preparation": int(np.count_nonzero(valid)),
+        "selected_events": int(selected.size),
+        "led_outlier_rejection": {
+            "enabled": False,
+            "status": "obsolete_removed",
+        },
+        "search_time_outlier_rejection": {
+            "stage": "study_after_dev_blind_split",
+            "fit_population": "development_only",
+        },
+    }
+
+    if selected.size < minimum:
+        raise RuntimeError(
+            f"Only {selected.size} events remain after dataset preparation; "
+            f"need {minimum}"
+        )
+    return selected, summary
 
 def _denoise_windows(
     source: np.ndarray,
@@ -365,7 +335,7 @@ def materialize_selected_dataset(
         selection_fp = canonical_hash({
             "source": source_signature(source_root),
             "energy_channels": cache.manifest.get("energy_channels_one_based", []),
-            "selection": {k: v for k, v in dict(config.get("selection", {})).items() if k != "led_outlier_rejection"},
+            "selection": dict(config.get("selection", {})),
             "photopeak": config.get("photopeak", {"enabled": False}),
         })
     physical_selected, physical_summary, physical_store = load_or_compute_selection(
@@ -444,7 +414,7 @@ def materialize_selected_dataset(
         "waveform_grid": cache.manifest.get("waveform_grid", "native_samples"),
         "native_sample_interval_ps": cache.manifest.get("native_sample_interval_ps"),
         "timing_native_sample_interval_ps": cache.manifest.get("timing_native_sample_interval_ps"),
-        "baseline_handling": "quality_only_no_shift",
+        "baseline_handling": str(config.get("baseline_handling", "quality_only_no_shift_v1")),
         "baseline_quality_metric": "rmse_about_event_baseline_mean",
         "led_timestamp_source": "energy_channels",
         "cfd_timestamp_source": "energy_channels",
@@ -480,8 +450,16 @@ def _raw_preprocess_config(study: dict[str, Any], root_file: Path, cache_dir: Pa
 
     # This is part of the raw-cache fingerprint because baseline-subtracted raw
     # caches from older code are not compatible with the no-shift representation.
-    energy["baseline_handling"] = "quality_only_no_shift_v1"
-    timing["baseline_handling"] = "quality_only_no_shift_v1"
+    energy["baseline_handling"] = (
+        "event_mean_subtracted_v1"
+        if bool(energy.get("subtract_baseline", False))
+        else "quality_only_no_shift_v1"
+    )
+    timing["baseline_handling"] = (
+        "event_mean_subtracted_v1"
+        if bool(timing.get("subtract_baseline", False))
+        else "quality_only_no_shift_v1"
+    )
 
     materialized = preprocessing.get("materialized_window_ns") or {
         "before": max(float(window["before_ns"]) for window in study["windows_ns"]),
@@ -549,6 +527,9 @@ def prepare_file_dataset(
         "name": root_id,
         "source_root": str(root_file),
         "request_fingerprint": request_fingerprint,
+        "baseline_handling": raw_cfg["waveform"].get(
+            "baseline_handling", "quality_only_no_shift_v1"
+        ),
         "true_tof_ps": float(study["data"].get("true_tof_ps", 0.0)),
         "selection_store_dir": str(study["preprocessing"].get("selection_store_dir", Path(study["preprocessing"]["prepared_dir"]).parent / "selected_events")),
         "selection_request_fingerprint": selection_request_fingerprint(

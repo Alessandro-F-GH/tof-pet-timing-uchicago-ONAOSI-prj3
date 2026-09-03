@@ -28,6 +28,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
 
 from utils_fit import FitResult
+from utils.plots import plot_xai_waveform_importance as plot_xai_waveform_importance_figure
 from .common import atomic_json, canonical_hash
 from .dataset import PreparedDataset
 from .metrics import FWHM_PER_SIGMA, ctr_bootstrap_uncertainty, fit_times_ps, residual_metrics
@@ -40,6 +41,11 @@ from .prepared_data import (
 )
 from .study_config import CHANNEL_MODES, candidate_overrides, discover_root_files, set_nested
 from .experiment_config import cfd_enabled
+from .standard_methods.adaptive import (
+    family_for_mode,
+    filter_search_time_outliers,
+    optimize_standard_methods,
+)
 from .torch_data import Normalization, compute_normalization
 from .training import train_model
 from .training_utils import make_split_loader, predict_loader, resolve_device
@@ -1940,18 +1946,41 @@ def _save_evaluation_artifact(
     atomic_json(root / f"{stem}.json", {"models": model_keys})
 
 
-def _plot_xai_profile(path: Path, *, time_ps: np.ndarray, importance: np.ndarray, title: str, dpi: int) -> None:
-    fig, axis = plt.subplots(figsize=(8.0, 3.6))
-    axis.plot(np.asarray(time_ps) / 1000.0, importance)
-    axis.set_xlabel("Relative time [ns]")
-    axis.set_ylabel("Normalized |attribution|")
-    axis.set_title(title)
-    axis.grid(alpha=0.2)
-    fig.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
 
+def _plot_xai_waveform_artifact(
+    path: Path,
+    *,
+    view: PreparedDataset,
+    indices: np.ndarray,
+    time_ps: np.ndarray,
+    importance: np.ndarray,
+    title: str,
+    dpi: int,
+    xai_config: dict[str, Any],
+) -> None:
+    """Write the standard experiment XAI artifact using the shared plotter."""
+    selected = np.asarray(indices, dtype=np.int64).reshape(-1)
+    if selected.size == 0:
+        return
+
+    # Integrated gradients consumes evaluation indices in order and truncates
+    # from the front, so this event is part of the XAI sample.
+    event = int(selected[0])
+    if not 0 <= event < int(view.event_id.size):
+        raise IndexError(f"XAI example event {event} is outside the selected view")
+
+    plot_xai_waveform_importance_figure(
+        path,
+        waveform_time_ps=np.asarray(view.relative_time_ps, dtype=np.float64),
+        waveforms_mV=np.asarray(view.windows_mV[event], dtype=np.float64),
+        xai_time_ps=np.asarray(time_ps, dtype=np.float64),
+        importance=np.asarray(importance, dtype=np.float64),
+        title=str(title),
+        dpi=int(dpi),
+        region_window_ns=float(xai_config.get("region_window_ns", 1.0)),
+        n_levels=int(xai_config.get("n_levels", 6)),
+        contrast_gamma=float(xai_config.get("contrast_gamma", 0.55)),
+    )
 
 def _repair_additive_artifacts(
     config: dict[str, Any],
@@ -2112,7 +2141,16 @@ def _repair_additive_artifacts(
                         max_events=int(xai_cfg.get("max_events", 512)),
                         steps=int(xai_cfg.get("integrated_gradient_steps", 16)),
                     )
-                    _plot_xai_profile(xai_path, time_ps=time_ps, importance=importance, title=f"{model_name} · {mode}", dpi=dpi)
+                    _plot_xai_waveform_artifact(
+                        xai_path,
+                        view=view,
+                        indices=blind,
+                        time_ps=time_ps,
+                        importance=importance,
+                        title=f"{model_name} · {mode}",
+                        dpi=dpi,
+                        xai_config=xai_cfg,
+                    )
                     repaired.append(str(xai_path.relative_to(output)))
                     del model
 
@@ -2210,6 +2248,20 @@ def run_study(
 
     root_files = discover_root_files(config)
     strategy = str(config["validation"]["strategy"])
+    if (
+        bool(
+            (config.get("standard_methods", {}) or {}).get(
+                "enabled",
+                True,
+            )
+        )
+        and strategy == "nested"
+    ):
+        raise RuntimeError(
+            "Adaptive standard-method selection currently does not support nested validation. "
+            "Search-time rejection and LED optimization must be re-fitted inside every outer "
+            "training fold before nested mode can be enabled."
+        )
     logger.info(
         "Study %s | files=%d | validation=%s | working ML/model implementation preserved",
         config["experiment"]["name"],
@@ -2308,29 +2360,146 @@ def run_study(
             len(root_files),
             root_file.name,
         )
-        dataset = prepare_file_dataset(
+        prepared_dataset = prepare_file_dataset(
             config,
             root_file,
             rebuild=rebuild_preprocessing,
             logger=logger,
         )
+
         plot_prepared_signal_examples(
-            dataset,
+            prepared_dataset,
             signal_plot_root / f"{root_file.stem}.png",
             dpi=dpi,
         )
-        development, blind = random_dev_blind(
-            int(dataset.event_id.size),
-            blind_fraction=float(config["validation"]["blind_fraction"]),
-            seed=_seed_for(base_seed, file_id, "devblind"),
+
+        base_development, base_blind = random_dev_blind(
+            int(prepared_dataset.event_id.size),
+            blind_fraction=float(
+                config["validation"]["blind_fraction"]
+            ),
+            seed=_seed_for(
+                base_seed,
+                file_id,
+                "devblind",
+            ),
         )
+
         voltage = _voltage_from_name(
             root_file.name,
             str(config["reporting"]["voltage_pattern"]),
         )
-        mt_feature_cache: dict[str, dict[str, Any]] = {}
+
+        if not bool(
+            (config.get("standard_methods", {}) or {}).get(
+                "enabled",
+                True,
+            )
+        ):
+            raise RuntimeError(
+                "standard_methods.enabled=false is incompatible with the "
+                "canonical study because optimized LED defines the ML target."
+            )
+
+        family_runtime: dict[str, dict[str, Any]] = {}
+
+        target_families = sorted(
+            {
+                family_for_mode(mode)
+                for mode in config["channel_modes"]
+            }
+        )
+
+        for family in target_families:
+            (
+                family_development,
+                family_blind,
+                search_summary,
+            ) = filter_search_time_outliers(
+                config,
+                prepared_dataset,
+                base_development,
+                base_blind,
+                family=family,
+                logger=logger,
+            )
+
+            standard_splits = selection_splits(
+                family_development,
+                config["validation"],
+                seed=_seed_for(
+                    base_seed,
+                    file_id,
+                    family,
+                    "standard_methods",
+                ),
+            )
+
+            active_indices = np.unique(
+                np.concatenate(
+                    [
+                        family_development,
+                        family_blind,
+                    ]
+                )
+            )
+
+            selected_dataset, standard_selections = (
+                optimize_standard_methods(
+                    config,
+                    prepared_dataset,
+                    family_development,
+                    standard_splits,
+                    families=[family],
+                    logger=logger,
+                    application_indices=active_indices,
+                )
+            )
+
+            updated_manifest = dict(selected_dataset.manifest)
+            search_manifest = dict(
+                updated_manifest.get(
+                    "search_time_outlier_rejection",
+                    {},
+                )
+            )
+            search_manifest[family] = search_summary
+            updated_manifest[
+                "search_time_outlier_rejection"
+            ] = search_manifest
+
+            selected_dataset = replace(
+                selected_dataset,
+                manifest=updated_manifest,
+            )
+
+            family_runtime[family] = {
+                "dataset": selected_dataset,
+                "development": family_development,
+                "blind": family_blind,
+                "search_time_rejection": search_summary,
+                "standard_selection": standard_selections[family].as_dict(),
+            }
 
         for mode in config["channel_modes"]:
+            runtime = family_runtime[
+                family_for_mode(mode)
+            ]
+            dataset = runtime["dataset"]
+            development = np.asarray(
+                runtime["development"],
+                dtype=np.int64,
+            )
+            blind = np.asarray(
+                runtime["blind"],
+                dtype=np.int64,
+            )
+
+            mt_feature_cache: dict[
+                str,
+                dict[str, Any],
+            ] = {}
+
             mode_id = codebooks["mode"][mode]
             use_cfd = cfd_enabled(config, mode)
             mt_window = None
@@ -3212,25 +3381,33 @@ def run_study(
 
                 if xai_profile is not None:
                     time_ps, importance = xai_profile
-                    fig, axis = plt.subplots(figsize=(8.0, 3.6))
-                    axis.plot(np.asarray(time_ps) / 1000.0, importance)
-                    axis.set_xlabel("Relative time [ns]")
-                    axis.set_ylabel("Normalized |attribution|")
-                    axis.set_title(f"{space['id']} · {mode}")
-                    axis.grid(alpha=0.2)
-                    fig.tight_layout()
+                    source = input_variant_dataset_view(
+                        dataset,
+                        chosen["variant"],
+                    )
+                    input_waveforms, target = CHANNEL_MODES[mode]
+                    xai_plot_view = prediction_window_dataset_view(
+                        source,
+                        input_waveforms=input_waveforms,
+                        target=target,
+                        before_ns=float(chosen["window"]["before_ns"]),
+                        after_ns=float(chosen["window"]["after_ns"]),
+                    )
                     xai_path = (
                         plots_root
                         / "xai"
                         / f"{root_file.stem}__{mode}__{space['id']}.png"
                     )
-                    xai_path.parent.mkdir(parents=True, exist_ok=True)
-                    fig.savefig(
+                    _plot_xai_waveform_artifact(
                         xai_path,
+                        view=xai_plot_view,
+                        indices=blind,
+                        time_ps=time_ps,
+                        importance=importance,
+                        title=f"{space['id']} · {mode}",
                         dpi=dpi,
-                        bbox_inches="tight",
+                        xai_config=(config.get("reporting", {}).get("xai", {}) or {}),
                     )
-                    plt.close(fig)
 
             if selected_mt is not None:
                 residual, metrics, train_residual = _multithreshold_evaluate(

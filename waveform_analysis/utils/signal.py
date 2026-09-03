@@ -20,8 +20,8 @@ class BasicFeatures:
     peak_index: int
     trigger_index: int
     trigger_time_fs: np.int64
-    # Historical field name retained for compatibility. The waveform is only
-    # polarity-oriented; no baseline subtraction is applied.
+    # Historical field name retained for compatibility. The waveform is polarity-
+    # oriented and may optionally have its event-wise baseline mean subtracted.
     corrected_signal_mV: np.ndarray
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ def baseline_and_basic_features(
     voltage_mV: np.ndarray,
     *,
     baseline_samples: int,
+    subtract_baseline: bool = False,
     polarity: int,
     trigger_threshold_mV: float,
     horizontal_interval_s: float,
@@ -63,7 +64,8 @@ def baseline_and_basic_features(
 
     # Baseline is diagnostic only. Do not translate the waveform by its event-wise
     # baseline mean; only orient it according to the configured pulse polarity.
-    corrected = polarity * values
+    oriented_input = values - baseline if bool(subtract_baseline) else values
+    corrected = polarity * oriented_input
     peak_index = int(np.argmax(corrected))
     amplitude = float(corrected[peak_index])
     crossing = np.flatnonzero(corrected > float(trigger_threshold_mV))

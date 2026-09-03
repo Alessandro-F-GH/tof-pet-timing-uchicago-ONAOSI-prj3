@@ -1,20 +1,26 @@
 \begin{frame}{Standard methods for oscilloscope waveforms}
 \small
+\vspace{-2mm}
 \centering
 \smartimage[0.78\linewidth]{0.55\textheight}{figures/led_waveform_schematic.pdf}{LED and CFD crossing definition.}
 
-\vspace{0.25em}
-\begin{block}{Leading-edge discriminator (LED)}
-Fixed voltage crossing: simple and robust, but sensitive to amplitude-dependent time walk.
-\end{block}
+\begin{columns}
+    \begin{column}{0.9\textwidth}
 
-\begin{block}{Variant: Constant-fraction discriminator (CFD)}
+        \begin{block}{Leading-edge discriminator (LED)}
+        Fixed voltage crossing: simple and robust, but sensitive to amplitude-dependent time walk.
+        \end{block}
 
-\small
+        \begin{block}{Variant: Constant-fraction discriminator (CFD)}
 
-Crossing at a fixed fraction of each pulse amplitude: reduces amplitude-dependent time walk.
+        \small
 
-\end{block}
+        Crossing at a fixed fraction of each pulse amplitude: reduces amplitude-dependent time walk.
+
+        \end{block}
+    \end{column}
+\end{columns}
+
 
 
 \end{frame}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -495,3 +496,211 @@ def plot_toa_for_parameter(
         figure.suptitle(title)
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
         _save_figure(figure, path, dpi)
+
+def _normalize_xai_importance(values: np.ndarray) -> np.ndarray:
+    values = np.abs(np.asarray(values, dtype=np.float64).reshape(-1))
+    peak = float(np.max(values)) if values.size else 0.0
+    if not np.isfinite(peak) or peak <= 0.0:
+        return np.zeros_like(values)
+    return values / peak
+
+
+def _xai_display_levels(
+    values: np.ndarray,
+    *,
+    gamma: float,
+    n_levels: int,
+) -> np.ndarray:
+    x = np.clip(np.asarray(values, dtype=np.float64).reshape(-1), 0.0, 1.0)
+    if x.size == 0:
+        return x
+    gamma = float(gamma)
+    if not np.isfinite(gamma) or gamma <= 0.0:
+        raise ValueError("contrast_gamma must be positive")
+    levels = int(n_levels)
+    if levels < 2:
+        raise ValueError("n_levels must be at least 2")
+    x = np.power(x, gamma)
+    indices = np.minimum((x * levels).astype(np.int64), levels - 1)
+    return (indices + 0.5) / levels
+
+
+def _xai_regional_importance(
+    time_ns: np.ndarray,
+    importance: np.ndarray,
+    *,
+    window_ns: float,
+) -> list[tuple[float, float, float]]:
+    time_ns = np.asarray(time_ns, dtype=np.float64).reshape(-1)
+    importance = _normalize_xai_importance(importance)
+    if time_ns.size != importance.size or time_ns.size < 2:
+        raise ValueError("XAI time and importance arrays must have matching length >= 2")
+    if np.any(~np.isfinite(time_ns)):
+        raise ValueError("XAI time array contains non-finite values")
+    window_ns = float(window_ns)
+    if not np.isfinite(window_ns) or window_ns <= 0.0:
+        raise ValueError("region_window_ns must be positive")
+
+    dt = np.diff(time_ns)
+    positive = dt[np.isfinite(dt) & (dt > 0.0)]
+    half_step = 0.5 * float(np.median(positive)) if positive.size else 0.0
+    left = float(time_ns[0]) - half_step
+    right = float(time_ns[-1]) + half_step
+    n_bins = max(1, int(np.ceil((right - left) / window_ns)))
+    edges = left + window_ns * np.arange(n_bins + 1, dtype=np.float64)
+    if edges[-1] < right:
+        edges = np.append(edges, right)
+    else:
+        edges[-1] = right
+
+    regions: list[tuple[float, float, float]] = []
+    for index, (lo, hi) in enumerate(zip(edges[:-1], edges[1:], strict=True)):
+        if index == len(edges) - 2:
+            mask = (time_ns >= lo) & (time_ns <= hi)
+        else:
+            mask = (time_ns >= lo) & (time_ns < hi)
+        if np.any(mask):
+            mean_importance = float(np.mean(importance[mask]))
+        else:
+            center = 0.5 * (lo + hi)
+            nearest = int(np.argmin(np.abs(time_ns - center)))
+            mean_importance = float(importance[nearest])
+        regions.append((float(lo), float(hi), mean_importance))
+    return regions
+
+
+def plot_xai_waveform_importance(
+    path: str | Path,
+    *,
+    waveform_time_ps: np.ndarray,
+    waveforms_mV: np.ndarray,
+    xai_time_ps: np.ndarray,
+    importance: np.ndarray,
+    title: str,
+    dpi: int,
+    region_window_ns: float = 1.0,
+    n_levels: int = 6,
+    contrast_gamma: float = 0.55,
+    anchor_label: str = "LED anchor",
+) -> None:
+    """Shared waveform + regional XAI background + normalized importance plot."""
+    waveform_time_ps = np.asarray(waveform_time_ps, dtype=np.float64).reshape(-1)
+    waveforms = np.asarray(waveforms_mV, dtype=np.float64)
+    if (
+        waveforms.ndim != 2
+        or waveforms.shape[0] != 2
+        or waveforms.shape[1] != waveform_time_ps.size
+    ):
+        raise ValueError("waveforms_mV must have shape (2, len(waveform_time_ps))")
+    if (
+        waveform_time_ps.size < 2
+        or np.any(~np.isfinite(waveform_time_ps))
+        or np.any(~np.isfinite(waveforms))
+    ):
+        raise ValueError("XAI waveform example must contain finite samples")
+
+    xai_time_ps = np.asarray(xai_time_ps, dtype=np.float64).reshape(-1)
+    normalized_importance = _normalize_xai_importance(importance)
+    if xai_time_ps.size != normalized_importance.size or xai_time_ps.size < 2:
+        raise ValueError("xai_time_ps and importance must have matching length >= 2")
+
+    waveform_time_ns = waveform_time_ps / 1000.0
+    xai_time_ns = xai_time_ps / 1000.0
+    regions = _xai_regional_importance(
+        xai_time_ns,
+        normalized_importance,
+        window_ns=float(region_window_ns),
+    )
+    region_strength = _xai_display_levels(
+        np.asarray([value for _lo, _hi, value in regions], dtype=np.float64),
+        gamma=float(contrast_gamma),
+        n_levels=int(n_levels),
+    )
+    boundaries = np.linspace(0.0, 1.0, int(n_levels) + 1)
+
+    with plt.rc_context(_PLOT_STYLE):
+        figure, (waveform_axis, importance_axis) = plt.subplots(
+            2,
+            1,
+            figsize=(9.2, 5.4),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2.8, 1.0], "hspace": 0.08},
+            constrained_layout=True,
+        )
+        cmap = mpl.colormaps["YlOrRd"]
+        norm = mpl.colors.BoundaryNorm(boundaries, cmap.N, clip=True)
+
+        for (lo, hi, _mean), strength in zip(regions, region_strength, strict=True):
+            waveform_axis.axvspan(
+                lo,
+                hi,
+                color=cmap(norm(float(strength))),
+                alpha=0.12 + 0.58 * float(strength),
+                linewidth=0.0,
+                zorder=0,
+            )
+
+        waveform_axis.plot(
+            waveform_time_ns,
+            waveforms[0],
+            linewidth=1.55,
+            label="Detector 1",
+            zorder=3,
+        )
+        waveform_axis.plot(
+            waveform_time_ns,
+            waveforms[1],
+            linewidth=1.55,
+            label="Detector 2",
+            zorder=3,
+        )
+        waveform_axis.axvline(
+            0.0,
+            linestyle="--",
+            linewidth=0.9,
+            color="0.25",
+            alpha=0.8,
+            label=str(anchor_label),
+            zorder=2,
+        )
+        waveform_axis.set_xlim(
+            min(region[0] for region in regions),
+            max(region[1] for region in regions),
+        )
+        waveform_axis.set_ylabel("Voltage [mV]")
+        waveform_axis.set_title(str(title))
+        waveform_axis.grid(alpha=0.18)
+        waveform_axis.legend(frameon=False, loc="best")
+
+        importance_axis.plot(
+            xai_time_ns,
+            normalized_importance,
+            linewidth=1.55,
+        )
+        importance_axis.fill_between(
+            xai_time_ns,
+            0.0,
+            normalized_importance,
+            alpha=0.15,
+        )
+        importance_axis.set_ylim(0.0, 1.05)
+        importance_axis.set_ylabel("Normalized\n|importance|")
+        importance_axis.set_xlabel("LED-relative time [ns]")
+        importance_axis.grid(alpha=0.18)
+
+        scalar = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+        scalar.set_array([])
+        ticks = 0.5 * (boundaries[:-1] + boundaries[1:])
+        colorbar = figure.colorbar(
+            scalar,
+            ax=[waveform_axis, importance_axis],
+            location="right",
+            fraction=0.055,
+            pad=0.02,
+            boundaries=boundaries,
+            ticks=ticks,
+            spacing="proportional",
+        )
+        colorbar.ax.set_yticklabels([f"{value:.2f}" for value in ticks])
+        colorbar.set_label("Regional mean normalized |importance|")
+        _save_figure(figure, path, int(dpi))
