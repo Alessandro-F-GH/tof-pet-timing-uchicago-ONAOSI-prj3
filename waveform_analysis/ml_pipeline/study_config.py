@@ -422,15 +422,15 @@ def load_study_config(path: str | Path, project_root: str | Path) -> dict[str, A
         raise MLConfigError("standard_methods must be an object")
 
     standard_methods.setdefault("enabled", True)
-    standard_methods.setdefault("led_grid_points", 121)
-    standard_methods.setdefault("led_refine_points", 41)
+    standard_methods.setdefault(
+        "led_thresholds_mV",
+        [float(v) for v in range(5, 100, 10)],
+    )
     standard_methods.setdefault("cfd_grid_points", 81)
     standard_methods.setdefault("cfd_refine_points", 41)
     standard_methods.setdefault("waveform_scan_chunk_size", 1024)
 
     for key in (
-        "led_grid_points",
-        "led_refine_points",
         "cfd_grid_points",
         "cfd_refine_points",
         "waveform_scan_chunk_size",
@@ -439,6 +439,25 @@ def load_study_config(path: str | Path, project_root: str | Path) -> dict[str, A
             raise MLConfigError(
                 f"standard_methods.{key} must be positive"
             )
+
+    led_thresholds = standard_methods.get("led_thresholds_mV")
+    if not isinstance(led_thresholds, (list, tuple)) or not led_thresholds:
+        raise MLConfigError(
+            "standard_methods.led_thresholds_mV must be a non-empty list"
+        )
+    normalized_led_thresholds = [
+        _finite(
+            value,
+            f"standard_methods.led_thresholds_mV[{index}]",
+            positive=True,
+        )
+        for index, value in enumerate(led_thresholds)
+    ]
+    if len(set(normalized_led_thresholds)) != len(normalized_led_thresholds):
+        raise MLConfigError(
+            "standard_methods.led_thresholds_mV must contain unique values"
+        )
+    standard_methods["led_thresholds_mV"] = normalized_led_thresholds
 
     search_rejection = standard_methods.setdefault(
         "search_time_outlier_rejection",

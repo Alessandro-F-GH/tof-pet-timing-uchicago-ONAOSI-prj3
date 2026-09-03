@@ -1134,51 +1134,26 @@ def optimize_family(
             "references after search-time filtering"
         )
 
-    configured_range = None
-    ranges = standard.get("led_range_mV_by_family")
-
-    if isinstance(ranges, dict) and family in ranges:
-        values = np.asarray(
-            ranges[family],
-            dtype=np.float64,
-        ).reshape(-1)
-
-        if (
-            values.size != 2
-            or not (
-                np.isfinite(values[0])
-                and np.isfinite(values[1])
-                and values[1] > values[0]
-            )
-        ):
-            raise ValueError(
-                f"standard_methods.led_range_mV_by_family.{family} "
-                "must be [low, high]"
-            )
-
-        configured_range = (
-            float(values[0]),
-            float(values[1]),
+    raw_led_thresholds = standard.get(
+        "led_thresholds_mV",
+        [float(value) for value in range(5, 100, 10)],
+    )
+    led_axis = np.asarray(raw_led_thresholds, dtype=np.float64).reshape(-1)
+    if (
+        led_axis.size == 0
+        or np.any(~np.isfinite(led_axis))
+        or np.any(led_axis <= 0.0)
+    ):
+        raise ValueError(
+            "standard_methods.led_thresholds_mV must contain positive finite values"
         )
-
-    low, high = _led_support(
-        waves,
-        development,
-        reference_threshold_mV=reference_threshold_mV,
-        chunk_size=chunk_size,
-        configured_range=configured_range,
-    )
-
-    led_points = max(
-        3,
-        int(standard.get("led_grid_points", 121)),
-    )
-    led_axis = np.linspace(
-        low,
-        high,
-        led_points,
-        dtype=np.float64,
-    )
+    led_axis = np.unique(led_axis)
+    if led_axis.size == 0:
+        raise ValueError(
+            "standard_methods.led_thresholds_mV must not be empty"
+        )
+    low = float(led_axis[0])
+    high = float(led_axis[-1])
 
     if cfd_enabled:
         cfd_points = max(
@@ -1204,8 +1179,8 @@ def optimize_family(
         cfd_axis = np.empty(0, dtype=np.float64)
 
     logger.info(
-        "Adaptive standards coarse scan | %s | Tref=%.6g mV | "
-        "LED %.3f..%.3f mV (%d) | CFD %s",
+        "Adaptive standards scan | %s | Tref=%.6g mV | "
+        "LED candidates %.3f..%.3f mV (%d) | CFD %s",
         family,
         reference_threshold_mV,
         low,
@@ -1251,11 +1226,8 @@ def optimize_family(
     else:
         cfd_index = -1
 
-    led_fine = _refined_axis(
-        led_axis,
-        led_index,
-        max(3, int(standard.get("led_refine_points", 41))),
-    )
+    # LED uses the explicit sparse scan only: no second refinement pass.
+    led_fine = led_axis[[led_index]]
 
     cfd_fine = (
         _refined_axis(

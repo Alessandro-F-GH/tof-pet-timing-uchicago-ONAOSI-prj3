@@ -416,9 +416,9 @@ def materialize_selected_dataset(
         "timing_native_sample_interval_ps": cache.manifest.get("timing_native_sample_interval_ps"),
         "baseline_handling": str(config.get("baseline_handling", "quality_only_no_shift_v1")),
         "baseline_quality_metric": "rmse_about_event_baseline_mean",
-        "led_timestamp_source": "energy_channels",
+        "led_timestamp_source": "adaptive_development_scan",
         "cfd_timestamp_source": "energy_channels",
-        "ml_window_alignment_source": "target_specific_led",
+        "ml_window_alignment_source": "preprocessing_search_threshold_then_adaptive_led",
         "window_anchor_timestamps_saved": True,
         "correction_target_reference": "interpolated_led_direct",
         "window_anchor_shift_factored": False,
@@ -443,6 +443,16 @@ def _raw_preprocess_config(study: dict[str, Any], root_file: Path, cache_dir: Pa
     energy.update(copy.deepcopy(preprocessing.get("energy", {})))
     timing = copy.deepcopy(common)
     timing.update(copy.deepcopy(preprocessing.get("timing", {})))
+
+    # Permanent preprocessing is method-independent with respect to LED.
+    # The existing signal/data cache code still expects an LED-like reference
+    # to anchor native waveform windows, so use the coarse search threshold as
+    # that internal reference. The physics LED threshold is selected later on
+    # DEVELOPMENT data by standard_methods/adaptive.py and the waveform view is
+    # lazily re-aligned to the selected threshold.
+    energy["led_threshold_mV"] = float(energy["search_trigger_threshold_mV"])
+    timing["led_threshold_mV"] = float(timing["search_trigger_threshold_mV"])
+
     # Denoising is intentionally excluded from ROOT conversion. LED/CFD and the
     # canonical raw windows therefore never depend on an ML denoising candidate.
     energy["denoising"] = {"enabled": False}

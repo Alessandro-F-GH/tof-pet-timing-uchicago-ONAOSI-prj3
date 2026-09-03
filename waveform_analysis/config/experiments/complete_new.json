@@ -1,14 +1,14 @@
 {
   "extends": "../profiles/ctr_default.json",
-  "data_config": "../data/full.json",
+  "data_config": "../data/converted_runs_07_13.json",
   "preprocessing_config": "../preprocessing/default_ctr.json",
 
   "experiment": {
-    "name": "full_waveform_new",
-    "output_dir": "results/studies/full_waveform_new"
+    "name": "complete",
+    "output_dir": "results/studies/complete_test"
   },
 
-  "models": ["linear_svr","cnn"],
+  "models": ["linear_svr"],
 
   "modes": {
     "energy_to_energy": {
@@ -27,15 +27,15 @@
 
   "windows_ns": [
     {
-      "id": "m2_p30",
+      "id": "m2_p60",
       "start_ns": -2.0,
-      "end_ns": 30.0
+      "end_ns": 60.0
     }
   ],
 
   "multithreshold": {
-    "enabled": true,
-    "window_id": "m2_p30",
+    "enabled": false,
+    "window_id": "m2_p60",
     "thresholds_mV": [20,50,100.0,200,500],
     "min_thresholds": 5,
     "max_thresholds": 5,

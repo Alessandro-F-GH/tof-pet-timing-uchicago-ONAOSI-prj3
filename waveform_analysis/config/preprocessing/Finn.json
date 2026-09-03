@@ -16,13 +16,12 @@
   ],
   "common": {
     "baseline_samples": 500,
-    "subtract_baseline": true,
+    "subtract_baseline": false,
     "search_trigger_threshold_mV": 50.0,
     "analysis_crop_ns": {
       "before": 5.0,
       "after": 40.0
     },
-    "led_threshold_mV": 40.0,
     "cfd_fraction": 0.045
   },
   "energy": {},
