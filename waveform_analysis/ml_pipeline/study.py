@@ -31,7 +31,7 @@ from utils_fit import FitResult
 from utils.plots import plot_xai_waveform_importance as plot_xai_waveform_importance_figure
 from .common import atomic_json, canonical_hash
 from .dataset import PreparedDataset
-from .metrics import FWHM_PER_SIGMA, ctr_bootstrap_uncertainty, fit_times_ps, residual_metrics
+from .metrics import FWHM_PER_SIGMA, fit_times_ps, residual_metrics
 from .models import validate_model, validate_model_training
 from .prediction import prediction_window_dataset_view
 from .prepared_data import (
@@ -61,6 +61,7 @@ _STAGE_BLIND = 1
 _MODEL_LED = "led"
 _MODEL_CFD = "cfd"
 _MODEL_MULTITHRESHOLD = "multithreshold_svr"
+_CTR_PROTOCOL = "Gaussian-fit FWHM = 2*sqrt(2*ln(2))*sigma_fit from fit_times_ps"
 
 
 def _seed_for(base: int, *parts: Any) -> int:
@@ -167,7 +168,7 @@ def _write_csv(
 
 
 # Increment this if the on-disk resume artifact semantics change.
-_RESUME_CACHE_VERSION = 1
+_RESUME_CACHE_VERSION = 2
 _RESULT_KEY_FIELDS = ("stage", "file_id", "mode_id", "model_id", "candidate_id")
 
 
@@ -384,6 +385,7 @@ def _restore_cached_metrics(values: Any) -> dict[str, Any]:
         "ctr_err_ps",
         "mean_ps",
         "std_ps",
+        "sample_std_ps",
         "rmse_ps",
         "bias_ps",
         "dev_ndof",
@@ -578,37 +580,116 @@ def _check_or_create_run_state(
     return path
 
 
-def _fit_row(
-    values_ps: np.ndarray, *, method: str, fit_config: dict[str, Any]
-) -> tuple[FitResult | None, dict[str, Any]]:
-    """Study-level all-event CTR metrics without clipping or fit-based selection.
-    The model/training pipeline is the working uploaded implementation.  Only
-    experiment-level evaluation uses the newer CTR convention requested for the
-    studies: 2.355 times the sample standard deviation over every event.
-    A Gaussian fit is attempted only as optional diagnostics and never changes
-    the reported/selected CTR.
+def _fit_ctr_gaussian(
+    values_ps: np.ndarray,
+    *,
+    method: str,
+    fit_config: dict[str, Any],
+) -> FitResult:
+    """Fit the timing distribution and return Gaussian FWHM CTR.
+
+    The preferred path uses the configured adaptive histogram binning.  Some
+    otherwise well-behaved distributions can make every tested adaptive bin
+    phase fail (typically because a local fit range becomes numerically
+    underconstrained for all phases).  In that case we retry the *same Gaussian
+    fitter* with adaptive binning disabled.
+
+    This is deliberately NOT a fallback to sample-standard-deviation CTR: every
+    accepted result is still a Gaussian fit with CTR = 2.355 * sigma_fit.
     """
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     if values.size == 0 or np.any(~np.isfinite(values)):
-        raise RuntimeError(f"{method}: evaluation requires one finite value for every event")
+        raise RuntimeError(
+            f"{method}: Gaussian CTR requires one finite residual per event"
+        )
+
+    attempts: list[tuple[str, dict[str, Any]]] = [("adaptive", fit_config)]
+    adaptive_cfg = fit_config.get("adaptive_binning", {})
+    if isinstance(adaptive_cfg, dict) and bool(adaptive_cfg.get("enabled", False)):
+        fallback_config = copy.deepcopy(fit_config)
+        fallback_config.setdefault("adaptive_binning", {})["enabled"] = False
+        attempts.append(("non-adaptive fallback", fallback_config))
+
+    failures: list[str] = []
+    for label, candidate_config in attempts:
+        try:
+            fit = fit_times_ps(values, method, candidate_config)
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+            continue
+        if fit.success and np.isfinite(float(fit.ctr_ps)):
+            return fit
+        failures.append(
+            f"{label}: {getattr(fit, 'message', 'unknown fit failure')}"
+        )
+
+    raise RuntimeError(
+        f"{method}: Gaussian CTR fit failed after all Gaussian fitting paths: "
+        + " | ".join(failures)
+    )
+
+
+def _bootstrap_gaussian_ctr_uncertainty(
+    values_ps: np.ndarray,
+    *,
+    method: str,
+    fit_config: dict[str, Any],
+    n_bootstrap: int,
+    seed: int,
+) -> tuple[float, int]:
+    """Event-resampling uncertainty with a full Gaussian refit per draw."""
+    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
+    if values.size < 3 or int(n_bootstrap) <= 1:
+        return float("nan"), 0
+    if np.any(~np.isfinite(values)):
+        raise RuntimeError(f"{method}: bootstrap input contains non-finite values")
+
+    rng = np.random.default_rng(int(seed))
+    draws: list[float] = []
+    for draw_index in range(int(n_bootstrap)):
+        sample = values[rng.integers(0, values.size, size=values.size)]
+        try:
+            fit = _fit_ctr_gaussian(
+                sample,
+                method=f"{method} bootstrap {draw_index}",
+                fit_config=fit_config,
+            )
+        except Exception:
+            continue
+        draws.append(float(fit.ctr_ps))
+
+    minimum_success = max(10, int(math.ceil(0.80 * int(n_bootstrap))))
+    if len(draws) < minimum_success:
+        raise RuntimeError(
+            f"{method}: only {len(draws)}/{n_bootstrap} Gaussian bootstrap fits "
+            f"succeeded; need at least {minimum_success}"
+        )
+    return float(np.std(np.asarray(draws, dtype=np.float64), ddof=1)), len(draws)
+
+
+def _fit_row(
+    values_ps: np.ndarray, *, method: str, fit_config: dict[str, Any]
+) -> tuple[FitResult, dict[str, Any]]:
+    """Return study metrics with CTR defined exclusively by the Gaussian fit."""
+    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     simple = residual_metrics(values)
-    fit: FitResult | None = None
-    try:
-        fit = fit_times_ps(values, method, fit_config)
-    except Exception:
-        fit = None
+    fit = _fit_ctr_gaussian(values, method=method, fit_config=fit_config)
+    ctr_error = float(getattr(fit, "ctr_error_ps", float("nan")))
     return fit, {
         "n": int(simple["n"]),
-        "ctr_ps": float(simple["ctr_ps"]),
-        "ctr_err_ps": float("nan"),
-        "mean_ps": float(simple["mean_ps"]),
-        "std_ps": float(simple["std_ps"]),
+        "ctr_ps": float(fit.ctr_ps),
+        "ctr_err_ps": ctr_error,
+        "mean_ps": float(fit.mean_ps),
+        "std_ps": float(fit.sigma_ps),
+        "sample_std_ps": float(simple["std_ps"]),
         "rmse_ps": float(simple["rmse_ps"]),
         "bias_ps": float(simple["bias_ps"]),
-        "dev_ndof": float(fit.chi2_ndof) if fit is not None and fit.success else float("nan"),
-        "bin_ps": float(fit.bin_width_ps) if fit is not None and fit.success else float("nan"),
-        "phase_ps": float(fit.bin_phase_ps) if fit is not None and fit.success else float("nan"),
-        "phase_ctr_std_ps": float(fit.phase_ctr_std_ps) if fit is not None and fit.success else float("nan"),
+        "dev_ndof": float(fit.chi2_ndof),
+        "bin_ps": float(getattr(fit, "bin_width_ps", float("nan"))),
+        "phase_ps": float(getattr(fit, "bin_phase_ps", float("nan"))),
+        "phase_ctr_std_ps": float(
+            getattr(fit, "phase_ctr_std_ps", float("nan"))
+        ),
     }
 
 def _target_deltas(dataset: PreparedDataset, mode: str, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
@@ -942,7 +1023,11 @@ def _multithreshold_candidates(config: dict[str, Any], threshold_count: int) -> 
 
 def _selection_metric_summary(
     residual_parts: list[np.ndarray],
+    *,
+    fit_config: dict[str, Any],
+    method: str,
 ) -> tuple[np.ndarray, dict[str, Any], list[float]]:
+    """Summarize holdout/CV selection using Gaussian CTR in every fold."""
     if not residual_parts:
         raise RuntimeError("Selection procedure produced no score residuals")
     parts = [
@@ -956,10 +1041,18 @@ def _selection_metric_summary(
         raise RuntimeError(
             "Selection procedure produced empty/non-finite score residuals"
         )
-    fold_ctrs = [
-        float(residual_metrics(values)["ctr_ps"])
-        for values in parts
-    ]
+
+    fold_metrics: list[dict[str, Any]] = []
+    fold_ctrs: list[float] = []
+    for index, values in enumerate(parts):
+        _fit, metrics = _fit_row(
+            values,
+            method=f"{method} fold {index}",
+            fit_config=fit_config,
+        )
+        fold_metrics.append(metrics)
+        fold_ctrs.append(float(metrics["ctr_ps"]))
+
     combined = np.concatenate(parts)
     simple = residual_metrics(combined)
     selection_ctr = (
@@ -970,23 +1063,38 @@ def _selection_metric_summary(
     fold_std = (
         float(np.std(np.asarray(fold_ctrs, dtype=np.float64), ddof=1))
         if len(fold_ctrs) > 1
-        else float("nan")
+        else float(fold_metrics[0].get("ctr_err_ps", float("nan")))
     )
+    if len(fold_metrics) == 1:
+        mean_ps = float(fold_metrics[0]["mean_ps"])
+        std_ps = float(fold_metrics[0]["std_ps"])
+        dev_ndof = float(fold_metrics[0]["dev_ndof"])
+        bin_ps = float(fold_metrics[0]["bin_ps"])
+        phase_ps = float(fold_metrics[0]["phase_ps"])
+        phase_ctr_std_ps = float(fold_metrics[0]["phase_ctr_std_ps"])
+    else:
+        mean_ps = float(simple["mean_ps"])
+        std_ps = float(selection_ctr / FWHM_PER_SIGMA)
+        dev_ndof = float("nan")
+        bin_ps = float("nan")
+        phase_ps = float("nan")
+        phase_ctr_std_ps = fold_std
+
     metrics = {
         "n": int(simple["n"]),
         "ctr_ps": float(selection_ctr),
         "ctr_err_ps": fold_std,
-        "mean_ps": float(simple["mean_ps"]),
-        "std_ps": float(selection_ctr / FWHM_PER_SIGMA),
+        "mean_ps": mean_ps,
+        "std_ps": std_ps,
+        "sample_std_ps": float(simple["std_ps"]),
         "rmse_ps": float(simple["rmse_ps"]),
         "bias_ps": float(simple["bias_ps"]),
-        "dev_ndof": float("nan"),
-        "bin_ps": float("nan"),
-        "phase_ps": float("nan"),
-        "phase_ctr_std_ps": fold_std,
+        "dev_ndof": dev_ndof,
+        "bin_ps": bin_ps,
+        "phase_ps": phase_ps,
+        "phase_ctr_std_ps": phase_ctr_std_ps,
     }
     return combined, metrics, fold_ctrs
-
 
 def _waveform_selection_candidate(
     study: dict[str, Any],
@@ -1091,7 +1199,11 @@ def _waveform_selection_candidate(
             model,
             Path(preview_cfg["output"]["train_dir"]),
         )
-    combined, metrics, fold_ctrs = _selection_metric_summary(residual_parts)
+    combined, metrics, fold_ctrs = _selection_metric_summary(
+        residual_parts,
+        fit_config=study["fit"],
+        method=f"Selection {space['id']} {mode}",
+    )
     return np.concatenate(score_parts), combined, metrics, fold_ctrs
 
 
@@ -1416,7 +1528,7 @@ def _select_waveform_space(
         if cached is not None:
             score_idx, residual, metrics, fold_ctrs = cached
             logger.info(
-                "Candidate %d/%d | REUSED | %s | s-CTR %.1f ps",
+                "Candidate %d/%d | REUSED | %s | Gaussian CTR %.1f ps",
                 sequence,
                 total,
                 _compact_candidate_params(overrides),
@@ -1456,7 +1568,7 @@ def _select_waveform_space(
             finally:
                 shutil.rmtree(candidate_work, ignore_errors=True)
             logger.info(
-                "Candidate %d/%d | %s | s-CTR %.1f ps",
+                "Candidate %d/%d | %s | Gaussian CTR %.1f ps",
                 sequence,
                 total,
                 _compact_candidate_params(overrides),
@@ -1652,7 +1764,7 @@ def _select_multithreshold(
             score_indices, combined, metrics, fold_ctrs = cached
             if sequence == 1 or sequence % max(1, len(candidates) // 10) == 0:
                 logger.info(
-                    "MT-SVR candidate %d/%d | REUSED | s-CTR %.1f ps",
+                    "MT-SVR candidate %d/%d | REUSED | Gaussian CTR %.1f ps",
                     sequence,
                     len(candidates),
                     float(metrics["ctr_ps"]),
@@ -1684,7 +1796,11 @@ def _select_multithreshold(
                 )
                 score_parts.append(np.asarray(score_idx, dtype=np.int64))
 
-            combined, metrics, fold_ctrs = _selection_metric_summary(residual_parts)
+            combined, metrics, fold_ctrs = _selection_metric_summary(
+                residual_parts,
+                fit_config=study["fit"],
+                method=f"Selection multithreshold SVR {mode}",
+            )
             score_indices = np.concatenate(score_parts)
             _save_selection_cache(
                 cache_npz,
@@ -1753,7 +1869,7 @@ def _select_multithreshold(
         _flush_progress_rows(result_rows)
 
     logger.info(
-        "Selected multithreshold SVR | mode=%s | s-CTR %.1f ps | thresholds=%s",
+        "Selected multithreshold SVR | mode=%s | Gaussian CTR %.1f ps | thresholds=%s",
         mode,
         float(best["metrics"]["ctr_ps"]),
         thresholds[best["params"]["threshold_indices"]].tolist(),
@@ -1841,6 +1957,7 @@ def _report_base(
         "n": int(metrics.get("n", 0)),
         "mean_ps": float(metrics.get("mean_ps", float("nan"))),
         "std_ps": float(metrics.get("std_ps", float("nan"))),
+        "sample_std_ps": float(metrics.get("sample_std_ps", float("nan"))),
         "ctr_ps": float(metrics.get("ctr_ps", float("nan"))),
         "rmse_ps": float(metrics.get("rmse_ps", float("nan"))),
         "bias_ps": float(metrics.get("bias_ps", float("nan"))),
@@ -1982,6 +2099,260 @@ def _plot_xai_waveform_artifact(
         contrast_gamma=float(xai_config.get("contrast_gamma", 0.55)),
     )
 
+
+def _find_final_model_meta(
+    manifest: dict[str, Any],
+    *,
+    file_id: int,
+    mode: str,
+    model: str,
+) -> dict[str, Any] | None:
+    for meta in manifest.get("final_models", {}).values():
+        if (
+            int(meta.get("file_id", -1)) == int(file_id)
+            and str(meta.get("mode", "")) == str(mode)
+            and str(meta.get("model", "")) == str(model)
+        ):
+            return dict(meta)
+    return None
+
+
+def _completed_artifact_gaps(
+    config: dict[str, Any],
+    output: Path,
+    manifest: dict[str, Any],
+) -> list[str]:
+    """Audit every persistent output expected from a completed study.
+
+    The audit is intentionally based on the canonical outputs produced by
+    ``run_study``. If anything is missing after the lightweight additive repair,
+    resume must fall through to the normal cache-aware pipeline instead of
+    returning just because ``manifest.json`` says the run is complete.
+    """
+    gaps: list[str] = []
+    plots_root = output / "plots"
+
+    results_path = output / "results.csv"
+    report_path = output / "report_results.csv"
+    summary_path = output / "summary_results.csv"
+
+    if not results_path.is_file():
+        gaps.append("results.csv")
+    if not report_path.is_file():
+        gaps.append("report_results.csv")
+    if not summary_path.is_file():
+        gaps.append("summary_results.csv")
+
+    report_rows = _read_csv_rows(report_path)
+    candidate_rows = _read_progressive_rows(results_path)
+
+    strategy = str(config["validation"]["strategy"])
+    if strategy == "nested" and not (output / "nested_results.csv").is_file():
+        gaps.append("nested_results.csv")
+
+    # Aggregate plots emitted after all files/modes finish.
+    if any(str(row.get("stage_name", "")) == "validation" for row in report_rows):
+        if not (plots_root / "validation_ctr_vs_voltage.png").is_file():
+            gaps.append("plots/validation_ctr_vs_voltage.png")
+    if any(str(row.get("stage_name", "")) == "blind" for row in report_rows):
+        if not (plots_root / "blind_ctr_vs_voltage.png").is_file():
+            gaps.append("plots/blind_ctr_vs_voltage.png")
+        if not (plots_root / "blind_ctr_bar_by_voltage.png").is_file():
+            gaps.append("plots/blind_ctr_bar_by_voltage.png")
+
+    validation_pairs = [
+        row
+        for row in report_rows
+        if str(row.get("stage_name", "")) == "validation"
+        and str(row.get("model", "")) not in (_MODEL_LED, _MODEL_CFD)
+        and any(
+            str(other.get("stage_name", "")) == "blind"
+            and str(other.get("file", "")) == str(row.get("file", ""))
+            and str(other.get("mode", "")) == str(row.get("mode", ""))
+            and str(other.get("model", "")) == str(row.get("model", ""))
+            for other in report_rows
+        )
+    ]
+    if validation_pairs and not (
+        plots_root / "validation_vs_blind_ctr.png"
+    ).is_file():
+        gaps.append("plots/validation_vs_blind_ctr.png")
+
+    if strategy == "nested":
+        nested_rows = [
+            row
+            for row in report_rows
+            if str(row.get("stage_name", "")) == "nested"
+        ]
+        if nested_rows and not (plots_root / "nested_ctr_vs_voltage.png").is_file():
+            gaps.append("plots/nested_ctr_vs_voltage.png")
+        nested_pairs = [
+            row
+            for row in nested_rows
+            if str(row.get("model", "")) not in (_MODEL_LED, _MODEL_CFD)
+            and any(
+                str(other.get("stage_name", "")) == "blind"
+                and str(other.get("file", "")) == str(row.get("file", ""))
+                and str(other.get("mode", "")) == str(row.get("mode", ""))
+                and str(other.get("model", "")) == str(row.get("model", ""))
+                for other in report_rows
+            )
+        ]
+        if nested_pairs and not (
+            plots_root / "nested_vs_blind_ctr.png"
+        ).is_file():
+            gaps.append("plots/nested_vs_blind_ctr.png")
+
+    codebooks = manifest.get("codebooks", {}) or {}
+    file_codes = codebooks.get("file", {}) or {}
+    mode_codes = codebooks.get("mode", {}) or {}
+    spaces = [str(space["id"]) for space in config.get("_model_spaces", [])]
+    root_files = discover_root_files(config)
+    expected_root_names = {path.name: path for path in root_files}
+
+    # Optional window-scan figures are one PNG per file with selection candidates.
+    if bool(config["reporting"].get("window_scan_bars", False)):
+        for file_name, file_id_raw in file_codes.items():
+            file_id = int(file_id_raw)
+            if any(
+                _row_int(row.get("stage")) == _STAGE_OOF
+                and _row_int(row.get("file_id")) == file_id
+                for row in candidate_rows
+            ):
+                path = plots_root / "window_scan" / f"{Path(file_name).stem}.png"
+                if not path.is_file():
+                    gaps.append(str(path.relative_to(output)))
+
+    for file_name, root_file in expected_root_names.items():
+        if file_name not in file_codes:
+            gaps.append(f"manifest.codebooks.file:{file_name}")
+            continue
+        file_id = int(file_codes[file_name])
+
+        prep_plot = output / "preprocessing_examples" / f"{root_file.stem}.png"
+        if not prep_plot.is_file():
+            gaps.append(str(prep_plot.relative_to(output)))
+
+        for mode in config["channel_modes"]:
+            if mode not in mode_codes:
+                gaps.append(f"manifest.codebooks.mode:{mode}")
+                continue
+            mode_id = int(mode_codes[mode])
+            stem = f"f{file_id}_m{mode_id}"
+
+            # Frozen evaluation artifact used by additive resume.
+            eval_npz = output / "artifacts" / "evaluations" / f"{stem}.npz"
+            eval_json = output / "artifacts" / "evaluations" / f"{stem}.json"
+            if not eval_npz.is_file():
+                gaps.append(str(eval_npz.relative_to(output)))
+            if not eval_json.is_file():
+                gaps.append(str(eval_json.relative_to(output)))
+
+            # Final waveform models are persistent experiment artifacts.
+            for model_name in spaces:
+                meta = _find_final_model_meta(
+                    manifest,
+                    file_id=file_id,
+                    mode=mode,
+                    model=model_name,
+                )
+                if meta is None:
+                    gaps.append(
+                        f"manifest.final_models:{file_name}/{mode}/{model_name}"
+                    )
+                    continue
+                for field in ("checkpoint", "resume_model"):
+                    relative = str(meta.get(field, "")).strip()
+                    if not relative or not (output / relative).is_file():
+                        gaps.append(
+                            relative
+                            or (
+                                "manifest.final_models:"
+                                f"{file_name}/{mode}/{model_name}/{field}"
+                            )
+                        )
+
+            # Per-mode distribution figures are always expected (LED is present).
+            for split_name in ("train_distributions", "blind_distributions"):
+                path = (
+                    plots_root
+                    / split_name
+                    / f"{root_file.stem}__{mode}.png"
+                )
+                if not path.is_file():
+                    gaps.append(str(path.relative_to(output)))
+
+            validation_models = {
+                str(row.get("model", ""))
+                for row in report_rows
+                if str(row.get("file", "")) == file_name
+                and str(row.get("mode", "")) == mode
+                and str(row.get("stage_name", "")) == "validation"
+                and str(row.get("model", "")) not in (_MODEL_LED, _MODEL_CFD)
+            }
+            blind_models = {
+                str(row.get("model", ""))
+                for row in report_rows
+                if str(row.get("file", "")) == file_name
+                and str(row.get("mode", "")) == mode
+                and str(row.get("stage_name", "")) == "blind"
+                and str(row.get("model", "")) not in (_MODEL_LED, _MODEL_CFD)
+            }
+
+            # plot_correction_matrix intentionally emits nothing with <2 models.
+            if len(validation_models) >= 2:
+                path = (
+                    plots_root
+                    / "correction_correlations"
+                    / f"{root_file.stem}__{mode}__validation.png"
+                )
+                if not path.is_file():
+                    gaps.append(str(path.relative_to(output)))
+            if len(blind_models) >= 2:
+                path = (
+                    plots_root
+                    / "correction_correlations"
+                    / f"{root_file.stem}__{mode}__blind.png"
+                )
+                if not path.is_file():
+                    gaps.append(str(path.relative_to(output)))
+
+            eligible_final = {
+                str(row.get("model", ""))
+                for row in report_rows
+                if str(row.get("file", "")) == file_name
+                and str(row.get("mode", "")) == mode
+                and str(row.get("stage_name", "")) == "blind"
+                and str(row.get("model", "")) not in (_MODEL_LED, _MODEL_CFD)
+                and _row_int(row.get("plot_included"), 1) == 1
+            }
+            for selection, k in (
+                ("top", int(config["reporting"].get("top_corrections_k", 3))),
+                ("worst", int(config["reporting"].get("worst_corrections_k", 3))),
+            ):
+                if k > 0 and eligible_final:
+                    path = (
+                        plots_root
+                        / f"{selection}_corrections"
+                        / f"{root_file.stem}__{mode}.png"
+                    )
+                    if not path.is_file():
+                        gaps.append(str(path.relative_to(output)))
+
+            xai_cfg = config.get("reporting", {}).get("xai", {}) or {}
+            if bool(xai_cfg.get("enabled", False)):
+                for model_name in spaces:
+                    path = (
+                        plots_root
+                        / "xai"
+                        / f"{root_file.stem}__{mode}__{model_name}.png"
+                    )
+                    if not path.is_file():
+                        gaps.append(str(path.relative_to(output)))
+
+    return list(dict.fromkeys(gaps))
+
+
 def _repair_additive_artifacts(
     config: dict[str, Any],
     output: Path,
@@ -2005,6 +2376,7 @@ def _repair_additive_artifacts(
     base_seed = int(config["validation"]["seed"])
     plots_root = output / "plots"
     repaired: list[str] = []
+    report_rows = _read_csv_rows(output / "report_results.csv")
 
     root_by_name = {path.name: path for path in discover_root_files(config)}
     spaces = {str(space["id"]): space for space in config.get("_model_spaces", [])}
@@ -2049,19 +2421,35 @@ def _repair_additive_artifacts(
                         ratio_limit=ratio_limit, bootstrap_samples=bootstrap_samples,
                         seed=_seed_for(base_seed, file_id, mode, seed_tag),
                         split_label=("Train / development" if split_name.startswith("train") else "Blind"),
+                        fit_config=config["fit"],
                     )
                     repaired.append(str(path.relative_to(output)))
 
-            # TOP/WORST can be rebuilt from stored residuals + prepared waveforms.
+            # TOP/WORST must preserve the original validation-based model
+            # selection. Resume must never re-rank candidate families using blind CTR.
             requested_top = int(config["reporting"].get("top_corrections_k", 3))
             requested_worst = int(config["reporting"].get("worst_corrections_k", 3))
             if (requested_top > 0 or requested_worst > 0) and model_map:
-                candidates = []
-                for model_name, key in model_map.items():
-                    if f"blind__{key}" in arrays:
-                        candidates.append((float(residual_metrics(arrays[f"blind__{key}"])["ctr_ps"]), model_name, key))
+                candidates: list[tuple[float, str, str]] = []
+                for row in report_rows:
+                    model_name = str(row.get("model", ""))
+                    if (
+                        str(row.get("file", "")) != file_name
+                        or str(row.get("mode", "")) != mode
+                        or str(row.get("stage_name", "")) != "blind"
+                        or model_name not in model_map
+                        or _row_int(row.get("plot_included"), 1) != 1
+                    ):
+                        continue
+                    key = str(model_map[model_name])
+                    try:
+                        validation_ctr = float(row.get("validation_ctr_ps", np.nan))
+                    except (TypeError, ValueError):
+                        validation_ctr = float("nan")
+                    if np.isfinite(validation_ctr) and f"blind__{key}" in arrays:
+                        candidates.append((validation_ctr, model_name, key))
                 if candidates:
-                    _ctr, best_name, best_key = min(candidates)
+                    _validation_ctr, best_name, best_key = min(candidates)
                     if dataset is None:
                         dataset = prepare_file_dataset(config, root_file, rebuild=False, logger=logger)
                     meta_match = None
@@ -2161,6 +2549,12 @@ def _repair_additive_artifacts(
     manifest["config_sources"] = copy.deepcopy(config.get("_config_sources", []))
     manifest["reporting"] = copy.deepcopy(config.get("reporting", {}))
     manifest["last_resume_repaired"] = repaired
+
+    gaps = _completed_artifact_gaps(config, output, manifest)
+    manifest["artifact_audit"] = {
+        "complete": not gaps,
+        "missing": gaps,
+    }
     atomic_json(output / "manifest.json", manifest)
     atomic_json(
         output / "config_resolved.json",
@@ -2174,12 +2568,34 @@ def _repair_additive_artifacts(
             "core_hash": _resume_state_hash(config),
             "artifact_hash": config.get("_artifact_hash"),
             "config_hash": config.get("_config_hash"),
-            "status": "complete",
+            "status": "complete" if not gaps else "repair_incomplete",
             "row_count": int(manifest.get("row_count", 0)),
+            "missing_artifacts": gaps,
         },
     )
-    logger.info("Additive resume | repaired %d missing artifacts; numeric results preserved", len(repaired))
-    return {"output_dir": str(output), "row_count": int(manifest.get("row_count", 0)), "resumed": True, "repaired_artifacts": repaired}
+    if gaps:
+        logger.warning(
+            "Completed-run artifact audit found %d missing output(s); "
+            "continuing through the normal resume pipeline",
+            len(gaps),
+        )
+        for item in gaps[:25]:
+            logger.warning("Missing artifact | %s", item)
+        if len(gaps) > 25:
+            logger.warning("... and %d more", len(gaps) - 25)
+    else:
+        logger.info(
+            "Additive resume audit passed | repaired %d missing artifact(s)",
+            len(repaired),
+        )
+    return {
+        "output_dir": str(output),
+        "row_count": int(manifest.get("row_count", 0)),
+        "resumed": True,
+        "repaired_artifacts": repaired,
+        "missing_artifacts": gaps,
+        "audit_complete": not gaps,
+    }
 
 
 def run_study(
@@ -2230,21 +2646,48 @@ def run_study(
         previous_core = manifest.get("core_hash")
         current_core = config.get("_core_hash")
         if previous_core is None:
-            # Backward compatibility: an older run can still resume unchanged,
-            # but additive reporting needs the new core fingerprint/artifact cache.
+            # Legacy completed runs are still audited when their full historical
+            # config hash matches. "Completed" must not bypass artifact repair.
             if manifest.get("config_hash") == config.get("_config_hash"):
-                logger.info("Legacy complete result set already exists; reuse %s", output)
-                return {"output_dir": str(output), "row_count": int(manifest.get("row_count", 0)), "resumed": True}
-            raise RuntimeError(
-                "Existing results predate additive-resume fingerprints. The scientific configuration cannot be proven compatible; use --restart once with the new code."
-            )
-        if previous_core != current_core:
+                logger.info(
+                    "Legacy complete result set found; config hash matches, "
+                    "running artifact audit"
+                )
+            else:
+                raise RuntimeError(
+                    "Existing results predate additive-resume fingerprints. "
+                    "The scientific configuration cannot be proven compatible; "
+                    "use --restart once with the new code."
+                )
+        elif previous_core != current_core:
             raise RuntimeError(
                 "Existing results have a different training/core configuration. "
                 "Reporting, XAI, TOP/WORST and per-mode CFD flags may be changed additively, "
                 "but preprocessing/windows/validation/models/enabled modes require a new experiment or --restart."
             )
-        return _repair_additive_artifacts(config, output, manifest, logger=logger)
+
+        previous_ctr_protocol = str(
+            (manifest.get("protocol", {}) or {}).get("ctr", "")
+        )
+        if previous_ctr_protocol == _CTR_PROTOCOL:
+            repaired = _repair_additive_artifacts(
+                config,
+                output,
+                manifest,
+                logger=logger,
+            )
+            if bool(repaired.get("audit_complete", False)):
+                return repaired
+            logger.info(
+                "Artifact audit requires canonical pipeline reconstruction; "
+                "compatible candidate/final caches will be reused"
+            )
+        else:
+            logger.info(
+                "CTR protocol changed to Gaussian-fit FWHM; existing numeric "
+                "results/candidate selections will be recomputed. Resume caches "
+                "with the old CTR semantics are intentionally not reused."
+            )
 
     root_files = discover_root_files(config)
     strategy = str(config["validation"]["strategy"])
@@ -2551,7 +2994,11 @@ def run_study(
                         cfd_outer = _require_cfd(cfd_outer, mode)
                         baseline_pairs.append((_MODEL_CFD, cfd_outer - float(dataset.true_tof_ps)))
                     for model_name, residual in baseline_pairs:
-                        metrics = residual_metrics(residual)
+                        _fit, metrics = _fit_row(
+                            residual,
+                            method=f"Nested {model_name} {mode} fold {outer_index}",
+                            fit_config=config["fit"],
+                        )
                         outer_model_metrics[model_name].append(
                             float(metrics["ctr_ps"])
                         )
@@ -2789,17 +3236,25 @@ def run_study(
                 validation_score_indices,
             )
             led_val_res = led_val - float(dataset.true_tof_ps)
-            led_val_metrics = residual_metrics(led_val_res)
+            _led_val_fit, led_val_metrics = _fit_row(
+                led_val_res,
+                method=f"Validation LED {mode}",
+                fit_config=config["fit"],
+            )
             cfd_val_metrics = None
             validation_baselines = [(_MODEL_LED, led_val_metrics)]
             if use_cfd:
                 cfd_val = _require_cfd(cfd_val, mode)
-                cfd_val_metrics = residual_metrics(cfd_val - float(dataset.true_tof_ps))
+                _cfd_val_fit, cfd_val_metrics = _fit_row(
+                    cfd_val - float(dataset.true_tof_ps),
+                    method=f"Validation CFD {mode}",
+                    fit_config=config["fit"],
+                )
                 validation_baselines.append((_MODEL_CFD, cfd_val_metrics))
             logger.info(
-                "Validation baseline | mode=%s | n=%d | LED s-CTR %.1f ps%s",
+                "Validation baseline | mode=%s | n=%d | LED Gaussian CTR %.1f ps%s",
                 mode, int(led_val_metrics["n"]), float(led_val_metrics["ctr_ps"]),
-                (f" | CFD s-CTR {float(cfd_val_metrics['ctr_ps']):.1f} ps" if cfd_val_metrics is not None else " | CFD disabled"),
+                (f" | CFD Gaussian CTR {float(cfd_val_metrics['ctr_ps']):.1f} ps" if cfd_val_metrics is not None else " | CFD disabled"),
             )
             selection_stage = "validation"
             for model_name, metrics in validation_baselines:
@@ -3015,20 +3470,30 @@ def run_study(
                 str,
                 tuple[np.ndarray, np.ndarray],
             ] = {}
-            led_blind_metrics = residual_metrics(led_residual)
+            _led_blind_fit, led_blind_metrics = _fit_row(
+                led_residual,
+                method=f"Blind LED {mode}",
+                fit_config=config["fit"],
+            )
             blind_uncertainties: dict[str, float] = {
-                _MODEL_LED: ctr_bootstrap_uncertainty(
-                    led_residual, bootstrap_samples,
-                    _seed_for(base_seed, file_id, mode, "led_bootstrap"),
-                )
+                _MODEL_LED: _bootstrap_gaussian_ctr_uncertainty(
+                    led_residual,
+                    method=f"Blind LED {mode}",
+                    fit_config=config["fit"],
+                    n_bootstrap=bootstrap_samples,
+                    seed=_seed_for(base_seed, file_id, mode, "led_bootstrap"),
+                )[0]
             }
             blind_baselines = [(_MODEL_LED, led_residual)]
             if use_cfd:
                 assert cfd_residual is not None
-                blind_uncertainties[_MODEL_CFD] = ctr_bootstrap_uncertainty(
-                    cfd_residual, bootstrap_samples,
-                    _seed_for(base_seed, file_id, mode, "cfd_bootstrap"),
-                )
+                blind_uncertainties[_MODEL_CFD] = _bootstrap_gaussian_ctr_uncertainty(
+                    cfd_residual,
+                    method=f"Blind CFD {mode}",
+                    fit_config=config["fit"],
+                    n_bootstrap=bootstrap_samples,
+                    seed=_seed_for(base_seed, file_id, mode, "cfd_bootstrap"),
+                )[0]
                 blind_baselines.append((_MODEL_CFD, cfd_residual))
             for model_name, residual in blind_baselines:
                 _fit, metrics = _fit_row(
@@ -3076,7 +3541,11 @@ def run_study(
                             if model_name == _MODEL_LED
                             else _require_cfd_metric(cfd_val_metrics, mode)["ctr_ps"]
                         ),
-                        "validation_ctr_uncertainty_ps": float("nan"),
+                        "validation_ctr_uncertainty_ps": float(
+                            (led_val_metrics if model_name == _MODEL_LED else _require_cfd_metric(cfd_val_metrics, mode)).get(
+                                "ctr_err_ps", float("nan")
+                            )
+                        ),
                         "ctr_uncertainty_ps": blind_uncertainties[model_name],
                         "led_ctr_ps": float(led_blind_metrics["ctr_ps"]),
                     }
@@ -3318,17 +3787,19 @@ def run_study(
                     blind,
                     led_residual - residual,
                 )
-                uncertainty = ctr_bootstrap_uncertainty(
+                uncertainty = _bootstrap_gaussian_ctr_uncertainty(
                     residual,
-                    bootstrap_samples,
-                    _seed_for(
+                    method=f"Blind {space['id']} {mode}",
+                    fit_config=config["fit"],
+                    n_bootstrap=bootstrap_samples,
+                    seed=_seed_for(
                         base_seed,
                         file_id,
                         mode,
                         space["id"],
                         "bootstrap",
                     ),
-                )
+                )[0]
                 blind_uncertainties[space["id"]] = uncertainty
                 report_row = _report_base(
                     root_file=root_file,
@@ -3445,17 +3916,19 @@ def run_study(
                     blind,
                     led_residual - residual,
                 )
-                uncertainty = ctr_bootstrap_uncertainty(
+                uncertainty = _bootstrap_gaussian_ctr_uncertainty(
                     residual,
-                    bootstrap_samples,
-                    _seed_for(
+                    method=f"Blind {_MODEL_MULTITHRESHOLD} {mode}",
+                    fit_config=config["fit"],
+                    n_bootstrap=bootstrap_samples,
+                    seed=_seed_for(
                         base_seed,
                         file_id,
                         mode,
                         _MODEL_MULTITHRESHOLD,
                         "bootstrap",
                     ),
-                )
+                )[0]
                 report_row = _report_base(
                     root_file=root_file,
                     file_id=file_id,
@@ -3523,6 +3996,7 @@ def run_study(
                     "train_distribution_bootstrap",
                 ),
                 split_label="Train / development",
+                fit_config=config["fit"],
             )
             plot_result_distribution(
                 plots_root
@@ -3540,6 +4014,7 @@ def run_study(
                     "blind_distribution_bootstrap",
                 ),
                 split_label="Blind",
+                fit_config=config["fit"],
             )
             plot_correction_matrix(
                 plots_root
@@ -3721,7 +4196,7 @@ def run_study(
         )
 
     manifest = {
-        "schema_version": 5,
+        "schema_version": 6,
         "experiment": config["experiment"]["name"],
         "config_hash": config["_config_hash"],
         "core_hash": config.get("_core_hash"),
@@ -3747,7 +4222,7 @@ def run_study(
             "selection": "holdout/CV/nested wrapper only; no model implementation replacement",
             "nested": "outer K-fold pipeline evaluation with configured inner selection",
             "blind": "single untouched blind partition opened only after final development selection",
-            "ctr": "2*sqrt(2*ln(2))*sample standard deviation over all evaluation events",
+            "ctr": _CTR_PROTOCOL,
             "evaluation_rejection": "none after permanent prepared population; pathological models are hidden from figures only",
             "photopeak_cache": "physical/photopeak indices persisted independently from ML windows/models/validation",
             "multithreshold": "raw native-grid relative threshold implementation; candidates cannot drop events",
@@ -3772,6 +4247,15 @@ def run_study(
             ),
         },
     }
+    final_artifact_gaps = _completed_artifact_gaps(
+        config,
+        output,
+        manifest,
+    )
+    manifest["artifact_audit"] = {
+        "complete": not final_artifact_gaps,
+        "missing": final_artifact_gaps,
+    }
     atomic_json(manifest_path, manifest)
     atomic_json(
         output / "config_resolved.json",
@@ -3785,10 +4269,30 @@ def run_study(
             "core_hash": _resume_state_hash(config),
             "artifact_hash": config.get("_artifact_hash"),
             "config_hash": config.get("_config_hash"),
-            "status": "complete",
+            "status": (
+                "complete"
+                if not final_artifact_gaps
+                else "artifact_incomplete"
+            ),
             "row_count": len(rows),
+            "missing_artifacts": final_artifact_gaps,
         },
     )
+    if final_artifact_gaps:
+        preview = "\n".join(
+            f"  - {item}"
+            for item in final_artifact_gaps[:25]
+        )
+        if len(final_artifact_gaps) > 25:
+            preview += (
+                f"\n  - ... and "
+                f"{len(final_artifact_gaps) - 25} more"
+            )
+        raise RuntimeError(
+            "Study computation finished, but the final artifact audit "
+            "found missing required outputs:\n"
+            + preview
+        )
     _flush_progress_rows(rows)
     logger.info("Study complete | rows=%d | %s", len(rows), output)
     return {

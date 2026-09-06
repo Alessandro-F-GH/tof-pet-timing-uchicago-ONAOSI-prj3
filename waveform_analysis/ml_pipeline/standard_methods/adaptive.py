@@ -8,7 +8,7 @@ import numpy as np
 from utils.signal import INVALID_TIME_FS, prepare_timing_features
 
 from ..dataset import PreparedDataset
-from ..metrics import residual_metrics
+from ..metrics import fit_times_ps
 
 
 @dataclass(frozen=True)
@@ -53,7 +53,7 @@ class FamilySelection:
             "led_refine_points": int(self.led_refine_points),
             "cfd_coarse_points": int(self.cfd_coarse_points),
             "cfd_refine_points": int(self.cfd_refine_points),
-            "selection_metric": "mean_fold_sctr_sample_std",
+            "selection_metric": "mean_fold_gaussian_ctr",
             "blind_used_for_selection": False,
         }
 
@@ -1038,6 +1038,7 @@ def _candidate_score(
     development: np.ndarray,
     splits: list[tuple[np.ndarray, np.ndarray]],
     true_tof_ps: float,
+    fit_config: dict[str, Any],
 ) -> tuple[float, tuple[float, ...]]:
     development = np.asarray(development, dtype=np.int64)
     pair = np.asarray(grid_fs[:, :, candidate_index], dtype=np.int64)
@@ -1053,8 +1054,17 @@ def _candidate_score(
             pair[idx, 0].astype(np.float64)
             - pair[idx, 1].astype(np.float64)
         ) / 1000.0
-        metrics = residual_metrics(delta - float(true_tof_ps))
-        fold_values.append(float(metrics["ctr_ps"]))
+        try:
+            fit = fit_times_ps(
+                delta - float(true_tof_ps),
+                f"Adaptive standard candidate {candidate_index}",
+                fit_config,
+            )
+        except Exception:
+            return float("inf"), tuple(fold_values)
+        if not fit.success or not np.isfinite(float(fit.ctr_ps)):
+            return float("inf"), tuple(fold_values)
+        fold_values.append(float(fit.ctr_ps))
 
     if not fold_values or not np.all(np.isfinite(fold_values)):
         return float("inf"), tuple(fold_values)
@@ -1067,11 +1077,17 @@ def _best_candidate(
     development: np.ndarray,
     splits: list[tuple[np.ndarray, np.ndarray]],
     true_tof_ps: float,
+    fit_config: dict[str, Any],
 ) -> tuple[int, float, tuple[float, ...]]:
     finite: list[tuple[float, int, tuple[float, ...]]] = []
     for index in range(int(parameters.size)):
         score, folds = _candidate_score(
-            grid_fs, index, development, splits, true_tof_ps
+            grid_fs,
+            index,
+            development,
+            splits,
+            true_tof_ps,
+            fit_config,
         )
         if np.isfinite(score):
             finite.append((score, index, folds))
@@ -1213,6 +1229,7 @@ def optimize_family(
         development,
         splits,
         dataset.true_tof_ps,
+        config["fit"],
     )
 
     if cfd_enabled:
@@ -1222,6 +1239,7 @@ def optimize_family(
             development,
             splits,
             dataset.true_tof_ps,
+            config["fit"],
         )
     else:
         cfd_index = -1
@@ -1259,6 +1277,7 @@ def optimize_family(
         development,
         splits,
         dataset.true_tof_ps,
+        config["fit"],
     )
 
     if cfd_enabled:
@@ -1268,6 +1287,7 @@ def optimize_family(
             development,
             splits,
             dataset.true_tof_ps,
+            config["fit"],
         )
         selected_cfd_fraction = float(cfd_fine[cfd_index])
     else:
@@ -1568,7 +1588,7 @@ def parameter_payload(
         return {
             "family": family,
             "led_threshold_mV": float(selection.led_threshold_mV),
-            "selection_metric": "sctr",
+            "selection_metric": "gaussian_ctr",
             "validation_sctr_ps": float(selection.led_validation_sctr_ps),
         }
     if str(model) == "cfd":
@@ -1577,7 +1597,7 @@ def parameter_payload(
         return {
             "family": family,
             "cfd_fraction": float(selection.cfd_fraction),
-            "selection_metric": "sctr",
+            "selection_metric": "gaussian_ctr",
             "validation_sctr_ps": float(selection.cfd_validation_sctr_ps),
         }
     return {}

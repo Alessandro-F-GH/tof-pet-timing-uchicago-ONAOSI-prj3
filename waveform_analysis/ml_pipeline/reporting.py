@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import math
@@ -7,9 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 
-from .metrics import ctr_bootstrap_uncertainty, residual_metrics
+from .metrics import fit_times_ps
 
 
 def short_model_label(name: str) -> str:
@@ -74,17 +76,115 @@ def _robust_bounds(groups: dict[str, np.ndarray]) -> tuple[float, float]:
     return median - 7.0 * scale, median + 7.0 * scale
 
 
-def eligible(methods: dict[str, np.ndarray], ratio_limit: float) -> set[str]:
+def _fit_ctr_gaussian(
+    values_ps: np.ndarray,
+    *,
+    method: str,
+    fit_config: dict[str, Any],
+):
+    """Return the Gaussian fit used to define and plot CTR.
+
+    Prefer adaptive binning, but if every adaptive bin phase fails, retry the
+    same Gaussian fitter with adaptive binning disabled.  No sample-std CTR
+    fallback is used.
+    """
+    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
+    if values.size == 0:
+        raise RuntimeError(f"{method}: empty timing distribution")
+    if np.any(~np.isfinite(values)):
+        bad = int(np.count_nonzero(~np.isfinite(values)))
+        raise RuntimeError(
+            f"{method}: found {bad} non-finite residuals; refusing to drop "
+            "events during Gaussian CTR evaluation"
+        )
+
+    attempts: list[tuple[str, dict[str, Any]]] = [("adaptive", fit_config)]
+    adaptive_cfg = fit_config.get("adaptive_binning", {})
+    if isinstance(adaptive_cfg, dict) and bool(adaptive_cfg.get("enabled", False)):
+        fallback_config = copy.deepcopy(fit_config)
+        fallback_config.setdefault("adaptive_binning", {})["enabled"] = False
+        attempts.append(("non-adaptive fallback", fallback_config))
+
+    failures: list[str] = []
+    for label, candidate_config in attempts:
+        try:
+            fit = fit_times_ps(values, method, candidate_config)
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+            continue
+        if fit.success and np.isfinite(float(fit.ctr_ps)):
+            return fit
+        failures.append(
+            f"{label}: {getattr(fit, 'message', 'unknown fit failure')}"
+        )
+
+    raise RuntimeError(
+        f"{method}: Gaussian CTR fit failed after all Gaussian fitting paths: "
+        + " | ".join(failures)
+    )
+
+
+def _bootstrap_gaussian_ctr_uncertainty(
+    values_ps: np.ndarray,
+    *,
+    method: str,
+    fit_config: dict[str, Any],
+    n_bootstrap: int,
+    seed: int,
+) -> float:
+    """Bootstrap uncertainty with a complete Gaussian refit for every draw."""
+    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
+    if values.size < 3 or int(n_bootstrap) <= 1:
+        return float("nan")
+    if np.any(~np.isfinite(values)):
+        raise RuntimeError(f"{method}: bootstrap input contains non-finite values")
+
+    rng = np.random.default_rng(int(seed))
+    draws: list[float] = []
+    for draw_index in range(int(n_bootstrap)):
+        sample = values[rng.integers(0, values.size, size=values.size)]
+        try:
+            fit = _fit_ctr_gaussian(
+                sample,
+                method=f"{method} bootstrap {draw_index}",
+                fit_config=fit_config,
+            )
+        except Exception:
+            continue
+        draws.append(float(fit.ctr_ps))
+
+    minimum_success = max(10, int(math.ceil(0.80 * int(n_bootstrap))))
+    if len(draws) < minimum_success:
+        raise RuntimeError(
+            f"{method}: only {len(draws)}/{n_bootstrap} Gaussian bootstrap "
+            f"fits succeeded; need at least {minimum_success}"
+        )
+    return float(np.std(np.asarray(draws, dtype=np.float64), ddof=1))
+
+
+def eligible(
+    methods: dict[str, np.ndarray],
+    ratio_limit: float,
+    *,
+    fit_config: dict[str, Any],
+) -> set[str]:
+    """Models eligible for plotting using Gaussian-fit CTR consistently."""
     if "led" not in methods:
         return set(methods)
-    led_ctr = residual_metrics(methods["led"])["ctr_ps"]
+    led_fit = _fit_ctr_gaussian(
+        methods["led"], method="LED plot eligibility", fit_config=fit_config
+    )
+    led_ctr = float(led_fit.ctr_ps)
     if not np.isfinite(led_ctr) or led_ctr <= 0.0:
         return set(methods)
     output = {"led"}
     for name, values in methods.items():
         if name == "led":
             continue
-        ctr = residual_metrics(values)["ctr_ps"]
+        fit = _fit_ctr_gaussian(
+            values, method=f"{name} plot eligibility", fit_config=fit_config
+        )
+        ctr = float(fit.ctr_ps)
         if np.isfinite(ctr) and ctr <= float(ratio_limit) * led_ctr:
             output.add(name)
     return output
@@ -100,51 +200,82 @@ def plot_result_distribution(
     bootstrap_samples: int,
     seed: int,
     split_label: str,
+    fit_config: dict[str, Any],
 ) -> dict[str, float]:
-    """Plot train/development or blind residual distributions identically."""
-    keep = eligible(methods, ratio_limit)
+    """Plot absolute-count residual histograms and their Gaussian fits.
+
+    The histogram is exactly the histogram produced by ``fit_times_ps``.  The
+    dashed curve is ``fit.expected`` on those same bins, so the displayed fit
+    and the CTR in the legend are guaranteed to describe the same object.
+    """
+    keep = eligible(methods, ratio_limit, fit_config=fit_config)
     visible = {
-        key: np.asarray(value, dtype=float)
+        key: np.asarray(value, dtype=np.float64).reshape(-1)
         for key, value in methods.items()
-        if key in keep and np.sum(np.isfinite(value)) >= 2
+        if key in keep and np.asarray(value).size >= 2
     }
     if not visible:
         return {}
+    for name, values in visible.items():
+        if np.any(~np.isfinite(values)):
+            raise RuntimeError(
+                f"{mode}/{split_label}/{name}: non-finite residual in distribution"
+            )
 
     low, high = _robust_bounds(visible)
-    bins = np.linspace(low, high, 81)
     fig, axis = plt.subplots(figsize=(8.8, 5.0))
     uncertainties: dict[str, float] = {}
 
     for index, (name, values) in enumerate(visible.items()):
-        values = values[np.isfinite(values)]
-        metrics = residual_metrics(values)
-        uncertainty = ctr_bootstrap_uncertainty(
+        fit = _fit_ctr_gaussian(
             values,
-            bootstrap_samples,
-            seed + 137 * index,
+            method=f"{mode} {split_label} {name}",
+            fit_config=fit_config,
+        )
+        uncertainty = _bootstrap_gaussian_ctr_uncertainty(
+            values,
+            method=f"{mode} {split_label} {name}",
+            fit_config=fit_config,
+            n_bootstrap=bootstrap_samples,
+            seed=seed + 137 * index,
         )
         uncertainties[name] = uncertainty
-        axis.hist(
-            values[(values >= low) & (values <= high)],
-            bins=bins,
-            histtype="step",
-            density=True,
+
+        stairs = axis.stairs(
+            np.asarray(fit.counts, dtype=np.float64),
+            np.asarray(fit.edges_ps, dtype=np.float64),
             linewidth=1.4,
             label=(
                 f"{short_model_label(name)} — "
-                f"CTR {format_ctr(metrics['ctr_ps'], uncertainty)}"
+                f"CTR {format_ctr(float(fit.ctr_ps), uncertainty)}"
             ),
         )
+        color = stairs.get_edgecolor()
+        centers = 0.5 * (
+            np.asarray(fit.edges_ps[:-1], dtype=np.float64)
+            + np.asarray(fit.edges_ps[1:], dtype=np.float64)
+        )
+        axis.plot(
+            centers,
+            np.asarray(fit.expected, dtype=np.float64),
+            linestyle="--",
+            linewidth=1.25,
+            color=color,
+        )
 
+    axis.set_xlim(low, high)
     axis.set_title(f"{short_mode_label(mode)} · {split_label}")
     axis.set_xlabel("Residual timing error [ps]")
-    axis.set_ylabel("Density")
+    axis.set_ylabel("Count")
     axis.grid(alpha=0.22)
-    axis.legend(frameon=False, fontsize=9, loc="upper right")
+    handles, labels = axis.get_legend_handles_labels()
+    handles.append(
+        Line2D([], [], linestyle="--", linewidth=1.25, color="0.35", label="Gaussian fit")
+    )
+    labels.append("Gaussian fit")
+    axis.legend(handles, labels, frameon=False, fontsize=9, loc="upper right")
     _save(fig, path, dpi)
     return uncertainties
-
 
 def plot_blind_distribution(
     path: Path,
@@ -155,6 +286,7 @@ def plot_blind_distribution(
     ratio_limit: float,
     bootstrap_samples: int,
     seed: int,
+    fit_config: dict[str, Any],
 ) -> dict[str, float]:
     """Compatibility wrapper for callers outside study.py."""
     return plot_result_distribution(
@@ -166,6 +298,7 @@ def plot_blind_distribution(
         bootstrap_samples=bootstrap_samples,
         seed=seed,
         split_label="Blind",
+        fit_config=fit_config,
     )
 
 
@@ -421,7 +554,7 @@ def plot_window_scan_bars(
                 )
             axis.set_xticks(x_values, [window_label(window) for window in windows])
             axis.set_xlabel("Disjoint LED-relative window [ns]")
-            axis.set_ylabel("Validation s-CTR [ps]")
+            axis.set_ylabel("Validation Gaussian CTR [ps]")
             axis.set_title(short_mode_label(mode))
             axis.grid(axis="y", alpha=0.22)
             axis.legend(
@@ -838,6 +971,7 @@ def write_summary_results(path: Path, rows: list[dict[str, Any]]) -> None:
         "n",
         "mean_ps",
         "std_ps",
+        "sample_std_ps",
         "ctr_ps",
         "ctr_uncertainty_ps",
         "rmse_ps",

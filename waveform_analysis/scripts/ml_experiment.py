@@ -34,8 +34,9 @@ def main() -> None:
     parser.add_argument(
         "--resume", action="store_true",
         help=(
-            "Reuse compatible scientific results and create only missing/additional "
-            "report artifacts such as XAI, TOP/WORST, distributions or CFD views"
+            "Audit a compatible experiment for missing outputs, rebuild every "
+            "missing artifact/plot that can be reconstructed, and fall back to "
+            "cache-aware pipeline resume when a required scientific artifact is missing"
         ),
     )
     parser.add_argument("--restart", action="store_true")
