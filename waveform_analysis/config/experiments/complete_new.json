@@ -8,7 +8,7 @@
     "output_dir": "results/studies/complete_test"
   },
 
-  "models": ["linear_svr"],
+  "models": ["linear_svr_test","cnn"],
 
   "modes": {
     "energy_to_energy": {

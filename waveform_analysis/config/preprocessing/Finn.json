@@ -42,8 +42,8 @@
     "iteration_sigma": 2.5,
     "max_iterations": 6,
     "convergence_tolerance_mV": 0.01,
-    "selection_sigma_low": -2.0,
-    "selection_sigma_high": 4.0
+    "selection_sigma_low": -0.5,
+    "selection_sigma_high": 1.0
   },
   "denoising": {
     "enabled": true,

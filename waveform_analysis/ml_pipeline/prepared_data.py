@@ -15,13 +15,20 @@ from scipy.signal import butter, sosfiltfilt
 
 from utils.photopeak import fit_photopeak, photopeak_mask
 from utils.signal import INVALID_TIME_FS
+
 from .common import atomic_json, canonical_hash, read_json, source_signature
+from .dataset import DATASET_FORMAT_VERSION, PreparedDataset, load_prepared_dataset
+from .preprocessing_diagnostics import write_preprocessing_diagnostics
+from .selection_store import load_or_compute_selection
+
 if TYPE_CHECKING:
     from .data import EnergyCache
-from .dataset import DATASET_FORMAT_VERSION, PreparedDataset, load_prepared_dataset
-from .selection_store import load_or_compute_selection, selection_request_fingerprint
 
-PREPARED_SELECTION_VERSION = 4
+PREPARED_SELECTION_VERSION = 6
+
+# Permanent v7 data contain one canonical trigger-referenced window for each
+# active waveform family.  The historical timing-aligned duplicate energy matrix
+# is intentionally NOT copied from the temporary raw cache.
 _COPY_ARRAYS = (
     "event_id",
     "event_index",
@@ -37,41 +44,100 @@ _COPY_ARRAYS = (
     "energy_cfd_time_fs",
     "timing_cfd_time_fs",
     "energy_window_anchor_time_fs",
-    "timing_aligned_energy_window_anchor_time_fs",
     "timing_window_anchor_time_fs",
-    "timing_aligned_energy_windows_mV",
     "timing_windows_mV",
 )
+
+
+def _active_trigger_families(study_or_config: dict[str, Any]) -> tuple[str, ...]:
+    """Return only waveform families actually used by configured experiment modes."""
+    modes = [str(value).strip().lower() for value in study_or_config.get("channel_modes", [])]
+    if not modes:
+        # Direct materialize_selected_dataset callers from older code do not pass
+        # channel_modes. Energy is always present because it defines photopeak.
+        return ("energy",)
+    families: list[str] = []
+    if any("energy" in mode for mode in modes):
+        families.append("energy")
+    if any("timing" in mode for mode in modes):
+        families.append("timing")
+    return tuple(families or ["energy"])
+
+
 def _preparation_request_fingerprint(study: dict[str, Any], root_file: Path) -> str:
-    """Hash only inputs that change the canonical prepared signal representation.
-    Experiment windows, models, validation settings and true TOF are intentionally
-    excluded.  They are runtime views/evaluation metadata and must not trigger
-    another ROOT/photopeak pass.
+    """Hash only inputs that change canonical prepared preprocessing.
+
+    Model families, train/validation settings, true TOF and runtime input windows
+    do not trigger another ROOT/photopeak pass.  Physical preprocessing settings,
+    active channel families, materialized windowing and selection do.
     """
     preprocessing = copy.deepcopy(study["preprocessing"])
+
+    # These no longer define preprocessing semantics. Baseline uses a
+    # trigger-relative ns interval; LED thresholds are selected downstream.
+    for section in ("common", "energy", "timing"):
+        values = preprocessing.get(section)
+        if isinstance(values, dict):
+            values.pop("baseline_samples", None)
+            values.pop("led_threshold_mV", None)
     for key in (
-        "prepared_dir", "selection_store_dir", "cleanup_raw_cache",
-        "materialization_chunk_size", "parallelization", "input_variants",
-        "input_variant_by_channel", "subsampling_factors",
+        "prepared_dir",
+        "selection_store_dir",
+        "cleanup_raw_cache",
+        "materialization_chunk_size",
+        "parallelization",
+        "input_variants",
+        "input_variant_by_channel",
+        "subsampling_factors",
     ):
         preprocessing.pop(key, None)
     io = preprocessing.get("io")
     if isinstance(io, dict):
         preprocessing["io"] = {"max_events": int(io.get("max_events", 0))}
-    return canonical_hash({
-        "format_version": DATASET_FORMAT_VERSION,
-        "selection_version": PREPARED_SELECTION_VERSION,
-        "source": source_signature(root_file),
-        "channels": study["data"]["channels"],
-        "materialized_window_ns": preprocessing.get("materialized_window_ns"),
-        "preprocessing": preprocessing,
-    })
+    return canonical_hash(
+        {
+            "format_version": DATASET_FORMAT_VERSION,
+            "selection_version": PREPARED_SELECTION_VERSION,
+            "source": source_signature(root_file),
+            "channels": study["data"]["channels"],
+            "active_trigger_families": _active_trigger_families(study),
+            "materialized_window_ns": preprocessing.get("materialized_window_ns"),
+            "preprocessing": preprocessing,
+        }
+    )
+
+
+def _selection_request_fingerprint(
+    cache: "EnergyCache", config: dict[str, Any], source_root: Path
+) -> str:
+    """Fingerprint the reusable physical/photopeak cohort without patching selection_store.py."""
+    return canonical_hash(
+        {
+            "selection_schema": PREPARED_SELECTION_VERSION,
+            "source": source_signature(source_root),
+            # raw-cache fingerprint includes waveform decoding, clipping, trigger
+            # extraction and max-events. Therefore cached selection is safe to
+            # reuse only when the quantities used by selection are unchanged.
+            "raw_cache": cache.manifest.get("fingerprint"),
+            "energy_channels": cache.manifest.get("energy_channels_one_based", []),
+            "timing_channels": cache.manifest.get("timing_channels_one_based", []),
+            "active_trigger_families": list(config.get("active_trigger_families", ("energy",))),
+            "selection": copy.deepcopy(config.get("selection", {})),
+            "photopeak": copy.deepcopy(config.get("photopeak", {"enabled": False})),
+        }
+    )
+
+
 def _hash_indices(indices: np.ndarray) -> str:
-    return hashlib.sha256(np.ascontiguousarray(indices, dtype=np.int64).tobytes()).hexdigest()
+    return hashlib.sha256(
+        np.ascontiguousarray(indices, dtype=np.int64).tobytes()
+    ).hexdigest()
 
 
-def _copy_selected(source: np.ndarray, selected: np.ndarray, path: Path, chunk_size: int) -> None:
-    shape = (int(selected.size),) + tuple(int(v) for v in source.shape[1:])
+def _copy_selected(
+    source: np.ndarray, selected: np.ndarray, path: Path, chunk_size: int
+) -> None:
+    shape = (int(selected.size),) + tuple(int(value) for value in source.shape[1:])
     target = open_memmap(path, mode="w+", dtype=source.dtype, shape=shape)
     for start in range(0, selected.size, chunk_size):
         idx = selected[start : start + chunk_size]
@@ -83,7 +149,6 @@ def _copy_selected(source: np.ndarray, selected: np.ndarray, path: Path, chunk_s
 
 
 def _robust_location_scale(values: np.ndarray) -> tuple[float, float]:
-    """Return median and MAD-derived robust sigma for finite values only."""
     data = np.asarray(values, dtype=np.float64).reshape(-1)
     data = data[np.isfinite(data)]
     if data.size == 0:
@@ -96,127 +161,363 @@ def _robust_location_scale(values: np.ndarray) -> tuple[float, float]:
     return center, sigma
 
 
+def _absolute_rmse_limits(
+    selection: dict[str, Any], channel_count: int
+) -> np.ndarray | None:
+    value = selection.get("baseline_rmse_max_mV")
+    if value is None:
+        return None
+    if isinstance(value, (int, float, np.number)):
+        limits = np.full(channel_count, float(value), dtype=np.float64)
+    elif isinstance(value, (list, tuple)) and len(value) == channel_count:
+        limits = np.asarray([float(item) for item in value], dtype=np.float64)
+    else:
+        raise ValueError(
+            "preprocessing.selection.baseline_rmse_max_mV must be one number "
+            "or one value per energy channel"
+        )
+    if np.any(~np.isfinite(limits)) or np.any(limits < 0.0):
+        raise ValueError(
+            "preprocessing.selection.baseline_rmse_max_mV values must be finite and >= 0"
+        )
+    return limits
+
+
+def _trigger_anchor_array(cache: "EnergyCache", family: str) -> np.ndarray | None:
+    if family == "energy":
+        return getattr(cache, "energy_window_anchor_time_fs", None)
+    if family == "timing":
+        return getattr(cache, "timing_window_anchor_time_fs", None)
+    return None
+
+
+def _trigger_location_scale_ns(
+    values_ns: np.ndarray, cache: "EnergyCache", family: str
+) -> tuple[float, float]:
+    """Robust trigger center/scale with a one-native-sample resolution floor."""
+    data = np.asarray(values_ns, dtype=np.float64).reshape(-1)
+    data = data[np.isfinite(data)]
+    if data.size == 0:
+        return float("nan"), float("nan")
+    center = float(np.median(data))
+    mad = float(np.median(np.abs(data - center)))
+    sigma = 1.4826 * mad
+    key = (
+        "timing_native_sample_interval_ps"
+        if family == "timing"
+        else "native_sample_interval_ps"
+    )
+    interval_ps = cache.manifest.get(key)
+    try:
+        resolution_floor_ns = abs(float(interval_ps)) / 1000.0
+    except (TypeError, ValueError):
+        resolution_floor_ns = 0.0
+    if not np.isfinite(resolution_floor_ns) or resolution_floor_ns <= 0.0:
+        resolution_floor_ns = 1.0e-3  # 1 ps conservative fallback
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        sigma = resolution_floor_ns
+    else:
+        sigma = max(float(sigma), resolution_floor_ns)
+    return center, float(sigma)
+
+
 def _physical_photopeak_selection(
     cache: "EnergyCache", config: dict[str, Any], logger: Any
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Define the reusable physical cohort.
+    """Reusable permanent physical selection before any ML split.
 
-    Photopeak is the first event-selection cut. ``noise_rms_mV`` is always the
-    baseline RMSE about the event's own baseline mean. Event-wise baseline
-    subtraction, when requested by preprocessing, is applied upstream to the
-    waveform. Timing validity and LED mismatch rejection remain downstream.
+    Order:
+      1. finite energy amplitudes;
+      2. two-channel energy photopeak;
+      3. two-channel energy baseline-RMSE cut;
+      4. trigger computability and absolute trigger-time outlier cut, restricted
+         to channel families active in the experiment.
     """
     amplitudes_all = np.asarray(cache.amplitude_mV, dtype=np.float64)
     baseline_rmse_all = np.asarray(cache.noise_rms_mV, dtype=np.float64)
     trigger_all = np.asarray(cache.trigger_index, dtype=np.int64)
     selection = copy.deepcopy(config.get("selection", {}))
 
-    if "energy_noise_max_mV" in selection:
-        logger.warning(
-            "preprocessing.selection.energy_noise_max_mV is obsolete and ignored; "
-            "baseline RMSE is now filtered from the post-photopeak population via "
-            "baseline_rmse_robust_z"
-        )
-
-    # Finite amplitudes are a computability guard, not a quality-selection cut.
     finite_amplitude = np.all(np.isfinite(amplitudes_all), axis=1)
     valid = finite_amplitude.copy()
     summary: dict[str, Any] = {
-        "scope": "physical_photopeak_before_timing_and_ml",
+        "scope": "physical_photopeak_noise_trigger_before_ml",
         "finite_amplitude_before_photopeak": int(np.count_nonzero(finite_amplitude)),
     }
 
-    # Fit every energy-channel photopeak on the same initial population so the
-    # resulting cohort is independent of channel iteration order.
+    # PHOTOPEAK: both fits use the identical initial finite-amplitude cohort so
+    # channel iteration order cannot alter the fit population.
     photopeak_cfg = copy.deepcopy(config.get("photopeak", {"enabled": False}))
     photopeak_rows: list[dict[str, Any]] = []
     if bool(photopeak_cfg.get("enabled", False)):
         fit_indices = np.flatnonzero(finite_amplitude)
         if fit_indices.size == 0:
             raise RuntimeError("No finite energy amplitudes are available for photopeak selection")
-        photopeak_valid = finite_amplitude.copy()
-        for channel_position, channel_number in enumerate(cache.manifest["energy_channels_one_based"]):
+        photopeak_accept = finite_amplitude.copy()
+        for position, channel_number in enumerate(
+            cache.manifest.get("energy_channels_one_based", [1, 2])
+        ):
             result = fit_photopeak(
-                amplitudes_all[fit_indices, channel_position],
+                amplitudes_all[fit_indices, position],
                 channel=int(channel_number),
                 config=photopeak_cfg,
             )
             if not result.success:
-                raise RuntimeError(f"Photopeak fit failed for energy channel {channel_number}: {result.message}")
-            photopeak_valid &= photopeak_mask(amplitudes_all[:, channel_position], result)
+                raise RuntimeError(
+                    f"Photopeak fit failed for energy channel {channel_number}: {result.message}"
+                )
+            photopeak_accept &= photopeak_mask(amplitudes_all[:, position], result)
             photopeak_rows.append(result.as_dict())
-        valid = photopeak_valid
-        logger.info("Physical photopeak selection | retained=%d", int(np.count_nonzero(valid)))
+        valid &= photopeak_accept
+        logger.info(
+            "Physical photopeak selection | retained=%d",
+            int(np.count_nonzero(valid)),
+        )
     summary["photopeak"] = photopeak_rows
     summary["events_after_photopeak"] = int(np.count_nonzero(valid))
 
-    # Derive one upper baseline-RMSE limit per energy channel from the same
-    # post-photopeak population. Channel-1 rejection cannot change channel-2's
-    # population statistics.
-    rmse_z_max = selection.get("baseline_rmse_robust_z", 5.0)
+    # BASELINE RMSE: prefer the requested absolute threshold.  Keep the old
+    # robust-z option as a compatibility fallback for existing configurations.
+    rmse_population = valid.copy()
+    rmse_accept = np.ones(valid.shape, dtype=bool)
     rmse_rows: list[dict[str, Any]] = []
-    if rmse_z_max is not None:
-        rmse_z_max = float(rmse_z_max)
-        if not np.isfinite(rmse_z_max) or rmse_z_max <= 0.0:
-            raise ValueError(
-                "preprocessing.selection.baseline_rmse_robust_z must be positive or null"
-            )
-        rmse_population = valid.copy()
-        rmse_accept = np.ones(valid.shape, dtype=bool)
-        for channel_position, channel_number in enumerate(cache.manifest["energy_channels_one_based"]):
-            center, sigma = _robust_location_scale(
-                baseline_rmse_all[rmse_population, channel_position]
-            )
-            if not np.isfinite(center):
-                raise RuntimeError(
-                    f"No finite baseline RMSE values in the photopeak population for energy channel {channel_number}"
-                )
-            upper = center + rmse_z_max * sigma if sigma > 0.0 else center
+    absolute_limits = _absolute_rmse_limits(selection, baseline_rmse_all.shape[1])
+    if absolute_limits is not None:
+        for position, channel_number in enumerate(
+            cache.manifest.get("energy_channels_one_based", [1, 2])
+        ):
+            limit = float(absolute_limits[position])
             channel_accept = (
-                np.isfinite(baseline_rmse_all[:, channel_position])
-                & (baseline_rmse_all[:, channel_position] <= upper)
+                np.isfinite(baseline_rmse_all[:, position])
+                & (baseline_rmse_all[:, position] <= limit)
             )
             rmse_accept &= channel_accept
-            rmse_rows.append({
-                "channel": int(channel_number),
-                "population_events": int(np.count_nonzero(rmse_population)),
-                "median_rmse_mV": center,
-                "robust_sigma_mV": sigma,
-                "robust_z_max": rmse_z_max,
-                "upper_limit_mV": float(upper),
-                "rejected_from_photopeak": int(
-                    np.count_nonzero(rmse_population & ~channel_accept)
-                ),
-            })
+            center, sigma = _robust_location_scale(
+                baseline_rmse_all[rmse_population, position]
+            )
+            rmse_rows.append(
+                {
+                    "channel": int(channel_number),
+                    "position": int(position),
+                    "population_events": int(np.count_nonzero(rmse_population)),
+                    "median_rmse_mV": center,
+                    "robust_sigma_mV": sigma,
+                    "mode": "absolute_threshold",
+                    "upper_limit_mV": limit,
+                    "rejected_from_photopeak": int(
+                        np.count_nonzero(rmse_population & ~channel_accept)
+                    ),
+                }
+            )
         valid &= rmse_accept
-        logger.info(
-            "Baseline RMSE filter | retained=%d | %s",
-            int(np.count_nonzero(valid)),
-            ", ".join(
-                f"ch{row['channel']}<={row['upper_limit_mV']:.3g} mV"
-                for row in rmse_rows
-            ),
-        )
-    summary["baseline_rmse_filter"] = {
-        "enabled": rmse_z_max is not None,
-        "robust_z_max": None if rmse_z_max is None else float(rmse_z_max),
-        "channels": rmse_rows,
-        "events_after_filter": int(np.count_nonzero(valid)),
-    }
+        rmse_filter = {
+            "enabled": True,
+            "mode": "absolute_threshold",
+            "configured_max_mV": absolute_limits.tolist(),
+            "channels": rmse_rows,
+            "events_after_filter": int(np.count_nonzero(valid)),
+        }
+    else:
+        rmse_z_max = selection.get("baseline_rmse_robust_z", 5.0)
+        if rmse_z_max is not None:
+            rmse_z_max = float(rmse_z_max)
+            if not np.isfinite(rmse_z_max) or rmse_z_max <= 0.0:
+                raise ValueError(
+                    "preprocessing.selection.baseline_rmse_robust_z must be positive or null"
+                )
+            for position, channel_number in enumerate(
+                cache.manifest.get("energy_channels_one_based", [1, 2])
+            ):
+                center, sigma = _robust_location_scale(
+                    baseline_rmse_all[rmse_population, position]
+                )
+                if not np.isfinite(center):
+                    raise RuntimeError(
+                        f"No finite baseline RMSE values for energy channel {channel_number}"
+                    )
+                upper = center + rmse_z_max * sigma if sigma > 0.0 else center
+                channel_accept = (
+                    np.isfinite(baseline_rmse_all[:, position])
+                    & (baseline_rmse_all[:, position] <= upper)
+                )
+                rmse_accept &= channel_accept
+                rmse_rows.append(
+                    {
+                        "channel": int(channel_number),
+                        "position": int(position),
+                        "population_events": int(np.count_nonzero(rmse_population)),
+                        "median_rmse_mV": center,
+                        "robust_sigma_mV": sigma,
+                        "mode": "robust_z_fallback",
+                        "robust_z_max": rmse_z_max,
+                        "upper_limit_mV": float(upper),
+                        "rejected_from_photopeak": int(
+                            np.count_nonzero(rmse_population & ~channel_accept)
+                        ),
+                    }
+                )
+            valid &= rmse_accept
+            rmse_filter = {
+                "enabled": True,
+                "mode": "robust_z_fallback",
+                "robust_z_max": rmse_z_max,
+                "channels": rmse_rows,
+                "events_after_filter": int(np.count_nonzero(valid)),
+            }
+        else:
+            rmse_filter = {
+                "enabled": False,
+                "mode": "disabled",
+                "channels": [],
+                "events_after_filter": int(np.count_nonzero(valid)),
+            }
+    summary["baseline_rmse_filter"] = rmse_filter
+    logger.info(
+        "Baseline RMSE filter | retained=%d",
+        int(np.count_nonzero(valid)),
+    )
 
-    # Trigger quality is intentionally downstream of photopeak and baseline RMSE.
+    # Energy trigger index must exist because energy channels are always used for
+    # photopeak and window materialization.
     valid &= np.all(trigger_all >= 0, axis=1)
     trigger_range = selection.get("energy_trigger_index_range")
     if trigger_range is not None:
+        if not isinstance(trigger_range, (list, tuple)) or len(trigger_range) != 2:
+            raise ValueError("preprocessing.selection.energy_trigger_index_range must be [low, high]")
         low, high = int(trigger_range[0]), int(trigger_range[1])
         valid &= np.all((trigger_all > low) & (trigger_all < high), axis=1)
-    summary["valid_after_trigger_quality"] = int(np.count_nonzero(valid))
+    summary["events_after_trigger_computability"] = int(np.count_nonzero(valid))
+
+    # ABSOLUTE TRIGGER-TIME REJECTION.  The interval is estimated only from the
+    # post-photopeak/post-noise population and only for active experiment family
+    # channels.  Values are absolute on the original oscilloscope time axis.
+    trigger_z = selection.get("trigger_time_robust_z", 5.0)
+    trigger_rows: list[dict[str, Any]] = []
+    active_families = tuple(config.get("active_trigger_families", ("energy",)))
+    if trigger_z is not None:
+        trigger_z = float(trigger_z)
+        if not np.isfinite(trigger_z) or trigger_z <= 0.0:
+            raise ValueError(
+                "preprocessing.selection.trigger_time_robust_z must be positive or null"
+            )
+        trigger_population = valid.copy()
+        trigger_accept = np.ones(valid.shape, dtype=bool)
+        for family in active_families:
+            anchors = _trigger_anchor_array(cache, family)
+            if anchors is None:
+                raise RuntimeError(
+                    f"{family} is active but its trigger-anchor array is unavailable"
+                )
+            anchors = np.asarray(anchors, dtype=np.int64)
+            channels = cache.manifest.get(
+                f"{family}_channels_one_based",
+                cache.manifest.get("energy_channels_one_based", [1, 2]),
+            )
+            for position in range(anchors.shape[1]):
+                values_fs = anchors[:, position]
+                usable = (
+                    trigger_population
+                    & (values_fs != int(INVALID_TIME_FS))
+                )
+                values_ns = values_fs[usable].astype(np.float64) / 1.0e6
+                center, sigma = _trigger_location_scale_ns(values_ns, cache, family)
+                if not np.isfinite(center):
+                    raise RuntimeError(
+                        f"No finite absolute search-trigger times for {family} channel {position + 1}"
+                    )
+                half_width = trigger_z * sigma if sigma > 0.0 else 0.0
+                lower = center - half_width
+                upper = center + half_width
+                all_ns = values_fs.astype(np.float64) / 1.0e6
+                valid_anchor = values_fs != int(INVALID_TIME_FS)
+                if sigma > 0.0:
+                    channel_accept = valid_anchor & (all_ns >= lower) & (all_ns <= upper)
+                else:
+                    channel_accept = valid_anchor & np.isclose(all_ns, center, rtol=0.0, atol=1e-12)
+                trigger_accept &= channel_accept
+                channel_number = int(channels[position]) if position < len(channels) else position + 1
+                trigger_rows.append(
+                    {
+                        "family": str(family),
+                        "channel": channel_number,
+                        "position": int(position),
+                        "population_events": int(np.count_nonzero(trigger_population)),
+                        "median_ns": center,
+                        "robust_sigma_ns": sigma,
+                        "robust_z_max": trigger_z,
+                        "lower_ns": float(lower),
+                        "upper_ns": float(upper),
+                        "rejected_from_population": int(
+                            np.count_nonzero(trigger_population & ~channel_accept)
+                        ),
+                    }
+                )
+        valid &= trigger_accept
+        trigger_summary = {
+            "enabled": True,
+            "reference": "absolute_time_from_original_oscilloscope_acquisition_origin",
+            "robust_z_max": trigger_z,
+            "active_families": list(active_families),
+            "channels": trigger_rows,
+            "events_after_filter": int(np.count_nonzero(valid)),
+        }
+    else:
+        trigger_summary = {
+            "enabled": False,
+            "reference": "absolute_time_from_original_oscilloscope_acquisition_origin",
+            "active_families": list(active_families),
+            "channels": [],
+            "events_after_filter": int(np.count_nonzero(valid)),
+        }
+    summary["trigger_time_filter"] = trigger_summary
 
     selected = np.flatnonzero(valid).astype(np.int64)
     summary["selected_events"] = int(selected.size)
     return selected, summary
 
 
+def _finite_waveform_rows(
+    windows: np.ndarray, *, chunk_size: int = 2048
+) -> np.ndarray:
+    """Check waveform finiteness without loading the whole memmap into RAM."""
+    n_events = int(windows.shape[0])
+    output = np.empty(n_events, dtype=bool)
+    chunk = max(1, int(chunk_size))
+    for start in range(0, n_events, chunk):
+        stop = min(start + chunk, n_events)
+        block = np.asarray(windows[start:stop])
+        output[start:stop] = np.all(np.isfinite(block), axis=(1, 2))
+    return output
+
+
+def _family_cache_validity(cache: "EnergyCache", family: str) -> np.ndarray:
+    """Preprocessing validity depends only on the prepared signal and trigger anchor.
+
+    LED/CFD timestamps are intentionally INVALID_TIME_FS at this stage because
+    their thresholds are selected later by standard_methods. They must therefore
+    never enter permanent preprocessing event selection.
+    """
+    n = int(cache.event_id.size)
+    valid = np.ones(n, dtype=bool)
+
+    if family == "energy":
+        windows = getattr(cache, "windows_mV", None)
+        anchor = getattr(cache, "energy_window_anchor_time_fs", None)
+    elif family == "timing":
+        windows = getattr(cache, "timing_windows_mV", None)
+        anchor = getattr(cache, "timing_window_anchor_time_fs", None)
+    else:
+        raise ValueError(f"Unknown waveform family: {family}")
+
+    if windows is None or anchor is None:
+        return np.zeros(n, dtype=bool)
+
+    valid &= _finite_waveform_rows(windows)
+    valid &= np.all(
+        np.asarray(anchor, dtype=np.int64) != int(INVALID_TIME_FS),
+        axis=1,
+    )
+    return valid
 
 
 def _dataset_level_selection(
@@ -227,20 +528,23 @@ def _dataset_level_selection(
     physical_selected: np.ndarray | None = None,
     physical_summary: dict[str, Any] | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    # Permanent preprocessing contains only physical / signal-computability
-    # selection. Statistical timing-outlier rejection is fitted later on the
-    # DEVELOPMENT split using the search-threshold arrival-time difference.
     valid = np.zeros(int(cache.event_id.size), dtype=bool)
     if physical_selected is None:
-        physical_selected, physical_summary = _physical_photopeak_selection(
-            cache, config, logger
-        )
+        physical_selected, physical_summary = _physical_photopeak_selection(cache, config, logger)
     valid[np.asarray(physical_selected, dtype=np.int64)] = True
 
-    # cache.valid already guarantees that the configured channels and stored
-    # waveform windows are usable. Do not apply another LED-derived population
-    # cut here.
-    valid &= np.asarray(cache.valid, dtype=bool)
+    # Do not use cache.valid here: current data.py includes the historical
+    # timing-LED-aligned duplicate energy matrix in that aggregate flag.  Format
+    # v7 deliberately stores only the canonical search-trigger window, so we
+    # check exactly the families/arrays that v7 actually requires.
+    active_families = tuple(config.get("active_trigger_families", ("energy",)))
+    required_families = set(active_families)
+    required_families.add("energy")  # energy is always needed for photopeak
+    family_counts: dict[str, int] = {}
+    for family in sorted(required_families):
+        family_valid = _family_cache_validity(cache, family)
+        valid &= family_valid
+        family_counts[family] = int(np.count_nonzero(family_valid))
 
     selection = copy.deepcopy(config.get("selection", {}))
     minimum = int(
@@ -250,28 +554,27 @@ def _dataset_level_selection(
         )
     )
     selected = np.flatnonzero(valid).astype(np.int64)
-
     summary: dict[str, Any] = {
-        "scope": "physical_and_signal_quality_before_ml_split",
+        "scope": "physical_and_canonical_signal_quality_before_ml_split",
         "physical_selection": physical_summary or {},
+        "canonical_family_valid_counts": family_counts,
         "valid_after_waveform_preparation": int(np.count_nonzero(valid)),
         "selected_events": int(selected.size),
-        "led_outlier_rejection": {
-            "enabled": False,
-            "status": "obsolete_removed",
-        },
+        "canonical_window_alignment": "native_search_trigger_sample_then_relative_baseline",
+        "timing_aligned_energy_duplicate_required": False,
         "search_time_outlier_rejection": {
-            "stage": "study_after_dev_blind_split",
-            "fit_population": "development_only",
+            "permanent_absolute_trigger_stage": bool(
+                (physical_summary or {}).get("trigger_time_filter", {}).get("enabled", False)
+            ),
+            "development_relative_timing_stage": "unchanged_in_study_pipeline",
         },
     }
-
     if selected.size < minimum:
         raise RuntimeError(
-            f"Only {selected.size} events remain after dataset preparation; "
-            f"need {minimum}"
+            f"Only {selected.size} events remain after dataset preparation; need {minimum}"
         )
     return selected, summary
+
 
 def _denoise_windows(
     source: np.ndarray,
@@ -298,7 +601,10 @@ def _denoise_windows(
     for start in range(0, values.shape[0], chunk_size):
         stop = min(start + chunk_size, values.shape[0])
         block = np.asarray(values[start:stop], dtype=np.float64)
-        zero_count = min(int(np.count_nonzero(sos[:, 2] == 0.0)), int(np.count_nonzero(sos[:, 5] == 0.0)))
+        zero_count = min(
+            int(np.count_nonzero(sos[:, 2] == 0.0)),
+            int(np.count_nonzero(sos[:, 5] == 0.0)),
+        )
         default_padlen = 3 * (2 * int(sos.shape[0]) + 1 - zero_count)
         padlen = min(default_padlen, max(0, block.shape[-1] - 1))
         filtered = sosfiltfilt(sos, block, axis=-1, padlen=padlen)
@@ -309,15 +615,22 @@ def _denoise_windows(
         mmap.close()
 
 
-def _prepared_fingerprint(cache: "EnergyCache", selected: np.ndarray, config: dict[str, Any]) -> str:
-    return canonical_hash({
-        "format_version": DATASET_FORMAT_VERSION,
-        "selection_version": PREPARED_SELECTION_VERSION,
-        "raw_cache": cache.manifest["fingerprint"],
-        "selected_hash": _hash_indices(selected),
-        "selection": config.get("selection", {}),
-        "denoising": config.get("denoising", {}),
-    })
+def _prepared_fingerprint(
+    cache: "EnergyCache", selected: np.ndarray, config: dict[str, Any]
+) -> str:
+    return canonical_hash(
+        {
+            "format_version": DATASET_FORMAT_VERSION,
+            "selection_version": PREPARED_SELECTION_VERSION,
+            "raw_cache": cache.manifest["fingerprint"],
+            "selected_hash": _hash_indices(selected),
+            "selection": config.get("selection", {}),
+            "photopeak": config.get("photopeak", {}),
+            "active_trigger_families": list(config.get("active_trigger_families", ("energy",))),
+            "denoising": config.get("denoising", {}),
+            "permanent_window_storage": "single_search_trigger_referenced_window_with_relative_baseline_v2",
+        }
+    )
 
 
 def materialize_selected_dataset(
@@ -328,27 +641,32 @@ def materialize_selected_dataset(
     rebuild: bool,
     logger: Any,
 ) -> PreparedDataset:
-    selection_store_root = Path(config.get("selection_store_dir", output.parent / "selected_events"))
+    selection_store_root = Path(
+        config.get("selection_store_dir", output.parent / "selected_events")
+    )
     source_root = Path(config["source_root"])
     selection_fp = str(config.get("selection_request_fingerprint", ""))
     if not selection_fp:
-        selection_fp = canonical_hash({
-            "source": source_signature(source_root),
-            "energy_channels": cache.manifest.get("energy_channels_one_based", []),
-            "selection": dict(config.get("selection", {})),
-            "photopeak": config.get("photopeak", {"enabled": False}),
-        })
+        selection_fp = _selection_request_fingerprint(cache, config, source_root)
+
     physical_selected, physical_summary, physical_store = load_or_compute_selection(
-        root=selection_store_root, root_file=source_root, fingerprint=selection_fp,
+        root=selection_store_root,
+        root_file=source_root,
+        fingerprint=selection_fp,
         rebuild=bool(config.get("rebuild_selection", False)),
         compute=lambda: _physical_photopeak_selection(cache, config, logger),
         logger=logger,
     )
     selected, selection_summary = _dataset_level_selection(
-        cache, config, logger, physical_selected=physical_selected,
+        cache,
+        config,
+        logger,
+        physical_selected=physical_selected,
         physical_summary=physical_summary,
     )
     selection_summary["physical_selection_store"] = str(physical_store)
+    selection_summary["physical_selection_fingerprint"] = selection_fp
+
     fingerprint = _prepared_fingerprint(cache, selected, config)
     manifest_path = output / "manifest.json"
     if output.is_dir() and not rebuild and manifest_path.is_file():
@@ -359,18 +677,28 @@ def materialize_selected_dataset(
                 return load_prepared_dataset(output)
         except Exception:
             pass
+
     temporary = output.with_name(output.name + ".building")
     if temporary.exists():
         shutil.rmtree(temporary)
     temporary.mkdir(parents=True, exist_ok=True)
     chunk_size = max(1, int(config.get("materialization_chunk_size", 2048)))
+
     for name in _COPY_ARRAYS:
         source = getattr(cache, name, None)
         if source is not None:
             _copy_selected(source, selected, temporary / f"{name}.npy", chunk_size)
-    np.save(temporary / "relative_time_ps.npy", np.asarray(cache.relative_time_ps, dtype=np.float64))
-    if cache.timing_relative_time_ps is not None:
-        np.save(temporary / "timing_relative_time_ps.npy", np.asarray(cache.timing_relative_time_ps, dtype=np.float64))
+
+    np.save(
+        temporary / "relative_time_ps.npy",
+        np.asarray(cache.relative_time_ps, dtype=np.float64),
+    )
+    if cache.timing_relative_time_ps is not None and cache.timing_windows_mV is not None:
+        np.save(
+            temporary / "timing_relative_time_ps.npy",
+            np.asarray(cache.timing_relative_time_ps, dtype=np.float64),
+        )
+
     denoise_cfg = copy.deepcopy(config.get("denoising", {}))
     denoise_enabled = bool(denoise_cfg.get("enabled", False))
     if denoise_enabled:
@@ -381,15 +709,40 @@ def materialize_selected_dataset(
             config=denoise_cfg,
             chunk_size=chunk_size,
         )
-        aligned = temporary / "timing_aligned_energy_windows_mV.npy"
-        if aligned.is_file():
-            _denoise_windows(
-                np.load(aligned, mmap_mode="r"),
-                temporary / "denoised_timing_aligned_energy_windows_mV.npy",
-                relative_time_ps=np.asarray(cache.relative_time_ps),
-                config=denoise_cfg,
-                chunk_size=chunk_size,
-            )
+
+    diagnostics_dir = temporary / "diagnostics"
+    diagnostics = write_preprocessing_diagnostics(
+        cache,
+        diagnostics_dir,
+        physical_summary=physical_summary,
+        active_families=tuple(config.get("active_trigger_families", ("energy",))),
+        dpi=int(config.get("diagnostic_dpi", 180)),
+        logger=logger,
+    )
+
+    raw_cache_manifest = copy.deepcopy(cache.manifest)
+    # data.py remains backward-compatible and may describe its temporary
+    # compatibility arrays using the old target-aligned terminology.  The
+    # canonical windows produced by this signal.py are search-trigger anchored.
+    raw_cache_manifest["canonical_window_alignment_source"] = (
+        "native_search_trigger_sample"
+    )
+    raw_cache_manifest["ml_window_alignment_source"] = (
+        "native_search_trigger_sample"
+    )
+    if cache.timing_windows_mV is not None:
+        raw_cache_manifest["timing_window_alignment_source"] = (
+            "native_search_trigger_sample"
+        )
+
+    waveform_manifest = raw_cache_manifest.get("preprocessing", {}).get("waveform", {})
+    vertical_limits = None
+    if isinstance(waveform_manifest, dict):
+        for key in ("vertical_scale_limit_mV", "vertical_scale_limit", "vertical scale limit"):
+            if key in waveform_manifest:
+                vertical_limits = waveform_manifest.get(key)
+                break
+
     manifest = {
         "format_version": DATASET_FORMAT_VERSION,
         "fingerprint": fingerprint,
@@ -402,10 +755,15 @@ def materialize_selected_dataset(
         "event_count": int(selected.size),
         "input_length": int(cache.windows_mV.shape[-1]),
         "selection": selection_summary,
-        "raw_cache_manifest": cache.manifest,
+        "raw_cache_manifest": raw_cache_manifest,
         "energy_channels_one_based": cache.manifest.get("energy_channels_one_based", []),
-        "timing_channel_waveforms_saved": cache.timing_windows_mV is not None,
-        "timing_aligned_energy_waveforms_saved": cache.timing_aligned_energy_windows_mV is not None,
+        "timing_channels_one_based": cache.manifest.get("timing_channels_one_based", []),
+        "active_trigger_families": list(config.get("active_trigger_families", ("energy",))),
+        "timing_channel_waveforms_saved": (
+            cache.timing_windows_mV is not None
+            and (temporary / "timing_windows_mV.npy").is_file()
+        ),
+        "timing_aligned_energy_waveforms_saved": False,
         "denoised_waveforms_saved": denoise_enabled,
         "denoised_energy_waveforms_saved": denoise_enabled,
         "denoised_timing_waveforms_saved": False,
@@ -414,29 +772,40 @@ def materialize_selected_dataset(
         "waveform_grid": cache.manifest.get("waveform_grid", "native_samples"),
         "native_sample_interval_ps": cache.manifest.get("native_sample_interval_ps"),
         "timing_native_sample_interval_ps": cache.manifest.get("timing_native_sample_interval_ps"),
-        "baseline_handling": str(config.get("baseline_handling", "quality_only_no_shift_v1")),
-        "baseline_quality_metric": "rmse_about_event_baseline_mean",
-        "led_timestamp_source": "adaptive_development_scan",
-        "cfd_timestamp_source": "energy_channels",
-        "ml_window_alignment_source": "preprocessing_search_threshold_then_adaptive_led",
+        "baseline_handling": str(
+            config.get("baseline_handling", "quality_only_no_shift_v1")
+        ),
+        "baseline_quality_metric": "rmse_on_trigger_relative_materialized_baseline_window",
+        "vertical_scale_limit_mV": vertical_limits,
+        "led_timestamp_source": "selected_downstream_from_standard_methods_candidates",
+        "cfd_timestamp_source": "selected_downstream_from_standard_methods_candidates",
+        "ml_window_alignment_source": "native_search_trigger_sample",
         "window_anchor_timestamps_saved": True,
-        "correction_target_reference": "interpolated_led_direct",
-        "window_anchor_shift_factored": False,
+        "single_canonical_energy_waveform_matrix": True,
+        "timing_target_energy_alignment": "lazy_from_canonical_anchor",
         "dataset_selection_is_independent_of_ml_split": True,
-        "final_evaluation_rejects_no_additional_events": True,
         "arrays_are_post_selection": True,
         "ml_split_materialized": False,
+        "diagnostics_directory": "diagnostics",
+        "diagnostic_files": diagnostics,
     }
     atomic_json(temporary / "manifest.json", manifest)
+
     if output.exists():
         shutil.rmtree(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     os.replace(temporary, output)
-    logger.info("Permanent prepared dataset written | %s | events=%d", output, selected.size)
+    logger.info(
+        "Permanent prepared dataset written | %s | events=%d",
+        output,
+        selected.size,
+    )
     return load_prepared_dataset(output)
 
 
-def _raw_preprocess_config(study: dict[str, Any], root_file: Path, cache_dir: Path) -> dict[str, Any]:
+def _raw_preprocess_config(
+    study: dict[str, Any], root_file: Path, cache_dir: Path
+) -> dict[str, Any]:
     preprocessing = copy.deepcopy(study["preprocessing"])
     common = copy.deepcopy(preprocessing.get("common", {}))
     energy = copy.deepcopy(common)
@@ -444,31 +813,37 @@ def _raw_preprocess_config(study: dict[str, Any], root_file: Path, cache_dir: Pa
     timing = copy.deepcopy(common)
     timing.update(copy.deepcopy(preprocessing.get("timing", {})))
 
-    # Permanent preprocessing is method-independent with respect to LED.
-    # The existing signal/data cache code still expects an LED-like reference
-    # to anchor native waveform windows, so use the coarse search threshold as
-    # that internal reference. The physics LED threshold is selected later on
-    # DEVELOPMENT data by standard_methods/adaptive.py and the waveform view is
-    # lazily re-aligned to the selected threshold.
-    energy["led_threshold_mV"] = float(energy["search_trigger_threshold_mV"])
-    timing["led_threshold_mV"] = float(timing["search_trigger_threshold_mV"])
-
-    # Denoising is intentionally excluded from ROOT conversion. LED/CFD and the
-    # canonical raw windows therefore never depend on an ML denoising candidate.
+    # Denoising is excluded from ROOT conversion. Permanent denoised energy
+    # windows, when requested, are derived from the canonical raw materialized
+    # window after event selection.
     energy["denoising"] = {"enabled": False}
     timing["denoising"] = {"enabled": False}
 
-    # This is part of the raw-cache fingerprint because baseline-subtracted raw
-    # caches from older code are not compatible with the no-shift representation.
+    # Baseline is estimated only after trigger-centered materialization.
+    # Fixed sample-count baselines and fixed preprocessing LED thresholds are
+    # deliberately removed before constructing the raw-cache configuration.
+    for family_cfg in (energy, timing):
+        family_cfg.pop("baseline_samples", None)
+        family_cfg.pop("led_threshold_mV", None)
+
     energy["baseline_handling"] = (
-        "event_mean_subtracted_v1"
-        if bool(energy.get("subtract_baseline", False))
-        else "quality_only_no_shift_v1"
+        "materialized_trigger_relative_mean_subtracted_v2"
+        if bool(energy.get("subtract_baseline", True))
+        else "materialized_trigger_relative_quality_only_v2"
     )
     timing["baseline_handling"] = (
-        "event_mean_subtracted_v1"
-        if bool(timing.get("subtract_baseline", False))
-        else "quality_only_no_shift_v1"
+        "materialized_trigger_relative_mean_subtracted_v2"
+        if bool(timing.get("subtract_baseline", True))
+        else "materialized_trigger_relative_quality_only_v2"
+    )
+
+    # Participates in data.py's raw-cache fingerprint so old caches cannot be
+    # reused with the new trigger -> materialize -> baseline semantics.
+    energy["canonical_window_alignment_version"] = (
+        "search_trigger_then_materialized_baseline_v2"
+    )
+    timing["canonical_window_alignment_version"] = (
+        "search_trigger_then_materialized_baseline_v2"
     )
 
     materialized = preprocessing.get("materialized_window_ns") or {
@@ -476,19 +851,45 @@ def _raw_preprocess_config(study: dict[str, Any], root_file: Path, cache_dir: Pa
         "after": max(float(window["after_ns"]) for window in study["windows_ns"]),
     }
     energy["ml_window_ns"] = {
-        "before": float(materialized["before"]), "after": float(materialized["after"])
+        "before": float(materialized["before"]),
+        "after": float(materialized["after"]),
     }
     timing["ml_window_ns"] = {
-        "before": float(materialized["before"]), "after": float(materialized["after"])
+        "before": float(materialized["before"]),
+        "after": float(materialized["after"]),
     }
-    timing["enabled"] = True
+
+    active_families = _active_trigger_families(study)
+    timing["enabled"] = "timing" in active_families
     energy["timing_channel_led"] = timing
+
     return {
-        "data": {"input_root": str(root_file), "true_tof_ps": float(study["data"].get("true_tof_ps", 0.0))},
+        "data": {
+            "input_root": str(root_file),
+            "true_tof_ps": float(study["data"].get("true_tof_ps", 0.0)),
+        },
         "channels": copy.deepcopy(study["data"]["channels"]),
         "waveform": energy,
-        "io": copy.deepcopy(preprocessing.get("io", {"step_size": "128 MB", "max_events": 0, "progress_every": 1000})),
-        "parallelization": copy.deepcopy(preprocessing.get("parallelization", {"preprocessing_backend": "process", "preprocessing_workers": 0, "preprocessing_chunksize": 8})),
+        "io": copy.deepcopy(
+            preprocessing.get(
+                "io",
+                {
+                    "step_size": "128 MB",
+                    "max_events": 0,
+                    "progress_every": 1000,
+                },
+            )
+        ),
+        "parallelization": copy.deepcopy(
+            preprocessing.get(
+                "parallelization",
+                {
+                    "preprocessing_backend": "process",
+                    "preprocessing_workers": 0,
+                    "preprocessing_chunksize": 8,
+                },
+            )
+        ),
         "cache": {"raw_cache_dir": str(cache_dir)},
     }
 
@@ -504,19 +905,28 @@ def prepare_file_dataset(
     prepared_root = Path(study["preprocessing"]["prepared_dir"])
     output = prepared_root / root_id
     request_fingerprint = _preparation_request_fingerprint(study, root_file)
+
     if output.is_dir() and not rebuild:
         manifest_path = output / "manifest.json"
         if manifest_path.is_file():
             try:
                 manifest = read_json(manifest_path)
                 if manifest.get("request_fingerprint") == request_fingerprint:
-                    logger.info("Reusing permanent prepared dataset without ROOT reconversion: %s", output)
+                    logger.info(
+                        "Reusing permanent prepared dataset without ROOT reconversion: %s",
+                        output,
+                    )
                     loaded = load_prepared_dataset(output)
-                    manifest = dict(loaded.manifest)
-                    manifest["true_tof_ps"] = float(study["data"].get("true_tof_ps", 0.0))
-                    return replace(loaded, manifest=manifest)
+                    updated_manifest = dict(loaded.manifest)
+                    updated_manifest["true_tof_ps"] = float(
+                        study["data"].get("true_tof_ps", 0.0)
+                    )
+                    return replace(loaded, manifest=updated_manifest)
             except Exception as exc:
-                logger.warning("Cannot reuse permanent prepared dataset %s: %s", output, exc)
+                logger.warning(
+                    "Cannot reuse permanent prepared dataset %s: %s", output, exc
+                )
+
     raw_cache_dir = prepared_root / ".raw_cache" / root_id
     raw_cfg = _raw_preprocess_config(study, root_file, raw_cache_dir)
     cache_cfg = {
@@ -526,6 +936,7 @@ def prepare_file_dataset(
         "parallelization": raw_cfg["parallelization"],
     }
     from .data import prepare_energy_cache
+
     cache = prepare_energy_cache(
         root_file,
         raw_cache_dir,
@@ -533,6 +944,7 @@ def prepare_file_dataset(
         rebuild=rebuild,
         logger=logger,
     )
+
     permanent_cfg = {
         "name": root_id,
         "source_root": str(root_file),
@@ -541,24 +953,46 @@ def prepare_file_dataset(
             "baseline_handling", "quality_only_no_shift_v1"
         ),
         "true_tof_ps": float(study["data"].get("true_tof_ps", 0.0)),
-        "selection_store_dir": str(study["preprocessing"].get("selection_store_dir", Path(study["preprocessing"]["prepared_dir"]).parent / "selected_events")),
-        "selection_request_fingerprint": selection_request_fingerprint(
-            root_file=root_file, channels=study["data"]["channels"],
-            preprocessing=study["preprocessing"],
+        "selection_store_dir": str(
+            study["preprocessing"].get(
+                "selection_store_dir",
+                Path(study["preprocessing"]["prepared_dir"]).parent
+                / "selected_events",
+            )
         ),
         "rebuild_selection": bool(rebuild),
-        "selection": copy.deepcopy(study["preprocessing"].get("selection", {})),
-        "photopeak": copy.deepcopy(study["preprocessing"].get("photopeak", {"enabled": False})),
-        "denoising": copy.deepcopy(study["preprocessing"].get("denoising", {"enabled": False})),
-        "materialization_chunk_size": int(study["preprocessing"].get("materialization_chunk_size", 2048)),
+        "selection": copy.deepcopy(
+            study["preprocessing"].get("selection", {})
+        ),
+        "photopeak": copy.deepcopy(
+            study["preprocessing"].get("photopeak", {"enabled": False})
+        ),
+        "denoising": copy.deepcopy(
+            study["preprocessing"].get("denoising", {"enabled": False})
+        ),
+        "materialization_chunk_size": int(
+            study["preprocessing"].get("materialization_chunk_size", 2048)
+        ),
+        "active_trigger_families": _active_trigger_families(study),
+        "diagnostic_dpi": int(study.get("reporting", {}).get("dpi", 180)),
     }
-    dataset = materialize_selected_dataset(
-        cache, output=output, config=permanent_cfg, rebuild=rebuild, logger=logger
+    permanent_cfg["selection_request_fingerprint"] = _selection_request_fingerprint(
+        cache, permanent_cfg, root_file
     )
+
+    dataset = materialize_selected_dataset(
+        cache,
+        output=output,
+        config=permanent_cfg,
+        rebuild=rebuild,
+        logger=logger,
+    )
+
     if bool(study["preprocessing"].get("cleanup_raw_cache", True)):
-        # Close source memmaps before deleting their directory (important on Windows).
+        # Close source memmaps before deleting their directory on Windows.
         del cache
         shutil.rmtree(raw_cache_dir, ignore_errors=True)
+
     manifest = dict(dataset.manifest)
     manifest["true_tof_ps"] = float(study["data"].get("true_tof_ps", 0.0))
     return replace(dataset, manifest=manifest)
@@ -573,40 +1007,85 @@ def plot_prepared_signal_examples(
     if dataset.event_id.size == 0:
         return
     rows: list[tuple[str, np.ndarray, np.ndarray, np.ndarray | None]] = [
-        ("Energy ch. 1", dataset.relative_time_ps, np.asarray(dataset.windows_mV[0, 0]),
-         None if dataset.denoised_windows_mV is None else np.asarray(dataset.denoised_windows_mV[0, 0])),
-        ("Energy ch. 2", dataset.relative_time_ps, np.asarray(dataset.windows_mV[0, 1]),
-         None if dataset.denoised_windows_mV is None else np.asarray(dataset.denoised_windows_mV[0, 1])),
+        (
+            "Energy ch. 1",
+            dataset.relative_time_ps,
+            np.asarray(dataset.windows_mV[0, 0]),
+            None
+            if dataset.denoised_windows_mV is None
+            else np.asarray(dataset.denoised_windows_mV[0, 0]),
+        ),
+        (
+            "Energy ch. 2",
+            dataset.relative_time_ps,
+            np.asarray(dataset.windows_mV[0, 1]),
+            None
+            if dataset.denoised_windows_mV is None
+            else np.asarray(dataset.denoised_windows_mV[0, 1]),
+        ),
     ]
-    if dataset.timing_windows_mV is not None and dataset.timing_relative_time_ps is not None:
-        rows.extend([
-            ("Timing ch. 1", dataset.timing_relative_time_ps, np.asarray(dataset.timing_windows_mV[0, 0]),
-             None if dataset.denoised_timing_windows_mV is None else np.asarray(dataset.denoised_timing_windows_mV[0, 0])),
-            ("Timing ch. 2", dataset.timing_relative_time_ps, np.asarray(dataset.timing_windows_mV[0, 1]),
-             None if dataset.denoised_timing_windows_mV is None else np.asarray(dataset.denoised_timing_windows_mV[0, 1])),
-        ])
-    fig, axes = plt.subplots(len(rows), 1, figsize=(10.5, 2.7 * len(rows)), squeeze=False)
+    if (
+        dataset.timing_windows_mV is not None
+        and dataset.timing_relative_time_ps is not None
+    ):
+        rows.extend(
+            [
+                (
+                    "Timing ch. 1",
+                    dataset.timing_relative_time_ps,
+                    np.asarray(dataset.timing_windows_mV[0, 0]),
+                    None
+                    if dataset.denoised_timing_windows_mV is None
+                    else np.asarray(dataset.denoised_timing_windows_mV[0, 0]),
+                ),
+                (
+                    "Timing ch. 2",
+                    dataset.timing_relative_time_ps,
+                    np.asarray(dataset.timing_windows_mV[0, 1]),
+                    None
+                    if dataset.denoised_timing_windows_mV is None
+                    else np.asarray(dataset.denoised_timing_windows_mV[0, 1]),
+                ),
+            ]
+        )
+    fig, axes = plt.subplots(
+        len(rows), 1, figsize=(10.5, 2.7 * len(rows)), squeeze=False
+    )
     for axis, (title, time_ps, raw, denoised) in zip(axes[:, 0], rows):
-        axis.plot(np.asarray(time_ps, dtype=np.float64) / 1000.0, raw, linewidth=1.0, label="raw")
+        axis.plot(
+            np.asarray(time_ps, dtype=np.float64) / 1000.0,
+            raw,
+            linewidth=1.0,
+            label="raw",
+        )
         if denoised is not None:
-            axis.plot(np.asarray(time_ps, dtype=np.float64) / 1000.0, denoised, linewidth=1.0, label="denoised")
+            axis.plot(
+                np.asarray(time_ps, dtype=np.float64) / 1000.0,
+                denoised,
+                linewidth=1.0,
+                label="denoised",
+            )
             axis.legend(loc="best")
         axis.set_title(title)
-        axis.set_xlabel("Time relative to native LED anchor [ns]")
+        axis.set_xlabel("Time relative to native search-trigger sample [ns]")
         axis.set_ylabel("Voltage [mV]")
         axis.minorticks_on()
         axis.grid(True, which="major", alpha=0.35)
         axis.grid(True, which="minor", alpha=0.15)
-    fig.suptitle(f"Prepared waveform example | {Path(dataset.manifest.get('source_root', dataset.directory)).name}")
+    fig.suptitle(
+        "Prepared waveform example | "
+        f"{Path(dataset.manifest.get('source_root', dataset.directory)).name}"
+    )
     fig.tight_layout()
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
 
-def input_variant_dataset_view(dataset: PreparedDataset, variant: str) -> PreparedDataset:
+def input_variant_dataset_view(
+    dataset: PreparedDataset, variant: str
+) -> PreparedDataset:
     """Return a zero-copy raw/denoised waveform view of one prepared dataset."""
-    from dataclasses import replace
     key = str(variant).strip().lower()
     if key == "raw":
         manifest = dict(dataset.manifest)

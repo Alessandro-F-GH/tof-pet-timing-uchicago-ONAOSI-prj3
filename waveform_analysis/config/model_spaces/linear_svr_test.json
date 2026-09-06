@@ -39,14 +39,14 @@
         "type": "categorical",
         "values": [
           
-          0.1
+          1
         ]
       },
       "model.epsilon_values": {
         "type": "categorical",
         "values": [
           [
-            60.0
+            10.0
           ]
         ]
       }
