@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from utils.signal import INVALID_TIME_FS, prepare_timing_features
+from utils.signal import INVALID_TIME_FS
 
 from ..dataset import PreparedDataset
 from ..metrics import fit_times_ps
@@ -114,20 +114,47 @@ def _alignment_shifts(
     source_anchor_fs: np.ndarray,
     relative_time_ps: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return lazy LED-alignment shifts without interpreting invalid timestamps.
+
+    LED/CFD timestamps are selected only for the active family population.
+    Inactive events intentionally remain ``INVALID_TIME_FS``. Their prepared
+    waveform is already trigger-referenced, so they require zero additional
+    shift and retain the original trigger anchor.
+    """
     selected = np.asarray(selected_led_fs, dtype=np.int64)
     anchors = np.asarray(source_anchor_fs, dtype=np.int64)
     if selected.shape != anchors.shape or selected.ndim != 2 or selected.shape[1] != 2:
         raise ValueError("Selected LED and source anchors must have shape [event,2]")
+
     t = np.asarray(relative_time_ps, dtype=np.float64)
     if t.size < 2:
         raise ValueError("Cannot re-align a waveform with fewer than two time samples")
+
     dt_fs = int(np.rint(float(np.median(np.diff(t))) * 1000.0))
     if dt_fs <= 0:
         raise ValueError("Prepared waveform sample interval must be positive")
-    shifts = np.rint(
-        (selected.astype(np.float64) - anchors.astype(np.float64)) / float(dt_fs)
-    ).astype(np.int64)
-    new_anchors = anchors + shifts * np.int64(dt_fs)
+
+    shifts = np.zeros(selected.shape, dtype=np.int64)
+    new_anchors = anchors.copy()
+
+    valid = (
+        (selected != int(INVALID_TIME_FS))
+        & (anchors != int(INVALID_TIME_FS))
+    )
+    if np.any(valid):
+        valid_shifts = np.rint(
+            (
+                selected[valid].astype(np.float64)
+                - anchors[valid].astype(np.float64)
+            )
+            / float(dt_fs)
+        ).astype(np.int64)
+        shifts[valid] = valid_shifts
+        new_anchors[valid] = (
+            anchors[valid]
+            + valid_shifts * np.int64(dt_fs)
+        )
+
     return shifts, new_anchors
 
 
@@ -150,9 +177,10 @@ def _check_shift_support(
     maximum = int(np.max(shifts))
     if first + minimum < 0 or last + maximum >= t_ns.size:
         raise RuntimeError(
-            f"Prepared {label} waveform has insufficient alignment padding for the "
-            f"selected LED (sample shifts {minimum}..{maximum}). Increase "
-            "standard_methods.alignment_padding_ns and rebuild preprocessing."
+            f"Prepared {label} waveform does not contain enough trigger-relative "
+            f"margin for the selected LED re-alignment "
+            f"(sample shifts {minimum}..{maximum}). Increase "
+            "preprocessing.materialized_window_ns and rebuild preprocessing."
         )
 
 
@@ -1340,20 +1368,10 @@ def optimize_family(
     inactive = np.ones(selected_led.shape[0], dtype=bool)
     inactive[active] = False
 
-    if np.any(inactive):
-        bootstrap_led = (
-            dataset.energy_led_time_fs
-            if family == "energy"
-            else dataset.timing_led_time_fs
-        )
-        if bootstrap_led is None:
-            raise RuntimeError(
-                f"{family} bootstrap LED timestamps unavailable"
-            )
-        selected_led[inactive] = np.asarray(
-            bootstrap_led,
-            dtype=np.int64,
-        )[inactive]
+    # No preprocessing LED exists anymore. Events outside the active
+    # post-search-time-rejection population intentionally remain
+    # INVALID_TIME_FS; _alignment_shifts() keeps their trigger-aligned waveform
+    # unshifted.
 
     if cfd_enabled:
         _, selected_cfd_grid = _extract_grids(
@@ -1400,7 +1418,8 @@ def optimize_family(
                 n_fallback,
             )
 
-        selected_cfd[inactive] = selected_led[inactive]
+        # Inactive events remain INVALID_TIME_FS and are not part of the family
+        # evaluation population.
     else:
         selected_cfd = selected_led.copy()
 
@@ -1453,7 +1472,10 @@ def apply_selections(
         }
         for family in selections
     }
-    manifest["ml_window_alignment_source"] = "adaptive_selected_led_search_anchored"
+    manifest["ml_window_alignment_source"] = (
+        "adaptive_selected_led_for_active_population; "
+        "trigger_reference_retained_for_inactive_population"
+    )
     manifest["window_anchor_shift_factored"] = True
 
     kwargs: dict[str, Any] = {"manifest": manifest}
@@ -1514,32 +1536,6 @@ def apply_selections(
         kwargs["timing_led_time_fs"] = timing.led_times_fs
         kwargs["timing_cfd_time_fs"] = timing.cfd_times_fs
 
-        if dataset.timing_aligned_energy_windows_mV is not None:
-            if dataset.timing_aligned_energy_window_anchor_time_fs is None:
-                raise ValueError(
-                    "Timing-aligned energy preprocessing anchors are required"
-                )
-            aligned_shifts, aligned_anchors = _alignment_shifts(
-                timing.led_times_fs,
-                dataset.timing_aligned_energy_window_anchor_time_fs,
-                dataset.relative_time_ps,
-            )
-            _check_shift_support(
-                aligned_shifts,
-                dataset.relative_time_ps,
-                config["windows_ns"],
-                label="timing-aligned energy",
-            )
-            kwargs["timing_aligned_energy_windows_mV"] = ShiftedWaveformArray(
-                dataset.timing_aligned_energy_windows_mV,
-                aligned_shifts,
-            )
-            if dataset.denoised_timing_aligned_energy_windows_mV is not None:
-                kwargs["denoised_timing_aligned_energy_windows_mV"] = ShiftedWaveformArray(
-                    dataset.denoised_timing_aligned_energy_windows_mV,
-                    aligned_shifts,
-                )
-            kwargs["timing_aligned_energy_window_anchor_time_fs"] = aligned_anchors
 
     return replace(dataset, **kwargs)
 

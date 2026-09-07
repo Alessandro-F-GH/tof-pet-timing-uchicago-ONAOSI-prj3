@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
+
 import numpy as np
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,11 +27,10 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
 
-from utils_fit import FitResult
 from utils.plots import plot_xai_waveform_importance as plot_xai_waveform_importance_figure
 from .common import atomic_json, canonical_hash
 from .dataset import PreparedDataset
-from .metrics import FWHM_PER_SIGMA, fit_times_ps, residual_metrics
+from .metrics import FWHMResult, ctr_bootstrap_summary, fit_times_ps, residual_metrics
 from .models import validate_model, validate_model_training
 from .prediction import prediction_window_dataset_view
 from .prepared_data import (
@@ -40,6 +39,7 @@ from .prepared_data import (
     prepare_file_dataset,
 )
 from .study_config import CHANNEL_MODES, candidate_overrides, discover_root_files, set_nested
+from .study_utils import *
 from .experiment_config import cfd_enabled
 from .standard_methods.adaptive import (
     family_for_mode,
@@ -61,14 +61,10 @@ _STAGE_BLIND = 1
 _MODEL_LED = "led"
 _MODEL_CFD = "cfd"
 _MODEL_MULTITHRESHOLD = "multithreshold_svr"
-_CTR_PROTOCOL = "Gaussian-fit FWHM = 2*sqrt(2*ln(2))*sigma_fit from fit_times_ps"
-
-
-def _seed_for(base: int, *parts: Any) -> int:
-    payload = "|".join(str(v) for v in (base, *parts)).encode("utf-8")
-    import hashlib
-    return int.from_bytes(hashlib.sha256(payload).digest()[:4], "little") & 0x7FFFFFFF
-
+_CTR_PROTOCOL = (
+    "Direct KDE FWHM of the dominant timing peak from fit_times_ps; "
+    "uncertainty from event-resampling bootstrap with full KDE-FWHM recomputation"
+)
 
 
 def _fit_early_split(train_pool: np.ndarray, *, fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -82,6 +78,11 @@ def _fit_early_split(train_pool: np.ndarray, *, fraction: float, seed: int) -> t
     fit = np.sort(order[n_early:])
     return fit, early
 
+def _seed_for(base: int, *parts: Any) -> int:
+    payload = "|".join(str(v) for v in (base, *parts)).encode("utf-8")
+    
+    return int.from_bytes(hashlib.sha256(payload).digest()[:4], "little") & 0x7FFFFFFF
+
 def _voltage_from_name(name: str, pattern: str) -> float:
     match = re.search(pattern, name)
     if not match:
@@ -93,7 +94,6 @@ def _voltage_from_name(name: str, pattern: str) -> float:
 
 def _pending_csv_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}.pending{path.suffix}")
-
 
 def _write_csv(
     path: Path,
@@ -168,7 +168,7 @@ def _write_csv(
 
 
 # Increment this if the on-disk resume artifact semantics change.
-_RESUME_CACHE_VERSION = 2
+_RESUME_CACHE_VERSION = 3
 _RESULT_KEY_FIELDS = ("stage", "file_id", "mode_id", "model_id", "candidate_id")
 
 
@@ -305,6 +305,7 @@ def _selection_cache_payload(
     """
     return {
         "schema_version": _RESUME_CACHE_VERSION,
+        "ctr_protocol": _CTR_PROTOCOL,
         "dataset": _dataset_resume_token(dataset),
         "mode": mode,
         "descriptor": copy.deepcopy(descriptor),
@@ -446,6 +447,7 @@ def _final_cache_payload(
 ) -> dict[str, Any]:
     return {
         "schema_version": _RESUME_CACHE_VERSION,
+        "ctr_protocol": _CTR_PROTOCOL,
         "dataset": _dataset_resume_token(dataset),
         "mode": mode,
         "space_id": str(space["id"]),
@@ -580,56 +582,31 @@ def _check_or_create_run_state(
     return path
 
 
-def _fit_ctr_gaussian(
+def _measure_ctr(
     values_ps: np.ndarray,
     *,
     method: str,
     fit_config: dict[str, Any],
-) -> FitResult:
-    """Fit the timing distribution and return Gaussian FWHM CTR.
-
-    The preferred path uses the configured adaptive histogram binning.  Some
-    otherwise well-behaved distributions can make every tested adaptive bin
-    phase fail (typically because a local fit range becomes numerically
-    underconstrained for all phases).  In that case we retry the *same Gaussian
-    fitter* with adaptive binning disabled.
-
-    This is deliberately NOT a fallback to sample-standard-deviation CTR: every
-    accepted result is still a Gaussian fit with CTR = 2.355 * sigma_fit.
-    """
+) -> FWHMResult:
+    """Measure CTR as the direct KDE FWHM of the dominant timing peak."""
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     if values.size == 0 or np.any(~np.isfinite(values)):
         raise RuntimeError(
-            f"{method}: Gaussian CTR requires one finite residual per event"
+            f"{method}: CTR requires one finite residual per event"
         )
 
-    attempts: list[tuple[str, dict[str, Any]]] = [("adaptive", fit_config)]
-    adaptive_cfg = fit_config.get("adaptive_binning", {})
-    if isinstance(adaptive_cfg, dict) and bool(adaptive_cfg.get("enabled", False)):
-        fallback_config = copy.deepcopy(fit_config)
-        fallback_config.setdefault("adaptive_binning", {})["enabled"] = False
-        attempts.append(("non-adaptive fallback", fallback_config))
-
-    failures: list[str] = []
-    for label, candidate_config in attempts:
-        try:
-            fit = fit_times_ps(values, method, candidate_config)
-        except Exception as exc:
-            failures.append(f"{label}: {exc}")
-            continue
-        if fit.success and np.isfinite(float(fit.ctr_ps)):
-            return fit
-        failures.append(
-            f"{label}: {getattr(fit, 'message', 'unknown fit failure')}"
+    result = fit_times_ps(values, method, fit_config)
+    if not bool(getattr(result, "success", False)) or not np.isfinite(
+        float(getattr(result, "ctr_ps", np.nan))
+    ):
+        raise RuntimeError(
+            f"{method}: KDE-FWHM measurement failed: "
+            f"{getattr(result, 'message', 'unknown failure')}"
         )
-
-    raise RuntimeError(
-        f"{method}: Gaussian CTR fit failed after all Gaussian fitting paths: "
-        + " | ".join(failures)
-    )
+    return result
 
 
-def _bootstrap_gaussian_ctr_uncertainty(
+def _bootstrap_ctr_uncertainty(
     values_ps: np.ndarray,
     *,
     method: str,
@@ -637,58 +614,58 @@ def _bootstrap_gaussian_ctr_uncertainty(
     n_bootstrap: int,
     seed: int,
 ) -> tuple[float, int]:
-    """Event-resampling uncertainty with a full Gaussian refit per draw."""
-    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
-    if values.size < 3 or int(n_bootstrap) <= 1:
-        return float("nan"), 0
-    if np.any(~np.isfinite(values)):
-        raise RuntimeError(f"{method}: bootstrap input contains non-finite values")
-
-    rng = np.random.default_rng(int(seed))
-    draws: list[float] = []
-    for draw_index in range(int(n_bootstrap)):
-        sample = values[rng.integers(0, values.size, size=values.size)]
-        try:
-            fit = _fit_ctr_gaussian(
-                sample,
-                method=f"{method} bootstrap {draw_index}",
-                fit_config=fit_config,
-            )
-        except Exception:
-            continue
-        draws.append(float(fit.ctr_ps))
-
-    minimum_success = max(10, int(math.ceil(0.80 * int(n_bootstrap))))
-    if len(draws) < minimum_success:
+    """Event-resampling uncertainty with full KDE-FWHM recomputation per draw."""
+    # metrics.py owns the canonical non-parametric bootstrap estimator.
+    summary = ctr_bootstrap_summary(
+        values_ps,
+        n_bootstrap=n_bootstrap,
+        seed=seed,
+        fit_config=fit_config,
+        method=method,
+    )
+    if not summary.success:
         raise RuntimeError(
-            f"{method}: only {len(draws)}/{n_bootstrap} Gaussian bootstrap fits "
-            f"succeeded; need at least {minimum_success}"
+            f"{method}: KDE-FWHM bootstrap failed: {summary.message}"
         )
-    return float(np.std(np.asarray(draws, dtype=np.float64), ddof=1)), len(draws)
+    return float(summary.std_ps), int(summary.n_successful)
 
 
 def _fit_row(
     values_ps: np.ndarray, *, method: str, fit_config: dict[str, Any]
-) -> tuple[FitResult, dict[str, Any]]:
-    """Return study metrics with CTR defined exclusively by the Gaussian fit."""
+) -> tuple[FWHMResult, dict[str, Any]]:
+    """Return study metrics with CTR defined by direct KDE FWHM."""
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     simple = residual_metrics(values)
-    fit = _fit_ctr_gaussian(values, method=method, fit_config=fit_config)
-    ctr_error = float(getattr(fit, "ctr_error_ps", float("nan")))
-    return fit, {
+    result = _measure_ctr(values, method=method, fit_config=fit_config)
+    ctr_error = float(getattr(result, "ctr_error_ps", float("nan")))
+    return result, {
         "n": int(simple["n"]),
-        "ctr_ps": float(fit.ctr_ps),
+        "ctr_ps": float(result.ctr_ps),
         "ctr_err_ps": ctr_error,
-        "mean_ps": float(fit.mean_ps),
-        "std_ps": float(fit.sigma_ps),
+        "mean_ps": float(simple["mean_ps"]),
+        "std_ps": float(simple["std_ps"]),
         "sample_std_ps": float(simple["std_ps"]),
         "rmse_ps": float(simple["rmse_ps"]),
         "bias_ps": float(simple["bias_ps"]),
-        "dev_ndof": float(fit.chi2_ndof),
-        "bin_ps": float(getattr(fit, "bin_width_ps", float("nan"))),
-        "phase_ps": float(getattr(fit, "bin_phase_ps", float("nan"))),
-        "phase_ctr_std_ps": float(
-            getattr(fit, "phase_ctr_std_ps", float("nan"))
+        "dev_ndof": float("nan"),
+        "bin_ps": float("nan"),
+        "phase_ps": float("nan"),
+        "phase_ctr_std_ps": float("nan"),
+        "peak_ps": float(getattr(result, "peak_ps", float("nan"))),
+        "left_halfmax_ps": float(
+            getattr(result, "left_halfmax_ps", float("nan"))
+        ),
+        "right_halfmax_ps": float(
+            getattr(result, "right_halfmax_ps", float("nan"))
+        ),
+        "kde_bandwidth_ps": float(
+            getattr(result, "bandwidth_ps", float("nan"))
+        ),
+        "multimodal_halfmax": bool(
+            getattr(result, "multimodal_halfmax", False)
+        ),
+        "n_halfmax_regions": int(
+            getattr(result, "n_halfmax_regions", 1)
         ),
     }
 
@@ -1027,7 +1004,7 @@ def _selection_metric_summary(
     fit_config: dict[str, Any],
     method: str,
 ) -> tuple[np.ndarray, dict[str, Any], list[float]]:
-    """Summarize holdout/CV selection using Gaussian CTR in every fold."""
+    """Summarize holdout/CV selection using KDE-FWHM CTR in every fold."""
     if not residual_parts:
         raise RuntimeError("Selection procedure produced no score residuals")
     parts = [
@@ -1074,7 +1051,7 @@ def _selection_metric_summary(
         phase_ctr_std_ps = float(fold_metrics[0]["phase_ctr_std_ps"])
     else:
         mean_ps = float(simple["mean_ps"])
-        std_ps = float(selection_ctr / FWHM_PER_SIGMA)
+        std_ps = float(simple["std_ps"])
         dev_ndof = float("nan")
         bin_ps = float("nan")
         phase_ps = float("nan")
@@ -1528,7 +1505,7 @@ def _select_waveform_space(
         if cached is not None:
             score_idx, residual, metrics, fold_ctrs = cached
             logger.info(
-                "Candidate %d/%d | REUSED | %s | Gaussian CTR %.1f ps",
+                "Candidate %d/%d | REUSED | %s | KDE-FWHM CTR %.1f ps",
                 sequence,
                 total,
                 _compact_candidate_params(overrides),
@@ -1568,7 +1545,7 @@ def _select_waveform_space(
             finally:
                 shutil.rmtree(candidate_work, ignore_errors=True)
             logger.info(
-                "Candidate %d/%d | %s | Gaussian CTR %.1f ps",
+                "Candidate %d/%d | %s | KDE-FWHM CTR %.1f ps",
                 sequence,
                 total,
                 _compact_candidate_params(overrides),
@@ -1764,7 +1741,7 @@ def _select_multithreshold(
             score_indices, combined, metrics, fold_ctrs = cached
             if sequence == 1 or sequence % max(1, len(candidates) // 10) == 0:
                 logger.info(
-                    "MT-SVR candidate %d/%d | REUSED | Gaussian CTR %.1f ps",
+                    "MT-SVR candidate %d/%d | REUSED | KDE-FWHM CTR %.1f ps",
                     sequence,
                     len(candidates),
                     float(metrics["ctr_ps"]),
@@ -1869,7 +1846,7 @@ def _select_multithreshold(
         _flush_progress_rows(result_rows)
 
     logger.info(
-        "Selected multithreshold SVR | mode=%s | Gaussian CTR %.1f ps | thresholds=%s",
+        "Selected multithreshold SVR | mode=%s | KDE-FWHM CTR %.1f ps | thresholds=%s",
         mode,
         float(best["metrics"]["ctr_ps"]),
         thresholds[best["params"]["threshold_indices"]].tolist(),
@@ -2601,7 +2578,6 @@ def _repair_additive_artifacts(
 def run_study(
     config: dict[str, Any],
     *,
-    dry_run: bool,
     resume: bool,
     restart: bool,
     rebuild_preprocessing: bool,
@@ -2684,7 +2660,7 @@ def run_study(
             )
         else:
             logger.info(
-                "CTR protocol changed to Gaussian-fit FWHM; existing numeric "
+                "CTR protocol changed to direct KDE-FWHM; existing numeric "
                 "results/candidate selections will be recomputed. Resume caches "
                 "with the old CTR semantics are intentionally not reused."
             )
@@ -2711,20 +2687,7 @@ def run_study(
         len(root_files),
         strategy,
     )
-    if dry_run:
-        return {
-            "output_dir": str(output),
-            "row_count": 0,
-            "dry_run": True,
-            "files": [str(value) for value in root_files],
-            "models": [value["id"] for value in config["_model_spaces"]],
-            "multithreshold": bool(
-                config["multithreshold"].get("enabled", False)
-            ),
-            "prepared_dir": config["preprocessing"]["prepared_dir"],
-            "selection_store_dir": config["preprocessing"]["selection_store_dir"],
-            "validation_strategy": strategy,
-        }
+   
     if not root_files:
         raise FileNotFoundError(
             f"No ROOT files match {config['data']['root_glob']} "
@@ -3189,7 +3152,7 @@ def run_study(
                         "selected": 1,
                         "n": len(ctr_values),
                         "mean_ps": float("nan"),
-                        "std_ps": ctr / FWHM_PER_SIGMA,
+                        "std_ps": float("nan"),
                         "ctr_ps": ctr,
                         "ctr_fold_std_ps": spread,
                         "ctr_uncertainty_ps": spread,
@@ -3252,9 +3215,9 @@ def run_study(
                 )
                 validation_baselines.append((_MODEL_CFD, cfd_val_metrics))
             logger.info(
-                "Validation baseline | mode=%s | n=%d | LED Gaussian CTR %.1f ps%s",
+                "Validation baseline | mode=%s | n=%d | LED KDE-FWHM CTR %.1f ps%s",
                 mode, int(led_val_metrics["n"]), float(led_val_metrics["ctr_ps"]),
-                (f" | CFD Gaussian CTR {float(cfd_val_metrics['ctr_ps']):.1f} ps" if cfd_val_metrics is not None else " | CFD disabled"),
+                (f" | CFD KDE-FWHM CTR {float(cfd_val_metrics['ctr_ps']):.1f} ps" if cfd_val_metrics is not None else " | CFD disabled"),
             )
             selection_stage = "validation"
             for model_name, metrics in validation_baselines:
@@ -3476,7 +3439,7 @@ def run_study(
                 fit_config=config["fit"],
             )
             blind_uncertainties: dict[str, float] = {
-                _MODEL_LED: _bootstrap_gaussian_ctr_uncertainty(
+                _MODEL_LED: _bootstrap_ctr_uncertainty(
                     led_residual,
                     method=f"Blind LED {mode}",
                     fit_config=config["fit"],
@@ -3487,7 +3450,7 @@ def run_study(
             blind_baselines = [(_MODEL_LED, led_residual)]
             if use_cfd:
                 assert cfd_residual is not None
-                blind_uncertainties[_MODEL_CFD] = _bootstrap_gaussian_ctr_uncertainty(
+                blind_uncertainties[_MODEL_CFD] = _bootstrap_ctr_uncertainty(
                     cfd_residual,
                     method=f"Blind CFD {mode}",
                     fit_config=config["fit"],
@@ -3787,7 +3750,7 @@ def run_study(
                     blind,
                     led_residual - residual,
                 )
-                uncertainty = _bootstrap_gaussian_ctr_uncertainty(
+                uncertainty = _bootstrap_ctr_uncertainty(
                     residual,
                     method=f"Blind {space['id']} {mode}",
                     fit_config=config["fit"],
@@ -3916,7 +3879,7 @@ def run_study(
                     blind,
                     led_residual - residual,
                 )
-                uncertainty = _bootstrap_gaussian_ctr_uncertainty(
+                uncertainty = _bootstrap_ctr_uncertainty(
                     residual,
                     method=f"Blind {_MODEL_MULTITHRESHOLD} {mode}",
                     fit_config=config["fit"],

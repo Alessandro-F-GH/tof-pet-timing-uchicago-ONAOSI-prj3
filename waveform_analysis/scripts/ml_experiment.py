@@ -24,10 +24,6 @@ def main() -> None:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument(
-        "--dry-run", "--check", dest="dry_run", action="store_true",
-        help="Validate resolved configuration/model availability without training",
-    )
-    parser.add_argument(
         "--print-resolved-config", action="store_true",
         help="Print the fully merged/effective JSON configuration and exit",
     )
@@ -69,7 +65,6 @@ def main() -> None:
 
     result = run_study(
         config,
-        dry_run=args.dry_run,
         resume=args.resume,
         restart=False,
         rebuild_preprocessing=args.rebuild_preprocessing,
