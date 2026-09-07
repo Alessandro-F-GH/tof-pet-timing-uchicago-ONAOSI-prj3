@@ -1,59 +1,34 @@
 # PET detector timing analysis
 
-This repository contains the analysis software developed to characterize timing performance in a TOF-PET detector setup using two complementary acquisition systems:
+Analysis software for the ONAOSI/UChicago TOF-PET project. The repository contains two complementary paths:
 
-- **oscilloscope waveform acquisition**, used as a full-information reference for conventional timing and waveform-based machine learning;
-- **Pico-TDC / Janus timestamp acquisition**, used to study a more compact and scalable threshold-based timing readout.
+- `waveform_analysis/`: oscilloscope preprocessing, LED/CFD baselines, waveform ML and XAI;
+- `janus_data_analysis/`: Pico-TDC / Janus timing analysis.
 
-The project focuses on coincidence timing resolution (CTR), waveform-dependent timing corrections, reduced multithreshold representations, and interpretation of the timing information encoded in detector signals.
+The waveform pipeline is intentionally compact. It uses one deterministic holdout protocol:
 
-## Main analysis components
+`prepared events -> development/blind -> training/validation -> select -> refit on development -> evaluate blind once`
 
-### Oscilloscope waveform analysis
+Only **Linear SVR** and **CNN** are retained as waveform models. Both use the physically constrained pair correction
 
-`waveform_analysis/` contains the waveform preprocessing and ML pipeline, including:
+`g(s1) - g(s2)`
 
-- photopeak/event preparation and LED/CFD timing references;
-- physics-constrained pair corrections of the form `g(s1) - g(s2)`;
-- linear SVR, CNN, and reduced multithreshold studies;
-- development/blind evaluation with a common CTR fitter;
-- explainability tools for studying where timing-relevant information is located in the waveform.
+so swapping the two detectors negates the prediction exactly. Standard timing is limited to **LED** and **CFD**. CTR is measured with a direct FWHM estimator of the dominant timing peak; no Gaussian distribution fit is used in the ML pipeline.
 
-See [`waveform_analysis/README.md`](waveform_analysis/README.md) for the detailed protocol and commands.
+Run the waveform pipeline from the repository root:
 
-### Pico-TDC / Janus analysis
+```bash
+python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/complete_new.json
+python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/complete_new.json
+python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/complete_new.json
+```
 
-`janus_data_analysis/` contains the Pico-TDC analysis workflow, including:
+Generate result plots from an existing run with:
 
-- trigger-matching acquisition analysis;
-- ToT-based energy/photopeak selection;
-- timing-hit matching and mismatch rejection;
-- timing-threshold scans;
-- CTR extraction and comparison with the oscilloscope reference.
+```bash
+python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete
+```
 
-### Supporting tools
+See `waveform_analysis/README.md` for the current scientific protocol and configuration structure.
 
-- `trc_converter/` — conversion utilities for oscilloscope `.trc` data;
-- `tools/` — repository-level analysis/support utilities;
-- `docs/` — additional project documentation.
-
-## Scientific goal
-
-The two readout paths are used together to address two complementary questions:
-
-1. **What timing performance is achievable when the complete detector waveform is available?**
-2. **How much of that performance can be retained with a practical, reduced-data readout?**
-
-The waveform analysis also uses interpretable ML models to investigate which parts of the detector signal carry timing-relevant information and to motivate future timing strategies or electronics designs.
-
-## Data availability
-
-**The experimental datasets used in this project are not publicly available yet.**
-
-The repository currently provides the analysis code, configuration files, and documentation, but does **not** include the raw or processed oscilloscope and Pico-TDC datasets required to reproduce the numerical results.
-
-Data availability will be updated if the experimental datasets can be released publicly.
-
-## License
-
-This repository is released under the MIT License. See [`LICENSE`](LICENSE).
+Experimental datasets are not included in the repository.

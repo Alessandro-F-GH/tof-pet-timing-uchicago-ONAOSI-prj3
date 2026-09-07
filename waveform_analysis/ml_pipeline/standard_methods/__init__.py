@@ -1,4 +1,4 @@
-from .led import led_delta_ps
-from .cfd import cfd_delta_ps, select_precomputed_cfd_times
+from .cfd import evaluate_cfd, select_cfd
+from .led import evaluate_led, select_led
 
-__all__ = ["led_delta_ps", "cfd_delta_ps", "select_precomputed_cfd_times"]
+__all__ = ["evaluate_cfd", "evaluate_led", "select_cfd", "select_led"]

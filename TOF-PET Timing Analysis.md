@@ -1,123 +1,37 @@
 # TOF-PET Timing Analysis
 
-Analysis tools developed for the ONAOSI/UChicago project on timing resolution in TOF-PET detector systems.
+This repository contains the ONAOSI/UChicago analysis tools for SiPM timing and coincidence time resolution (CTR).
 
-The repository contains complementary pipelines for oscilloscope waveform data and Janus/Pico-TDC data, together with tools for converting raw oscilloscope traces to a compact ROOT representation.
+## Waveform analysis
 
-## Project overview
+The oscilloscope pipeline keeps one compact protocol:
 
-The main goal is to study the timing information available in SiPM detector signals and evaluate methods for improving coincidence time resolution (CTR).
+1. physical event selection and permanent waveform preparation;
+2. deterministic development/blind split;
+3. one training/validation holdout inside development;
+4. LED/CFD and ML candidate selection on validation only;
+5. refit of the selected ML candidate on all development events;
+6. one final evaluation on the untouched blind population.
 
-The repository includes:
-
-- conventional timing estimators based on LED and CFD;
-- machine-learning corrections using full oscilloscope waveforms;
-- physics-constrained pair models of the form
-
-  \[
-  y(s_1,s_2)=g(s_1)-g(s_2),
-  \]
-
-  which enforce antisymmetry and use the same single-channel model for both detector signals;
-- reduced multithreshold models intended to approximate the information available from practical TDC-based readout;
-- Janus/Pico-TDC event matching and timing analysis.
-
-Experimental data are not included in the repository.
-
-## Repository structure
-
-```text
-.
-├── trc_converter/
-│   └── C++ converter from oscilloscope .trc files to ROOT
-│
-├── waveform_analysis/
-│   ├── config/          experiment and model configurations
-│   ├── ml_pipeline/     waveform preprocessing, training and evaluation
-│   ├── scripts/         analysis and experiment entry points
-│   └── tests/           pipeline tests
-│
-├── janus_data_analysis/
-│   ├── config/          Janus analysis configuration
-│   ├── utils/           event matching and analysis modules
-│   └── main.py          main Janus pipeline
-│
-├── notebooks/           optional exploratory/report notebooks
-└── docs/                additional documentation
-```
-
-## Oscilloscope waveform workflow
-
-Raw oscilloscope `.trc` files can first be converted to ROOT using the C++ converter:
-
-```bash
-cd trc_converter
-make -j"$(nproc)"
-```
-
-See `trc_converter/README.md` for converter usage and file-format details.
-
-The converted ROOT files can then be processed by the waveform-analysis pipeline:
-
-```bash
-cd waveform_analysis
-pip install -r requirements.txt
-
-python scripts/ml_experiment.py \
-    --config config/experiments/ctr_ml_search.json \
-    --check
-
-python scripts/ml_experiment.py \
-    --config config/experiments/ctr_ml_search.json
-```
-
-The waveform pipeline compares LED/CFD baselines with machine-learning timing corrections and supports full-waveform and multithreshold studies.
-
-See `waveform_analysis/README.md` for the scientific protocol, available models, preprocessing strategy and generated outputs.
-
-## Janus / Pico-TDC analysis
-
-The Janus pipeline processes binary timing data using a configurable event-matching and analysis workflow.
-
-```bash
-cd janus_data_analysis
-
-python main.py \
-    --config config/janus_pipeline.json
-```
-
-Input data and generated analysis outputs are kept outside version control.
-
-## Waveform models
-
-The current waveform-analysis pipeline includes:
-
-- Linear SVR
-- Constructive MLP
-- 1-D CNN
-- Multithreshold SVR
-
-For the full-waveform models, the pair correction is constructed from a shared single-channel scorer:
+The retained waveform models are **Linear SVR** and **1-D CNN**. Both implement a shared single-detector scorer and the exact antisymmetric pair correction
 
 \[
 y(s_1,s_2)=g(s_1)-g(s_2).
 \]
 
-This guarantees exact antisymmetry under detector exchange while avoiding independent pair-specific models.
+The standard methods are **LED** and **CFD**. The waveform ML pipeline reports CTR from a direct FWHM measurement of the dominant timing peak, with bootstrap uncertainty computed from the same estimator.
 
-## Reproducibility
-
-Experiment settings are stored in version-controlled configuration files.
-
-Large experimental datasets, prepared-data caches, trained outputs and generated result directories are intentionally excluded from Git.
-
-Tests for the waveform-analysis pipeline can be run with:
+Run from the repository root:
 
 ```bash
-cd waveform_analysis
-python -m unittest discover -s tests -v
+python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/complete_new.json
+python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/complete_new.json
 ```
 
-## License
+## Pico-TDC / Janus
 
-This project is released under the MIT License. See `LICENSE`.
+`janus_data_analysis/` remains the independent reduced-readout analysis path for Pico-TDC data, including event matching, threshold scans and CTR studies.
+
+## Data
+
+Experimental data are not included in the repository.
