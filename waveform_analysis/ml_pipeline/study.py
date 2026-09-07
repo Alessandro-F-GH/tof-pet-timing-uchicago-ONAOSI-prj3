@@ -54,15 +54,15 @@ def run_study(config_or_path:dict[str,Any]|str|Path,*,overwrite:bool=False,rebui
                 xai=config.get('reporting',{}).get('xai',{}) or {}
                 if bool(xai.get('enabled',True)) and spec.explain is not None:
                     limit=min(dataset.development.size,int(xai.get('max_events',1024))); chosen=dataset.development[:limit]; _prediction,time_ps,normalized=predict_indices(spec,fitted,dataset,mode,chosen); importance=spec.explain(fitted.artifact,normalized); physical=inverse_pair(dataset,mode,normalized); store.save_xai(name,mode,model_name,time_ps=time_ps,importance=importance,example_pair_mV=physical[0])
-        test=np.asarray(dataset.test,dtype=np.int64); true_tof=float(dataset.true_tof_ps)
+        test=np.asarray(dataset.test,dtype=np.int64)
         for mode in config['channel_modes']:
-            led=standard_delta(dataset,mode,'led')[test]-true_tof; rows.append(_metric_row(config,name,voltage,mode,'led',led,test.size,semantic_seed(seed,name,mode,'led','test'))); store.save_residuals(name,mode,'led',led)
+            family=target_family(mode); led_mean=float(dataset.manifest['led_training_mean_ps'][family]); led=standard_delta(dataset,mode,'led')[test]-led_mean; rows.append(_metric_row(config,name,voltage,mode,'led',led,test.size,semantic_seed(seed,name,mode,'led','test'))); store.save_residuals(name,mode,'led',led)
             if bool((config['modes'].get(mode) or {}).get('cfd',True)):
-                try: cfd=standard_delta(dataset,mode,'cfd')[test]-true_tof
+                try: cfd=standard_delta(dataset,mode,'cfd')[test]-led_mean
                 except ValueError: cfd=None
                 if cfd is not None: rows.append(_metric_row(config,name,voltage,mode,'cfd',cfd,test.size,semantic_seed(seed,name,mode,'cfd','test'))); store.save_residuals(name,mode,'cfd',cfd)
             anchor=anchor_delta(dataset,mode)[test]
             for model_name in config['models']:
-                final=final_models[(mode,model_name)]; spec=get_model(model_name); correction,_time,_pair=predict_indices(spec,final.fitted,dataset,mode,test); residual=anchor+correction-true_tof; rows.append(_metric_row(config,name,voltage,mode,model_name,residual,test.size,semantic_seed(seed,name,mode,model_name,'test'))); store.save_residuals(name,mode,model_name,residual)
-        manifest['datasets'][name]={'prepared_dir':str(dataset.directory),'split':dataset.manifest['split'],'led_threshold_mV':dataset.manifest['led_threshold_mV'],'cfd_fraction':dataset.manifest['cfd_fraction'],'subsampling':int(dataset.manifest['ml_input']['subsampling'])}; store.write_results(rows); store.write_manifest(manifest)
+                final=final_models[(mode,model_name)]; spec=get_model(model_name); correction,_time,_pair=predict_indices(spec,final.fitted,dataset,mode,test); residual=anchor+correction-led_mean; rows.append(_metric_row(config,name,voltage,mode,model_name,residual,test.size,semantic_seed(seed,name,mode,model_name,'test'))); store.save_residuals(name,mode,model_name,residual)
+        manifest['datasets'][name]={'prepared_dir':str(dataset.directory),'split':dataset.manifest['split'],'led_threshold_mV':dataset.manifest['led_threshold_mV'],'led_training_mean_ps':dataset.manifest['led_training_mean_ps'],'cfd_fraction':dataset.manifest['cfd_fraction'],'subsampling':int(dataset.manifest['ml_input']['subsampling'])}; store.write_results(rows); store.write_manifest(manifest)
     logger.info('Study complete | %s',store.root); return store.root
