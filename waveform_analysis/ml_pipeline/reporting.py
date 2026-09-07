@@ -33,6 +33,35 @@ def _residual(run,dataset,mode,method):
     return np.asarray(np.load(path),dtype=float) if path.is_file() else None
 
 
+def _measurement_text(value,uncertainty):
+    value=float(value); uncertainty=float(uncertainty)
+    if not np.isfinite(value):return "nan"
+    if not np.isfinite(uncertainty) or uncertainty<=0:return f"{value:.1f}"
+    rounded_unc=float(f"{uncertainty:.1g}")
+    exponent=int(np.floor(np.log10(abs(rounded_unc)))) if rounded_unc else 0
+    decimals=max(0,-exponent)
+    return f"{value:.{decimals}f} ± {rounded_unc:.{decimals}f}"
+
+
+def _mean_text(value,uncertainty):
+    value=float(value); uncertainty=float(uncertainty)
+    if not np.isfinite(value):return "nan"
+    if not np.isfinite(uncertainty) or uncertainty<=0:return f"{value:+.1f}"
+    rounded_unc=float(f"{uncertainty:.1g}")
+    exponent=int(np.floor(np.log10(abs(rounded_unc)))) if rounded_unc else 0
+    decimals=max(0,-exponent)
+    return f"{value:+.{decimals}f}"
+
+
+def _distribution_methods(subset,dataset):
+    available={r["method"] for r in subset if r["dataset"]==dataset}
+    # Distributions compare the LED reference directly with ML models. CFD is
+    # intentionally omitted here; it remains available in CTR-vs-voltage plots.
+    ordered=["led"]+[m for m in MODEL_ORDER if m not in {"led","cfd"}]
+    ordered.extend(sorted(available-set(ordered)-{"cfd"}))
+    return [m for m in ordered if m in available]
+
+
 def _stripe_importance(time_ns,importance,width_ns=1.0):
     t=np.asarray(time_ns,dtype=float); imp=np.asarray(importance,dtype=float)
     if t.size==0:return []
@@ -134,17 +163,33 @@ def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
             voltage=np.asarray([_voltage(r) for r in points]); ctr=np.asarray([_float(r["ctr_ps"]) for r in points]); error=np.asarray([_float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS[method])
         ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=mode_dir/"ctr_vs_voltage.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 
+        # Remove legacy method-centric distribution plots so regenerated reports
+        # contain one comparison plot per source file instead.
         for method in MODEL_ORDER:
-            fig,ax=plt.subplots(figsize=(8.2,4.6)); any_data=False
-            for dataset in datasets:
+            legacy=mode_dir/f"ctr_distribution_{method}.pdf"
+            if legacy.is_file():legacy.unlink()
+        for dataset in datasets:
+            methods=_distribution_methods(subset,dataset); series=[]
+            for method in methods:
                 residual=_residual(run,dataset,mode,method)
                 if residual is None:continue
                 residual=residual[np.isfinite(residual)]
                 if not residual.size:continue
-                center=float(np.median(residual)); ax.hist(residual-center,bins=100,histtype="step",density=True,label=f"{voltage_from_name(dataset):g} V"); any_data=True
-            if any_data:
-                ax.set_xlabel("Centered test residual [ps]"); ax.set_ylabel("Density"); ax.set_title(f"{mode.replace('_',' ')} — {LABELS[method]}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=mode_dir/f"ctr_distribution_{method}.pdf"; fig.savefig(target); paths.append(target)
-            plt.close(fig)
+                row=next((r for r in subset if r["dataset"]==dataset and r["method"]==method),None)
+                if row is None:continue
+                series.append((method,residual,row))
+            if not series:continue
+            all_values=np.concatenate([residual for _,residual,_ in series]); lo,hi=np.nanpercentile(all_values,[0.5,99.5])
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi<=lo:lo,hi=float(np.nanmin(all_values)),float(np.nanmax(all_values))
+            if hi<=lo:lo,hi=lo-1.0,hi+1.0
+            bins=np.linspace(lo,hi,101)
+            fig,ax=plt.subplots(figsize=(8.6,4.8))
+            for method,residual,row in series:
+                mean=float(np.mean(residual)); ctr=_float(row.get("ctr_ps")); unc=_float(row.get("ctr_uncertainty_ps"))
+                label=f"{LABELS.get(method,method)} · CTR {_measurement_text(ctr,unc)} ps · mean {_mean_text(mean,unc)} ps"
+                ax.hist(residual,bins=bins,histtype="step",density=True,label=label)
+            voltage=voltage_from_name(dataset); voltage_label=f" · {voltage:g} V" if np.isfinite(voltage) else ""
+            ax.set_xlabel("Test residual [ps]"); ax.set_ylabel("Density"); ax.set_title(f"{mode.replace('_',' ')} · {dataset}{voltage_label}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=mode_dir/f"ctr_distribution_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 
         for model in ("linear_svr","cnn"):
             for artifact in sorted((run/"artifacts").glob(f"*/{mode}/{model}_xai.npz"),key=lambda p:voltage_from_name(p.parent.parent.name)):
