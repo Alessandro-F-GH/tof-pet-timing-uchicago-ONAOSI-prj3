@@ -69,10 +69,12 @@ def validate_config(config):
         if key not in preprocessing: raise ConfigError(f"preprocessing.{key} is required")
     channels=config["data"]["channels"]
     if channels.get("timing") and "timing" not in preprocessing: raise ConfigError("preprocessing.timing is required when timing channels exist")
-    for family in ("energy","timing"):
-        if family not in preprocessing: continue
+    for key in ("trigger_threshold_mV","vertical_scale_limit_mV"):
+        if key not in preprocessing["energy"]: raise ConfigError(f"preprocessing.energy.{key} is required")
+    if "rising_edge_before_trigger_ns" in preprocessing["energy"]: raise ConfigError("preprocessing.energy.rising_edge_before_trigger_ns is obsolete; energy uses the materialized window start to peak")
+    if "timing" in preprocessing:
         for key in ("trigger_threshold_mV","vertical_scale_limit_mV","rising_edge_before_trigger_ns"):
-            if key not in preprocessing[family]: raise ConfigError(f"preprocessing.{family}.{key} is required")
+            if key not in preprocessing["timing"]: raise ConfigError(f"preprocessing.timing.{key} is required")
     noise=preprocessing["selection"]["baseline_noise"]
     if bool(noise.get("enabled",False)) and (len(noise["window_ns"])!=2 or float(noise["window_ns"][1])>0.): raise ConfigError("baseline_noise.window_ns must be [start, end] before the trigger")
     if not config["standard_methods"].get("led_thresholds_mV"): raise ConfigError("LED threshold list must not be empty")
