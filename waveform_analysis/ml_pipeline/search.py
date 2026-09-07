@@ -47,27 +47,34 @@ def select_candidate(
     predict_candidate: Callable[[Any, Any, Any], Any],
     score_candidate: Callable[[Any], float],
     seed: int,
+    on_candidate_start: Callable[[int, int, Any], None] | None = None,
+    on_candidate_result: Callable[[int, int, CandidateResult], None] | None = None,
 ) -> SearchResult:
     ordered = sorted(list(candidates), key=canonical_json)
     if not ordered:
         raise ValueError("Candidate list is empty")
 
     rows: list[CandidateResult] = []
+    total = len(ordered)
     for index, candidate in enumerate(ordered):
+        number = index + 1
+        if on_candidate_start is not None:
+            on_candidate_start(number, total, candidate)
         try:
             artifact = fit_candidate(candidate, train_data, int(seed) + index)
             prediction = predict_candidate(candidate, artifact, validation_data)
             score = float(score_candidate(prediction))
             metadata = dict(getattr(artifact, "metadata", {}) or {})
-            rows.append(CandidateResult(candidate, score, artifact, metadata))
+            result = CandidateResult(candidate, score, artifact, metadata)
         except Exception as exc:  # one bad candidate must not abort the search
-            rows.append(
-                CandidateResult(
-                    candidate,
-                    float("inf"),
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+            result = CandidateResult(
+                candidate,
+                float("inf"),
+                error=f"{type(exc).__name__}: {exc}",
             )
+        rows.append(result)
+        if on_candidate_result is not None:
+            on_candidate_result(number, total, result)
 
     successful = [row for row in rows if row.error is None]
     if not successful:

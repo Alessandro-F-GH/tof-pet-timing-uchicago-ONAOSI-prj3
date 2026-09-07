@@ -22,13 +22,22 @@ def _fit_once(spec, model_config, parameters, train_x, train_target, *, seed, va
 def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.ndarray:
     return np.asarray(spec.predict(fitted.artifact, np.asarray(pair,dtype=np.float32)), dtype=np.float64)
 
-def search_model(spec, model_config, config, dataset, mode: str, *, seed: int) -> SearchResult:
+def search_model(spec, model_config, config, dataset, mode: str, *, seed: int, logger=None) -> SearchResult:
     training=np.asarray(dataset.training,dtype=np.int64); validation=np.asarray(dataset.validation,dtype=np.int64)
     train_x=waveform_view(dataset,mode,training).materialize(); validation_x=waveform_view(dataset,mode,validation).materialize(); target=target_correction(dataset,mode); train_target=target[training]; validation_target=target[validation]
     def fit_candidate(parameters,_train_data,candidate_seed):
         return _fit_once(spec,model_config,parameters,train_x,train_target,seed=candidate_seed,validation_x=validation_x,validation_target=validation_target)
     def predict_candidate(_parameters,fitted,_validation_data): return predict_model(spec,fitted,validation_x)-validation_target
-    return select_candidate(spec.candidates(model_config),training,validation,fit_candidate=fit_candidate,predict_candidate=predict_candidate,score_candidate=lambda residual:ctr_fwhm(residual,config.get("fit")).ctr_ps,seed=seed)
+    def on_start(number,total,candidate):
+        if logger is not None:
+            logger.info('Training %s/%s | candidate %d/%d | %s',mode,spec.name,number,total,candidate)
+    def on_result(number,total,result):
+        if logger is None:return
+        if result.error is None:
+            logger.info('Validation %s/%s | candidate %d/%d | CTR %.3f ps | %s',mode,spec.name,number,total,result.score,result.candidate)
+        else:
+            logger.warning('Candidate failed %s/%s | candidate %d/%d | %s | %s',mode,spec.name,number,total,result.candidate,result.error)
+    return select_candidate(spec.candidates(model_config),training,validation,fit_candidate=fit_candidate,predict_candidate=predict_candidate,score_candidate=lambda residual:ctr_fwhm(residual,config.get("fit")).ctr_ps,seed=seed,on_candidate_start=on_start,on_candidate_result=on_result)
 
 def refit_selected(spec, model_config, dataset, mode: str, selected, *, seed: int) -> FittedModel:
     development=np.asarray(dataset.development,dtype=np.int64); x=waveform_view(dataset,mode,development).materialize(); target=target_correction(dataset,mode)[development]; epochs=selected.metadata.get("best_epoch") if selected.metadata else None
