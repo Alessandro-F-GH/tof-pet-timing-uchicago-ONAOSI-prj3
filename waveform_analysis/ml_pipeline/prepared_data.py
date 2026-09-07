@@ -25,13 +25,10 @@ def _families(config):
     return {source_family(m) for m in config['channel_modes']},{target_family(m) for m in config['channel_modes']}
 def dataset_fingerprint(preprocessed,config):
     return canonical_hash({'format_version':DATASET_FORMAT_VERSION,'preprocessed':preprocessed.manifest['fingerprint'],'true_tof_ps':config['data']['true_tof_ps'],'validation':{'seed':config['validation']['seed'],'validation_fraction':config['validation']['validation_fraction']},'standard_methods':config['standard_methods'],'ml_input':config['ml_input'],'modes':{m:config['modes'][m] for m in config['channel_modes']}})
-def _best_column(grid,candidates,true_tof,fit,*,logger=None,label='standard'):
-    best=None; score=float('inf'); population=int(grid.shape[0])
+def _best_column(grid,candidates,true_tof,fit):
+    best=None; score=float('inf')
     for i,c in enumerate(candidates):
-        times=np.asarray(grid[:,:,i],dtype=np.float64); valid_pair=np.all(np.isfinite(times),axis=1); valid_det1=int(np.count_nonzero(np.isfinite(times[:,0]))); valid_det2=int(np.count_nonzero(np.isfinite(times[:,1]))); valid_pairs=int(np.count_nonzero(valid_pair)); efficiency=float(valid_pairs/max(1,population))
-        if logger is not None:
-            logger.info('%s candidate %.6g | valid pairs %d/%d | efficiency %.2f%% | det1 %d/%d | det2 %d/%d',label,float(c),valid_pairs,population,100.0*efficiency,valid_det1,population,valid_det2,population)
-        residual=pair_delta(times)-float(true_tof)
+        residual=pair_delta(np.asarray(grid[:,:,i],dtype=np.float64))-float(true_tof)
         if not np.all(np.isfinite(residual)): continue
         s=float(ctr_fwhm(residual,fit).ctr_ps)
         if s<score: score=s; best=float(c)
@@ -63,11 +60,11 @@ def prepare_ml_dataset(preprocessed,config,*,rebuild,logger):
     if base.exists(): shutil.rmtree(base)
     base.mkdir(parents=True); development=np.asarray(preprocessed.development,dtype=np.int64); test=np.asarray(preprocessed.test,dtype=np.int64); split=split_training_validation(development,validation_fraction=float(config['validation']['validation_fraction']),seed=semantic_seed(int(config['validation']['seed']),Path(preprocessed.manifest['source']).name)); training,validation=split.training,split.validation; true_tof=float(config['data']['true_tof_ps']); sources,targets=_families(config); families=sorted(sources|targets); thresholds=np.asarray(config['standard_methods']['led_thresholds_mV'],dtype=float); fractions=np.asarray(config['standard_methods']['cfd_fractions'],dtype=float); led_choice={}; led_score={}; cfd_choice={}; cfd_score={}; led_times={}; cfd_times={}; anchor_idx={}; anchor_times={}
     for family in families:
-        dev_led=led_grid(preprocessed,family,development,thresholds); led_choice[family],led_score[family]=_best_column(dev_led,thresholds,true_tof,config.get('fit'),logger=logger,label=f'{family} LED'); led_times[family]=led_grid(preprocessed,family,np.arange(preprocessed.n_events),np.asarray([led_choice[family]]))[:,:,0]; anchor_idx[family],anchor_times[family]=anchor_grid(preprocessed,family,led_choice[family])
+        dev_led=led_grid(preprocessed,family,development,thresholds); led_choice[family],led_score[family]=_best_column(dev_led,thresholds,true_tof,config.get('fit')); logger.info('Selected %s LED | threshold %.6g mV | development FWHM CTR %.3f ps',family,led_choice[family],led_score[family]); led_times[family]=led_grid(preprocessed,family,np.arange(preprocessed.n_events),np.asarray([led_choice[family]]))[:,:,0]; anchor_idx[family],anchor_times[family]=anchor_grid(preprocessed,family,led_choice[family])
         if not np.all(np.isfinite(anchor_times[family])): raise RuntimeError(f'Unable to define {family} LED anchor for all selected events')
         need_cfd=family in targets and any(target_family(m)==family and bool((config['modes'].get(m) or {}).get('cfd',True)) for m in config['channel_modes'])
         if need_cfd:
-            dev_cfd=cfd_grid(preprocessed,family,development,fractions); cfd_choice[family],cfd_score[family]=_best_column(dev_cfd,fractions,true_tof,config.get('fit'),logger=logger,label=f'{family} CFD'); cfd_times[family]=cfd_grid(preprocessed,family,np.arange(preprocessed.n_events),np.asarray([cfd_choice[family]]))[:,:,0]
+            dev_cfd=cfd_grid(preprocessed,family,development,fractions); cfd_choice[family],cfd_score[family]=_best_column(dev_cfd,fractions,true_tof,config.get('fit')); cfd_times[family]=cfd_grid(preprocessed,family,np.arange(preprocessed.n_events),np.asarray([cfd_choice[family]]))[:,:,0]
     np.save(base/'event_index.npy',np.asarray(preprocessed.event_index,dtype=np.int64)); np.save(base/'bias_voltage_V.npy',np.asarray(preprocessed.bias_voltage_V,dtype=np.float64)); np.savez_compressed(base/'splits.npz',training=training,validation=validation,test=test); transforms={}
     for family in sorted(sources):
         normalized,time_ps,mean,scale=_materialize_family(preprocessed,family,anchor_idx[family],training,config); target=open_memmap(base/f'{family}_windows.npy',mode='w+',dtype=np.float32,shape=normalized.shape); target[:]=normalized; target.flush(); del target; np.save(base/f'{family}_time_ps.npy',time_ps); np.savez_compressed(base/f'{family}_transform.npz',mean=mean,scale=scale); transforms[family]={'mean_shape':list(mean.shape),'scale_shape':list(scale.shape),'fit_population':'training_only'}
