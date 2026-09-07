@@ -38,18 +38,26 @@ def _input_offsets(interval_s,config):
     w=config['ml_input']['window_ns']; dt_ns=float(interval_s)*1e9; first=int(np.ceil(float(w['start'])/dt_ns-1e-9)); last=int(np.floor(float(w['end'])/dt_ns+1e-9)); offsets=np.arange(first,last+1,dtype=np.int64); factor=int(config['ml_input'].get('subsampling',1)); offsets=offsets[::factor]
     if offsets.size<2: raise ValueError('ML input window contains fewer than two samples')
     return offsets,offsets.astype(float)*dt_ns*1000.0
-def _materialize_family(data,family,anchor_index,training,config):
+def _family_offsets_and_invalid(data,family,anchor_index,config):
     waves=data.energy_windows_mV if family=='energy' else data.timing_windows_mV; intervals=data.energy_sample_interval_s if family=='energy' else data.timing_sample_interval_s
     if waves is None or intervals is None: raise ValueError(f'{family} waveform unavailable')
-    ref=float(np.asarray(intervals)[training[0],0])
+    ref=float(np.asarray(intervals)[0,0])
     if not np.allclose(np.asarray(intervals),ref,rtol=1e-9,atol=0): raise ValueError(f'{family} sampling interval must be common')
-    offsets,time_ps=_input_offsets(ref,config); output=np.empty((data.n_events,2,offsets.size),dtype=np.float32)
-    for event in range(data.n_events):
+    offsets,time_ps=_input_offsets(ref,config); idx=np.asarray(anchor_index,dtype=np.int64); invalid=np.any((idx+int(offsets[0])<0)|(idx+int(offsets[-1])>=waves.shape[2]),axis=1)
+    return offsets,time_ps,invalid
+def _materialize_family(data,family,anchor_index,training_old,kept_rows,config):
+    waves=data.energy_windows_mV if family=='energy' else data.timing_windows_mV; intervals=data.energy_sample_interval_s if family=='energy' else data.timing_sample_interval_s
+    if waves is None or intervals is None: raise ValueError(f'{family} waveform unavailable')
+    ref=float(np.asarray(intervals)[0,0]); offsets,time_ps=_input_offsets(ref,config); output=np.empty((kept_rows.size,2,offsets.size),dtype=np.float32)
+    for out_event,event in enumerate(kept_rows):
         for detector in range(2):
             idx=int(anchor_index[event,detector])+offsets
-            if idx[0]<0 or idx[-1]>=waves.shape[2]: raise RuntimeError(f'{family} ML window exceeds preprocessing window')
-            output[event,detector]=np.asarray(waves[event,detector,idx],dtype=np.float32)
-    train=np.asarray(output[training],dtype=np.float64); mean=np.mean(train,axis=0); scale=np.std(train,axis=0); scale=np.where(scale>1e-6,scale,1.0); normalized=((output-mean[None,:,:])/scale[None,:,:]).astype(np.float32); return normalized,time_ps,mean.astype(np.float32),scale.astype(np.float32)
+            output[out_event,detector]=np.asarray(waves[event,detector,idx],dtype=np.float32)
+    train_positions=np.flatnonzero(np.isin(kept_rows,training_old)); train=np.asarray(output[train_positions],dtype=np.float64)
+    if train.size==0: raise RuntimeError(f'No training events remain after {family} ML-window exclusion')
+    mean=np.mean(train,axis=0); scale=np.std(train,axis=0); scale=np.where(scale>1e-6,scale,1.0); normalized=((output-mean[None,:,:])/scale[None,:,:]).astype(np.float32); return normalized,time_ps,mean.astype(np.float32),scale.astype(np.float32)
+def _remap_split(indices,keep):
+    mapping=np.full(keep.size,-1,dtype=np.int64); mapping[np.flatnonzero(keep)]=np.arange(np.count_nonzero(keep),dtype=np.int64); kept=np.asarray(indices,dtype=np.int64); kept=kept[keep[kept]]; return mapping[kept]
 def prepare_ml_dataset(preprocessed,config,*,rebuild,logger):
     base=Path(config['preprocessing']['prepared_dir']).resolve()/Path(preprocessed.manifest['source']).stem
     if base.is_dir() and not rebuild:
@@ -65,10 +73,21 @@ def prepare_ml_dataset(preprocessed,config,*,rebuild,logger):
         need_cfd=family in targets and any(target_family(m)==family and bool((config['modes'].get(m) or {}).get('cfd',True)) for m in config['channel_modes'])
         if need_cfd:
             dev_cfd=cfd_grid(preprocessed,family,development,fractions); cfd_choice[family],cfd_score[family]=_best_column(dev_cfd,fractions,true_tof,config.get('fit')); cfd_times[family]=cfd_grid(preprocessed,family,np.arange(preprocessed.n_events),np.asarray([cfd_choice[family]]))[:,:,0]
-    np.save(base/'event_index.npy',np.asarray(preprocessed.event_index,dtype=np.int64)); np.save(base/'bias_voltage_V.npy',np.asarray(preprocessed.bias_voltage_V,dtype=np.float64)); np.savez_compressed(base/'splits.npz',training=training,validation=validation,test=test); transforms={}
+
+    invalid=np.zeros(preprocessed.n_events,dtype=bool)
     for family in sorted(sources):
-        normalized,time_ps,mean,scale=_materialize_family(preprocessed,family,anchor_idx[family],training,config); target=open_memmap(base/f'{family}_windows.npy',mode='w+',dtype=np.float32,shape=normalized.shape); target[:]=normalized; target.flush(); del target; np.save(base/f'{family}_time_ps.npy',time_ps); np.savez_compressed(base/f'{family}_transform.npz',mean=mean,scale=scale); transforms[family]={'mean_shape':list(mean.shape),'scale_shape':list(scale.shape),'fit_population':'training_only'}
+        _offsets,_time,bad=_family_offsets_and_invalid(preprocessed,family,anchor_idx[family],config); invalid|=bad
+    keep=~invalid; kept_rows=np.flatnonzero(keep); excluded_event_index=np.asarray(preprocessed.event_index,dtype=np.int64)[invalid]
+    np.save(base/'excluded_ml_window_event_index.npy',excluded_event_index)
+    if excluded_event_index.size:
+        logger.warning('ML window exceeds preprocessing window | excluded=%d/%d | event indices saved to %s',excluded_event_index.size,preprocessed.n_events,base/'excluded_ml_window_event_index.npy')
+    if not kept_rows.size: raise RuntimeError('No events remain after ML-window exclusion')
+    training_new=_remap_split(training,keep); validation_new=_remap_split(validation,keep); test_new=_remap_split(test,keep)
+
+    np.save(base/'event_index.npy',np.asarray(preprocessed.event_index,dtype=np.int64)[keep]); np.save(base/'bias_voltage_V.npy',np.asarray(preprocessed.bias_voltage_V,dtype=np.float64)[keep]); np.savez_compressed(base/'splits.npz',training=training_new,validation=validation_new,test=test_new); transforms={}
+    for family in sorted(sources):
+        normalized,time_ps,mean,scale=_materialize_family(preprocessed,family,anchor_idx[family],training,kept_rows,config); target=open_memmap(base/f'{family}_windows.npy',mode='w+',dtype=np.float32,shape=normalized.shape); target[:]=normalized; target.flush(); del target; np.save(base/f'{family}_time_ps.npy',time_ps); np.savez_compressed(base/f'{family}_transform.npz',mean=mean,scale=scale); transforms[family]={'mean_shape':list(mean.shape),'scale_shape':list(scale.shape),'fit_population':'training_only'}
     for family in families:
-        np.save(base/f'{family}_led_time_ps.npy',led_times[family]); np.save(base/f'{family}_anchor_time_ps.npy',anchor_times[family]); np.save(base/f'{family}_target_ps.npy',true_tof-pair_delta(anchor_times[family])); np.save(base/f'{family}_anchor_offset_ps.npy',led_times[family]-anchor_times[family]);
-        if family in cfd_times: np.save(base/f'{family}_cfd_time_ps.npy',cfd_times[family])
-    manifest={'format_version':DATASET_FORMAT_VERSION,'fingerprint':dataset_fingerprint(preprocessed,config),'source':preprocessed.manifest['source'],'preprocessed_dir':str(preprocessed.directory),'true_tof_ps':true_tof,'n_events':preprocessed.n_events,'split':{'training':int(training.size),'validation':int(validation.size),'test':int(test.size)},'led_threshold_mV':led_choice,'led_development_ctr_ps':led_score,'cfd_fraction':cfd_choice,'cfd_development_ctr_ps':cfd_score,'ml_input':config['ml_input'],'normalization':transforms,'target_definition':'true_tof_ps - (native_anchor_time_1_ps - native_anchor_time_2_ps)','time_reference':'relative_to_native_sample_closest_to_selected_led_threshold'}; atomic_json(base/'manifest.json',manifest); logger.info('ML dataset %s | train=%d validation=%d test=%d | subsampling=%d',Path(preprocessed.manifest['source']).name,training.size,validation.size,test.size,int(config['ml_input'].get('subsampling',1))); return load_prepared_dataset(base)
+        np.save(base/f'{family}_led_time_ps.npy',led_times[family][keep]); np.save(base/f'{family}_anchor_time_ps.npy',anchor_times[family][keep]); np.save(base/f'{family}_target_ps.npy',(true_tof-pair_delta(anchor_times[family]))[keep]); np.save(base/f'{family}_anchor_offset_ps.npy',(led_times[family]-anchor_times[family])[keep]);
+        if family in cfd_times: np.save(base/f'{family}_cfd_time_ps.npy',cfd_times[family][keep])
+    manifest={'format_version':DATASET_FORMAT_VERSION,'fingerprint':dataset_fingerprint(preprocessed,config),'source':preprocessed.manifest['source'],'preprocessed_dir':str(preprocessed.directory),'true_tof_ps':true_tof,'n_input_events':preprocessed.n_events,'n_events':int(kept_rows.size),'excluded_ml_window_exceeds_preprocessing':int(excluded_event_index.size),'excluded_ml_window_event_index_file':'excluded_ml_window_event_index.npy','split':{'training':int(training_new.size),'validation':int(validation_new.size),'test':int(test_new.size)},'led_threshold_mV':led_choice,'led_development_ctr_ps':led_score,'cfd_fraction':cfd_choice,'cfd_development_ctr_ps':cfd_score,'ml_input':config['ml_input'],'normalization':transforms,'target_definition':'true_tof_ps - (native_anchor_time_1_ps - native_anchor_time_2_ps)','time_reference':'relative_to_native_sample_closest_to_selected_led_threshold'}; atomic_json(base/'manifest.json',manifest); logger.info('ML dataset %s | train=%d validation=%d test=%d | excluded_ml_window=%d | subsampling=%d',Path(preprocessed.manifest['source']).name,training_new.size,validation_new.size,test_new.size,excluded_event_index.size,int(config['ml_input'].get('subsampling',1))); return load_prepared_dataset(base)
