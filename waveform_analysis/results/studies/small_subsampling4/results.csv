@@ -1,7 +1,0 @@
-dataset,voltage_V,mode,method,stage,ctr_ps,ctr_uncertainty_ps,center_ps,n,population_n,crossing_efficiency,parameters_json
-45V-400mV,nan,energy_to_energy,led,development_selection,130.71189436683179,nan,nan,0,0,nan,"{""threshold_mV"": 15.0}"
-45V-400mV,nan,energy_to_energy,cfd,development_selection,128.96355237666108,nan,nan,0,0,nan,"{""fraction"": 0.05}"
-45V-400mV,nan,energy_to_energy,linear_svr,validation,130.0546054218392,nan,nan,0,0,nan,"{""C"": 100.0, ""epsilon_ps"": 60.0}"
-45V-400mV,nan,energy_to_energy,led,test,179.29365915416665,16.061342925119167,-134.93673995388207,150,150,1.0,
-45V-400mV,nan,energy_to_energy,cfd,test,165.77705689336273,32.122288263864824,-196.2428579227548,150,150,1.0,
-45V-400mV,nan,energy_to_energy,linear_svr,test,248.32514716820978,32.97569381604698,-122.29695225898342,150,150,1.0,

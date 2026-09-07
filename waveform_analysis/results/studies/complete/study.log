@@ -1,0 +1,11 @@
+2026-09-07 19:00:15,621 | INFO | Event selection 45V-400mV.root | 6928/20135 selected
+2026-09-07 19:00:44,793 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\45V-400mV
+2026-09-07 19:00:56,098 | INFO | Preprocessing 45V-400mV.root | n=6928/6928 | excluded_window=0 | families=energy,timing
+2026-09-07 19:00:57,210 | INFO | energy LED candidate 5 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4005/5547
+2026-09-07 19:00:57,211 | INFO | energy LED candidate 15 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547
+2026-09-07 19:00:57,211 | INFO | energy LED candidate 25 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547
+2026-09-07 19:00:57,212 | INFO | energy LED candidate 35 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547
+2026-09-07 19:00:57,212 | INFO | energy LED candidate 45 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547
+2026-09-07 19:00:57,213 | INFO | energy LED candidate 50 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547
+2026-09-07 19:00:57,213 | INFO | energy LED candidate 55 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547
+2026-09-07 19:00:57,213 | INFO | energy LED candidate 60 | valid pairs 11/5547 | efficiency 0.20% | det1 18/5547 | det2 4007/5547

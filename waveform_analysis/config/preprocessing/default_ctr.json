@@ -2,16 +2,16 @@
   "selection_store_dir": "processed_data/selected_events",
   "preprocessed_dir": "processed_data/native_preprocessed",
   "prepared_dir": "processed_data/ml_prepared",
-  "materialized_window_ns": {"before": 10.0, "after": 60.0},
+  "materialized_window_ns": {"before": 10.0, "after": 40.0},
   "energy": {
-    "trigger_threshold_mV": [50.0, 50.0],
+    "trigger_threshold_mV": [70.0, 70.0],
     "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]],
-    "rising_edge_before_trigger_ns": 3.0
+    "rising_edge_before_trigger_ns": 10.0
   },
   "timing": {
-    "trigger_threshold_mV": [100.0, 120.0],
+    "trigger_threshold_mV": [120.0, 120.0],
     "vertical_scale_limit_mV": [[-20.0, 140.0], [-20.0, 140.0]],
-    "rising_edge_before_trigger_ns": 3.0
+    "rising_edge_before_trigger_ns": 1.0
   },
   "selection": {
     "pulse_duration_mad": {"left": 5.0, "right": 5.0},
