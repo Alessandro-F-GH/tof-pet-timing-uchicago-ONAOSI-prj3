@@ -1,0 +1,21 @@
+dataset,voltage_V,mode,method,stage,ctr_ps,ctr_uncertainty_ps,center_ps,n,population_n,crossing_efficiency,parameters_json
+45V-400mV,nan,timing_to_timing,led,development_selection,61.16141568561467,nan,nan,0,0,nan,"{""threshold_mV"": 15.0}"
+45V-400mV,nan,timing_to_timing,linear_svr,validation,61.00523710634059,nan,nan,0,0,nan,"{""C"": 1.0, ""epsilon_ps"": 60.0}"
+45V-400mV,nan,timing_to_timing,led,test,58.60320160025384,8.516675724428376,75.3123149428647,142,142,1.0,
+45V-400mV,nan,timing_to_timing,linear_svr,test,70.92121220030815,11.083826561567363,73.2691719970116,142,142,1.0,
+46V-440mV,nan,timing_to_timing,led,development_selection,69.6277750615015,nan,nan,0,0,nan,"{""threshold_mV"": 15.0}"
+46V-440mV,nan,timing_to_timing,linear_svr,validation,50.97463262821472,nan,nan,0,0,nan,"{""C"": 1.0, ""epsilon_ps"": 60.0}"
+46V-440mV,nan,timing_to_timing,led,test,75.18471441878036,10.184448209364579,69.12550050241256,137,137,1.0,
+46V-440mV,nan,timing_to_timing,linear_svr,test,80.3550183803046,12.490623479118737,75.77046341535916,137,137,1.0,
+47V-470mV,nan,timing_to_timing,led,development_selection,61.90271078600129,nan,nan,0,0,nan,"{""threshold_mV"": 5.0}"
+47V-470mV,nan,timing_to_timing,linear_svr,validation,56.93178622912952,nan,nan,0,0,nan,"{""C"": 100.0, ""epsilon_ps"": 60.0}"
+47V-470mV,nan,timing_to_timing,led,test,48.258995401866095,10.592424821927406,75.41888617738279,150,150,1.0,
+47V-470mV,nan,timing_to_timing,linear_svr,test,106.00187237219578,10.939882431671501,74.1303119656753,150,150,1.0,
+48V-480mV,nan,timing_to_timing,led,development_selection,62.434582642976636,nan,nan,0,0,nan,"{""threshold_mV"": 5.0}"
+48V-480mV,nan,timing_to_timing,linear_svr,validation,66.52244651072532,nan,nan,0,0,nan,"{""C"": 1.0, ""epsilon_ps"": 60.0}"
+48V-480mV,nan,timing_to_timing,led,test,62.83682157811748,10.764442164788095,79.60343741628327,108,108,1.0,
+48V-480mV,nan,timing_to_timing,linear_svr,test,60.2696695107173,9.766190339022915,58.21282364025981,108,108,1.0,
+49V-490mV,nan,timing_to_timing,led,development_selection,66.64495240767529,nan,nan,0,0,nan,"{""threshold_mV"": 35.0}"
+49V-490mV,nan,timing_to_timing,linear_svr,validation,94.4636778437718,nan,nan,0,0,nan,"{""C"": 1.0, ""epsilon_ps"": 60.0}"
+49V-490mV,nan,timing_to_timing,led,test,59.79201253521073,10.199248108840749,86.89660529521487,75,75,1.0,
+49V-490mV,nan,timing_to_timing,linear_svr,test,104.38739219292675,18.37034527851241,94.96707159699037,75,75,1.0,

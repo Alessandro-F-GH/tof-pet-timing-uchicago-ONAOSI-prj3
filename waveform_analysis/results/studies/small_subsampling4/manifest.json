@@ -1,0 +1,257 @@
+{
+  "config": {
+    "channel_modes": [
+      "timing_to_timing"
+    ],
+    "data": {
+      "channels": {
+        "energy": [
+          1,
+          2
+        ],
+        "polarities": [
+          1,
+          1
+        ],
+        "timing": [
+          3,
+          4
+        ],
+        "timing_polarities": [
+          1,
+          1
+        ]
+      },
+      "recursive": false,
+      "root_folder": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\converted_runs_07-13",
+      "root_glob": "*-*.root",
+      "true_tof_ps": 0.0
+    },
+    "experiment": {
+      "name": "small_subsampling4",
+      "output_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\results\\studies\\small_subsampling4"
+    },
+    "fit": {
+      "fwhm": {
+        "bandwidth_multiplier": 1.0,
+        "max_bins": 8192,
+        "min_bandwidth_ps": 0.05,
+        "min_bins": 512,
+        "samples_per_bandwidth": 6.0,
+        "search_half_width_scale": 10.0
+      },
+      "min_events": 50
+    },
+    "ml_input": {
+      "subsampling": 4,
+      "window_ns": {
+        "end": 20.0,
+        "start": -2.0
+      }
+    },
+    "models": {
+      "linear_svr": {
+        "dual": "auto",
+        "loss": "epsilon_insensitive",
+        "max_iterations": 100000,
+        "model": "linear_svr",
+        "parameters": {
+          "C": [
+            1.0,
+            100.0
+          ],
+          "epsilon_ps": [
+            10.0,
+            60.0
+          ]
+        },
+        "tolerance": 0.001
+      }
+    },
+    "modes": {
+      "energy_to_energy": {
+        "cfd": true,
+        "enabled": false
+      },
+      "energy_to_timing": {
+        "cfd": false,
+        "enabled": false
+      },
+      "timing_to_timing": {
+        "cfd": false,
+        "enabled": true
+      }
+    },
+    "preprocessing": {
+      "energy": {
+        "trigger_threshold_mV": [
+          20.0,
+          20.0
+        ],
+        "vertical_scale_limit_mV": [
+          [
+            -50.0,
+            600.0
+          ],
+          [
+            -50.0,
+            600.0
+          ]
+        ]
+      },
+      "io": {
+        "max_events": 2000,
+        "step_size": "128 MB"
+      },
+      "materialized_window_ns": {
+        "after": 40.0,
+        "before": 12.0
+      },
+      "photopeak": {
+        "convergence_tolerance_mV": 0.01,
+        "histogram_bin_mV": 1.0,
+        "initial_half_width_mV": 15.0,
+        "iteration_sigma": 2.5,
+        "max_iterations": 6,
+        "search_quantile_min": 0.2,
+        "selection_sigma_high": 4.0,
+        "selection_sigma_low": -2.0,
+        "smoothing_sigma_bins": 2.0
+      },
+      "prepared_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\ml_prepared",
+      "preprocessed_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\native_preprocessed",
+      "selection": {
+        "baseline_noise": {
+          "enabled": true,
+          "lambda_mad": 5.0,
+          "window_ns": [
+            -4.0,
+            -1.0
+          ]
+        },
+        "minimum_events_per_split": 50,
+        "pulse_duration_mad": {
+          "left": 5.0,
+          "right": 5.0
+        }
+      },
+      "selection_store_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\selected_events",
+      "timing": {
+        "rising_edge_before_trigger_ns": 1.0,
+        "trigger_threshold_mV": [
+          120.0,
+          120.0
+        ],
+        "vertical_scale_limit_mV": [
+          [
+            -20.0,
+            140.0
+          ],
+          [
+            -20.0,
+            140.0
+          ]
+        ]
+      }
+    },
+    "reporting": {
+      "ctr_uncertainty_bootstrap_samples": 100,
+      "dpi": 180,
+      "xai": {
+        "enabled": false,
+        "max_events": 128
+      }
+    },
+    "standard_methods": {
+      "cfd_fractions": [
+        0.05
+      ],
+      "led_thresholds_mV": [
+        5.0,
+        15.0,
+        25.0,
+        35.0,
+        45.0,
+        50,
+        55,
+        60
+      ]
+    },
+    "validation": {
+      "seed": 20260813,
+      "test_fraction": 0.2,
+      "validation_fraction": 0.2
+    }
+  },
+  "ctr_metric": "direct_smoothed_histogram_fwhm",
+  "datasets": {
+    "45V-400mV": {
+      "cfd_fraction": {},
+      "led_threshold_mV": {
+        "timing": 15.0
+      },
+      "prepared_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\ml_prepared\\45V-400mV",
+      "split": {
+        "test": 142,
+        "training": 431,
+        "validation": 108
+      },
+      "subsampling": 4
+    },
+    "46V-440mV": {
+      "cfd_fraction": {},
+      "led_threshold_mV": {
+        "timing": 15.0
+      },
+      "prepared_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\ml_prepared\\46V-440mV",
+      "split": {
+        "test": 137,
+        "training": 503,
+        "validation": 126
+      },
+      "subsampling": 4
+    },
+    "47V-470mV": {
+      "cfd_fraction": {},
+      "led_threshold_mV": {
+        "timing": 5.0
+      },
+      "prepared_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\ml_prepared\\47V-470mV",
+      "split": {
+        "test": 150,
+        "training": 506,
+        "validation": 127
+      },
+      "subsampling": 4
+    },
+    "48V-480mV": {
+      "cfd_fraction": {},
+      "led_threshold_mV": {
+        "timing": 5.0
+      },
+      "prepared_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\ml_prepared\\48V-480mV",
+      "split": {
+        "test": 108,
+        "training": 334,
+        "validation": 83
+      },
+      "subsampling": 4
+    },
+    "49V-490mV": {
+      "cfd_fraction": {},
+      "led_threshold_mV": {
+        "timing": 35.0
+      },
+      "prepared_dir": "C:\\Users\\aless\\Desktop\\UChicago\\new_repo\\tof-pet-timing-uchicago-ONAOSI-prj3\\waveform_analysis\\processed_data\\ml_prepared\\49V-490mV",
+      "split": {
+        "test": 75,
+        "training": 211,
+        "validation": 53
+      },
+      "subsampling": 4
+    }
+  },
+  "protocol": "raw_split_then_development_fitted_selection_then_train_validation_then_test",
+  "schema_version": 2,
+  "test_used_for_selection": false
+}

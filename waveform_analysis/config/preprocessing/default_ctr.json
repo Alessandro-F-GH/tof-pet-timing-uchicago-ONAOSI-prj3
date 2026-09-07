@@ -2,9 +2,9 @@
   "selection_store_dir": "processed_data/selected_events",
   "preprocessed_dir": "processed_data/native_preprocessed",
   "prepared_dir": "processed_data/ml_prepared",
-  "materialized_window_ns": {"before": 10.0, "after": 40.0},
+  "materialized_window_ns": {"before": 5.0, "after": 40.0},
   "energy": {
-    "trigger_threshold_mV": [70.0, 70.0],
+    "trigger_threshold_mV": [20.0, 20.0],
     "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]]
   },
   "timing": {
@@ -16,10 +16,10 @@
     "pulse_duration_mad": {"left": 5.0, "right": 5.0},
     "baseline_noise": {
       "enabled": true,
-      "window_ns": [-4.0, -2.0],
+      "window_ns": [-4.0, -1.0],
       "lambda_mad": 5.0
     },
-    "minimum_events_per_split": 100
+    "minimum_events_per_split": 50
   },
   "photopeak": {
     "histogram_bin_mV": 1.0,

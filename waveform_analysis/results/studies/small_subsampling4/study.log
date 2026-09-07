@@ -1,14 +1,31 @@
-2026-09-07 18:59:14,995 | INFO | Event selection 45V-400mV.root | 685/2000 selected
-2026-09-07 18:59:20,698 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\45V-400mV
-2026-09-07 18:59:22,682 | INFO | Preprocessing 45V-400mV.root | n=684/685 | excluded_window=1 | families=timing
-2026-09-07 18:59:22,908 | INFO | timing LED candidate 5 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,909 | INFO | timing LED candidate 15 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,910 | INFO | timing LED candidate 25 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,911 | INFO | timing LED candidate 35 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,911 | INFO | timing LED candidate 45 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,912 | INFO | timing LED candidate 50 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,913 | INFO | timing LED candidate 55 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,913 | INFO | timing LED candidate 60 | valid pairs 540/540 | efficiency 100.00% | det1 540/540 | det2 540/540
-2026-09-07 18:59:22,995 | INFO | ML dataset 45V-400mV.root | train=432 validation=108 test=144 | subsampling=4
-2026-09-07 18:59:28,443 | INFO | Event selection 46V-440mV.root | 777/2000 selected
-2026-09-07 18:59:33,970 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\46V-440mV
+2026-09-07 19:41:28,365 | INFO | Event selection 45V-400mV.root | 683/2000 selected
+2026-09-07 19:41:33,688 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\45V-400mV
+2026-09-07 19:41:35,618 | INFO | Preprocessing 45V-400mV.root | n=681/683 | excluded_window=2 | families=timing
+2026-09-07 19:41:35,886 | INFO | Selected timing LED | threshold 15 mV | development FWHM CTR 61.161 ps
+2026-09-07 19:41:35,976 | INFO | ML dataset 45V-400mV.root | train=431 validation=108 test=142 | subsampling=4
+2026-09-07 19:41:40,528 | INFO | Event selection 46V-440mV.root | 766/2000 selected
+2026-09-07 19:41:45,725 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\46V-440mV
+2026-09-07 19:41:47,605 | INFO | Preprocessing 46V-440mV.root | n=766/766 | excluded_window=0 | families=timing
+2026-09-07 19:41:47,828 | INFO | Selected timing LED | threshold 15 mV | development FWHM CTR 69.628 ps
+2026-09-07 19:41:47,911 | INFO | ML dataset 46V-440mV.root | train=503 validation=126 test=137 | subsampling=4
+2026-09-07 19:41:52,519 | INFO | Event selection 47V-470mV.root | 786/2000 selected
+2026-09-07 19:41:57,819 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\47V-470mV
+2026-09-07 19:41:59,826 | INFO | Preprocessing 47V-470mV.root | n=783/786 | excluded_window=3 | families=timing
+2026-09-07 19:42:00,033 | INFO | Selected timing LED | threshold 5 mV | development FWHM CTR 61.903 ps
+2026-09-07 19:42:00,119 | INFO | ML dataset 47V-470mV.root | train=506 validation=127 test=150 | subsampling=4
+2026-09-07 19:42:04,715 | INFO | Event selection 48V-480mV.root | 525/2000 selected
+2026-09-07 19:42:09,890 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\48V-480mV
+2026-09-07 19:42:11,659 | INFO | Preprocessing 48V-480mV.root | n=525/525 | excluded_window=0 | families=timing
+2026-09-07 19:42:11,825 | INFO | Selected timing LED | threshold 5 mV | development FWHM CTR 62.435 ps
+2026-09-07 19:42:11,896 | INFO | ML dataset 48V-480mV.root | train=334 validation=83 test=108 | subsampling=4
+2026-09-07 19:42:16,440 | INFO | Event selection 49V-490mV.root | 339/2000 selected
+2026-09-07 19:42:21,511 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\49V-490mV
+2026-09-07 19:42:23,199 | INFO | Preprocessing 49V-490mV.root | n=339/339 | excluded_window=0 | families=timing
+2026-09-07 19:42:23,333 | INFO | Selected timing LED | threshold 35 mV | development FWHM CTR 66.645 ps
+2026-09-07 19:42:23,397 | INFO | ML dataset 49V-490mV.root | train=211 validation=53 test=75 | subsampling=4
+2026-09-07 19:42:25,603 | INFO | Selected timing_to_timing/linear_svr | validation CTR 61.005 ps | {'C': 1.0, 'epsilon_ps': 60.0}
+2026-09-07 19:42:26,822 | INFO | Selected timing_to_timing/linear_svr | validation CTR 50.975 ps | {'C': 1.0, 'epsilon_ps': 60.0}
+2026-09-07 19:42:29,301 | INFO | Selected timing_to_timing/linear_svr | validation CTR 56.932 ps | {'C': 100.0, 'epsilon_ps': 60.0}
+2026-09-07 19:42:30,430 | INFO | Selected timing_to_timing/linear_svr | validation CTR 66.522 ps | {'C': 1.0, 'epsilon_ps': 60.0}
+2026-09-07 19:42:31,229 | INFO | Selected timing_to_timing/linear_svr | validation CTR 94.464 ps | {'C': 1.0, 'epsilon_ps': 60.0}
+2026-09-07 19:42:31,284 | INFO | Study complete | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\results\studies\small_subsampling4

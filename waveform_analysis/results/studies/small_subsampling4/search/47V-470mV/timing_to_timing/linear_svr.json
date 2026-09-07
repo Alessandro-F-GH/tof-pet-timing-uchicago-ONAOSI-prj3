@@ -1,0 +1,49 @@
+{
+  "best": {
+    "candidate": {
+      "C": 100.0,
+      "epsilon_ps": 60.0
+    },
+    "error": null,
+    "metadata": {},
+    "score": 56.93178622912952
+  },
+  "candidates": [
+    {
+      "candidate": {
+        "C": 1.0,
+        "epsilon_ps": 10.0
+      },
+      "error": null,
+      "metadata": {},
+      "score": 115.05592665480837
+    },
+    {
+      "candidate": {
+        "C": 1.0,
+        "epsilon_ps": 60.0
+      },
+      "error": null,
+      "metadata": {},
+      "score": 71.40013242690554
+    },
+    {
+      "candidate": {
+        "C": 100.0,
+        "epsilon_ps": 10.0
+      },
+      "error": null,
+      "metadata": {},
+      "score": 198.96807287749743
+    },
+    {
+      "candidate": {
+        "C": 100.0,
+        "epsilon_ps": 60.0
+      },
+      "error": null,
+      "metadata": {},
+      "score": 56.93178622912952
+    }
+  ]
+}
