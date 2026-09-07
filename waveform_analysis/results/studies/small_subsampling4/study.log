@@ -1,0 +1,6 @@
+2026-09-07 18:04:23,263 | INFO | Event selection 45V-400mV.root | 710/2000 selected
+2026-09-07 18:04:29,665 | INFO | Selection diagnostics written | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\processed_data\selected_events\45V-400mV
+2026-09-07 18:04:30,767 | INFO | Preprocessing 45V-400mV.root | n=710 | families=energy
+2026-09-07 18:04:31,445 | INFO | ML dataset 45V-400mV.root | train=448 validation=112 test=150 | subsampling=4
+2026-09-07 18:04:32,847 | INFO | Selected energy_to_energy/linear_svr | validation CTR 130.055 ps | {'C': 100.0, 'epsilon_ps': 60.0}
+2026-09-07 18:04:32,922 | INFO | Study complete | C:\Users\aless\Desktop\UChicago\new_repo\tof-pet-timing-uchicago-ONAOSI-prj3\waveform_analysis\results\studies\small_subsampling4

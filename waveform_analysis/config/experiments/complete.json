@@ -6,7 +6,7 @@
   "models": ["linear_svr", "cnn"],
   "modes": {
     "energy_to_energy": {"enabled": true, "cfd": true},
-    "energy_to_timing": {"enabled": true, "cfd": false},
+    "energy_to_timing": {"enabled": false, "cfd": false},
     "timing_to_timing": {"enabled": true, "cfd": false}
   }
 }
