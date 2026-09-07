@@ -11,7 +11,7 @@ def semantic_seed(base: int, *parts: object) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:4], "little") & 0x7FFFFFFF
 
 
-def _split(indices: np.ndarray, fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def split_indices(indices: np.ndarray, fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
     values = np.asarray(indices, dtype=np.int64).reshape(-1)
     if values.size < 2:
         raise ValueError("Need at least two events to split")
@@ -23,52 +23,39 @@ def _split(indices: np.ndarray, fraction: float, seed: int) -> tuple[np.ndarray,
 
 
 @dataclass(frozen=True)
-class ExperimentSplit:
+class DevelopmentTestSplit:
     development: np.ndarray
-    blind: np.ndarray
+    test: np.ndarray
+
+    def validate(self) -> None:
+        if set(map(int, self.development)) & set(map(int, self.test)):
+            raise AssertionError("development and test overlap")
+
+
+@dataclass(frozen=True)
+class TrainValidationSplit:
     training: np.ndarray
     validation: np.ndarray
 
-    def validate(self) -> None:
-        development = set(map(int, self.development))
-        blind = set(map(int, self.blind))
+    def validate(self, development: np.ndarray) -> None:
+        development_set = set(map(int, development))
         training = set(map(int, self.training))
         validation = set(map(int, self.validation))
-        if development & blind:
-            raise AssertionError("development and blind overlap")
         if training & validation:
             raise AssertionError("training and validation overlap")
-        if not training <= development or not validation <= development:
-            raise AssertionError("training/validation must be subsets of development")
-        if training | validation != development:
+        if training | validation != development_set:
             raise AssertionError("training + validation must exactly partition development")
 
-    def as_dict(self) -> dict[str, int]:
-        return {
-            "development": int(self.development.size),
-            "blind": int(self.blind.size),
-            "training": int(self.training.size),
-            "validation": int(self.validation.size),
-        }
 
-
-def make_split(
-    n_events: int,
-    *,
-    blind_fraction: float,
-    validation_fraction: float,
-    seed: int,
-) -> ExperimentSplit:
-    development, blind = _split(
-        np.arange(int(n_events), dtype=np.int64),
-        blind_fraction,
-        semantic_seed(seed, "blind"),
-    )
-    training, validation = _split(
-        development,
-        validation_fraction,
-        semantic_seed(seed, "validation"),
-    )
-    result = ExperimentSplit(development, blind, training, validation)
+def split_development_test(indices: np.ndarray, *, test_fraction: float, seed: int) -> DevelopmentTestSplit:
+    development, test = split_indices(indices, test_fraction, semantic_seed(seed, "test"))
+    result = DevelopmentTestSplit(development, test)
     result.validate()
+    return result
+
+
+def split_training_validation(development: np.ndarray, *, validation_fraction: float, seed: int) -> TrainValidationSplit:
+    training, validation = split_indices(development, validation_fraction, semantic_seed(seed, "validation"))
+    result = TrainValidationSplit(training, validation)
+    result.validate(development)
     return result

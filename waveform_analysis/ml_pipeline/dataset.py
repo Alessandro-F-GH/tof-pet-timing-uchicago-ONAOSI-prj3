@@ -1,116 +1,96 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .common import read_json
+DATASET_FORMAT_VERSION = 8
 
-DATASET_FORMAT_VERSION = 7
+
+@dataclass(frozen=True)
+class InputTransform:
+    mean: np.ndarray
+    scale: np.ndarray
+
+    def transform(self, values: np.ndarray) -> np.ndarray:
+        return ((np.asarray(values, dtype=np.float32) - self.mean) / self.scale).astype(np.float32)
+
+    def inverse(self, values: np.ndarray) -> np.ndarray:
+        return (np.asarray(values, dtype=np.float32) * self.scale + self.mean).astype(np.float32)
 
 
 @dataclass(frozen=True)
 class PreparedDataset:
     directory: Path
     manifest: dict[str, Any]
-    event_id: np.ndarray
     event_index: np.ndarray
-    source_file_id: np.ndarray
-    source_run_index: np.ndarray
     bias_voltage_V: np.ndarray
-    amplitude_mV: np.ndarray
-    noise_rms_mV: np.ndarray
-    trigger_index: np.ndarray
-    windows_mV: np.ndarray
-    relative_time_ps: np.ndarray
-    energy_led_time_fs: np.ndarray | None = None
-    timing_led_time_fs: np.ndarray | None = None
-    energy_cfd_time_fs: np.ndarray | None = None
-    timing_cfd_time_fs: np.ndarray | None = None
-    energy_window_anchor_time_fs: np.ndarray | None = None
-    timing_window_anchor_time_fs: np.ndarray | None = None
-    timing_windows_mV: np.ndarray | None = None
-    timing_relative_time_ps: np.ndarray | None = None
-    denoised_windows_mV: np.ndarray | None = None
-    denoised_timing_windows_mV: np.ndarray | None = None
-    # Raw-cache-only optional arrays. Current permanent v7 datasets normally do
-    # not materialize these duplicate energy representations.
-    timing_aligned_energy_window_anchor_time_fs: np.ndarray | None = None
-    timing_aligned_energy_windows_mV: np.ndarray | None = None
-    denoised_timing_aligned_energy_windows_mV: np.ndarray | None = None
-    # Generic aliases are kept only because the physical preparation module
-    # writes/reads them while constructing the current v7 dataset.
-    led_time_fs: np.ndarray | None = None
-    cfd_time_fs: np.ndarray | None = None
-    window_anchor_time_fs: np.ndarray | None = None
+    training: np.ndarray
+    validation: np.ndarray
+    test: np.ndarray
+    energy_windows: np.ndarray | None
+    timing_windows: np.ndarray | None
+    energy_time_ps: np.ndarray | None
+    timing_time_ps: np.ndarray | None
+    energy_transform: InputTransform | None
+    timing_transform: InputTransform | None
+    energy_led_time_ps: np.ndarray | None
+    timing_led_time_ps: np.ndarray | None
+    energy_cfd_time_ps: np.ndarray | None
+    timing_cfd_time_ps: np.ndarray | None
+    energy_anchor_time_ps: np.ndarray | None
+    timing_anchor_time_ps: np.ndarray | None
+    energy_target_ps: np.ndarray | None
+    timing_target_ps: np.ndarray | None
 
     @property
     def n_events(self) -> int:
-        return int(self.event_id.size)
+        return int(self.event_index.size)
 
     @property
-    def input_length(self) -> int:
-        return int(self.windows_mV.shape[-1])
+    def development(self) -> np.ndarray:
+        return np.sort(np.concatenate([self.training, self.validation])).astype(np.int64)
 
     @property
     def true_tof_ps(self) -> float:
-        return float(self.manifest.get("true_tof_ps", 0.0))
+        return float(self.manifest["true_tof_ps"])
 
 
-def _load(directory: Path, name: str, *, required: bool = True) -> np.ndarray | None:
+def _optional(directory: Path, name: str) -> np.ndarray | None:
     path = directory / f"{name}.npy"
+    return np.load(path, mmap_mode="r") if path.is_file() else None
+
+
+def _transform(directory: Path, family: str) -> InputTransform | None:
+    path = directory / f"{family}_transform.npz"
     if not path.is_file():
-        if required:
-            raise FileNotFoundError(f"Prepared dataset array not found: {path}")
         return None
-    return np.load(path, mmap_mode="r")
+    with np.load(path) as values:
+        return InputTransform(mean=np.asarray(values["mean"], dtype=np.float32), scale=np.asarray(values["scale"], dtype=np.float32))
 
 
 def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
-    root = Path(directory).resolve()
-    manifest_path = root / "manifest.json"
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"Not a prepared waveform dataset: {root}")
-    manifest = read_json(manifest_path)
-    version = int(manifest.get("format_version", -1))
-    if version != DATASET_FORMAT_VERSION:
-        raise ValueError(
-            f"Prepared dataset {root} uses format {version}; current format is "
-            f"{DATASET_FORMAT_VERSION}. Rebuild preprocessing."
-        )
-
-    energy_led = _load(root, "energy_led_time_fs", required=False)
-    energy_cfd = _load(root, "energy_cfd_time_fs", required=False)
-    energy_anchor = _load(root, "energy_window_anchor_time_fs", required=False)
+    directory = Path(directory).resolve()
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if int(manifest.get("format_version", -1)) != DATASET_FORMAT_VERSION:
+        raise ValueError(f"Prepared dataset must use format {DATASET_FORMAT_VERSION}")
+    with np.load(directory / "splits.npz") as split:
+        training = np.asarray(split["training"], dtype=np.int64)
+        validation = np.asarray(split["validation"], dtype=np.int64)
+        test = np.asarray(split["test"], dtype=np.int64)
     return PreparedDataset(
-        directory=root,
-        manifest=manifest,
-        event_id=_load(root, "event_id"),
-        event_index=_load(root, "event_index"),
-        source_file_id=_load(root, "source_file_id"),
-        source_run_index=_load(root, "source_run_index"),
-        bias_voltage_V=_load(root, "bias_voltage_V"),
-        amplitude_mV=_load(root, "amplitude_mV"),
-        noise_rms_mV=_load(root, "noise_rms_mV"),
-        trigger_index=_load(root, "trigger_index"),
-        windows_mV=_load(root, "windows_mV"),
-        relative_time_ps=_load(root, "relative_time_ps"),
-        energy_led_time_fs=energy_led,
-        timing_led_time_fs=_load(root, "timing_led_time_fs", required=False),
-        energy_cfd_time_fs=energy_cfd,
-        timing_cfd_time_fs=_load(root, "timing_cfd_time_fs", required=False),
-        energy_window_anchor_time_fs=energy_anchor,
-        timing_window_anchor_time_fs=_load(root, "timing_window_anchor_time_fs", required=False),
-        timing_windows_mV=_load(root, "timing_windows_mV", required=False),
-        timing_relative_time_ps=_load(root, "timing_relative_time_ps", required=False),
-        denoised_windows_mV=_load(root, "denoised_windows_mV", required=False),
-        denoised_timing_windows_mV=_load(root, "denoised_timing_windows_mV", required=False),
-        timing_aligned_energy_window_anchor_time_fs=_load(root, "timing_aligned_energy_window_anchor_time_fs", required=False),
-        timing_aligned_energy_windows_mV=_load(root, "timing_aligned_energy_windows_mV", required=False),
-        denoised_timing_aligned_energy_windows_mV=_load(root, "denoised_timing_aligned_energy_windows_mV", required=False),
-        led_time_fs=energy_led,
-        cfd_time_fs=energy_cfd,
-        window_anchor_time_fs=energy_anchor,
+        directory=directory, manifest=manifest,
+        event_index=np.load(directory / "event_index.npy", mmap_mode="r"),
+        bias_voltage_V=np.load(directory / "bias_voltage_V.npy", mmap_mode="r"),
+        training=training, validation=validation, test=test,
+        energy_windows=_optional(directory, "energy_windows"), timing_windows=_optional(directory, "timing_windows"),
+        energy_time_ps=_optional(directory, "energy_time_ps"), timing_time_ps=_optional(directory, "timing_time_ps"),
+        energy_transform=_transform(directory, "energy"), timing_transform=_transform(directory, "timing"),
+        energy_led_time_ps=_optional(directory, "energy_led_time_ps"), timing_led_time_ps=_optional(directory, "timing_led_time_ps"),
+        energy_cfd_time_ps=_optional(directory, "energy_cfd_time_ps"), timing_cfd_time_ps=_optional(directory, "timing_cfd_time_ps"),
+        energy_anchor_time_ps=_optional(directory, "energy_anchor_time_ps"), timing_anchor_time_ps=_optional(directory, "timing_anchor_time_ps"),
+        energy_target_ps=_optional(directory, "energy_target_ps"), timing_target_ps=_optional(directory, "timing_target_ps"),
     )

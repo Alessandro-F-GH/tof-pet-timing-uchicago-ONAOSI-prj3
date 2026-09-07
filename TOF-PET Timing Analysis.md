@@ -1,37 +1,11 @@
 # TOF-PET Timing Analysis
 
-This repository contains the ONAOSI/UChicago analysis tools for SiPM timing and coincidence time resolution (CTR).
+The repository contains an oscilloscope waveform pipeline and a separate Janus/Pico-TDC pipeline.
 
-## Waveform analysis
+The waveform protocol is selection-first:
 
-The oscilloscope pipeline keeps one compact protocol:
+`raw ROOT entries -> development/test -> development-fitted physical selection -> native-time materialization -> development LED/CFD calibration -> training/validation ML dataset -> model selection -> test`
 
-1. physical event selection and permanent waveform preparation;
-2. deterministic development/blind split;
-3. one training/validation holdout inside development;
-4. LED/CFD and ML candidate selection on validation only;
-5. refit of the selected ML candidate on all development events;
-6. one final evaluation on the untouched blind population.
+Only LED, CFD, Linear SVR and CNN are supported in the waveform study. Waveform preprocessing uses native samples with configured vertical clipping and no denoising. ML waveforms are aligned only during dataset preparation to the native sample closest to the selected LED threshold, then independently standardized for the two detector positions using training data only.
 
-The retained waveform models are **Linear SVR** and **1-D CNN**. Both implement a shared single-detector scorer and the exact antisymmetric pair correction
-
-\[
-y(s_1,s_2)=g(s_1)-g(s_2).
-\]
-
-The standard methods are **LED** and **CFD**. The waveform ML pipeline reports CTR from a direct FWHM measurement of the dominant timing peak, with bootstrap uncertainty computed from the same estimator.
-
-Run from the repository root:
-
-```bash
-python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/complete_new.json
-python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/complete_new.json
-```
-
-## Pico-TDC / Janus
-
-`janus_data_analysis/` remains the independent reduced-readout analysis path for Pico-TDC data, including event matching, threshold scans and CTR studies.
-
-## Data
-
-Experimental data are not included in the repository.
+The ML correction remains `g(s1) - g(s2)`, and waveform CTR uses the direct FWHM estimator rather than a Gaussian timing-distribution fit.

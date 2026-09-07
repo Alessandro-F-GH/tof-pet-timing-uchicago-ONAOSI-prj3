@@ -2,7 +2,7 @@
   "model_spaces_dir": "config/model_spaces",
   "validation": {
     "seed": 20260813,
-    "blind_fraction": 0.20,
+    "test_fraction": 0.20,
     "validation_fraction": 0.20
   },
   "fit": {
@@ -19,13 +19,14 @@
   "reporting": {
     "dpi": 180,
     "ctr_uncertainty_bootstrap_samples": 1000,
-    "xai": {
-      "enabled": true,
-      "max_events": 1024
-    }
+    "xai": {"enabled": true, "max_events": 1024}
   },
   "standard_methods": {
     "led_thresholds_mV": [5.0, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0, 75.0, 85.0, 95.0],
     "cfd_fractions": [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70, 0.80]
+  },
+  "ml_input": {
+    "window_ns": {"start": -2.0, "end": 60.0},
+    "subsampling": 1
   }
 }
