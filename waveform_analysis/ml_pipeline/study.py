@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import numpy as np
+from .common import voltage_from_name
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
 from .event_selection import select_events
@@ -35,12 +36,15 @@ def _selection_row(name,voltage,mode,method,score,parameters):
     return {'dataset':name,'voltage_V':voltage,'mode':mode,'method':method,'stage':'development_selection' if method in {'led','cfd'} else 'validation','ctr_ps':float(score),'ctr_uncertainty_ps':float('nan'),'center_ps':float('nan'),'n':0,'population_n':0,'crossing_efficiency':float('nan'),'parameters_json':json.dumps(parameters,sort_keys=True)}
 def _prepare_one(root,config,rebuild,logger):
     selection=select_events(root,config,rebuild=rebuild,logger=logger); ensure_selection_outputs(root,selection,config,logger); preprocessed=preprocess_selected(root,selection,config,rebuild=rebuild,logger=logger); return prepare_ml_dataset(preprocessed,config,rebuild=rebuild,logger=logger)
+def _dataset_voltage(dataset,name):
+    values=np.asarray(dataset.bias_voltage_V,dtype=float); finite=values[np.isfinite(values)]
+    return float(np.median(finite)) if finite.size else voltage_from_name(name)
 def run_study(config_or_path:dict[str,Any]|str|Path,*,overwrite:bool=False,rebuild_preprocessing:bool=False)->Path:
     config=load_config(config_or_path) if not isinstance(config_or_path,dict) else config_or_path; store=RunStore(config['experiment']['output_dir'],overwrite=overwrite); logger=_logger(store.root); roots=discover_root_files(config)
     if not roots: raise FileNotFoundError('No ROOT files matched the configured source')
     datasets=[_prepare_one(root,config,rebuild_preprocessing,logger) for root in roots]; rows=[]; seed=int(config['validation']['seed']); manifest={'schema_version':2,'protocol':'raw_split_then_development_fitted_selection_then_train_validation_then_test','test_used_for_selection':False,'ctr_metric':'direct_smoothed_histogram_fwhm','config':public_config(config),'datasets':{}}
     for dataset in datasets:
-        name=Path(dataset.manifest['source']).stem; voltage=float(np.nanmedian(dataset.bias_voltage_V)); store.save_split(name,dataset); final_models={}
+        name=Path(dataset.manifest['source']).stem; voltage=_dataset_voltage(dataset,name); store.save_split(name,dataset); final_models={}
         for mode in config['channel_modes']:
             family=target_family(mode); threshold=float(dataset.manifest['led_threshold_mV'][family]); rows.append(_selection_row(name,voltage,mode,'led',dataset.manifest['led_development_ctr_ps'][family],{'threshold_mV':threshold}))
             if bool((config['modes'].get(mode) or {}).get('cfd',True)) and family in dataset.manifest['cfd_fraction']:
