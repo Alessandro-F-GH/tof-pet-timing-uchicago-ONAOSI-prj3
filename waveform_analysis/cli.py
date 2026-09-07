@@ -46,6 +46,35 @@ def _prepare(config, rebuild: bool) -> int:
     return len(roots)
 
 
+def _confirm_same_config_rerun(config, *, overwrite: bool, rebuild_preprocessing: bool) -> bool:
+    if not (overwrite or rebuild_preprocessing):
+        return True
+    run_dir = Path(config["experiment"]["output_dir"]).resolve()
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return True
+    try:
+        previous = json.loads(manifest_path.read_text(encoding="utf-8")).get("config")
+    except (OSError, json.JSONDecodeError):
+        return True
+    if previous != public_config(config):
+        return True
+    action = []
+    if overwrite:
+        action.append("overwrite the existing run")
+    if rebuild_preprocessing:
+        action.append("rebuild preprocessing")
+    prompt = f"Configuration is unchanged from the previous run. Do you still want to {' and '.join(action)}? [y/N]: "
+    try:
+        answer = input(prompt).strip().lower()
+    except EOFError:
+        answer = ""
+    if answer in {"y", "yes"}:
+        return True
+    print(f"Keeping existing result: {run_dir}")
+    return False
+
+
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "report":
@@ -58,6 +87,8 @@ def main() -> None:
         return
     if args.command == "prepare":
         print(f"Prepared {_prepare(config, args.rebuild)} dataset(s)")
+        return
+    if not _confirm_same_config_rerun(config, overwrite=args.overwrite, rebuild_preprocessing=args.rebuild_preprocessing):
         return
     print(run_study(config, overwrite=args.overwrite, rebuild_preprocessing=args.rebuild_preprocessing))
 
