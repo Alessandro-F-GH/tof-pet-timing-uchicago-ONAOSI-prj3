@@ -10,6 +10,7 @@ from .data import preprocess_selected
 from .event_selection import select_events
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
+from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
 from .stats import bootstrap_ctr, ctr_fwhm
 from .storage import RunStore
@@ -33,7 +34,7 @@ def _metric_row(config,name,voltage,mode,method,residual,population_n,seed):
 def _selection_row(name,voltage,mode,method,score,parameters):
     return {'dataset':name,'voltage_V':voltage,'mode':mode,'method':method,'stage':'development_selection' if method in {'led','cfd'} else 'validation','ctr_ps':float(score),'ctr_uncertainty_ps':float('nan'),'center_ps':float('nan'),'n':0,'population_n':0,'crossing_efficiency':float('nan'),'parameters_json':json.dumps(parameters,sort_keys=True)}
 def _prepare_one(root,config,rebuild,logger):
-    selection=select_events(root,config,rebuild=rebuild,logger=logger); preprocessed=preprocess_selected(root,selection,config,rebuild=rebuild,logger=logger); return prepare_ml_dataset(preprocessed,config,rebuild=rebuild,logger=logger)
+    selection=select_events(root,config,rebuild=rebuild,logger=logger); ensure_selection_outputs(root,selection,config,logger); preprocessed=preprocess_selected(root,selection,config,rebuild=rebuild,logger=logger); return prepare_ml_dataset(preprocessed,config,rebuild=rebuild,logger=logger)
 def run_study(config_or_path:dict[str,Any]|str|Path,*,overwrite:bool=False,rebuild_preprocessing:bool=False)->Path:
     config=load_config(config_or_path) if not isinstance(config_or_path,dict) else config_or_path; store=RunStore(config['experiment']['output_dir'],overwrite=overwrite); logger=_logger(store.root); roots=discover_root_files(config)
     if not roots: raise FileNotFoundError('No ROOT files matched the configured source')

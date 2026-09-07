@@ -10,6 +10,7 @@ from .ml_pipeline.data import preprocess_selected
 from .ml_pipeline.event_selection import select_events
 from .ml_pipeline.prepared_data import prepare_ml_dataset
 from .ml_pipeline.reporting import make_plots
+from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -39,6 +40,7 @@ def _prepare(config, rebuild: bool) -> int:
     logger = logging.getLogger("waveform-prepare")
     for root in roots:
         selection = select_events(root, config, rebuild=rebuild, logger=logger)
+        ensure_selection_outputs(root, selection, config, logger)
         preprocessed = preprocess_selected(root, selection, config, rebuild=rebuild, logger=logger)
         prepare_ml_dataset(preprocessed, config, rebuild=rebuild, logger=logger)
     return len(roots)
