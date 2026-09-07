@@ -1,23 +1,153 @@
 from __future__ import annotations
-import csv
+
+import csv, json
 from pathlib import Path
 from typing import Any
 import numpy as np
-MODEL_ORDER=("led","cfd","linear_svr","cnn"); LABELS={"led":"LED","cfd":"CFD","linear_svr":"Linear SVR","cnn":"CNN"}
+
+from .common import voltage_from_name
+from .dataset import load_prepared_dataset
+from .view import inverse_pair, waveform_view
+
+MODEL_ORDER=("led","cfd","linear_svr","cnn")
+LABELS={"led":"LED","cfd":"CFD","linear_svr":"Linear SVR","cnn":"CNN"}
+
+
 def read_results(run_dir:str|Path)->list[dict[str,Any]]:
-    with (Path(run_dir)/"results.csv").open(encoding="utf-8",newline="") as stream: return list(csv.DictReader(stream))
+    with (Path(run_dir)/"results.csv").open(encoding="utf-8",newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def _float(value,default=float("nan")):
+    try:return float(value)
+    except (TypeError,ValueError):return default
+
+
+def _voltage(row):
+    value=_float(row.get("voltage_V"))
+    return value if np.isfinite(value) else voltage_from_name(row.get("dataset", ""))
+
+
+def _residual(run,dataset,mode,method):
+    path=run/"artifacts"/dataset/mode/f"{method}_test_residuals_ps.npy"
+    return np.asarray(np.load(path),dtype=float) if path.is_file() else None
+
+
+def _stripe_importance(time_ns,importance,width_ns=1.0):
+    t=np.asarray(time_ns,dtype=float); imp=np.asarray(importance,dtype=float)
+    if t.size==0:return []
+    edges=np.arange(np.floor(np.nanmin(t)/width_ns)*width_ns,np.ceil(np.nanmax(t)/width_ns)*width_ns+width_ns,width_ns)
+    out=[]
+    for a,b in zip(edges[:-1],edges[1:]):
+        mask=(t>=a)&(t<(b if b<edges[-1] else b+1e-12)); values=imp[mask]
+        out.append((float(a),float(b),float(np.nanmean(values)) if values.size else 0.0))
+    maximum=max((v for _,_,v in out),default=0.0)
+    return [(a,b,v/maximum if maximum>0 else 0.0) for a,b,v in out]
+
+
+def _xai_plot(mode_dir,run,mode,model,artifacts,paths):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap,Normalize
+
+    series=[]; pairs=[]; reference=None
+    for artifact in artifacts:
+        with np.load(artifact) as data:
+            time=np.asarray(data["time_ps"],dtype=float)/1000.0; importance=np.asarray(data["importance"],dtype=float); pair=np.asarray(data["example_pair_mV"],dtype=float)
+        if reference is None: reference=time
+        if time.shape!=reference.shape or not np.allclose(time,reference):
+            importance=np.interp(reference,time,importance); pair=np.vstack([np.interp(reference,time,pair[d]) for d in range(2)])
+        series.append(importance); pairs.append(pair)
+    if not series:return
+    importance=np.nanmean(np.stack(series),axis=0); pair=np.nanmean(np.stack(pairs),axis=0); time=reference
+    stripes=_stripe_importance(time,importance,1.0); cmap=LinearSegmentedColormap.from_list("xai",["white","orange","red"]); norm=Normalize(0,1)
+    fig,(top,bottom)=plt.subplots(2,1,figsize=(8.4,5.8),sharex=True,height_ratios=(2,1))
+    for a,b,value in stripes: top.axvspan(a,b,color=cmap(norm(value)),alpha=.65,lw=0); bottom.axvspan(a,b,color=cmap(norm(value)),alpha=.8,lw=0)
+    top.plot(time,pair[0],label="detector 1"); top.plot(time,pair[1],label="detector 2"); top.set_ylabel("Signal [mV]"); top.legend(); top.grid(True,alpha=.2)
+    centers=np.asarray([(a+b)/2 for a,b,_ in stripes]); values=np.asarray([v for _,_,v in stripes]); bottom.plot(centers,values,marker="o"); bottom.set_ylim(0,1.05); bottom.set_xlabel("Time relative to LED anchor [ns]"); bottom.set_ylabel("1 ns mean importance"); bottom.grid(True,alpha=.2)
+    fig.suptitle(f"{mode.replace('_',' ')} — {LABELS.get(model,model)} XAI (mean across datasets)"); fig.tight_layout(); target=mode_dir/f"xai_{model}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+
+
+def _correction_rankings(run,mode,model,datasets):
+    rows=[]
+    for dataset in datasets:
+        led=_residual(run,dataset,mode,"led"); corrected=_residual(run,dataset,mode,model)
+        if led is None or corrected is None or led.size!=corrected.size:continue
+        finite=np.isfinite(led)&np.isfinite(corrected)
+        if not np.any(finite):continue
+        center=float(np.median(led[finite]))
+        improvement=np.abs(led-center)-np.abs(corrected-center)
+        split_path=run/"splits"/f"{dataset}.npz"; event_indices=None
+        try:
+            with np.load(split_path) as split:test=np.asarray(split["test"],dtype=np.int64)
+            manifest=json.loads((run/"manifest.json").read_text(encoding="utf-8")); prepared=load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"]); event_indices=np.asarray(prepared.event_index[test],dtype=np.int64)
+        except Exception:event_indices=np.full(led.size,-1,dtype=np.int64)
+        for i in np.flatnonzero(finite):
+            rows.append({"dataset":dataset,"voltage_V":voltage_from_name(dataset),"position":int(i),"event_index":int(event_indices[i]) if i<event_indices.size else -1,"led_residual_ps":float(led[i]),"corrected_residual_ps":float(corrected[i]),"led_bias_ps":center,"led_distance_from_bias_ps":float(abs(led[i]-center)),"corrected_distance_from_led_bias_ps":float(abs(corrected[i]-center)),"improvement_ps":float(improvement[i])})
+    rows.sort(key=lambda r:r["improvement_ps"],reverse=True)
+    return rows[:3],rows[-3:]
+
+
+def _write_rankings(mode_dir,mode,model,top,worst):
+    target=mode_dir/f"correction_top_worst_{model}.csv"; fields=["rank_group","rank","dataset","voltage_V","event_index","led_residual_ps","corrected_residual_ps","led_bias_ps","led_distance_from_bias_ps","corrected_distance_from_led_bias_ps","improvement_ps"]
+    with target.open("w",encoding="utf-8",newline="") as stream:
+        writer=csv.DictWriter(stream,fieldnames=fields); writer.writeheader()
+        for group,items in (("top",top),("worst",list(reversed(worst)))):
+            for rank,row in enumerate(items,1): writer.writerow({"rank_group":group,"rank":rank,**{k:row[k] for k in fields if k not in {"rank_group","rank"}}})
+    return target
+
+
+def _correction_examples(mode_dir,run,mode,model,top,worst,paths):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap,Normalize
+    selected=[("Top",r) for r in top]+[("Worst",r) for r in reversed(worst)]
+    if not selected:return
+    manifest=json.loads((run/"manifest.json").read_text(encoding="utf-8")); cmap=LinearSegmentedColormap.from_list("xai",["white","orange","red"]); norm=Normalize(0,1)
+    fig,axes=plt.subplots(3,2,figsize=(11,9),squeeze=False)
+    for ax,(group,row) in zip(axes.flat,selected):
+        try:
+            prepared=load_prepared_dataset(manifest["datasets"][row["dataset"]]["prepared_dir"])
+            with np.load(run/"splits"/f'{row["dataset"]}.npz') as split:test=np.asarray(split["test"],dtype=np.int64)
+            index=int(test[row["position"]]); view=waveform_view(prepared,mode,np.asarray([index])); pair=inverse_pair(prepared,mode,view.materialize())[0]; time=np.asarray(view.time_ps)/1000.0
+            artifact=run/"artifacts"/row["dataset"]/mode/f"{model}_xai.npz"
+            if artifact.is_file():
+                with np.load(artifact) as data: xai_t=np.asarray(data["time_ps"])/1000.0; imp=np.asarray(data["importance"],dtype=float)
+                if xai_t.shape!=time.shape or not np.allclose(xai_t,time): imp=np.interp(time,xai_t,imp)
+                for a,b,value in _stripe_importance(time,imp,1.0): ax.axvspan(a,b,color=cmap(norm(value)),alpha=.6,lw=0)
+            ax.plot(time,pair[0],label="detector 1"); ax.plot(time,pair[1],label="detector 2")
+            ax.set_title(f"{group}: {row['dataset']} event {row['event_index']} | improvement {row['improvement_ps']:.1f} ps")
+            ax.set_xlabel("Time [ns]"); ax.set_ylabel("Signal [mV]"); ax.grid(True,alpha=.2)
+        except Exception as exc: ax.text(.5,.5,f"Unable to load example\n{exc}",ha="center",va="center",transform=ax.transAxes)
+    axes[0,0].legend(); fig.suptitle(f"{mode.replace('_',' ')} — {LABELS.get(model,model)} top/worst corrections"); fig.tight_layout(); target=mode_dir/f"correction_examples_{model}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+
+
 def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
     import matplotlib.pyplot as plt
     run=Path(run_dir).resolve(); output=Path(output_dir).resolve() if output_dir else run/"plots"; output.mkdir(parents=True,exist_ok=True); rows=[r for r in read_results(run) if r.get("stage")=="test"]; paths=[]
-    for mode in sorted({r["mode"] for r in rows}):
-        subset=[r for r in rows if r["mode"]==mode]; fig,ax=plt.subplots(figsize=(8.2,4.6))
+    modes=sorted({r["mode"] for r in rows})
+    for mode in modes:
+        mode_dir=output/mode; mode_dir.mkdir(parents=True,exist_ok=True); subset=[r for r in rows if r["mode"]==mode]; datasets=sorted({r["dataset"] for r in subset},key=voltage_from_name)
+        fig,ax=plt.subplots(figsize=(8.2,4.6))
         for method in MODEL_ORDER:
-            points=sorted([r for r in subset if r["method"]==method],key=lambda r:float(r["voltage_V"]));
-            if not points: continue
-            voltage=np.asarray([float(r["voltage_V"]) for r in points]); ctr=np.asarray([float(r["ctr_ps"]) for r in points]); error=np.asarray([float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS[method])
-        ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=output/f"ctr_vs_voltage_{mode}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
-    for artifact in sorted((run/"artifacts").glob("*/*/*_xai.npz")):
-        with np.load(artifact) as data: time_ns=np.asarray(data["time_ps"])/1000.; importance=np.asarray(data["importance"],dtype=float); pair=np.asarray(data["example_pair_mV"],dtype=float)
-        if importance.size and np.nanmax(importance)>0: importance=importance/np.nanmax(importance)
-        fig,(top,bottom)=plt.subplots(2,1,figsize=(8.4,5.8),sharex=True,height_ratios=(2,1)); top.plot(time_ns,pair[0],label="detector 1"); top.plot(time_ns,pair[1],label="detector 2"); top.set_ylabel("Signal [mV]"); top.legend(); top.grid(True,alpha=.25); bottom.plot(time_ns,importance); bottom.set_xlabel("Time relative to LED anchor [ns]"); bottom.set_ylabel("normalized importance"); bottom.grid(True,alpha=.25); fig.tight_layout(); target=output/f"xai_{artifact.parent.parent.name}_{artifact.parent.name}_{artifact.stem.removesuffix('_xai')}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+            points=sorted([r for r in subset if r["method"]==method and np.isfinite(_voltage(r))],key=_voltage)
+            if not points:continue
+            voltage=np.asarray([_voltage(r) for r in points]); ctr=np.asarray([_float(r["ctr_ps"]) for r in points]); error=np.asarray([_float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS[method])
+        ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=mode_dir/"ctr_vs_voltage.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+
+        for method in MODEL_ORDER:
+            fig,ax=plt.subplots(figsize=(8.2,4.6)); any_data=False
+            for dataset in datasets:
+                residual=_residual(run,dataset,mode,method)
+                if residual is None:continue
+                residual=residual[np.isfinite(residual)];
+                if not residual.size:continue
+                center=float(np.median(residual)); ax.hist(residual-center,bins=100,histtype="step",density=True,label=f"{voltage_from_name(dataset):g} V"); any_data=True
+            if any_data:
+                ax.set_xlabel("Centered test residual [ps]"); ax.set_ylabel("Density"); ax.set_title(f"{mode.replace('_',' ')} — {LABELS[method]}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=mode_dir/f"ctr_distribution_{method}.pdf"; fig.savefig(target); paths.append(target)
+            plt.close(fig)
+
+        for model in ("linear_svr","cnn"):
+            artifacts=sorted((run/"artifacts").glob(f"*/{mode}/{model}_xai.npz")); _xai_plot(mode_dir,run,mode,model,artifacts,paths)
+            top,worst=_correction_rankings(run,mode,model,datasets)
+            if top or worst:
+                paths.append(_write_rankings(mode_dir,mode,model,top,worst)); _correction_examples(mode_dir,run,mode,model,top,worst,paths)
     return paths
