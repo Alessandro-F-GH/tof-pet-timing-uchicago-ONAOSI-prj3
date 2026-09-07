@@ -45,26 +45,31 @@ def _stripe_importance(time_ns,importance,width_ns=1.0):
     return [(a,b,v/maximum if maximum>0 else 0.0) for a,b,v in out]
 
 
-def _xai_plot(mode_dir,run,mode,model,artifacts,paths):
+def _xai_plot_dataset(mode_dir,artifact,mode,model,paths):
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap,Normalize
 
-    series=[]; pairs=[]; reference=None
-    for artifact in artifacts:
-        with np.load(artifact) as data:
-            time=np.asarray(data["time_ps"],dtype=float)/1000.0; importance=np.asarray(data["importance"],dtype=float); pair=np.asarray(data["example_pair_mV"],dtype=float)
-        if reference is None: reference=time
-        if time.shape!=reference.shape or not np.allclose(time,reference):
-            importance=np.interp(reference,time,importance); pair=np.vstack([np.interp(reference,time,pair[d]) for d in range(2)])
-        series.append(importance); pairs.append(pair)
-    if not series:return
-    importance=np.nanmean(np.stack(series),axis=0); pair=np.nanmean(np.stack(pairs),axis=0); time=reference
-    stripes=_stripe_importance(time,importance,1.0); cmap=LinearSegmentedColormap.from_list("xai",["white","orange","red"]); norm=Normalize(0,1)
+    dataset=artifact.parent.parent.name
+    with np.load(artifact) as data:
+        time=np.asarray(data["time_ps"],dtype=float)/1000.0
+        importance=np.asarray(data["importance"],dtype=float)
+        pair=np.asarray(data["example_pair_mV"],dtype=float)
+    if not time.size or not importance.size:return
+    stripes=_stripe_importance(time,importance,1.0)
+    cmap=LinearSegmentedColormap.from_list("xai",["white","orange","red"]); norm=Normalize(0,1)
     fig,(top,bottom)=plt.subplots(2,1,figsize=(8.4,5.8),sharex=True,height_ratios=(2,1))
-    for a,b,value in stripes: top.axvspan(a,b,color=cmap(norm(value)),alpha=.65,lw=0); bottom.axvspan(a,b,color=cmap(norm(value)),alpha=.8,lw=0)
-    top.plot(time,pair[0],label="detector 1"); top.plot(time,pair[1],label="detector 2"); top.set_ylabel("Signal [mV]"); top.legend(); top.grid(True,alpha=.2)
-    centers=np.asarray([(a+b)/2 for a,b,_ in stripes]); values=np.asarray([v for _,_,v in stripes]); bottom.plot(centers,values,marker="o"); bottom.set_ylim(0,1.05); bottom.set_xlabel("Time relative to LED anchor [ns]"); bottom.set_ylabel("1 ns mean importance"); bottom.grid(True,alpha=.2)
-    fig.suptitle(f"{mode.replace('_',' ')} — {LABELS.get(model,model)} XAI (mean across datasets)"); fig.tight_layout(); target=mode_dir/f"xai_{model}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+    for a,b,value in stripes:
+        top.axvspan(a,b,color=cmap(norm(value)),alpha=.65,lw=0)
+        bottom.axvspan(a,b,color=cmap(norm(value)),alpha=.8,lw=0)
+    top.plot(time,pair[0],label="detector 1"); top.plot(time,pair[1],label="detector 2")
+    top.set_ylabel("Signal [mV]"); top.legend(); top.grid(True,alpha=.2)
+    centers=np.asarray([(a+b)/2 for a,b,_ in stripes]); values=np.asarray([v for _,_,v in stripes])
+    bottom.plot(centers,values,marker="o")
+    bottom.set_ylim(0,1.05); bottom.set_xlabel("Time relative to LED anchor [ns]"); bottom.set_ylabel("1 ns mean importance"); bottom.grid(True,alpha=.2)
+    voltage=voltage_from_name(dataset)
+    label=f"{voltage:g} V" if np.isfinite(voltage) else dataset
+    fig.suptitle(f"{LABELS.get(model,model)} · {mode.replace('_',' ')} · {label}")
+    fig.tight_layout(); target=mode_dir/f"xai_{dataset}_{model}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 
 
 def _correction_rankings(run,mode,model,datasets):
@@ -98,22 +103,18 @@ def _write_rankings(mode_dir,mode,model,top,worst):
 
 def _correction_examples(mode_dir,run,mode,model,top,worst,paths):
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap,Normalize
+
     selected=[("Top",r) for r in top]+[("Worst",r) for r in reversed(worst)]
     if not selected:return
-    manifest=json.loads((run/"manifest.json").read_text(encoding="utf-8")); cmap=LinearSegmentedColormap.from_list("xai",["white","orange","red"]); norm=Normalize(0,1)
+    manifest=json.loads((run/"manifest.json").read_text(encoding="utf-8"))
     fig,axes=plt.subplots(3,2,figsize=(11,9),squeeze=False)
     for ax,(group,row) in zip(axes.flat,selected):
         try:
             prepared=load_prepared_dataset(manifest["datasets"][row["dataset"]]["prepared_dir"])
             with np.load(run/"splits"/f'{row["dataset"]}.npz') as split:test=np.asarray(split["test"],dtype=np.int64)
             index=int(test[row["position"]]); view=waveform_view(prepared,mode,np.asarray([index])); pair=inverse_pair(prepared,mode,view.materialize())[0]; time=np.asarray(view.time_ps)/1000.0
-            artifact=run/"artifacts"/row["dataset"]/mode/f"{model}_xai.npz"
-            if artifact.is_file():
-                with np.load(artifact) as data: xai_t=np.asarray(data["time_ps"])/1000.0; imp=np.asarray(data["importance"],dtype=float)
-                if xai_t.shape!=time.shape or not np.allclose(xai_t,time): imp=np.interp(time,xai_t,imp)
-                for a,b,value in _stripe_importance(time,imp,1.0): ax.axvspan(a,b,color=cmap(norm(value)),alpha=.6,lw=0)
             ax.plot(time,pair[0],label="detector 1"); ax.plot(time,pair[1],label="detector 2")
+            ax.axvline(0.0,ls="--",lw=1.0,alpha=.8)
             ax.set_title(f"{group}: {row['dataset']} event {row['event_index']} | improvement {row['improvement_ps']:.1f} ps")
             ax.set_xlabel("Time [ns]"); ax.set_ylabel("Signal [mV]"); ax.grid(True,alpha=.2)
         except Exception as exc: ax.text(.5,.5,f"Unable to load example\n{exc}",ha="center",va="center",transform=ax.transAxes)
@@ -138,7 +139,7 @@ def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
             for dataset in datasets:
                 residual=_residual(run,dataset,mode,method)
                 if residual is None:continue
-                residual=residual[np.isfinite(residual)];
+                residual=residual[np.isfinite(residual)]
                 if not residual.size:continue
                 center=float(np.median(residual)); ax.hist(residual-center,bins=100,histtype="step",density=True,label=f"{voltage_from_name(dataset):g} V"); any_data=True
             if any_data:
@@ -146,7 +147,8 @@ def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
             plt.close(fig)
 
         for model in ("linear_svr","cnn"):
-            artifacts=sorted((run/"artifacts").glob(f"*/{mode}/{model}_xai.npz")); _xai_plot(mode_dir,run,mode,model,artifacts,paths)
+            for artifact in sorted((run/"artifacts").glob(f"*/{mode}/{model}_xai.npz"),key=lambda p:voltage_from_name(p.parent.parent.name)):
+                _xai_plot_dataset(mode_dir,artifact,mode,model,paths)
             top,worst=_correction_rankings(run,mode,model,datasets)
             if top or worst:
                 paths.append(_write_rankings(mode_dir,mode,model,top,worst)); _correction_examples(mode_dir,run,mode,model,top,worst,paths)
