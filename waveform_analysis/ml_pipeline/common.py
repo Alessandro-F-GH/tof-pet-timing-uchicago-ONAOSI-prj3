@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,13 @@ def canonical_hash(value: Any) -> str:
 def source_signature(path: Path) -> dict[str, Any]:
     stat = path.stat()
     return {"path": str(path.resolve()), "size_bytes": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+
+
+def voltage_from_name(value: str | Path) -> float:
+    """Extract detector bias from names such as ``49V-490mV.root``."""
+    name = Path(value).stem
+    match = re.search(r"(?:^|[^0-9.])(\d+(?:\.\d+)?)V(?:-|_|$)", name, flags=re.IGNORECASE)
+    return float(match.group(1)) if match else float("nan")
 
 
 def atomic_json(path: Path, value: Any) -> None:
