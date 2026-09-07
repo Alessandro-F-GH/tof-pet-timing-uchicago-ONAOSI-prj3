@@ -1,33 +1,19 @@
 {
   "selection_store_dir": "processed_data/selected_events",
   "prepared_dir": "processed_data/ml_prepared",
-  "materialized_window_ns": {
-    "before": 5.0,
-    "after": 40.0
-  },
+  "materialized_window_ns": {"before": 5.0, "after": 40.0},
   "cleanup_raw_cache": true,
   "materialization_chunk_size": 4096,
-  "input_variant_by_channel": {
-    "energy": "denoised",
-    "timing": "raw"
-  },
-  "subsampling_factors": [
-    1
-  ],
+  "input_variant_by_channel": {"energy": "denoised", "timing": "raw"},
+  "subsampling_factors": [1],
   "common": {
-    "baseline_samples": 500,
     "subtract_baseline": false,
+    "baseline_window_ns": {"start": -5.0, "end": -1.0},
     "search_trigger_threshold_mV": 50.0,
-    "analysis_crop_ns": {
-      "before": 5.0,
-      "after": 40.0
-    },
-    "cfd_fraction": 0.045
+    "analysis_crop_ns": {"before": 5.0, "after": 40.0}
   },
   "energy": {},
-  "timing": {
-    "search_trigger_threshold_mV": 100.0
-  },
+  "timing": {"search_trigger_threshold_mV": 100.0},
   "selection": {
     "baseline_rmse_robust_z": 5.0,
     "energy_trigger_index_range": null,
@@ -45,20 +31,7 @@
     "selection_sigma_low": -0.5,
     "selection_sigma_high": 1.0
   },
-  "denoising": {
-    "enabled": true,
-    "method": "butterworth_lowpass",
-    "cutoff_GHz": 1.0,
-    "order": 4
-  },
-  "io": {
-    "step_size": "128 MB",
-    "max_events": 0,
-    "progress_every": 1000
-  },
-  "parallelization": {
-    "preprocessing_backend": "process",
-    "preprocessing_workers": 8,
-    "preprocessing_chunksize": 8
-  }
+  "denoising": {"enabled": true, "method": "butterworth_lowpass", "cutoff_GHz": 1.0, "order": 4},
+  "io": {"step_size": "128 MB", "max_events": 0, "progress_every": 1000},
+  "parallelization": {"preprocessing_backend": "process", "preprocessing_workers": 8, "preprocessing_chunksize": 8}
 }

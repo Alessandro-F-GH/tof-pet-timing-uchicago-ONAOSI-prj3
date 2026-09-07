@@ -2,46 +2,50 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..dataset import PreparedDataset
+from ..search import SearchResult, select_candidate
+from ..stats import ctr_fwhm
+from ..timing import cfd_grid, pair_delta
 
 
 def select_precomputed_cfd_times(
     energy_cfd_time_fs: np.ndarray,
     timing_cfd_time_fs: np.ndarray | None,
 ) -> np.ndarray:
-    """Select the CFD timestamps materialized by preprocessing.
-
-    The prepared standard CFD must follow the same waveform family selected for
-    the prepared LED.  When timing-channel preprocessing is enabled,
-    ``timing_cfd_time_fs`` is passed and is selected. Otherwise the energy CFD
-    timestamps remain the standard-method artifact.
-
-    This function does not inspect manifest metadata and never recomputes a
-    crossing from saved waveform windows.
-    """
-
+    """Raw-preprocessing helper: keep CFD and LED on the same active family."""
     energy = np.asarray(energy_cfd_time_fs, dtype=np.int64)
-    if energy.ndim != 1:
-        raise ValueError(
-            f"Expected one energy CFD timestamp per detector, got shape {energy.shape}"
-        )
     if timing_cfd_time_fs is None:
         return energy
-
     timing = np.asarray(timing_cfd_time_fs, dtype=np.int64)
     if timing.shape != energy.shape:
-        raise ValueError(
-            "Timing and energy CFD timestamp shapes differ: "
-            f"{timing.shape} vs {energy.shape}"
-        )
+        raise ValueError("Energy/timing CFD timestamp shapes differ")
     return timing
 
 
-def cfd_delta_ps(dataset: PreparedDataset, indices: np.ndarray) -> np.ndarray:
-    """Return the detector-pair CFD difference from precomputed timestamps."""
+def select_cfd(config, dataset, family, training, validation, seed) -> SearchResult:
+    fractions = np.asarray(config["standard_methods"]["cfd_fractions"], dtype=np.float64)
+    grid = cfd_grid(config, dataset, family, validation, fractions)
 
-    idx = np.asarray(indices, dtype=np.int64)
-    return (
-        np.asarray(dataset.cfd_time_fs[idx, 0], dtype=np.float64)
-        - np.asarray(dataset.cfd_time_fs[idx, 1], dtype=np.float64)
-    ) / 1000.0
+    def fit(candidate, _data, _seed):
+        return int(np.flatnonzero(fractions == float(candidate))[0])
+
+    def predict(_candidate, column, _data):
+        residual = pair_delta(grid[:, :, int(column)]) - float(dataset.true_tof_ps)
+        if not np.all(np.isfinite(residual)):
+            raise ValueError("Candidate does not provide complete validation crossing coverage")
+        return residual
+
+    return select_candidate(
+        fractions.tolist(), training, validation,
+        fit_candidate=fit,
+        predict_candidate=predict,
+        score_candidate=lambda residual: ctr_fwhm(residual, config.get("fit")).ctr_ps,
+        seed=seed,
+    )
+
+
+def evaluate_cfd(config, dataset, family, indices, fraction) -> np.ndarray:
+    return pair_delta(
+        cfd_grid(
+            config, dataset, family, indices, np.asarray([float(fraction)], dtype=np.float64)
+        )[:, :, 0]
+    )
