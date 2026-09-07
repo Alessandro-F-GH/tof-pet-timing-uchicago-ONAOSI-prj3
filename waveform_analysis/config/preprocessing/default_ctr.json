@@ -5,8 +5,7 @@
   "materialized_window_ns": {"before": 10.0, "after": 40.0},
   "energy": {
     "trigger_threshold_mV": [70.0, 70.0],
-    "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]],
-    "rising_edge_before_trigger_ns": 10.0
+    "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]]
   },
   "timing": {
     "trigger_threshold_mV": [120.0, 120.0],
