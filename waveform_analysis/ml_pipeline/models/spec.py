@@ -16,7 +16,6 @@ ModelExplain = Callable[[Any, np.ndarray], np.ndarray]
 @dataclass(frozen=True)
 class ModelSpec:
     name: str
-    normalization: str
     candidates: CandidateFactory
     fit: ModelFit
     predict: ModelPredict

@@ -17,8 +17,6 @@ def register_model(spec: ModelSpec, *, replace: bool = False) -> None:
         raise ValueError("ModelSpec.name must be non-empty")
     if name in _REGISTRY and not replace:
         raise ValueError(f"Duplicate model name: {name}")
-    if spec.normalization not in {"global", "feature"}:
-        raise ValueError("Model normalization must be 'global' or 'feature'")
     _REGISTRY[name] = spec
 
 

@@ -1,16 +1,17 @@
 import unittest
 import numpy as np
 
-from waveform_analysis.ml_pipeline.splits import make_split
+from waveform_analysis.ml_pipeline.splits import split_development_test, split_training_validation
 
 
 class SplitTests(unittest.TestCase):
-    def test_isolation_and_determinism(self):
-        a = make_split(1000, blind_fraction=0.2, validation_fraction=0.2, seed=17)
-        b = make_split(1000, blind_fraction=0.2, validation_fraction=0.2, seed=17)
-        for name in ("development", "blind", "training", "validation"):
-            np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
-        self.assertFalse(set(a.development) & set(a.blind))
-        self.assertFalse(set(a.training) & set(a.validation))
-        self.assertTrue(set(a.training) <= set(a.development))
-        self.assertTrue(set(a.validation) <= set(a.development))
+    def test_raw_test_split_and_development_holdout_are_disjoint_and_deterministic(self):
+        indices = np.arange(1000)
+        first = split_development_test(indices, test_fraction=0.2, seed=7)
+        second = split_development_test(indices, test_fraction=0.2, seed=7)
+        np.testing.assert_array_equal(first.development, second.development)
+        np.testing.assert_array_equal(first.test, second.test)
+        self.assertFalse(set(first.development) & set(first.test))
+        holdout = split_training_validation(first.development, validation_fraction=0.2, seed=11)
+        self.assertFalse(set(holdout.training) & set(holdout.validation))
+        self.assertEqual(set(holdout.training) | set(holdout.validation), set(first.development))

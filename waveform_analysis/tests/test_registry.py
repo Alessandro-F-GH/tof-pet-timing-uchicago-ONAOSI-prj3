@@ -10,7 +10,6 @@ class RegistryTests(unittest.TestCase):
     def test_dummy_model_can_register_without_study_change(self):
         dummy = ModelSpec(
             name="dummy",
-            normalization="global",
             candidates=lambda _cfg: [{}],
             fit=lambda *args, **kwargs: object(),
             predict=lambda _artifact, pair: pair[:, 0, 0] * 0,

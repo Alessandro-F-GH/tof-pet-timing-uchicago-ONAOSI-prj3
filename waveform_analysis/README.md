@@ -1,68 +1,40 @@
-# Compact waveform timing pipeline
+# Waveform timing pipeline
 
-`waveform_analysis` evaluates how much TOF-PET timing information is available in oscilloscope waveforms while keeping the scientific protocol explicit and small.
+The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**.
 
-## Protocol
+## 1. Event selection
 
-For each prepared ROOT dataset:
+The ROOT entry population is split into permanent **development** and **test** sets before any fitted selection. Using development only, the pipeline fits the two energy photopeaks, detects every threshold hit on waveform families required by the experiment, derives detector-specific ToT limits from development median and scaled MAD, selects the longest acceptable pulse, and optionally derives a baseline-RMS limit from a trigger-relative development region. Frozen cuts are applied unchanged to test.
 
-`events -> development/blind -> training/validation`
+The selection cache stores indices, split labels, all hit metadata and selected main-hit indices. It does not copy waveforms. Energy used only for photopeak selection is not persisted downstream.
 
-The blind set is created first and is not passed to standard-method optimization, hyperparameter search, early stopping or model selection. LED/CFD parameters and ML candidates are selected with the single validation holdout. The selected ML candidate is then refit on the complete development population and evaluated once on blind data.
+Diagnostics include photopeak, ToT and optional baseline-noise plots plus `selection_summary.csv`.
 
-There is no K-fold, nested CV, cross-validation or pooled OOF path.
+## 2. Native-time preprocessing
 
-## Methods
+Only selected events and waveform families required by the configured ML modes are materialized. For each waveform the pipeline decodes/orients native samples, clamps them to detector-specific vertical limits, crops around the selected main trigger, preserves the original acquisition time through `window_start_time_s` and `sample_interval_s`, and stores a rising-edge interval ending at the selected pulse peak.
 
-Standard timing:
+There is **no denoising** and no event-wise baseline subtraction. No relative-time conversion, LED or CFD is performed here.
 
-- LED: threshold selected from `standard_methods.led_thresholds_mV`;
-- CFD: fraction selected from `standard_methods.cfd_fractions` when enabled for a mode.
+## 3. ML dataset preparation
 
-Waveform ML:
+For each waveform family needed as a source or target, LED thresholds are scanned only inside the stored rising intervals and the best threshold is selected on complete development. CFD fraction is selected on development when active. The native sample whose voltage is closest to the selected LED threshold becomes the anchor. The target is
 
-- `linear_svr`: linear shared-pair correction;
-- `cnn`: nonlinear shared 1-D convolutional scorer.
+`true_tof_ps - (anchor_time_1_ps - anchor_time_2_ps)`.
 
-Both models enforce
+The ML window is then materialized with `t_anchor = 0`, the single scalar `ml_input.subsampling` is applied, selected development is split into training/validation, and `mean[detector, sample]` / `std[detector, sample]` are fit on **training only**. The frozen transform and its inverse are persisted.
 
-`correction = g(detector_1) - g(detector_2)`.
+## 4. ML and final test
 
-New model families can be added by dropping a module with a `MODEL_SPEC` into `ml_pipeline/models/`; the registry discovers it without modifying `study.py`.
-
-## CTR metric
-
-`ml_pipeline.stats.ctr_fwhm` measures the full width at half maximum of the dominant smoothed timing histogram directly. The smoothing kernel stabilizes the histogram only; it is not a Gaussian fit. Blind uncertainty is obtained by event-resampling bootstrap with the same FWHM estimator.
+Linear SVR and CNN candidates are trained on training and ranked only on validation. The selected candidate is refit on complete development. The permanent test population is evaluated once after selection.
 
 ## CLI
 
-From the repository root:
-
 ```bash
-python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/complete_new.json
-python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/complete_new.json
-python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/complete_new.json
+python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/complete.json
+python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/complete.json
+python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/complete.json --overwrite
 python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete
 ```
 
-Use `--overwrite` for a fresh run and `--rebuild-preprocessing` only when the physical preparation must be rebuilt.
-
-## Outputs
-
-A run stores:
-
-- `manifest.json`: resolved configuration and protocol;
-- `results.csv`: validation and final blind CTR rows;
-- `splits/`: exact deterministic indices;
-- `search/`: candidate scores and selected parameters;
-- `models/`: only final development-refit models;
-- `artifacts/`: blind residuals and XAI arrays;
-- `plots/`: generated CTR/XAI figures.
-
-## Tests
-
-```bash
-python -m unittest discover -s waveform_analysis/tests -v
-```
-
-The tests cover split isolation/determinism, holdout candidate selection, direct FWHM robustness, model-registry extension and exact detector-swap antisymmetry.
+A small experiment with subsampling 4 is provided in `config/experiments/small_subsampling4.json`.

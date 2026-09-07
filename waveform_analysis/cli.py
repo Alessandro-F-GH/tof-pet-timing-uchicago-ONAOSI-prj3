@@ -6,7 +6,9 @@ import logging
 from pathlib import Path
 
 from .ml_pipeline.config import discover_root_files, load_config, public_config
-from .ml_pipeline.prepared_data import plot_prepared_signal_examples, prepare_file_dataset
+from .ml_pipeline.data import preprocess_selected
+from .ml_pipeline.event_selection import select_events
+from .ml_pipeline.prepared_data import prepare_ml_dataset
 from .ml_pipeline.reporting import make_plots
 from .ml_pipeline.study import run_study
 
@@ -14,16 +16,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="python -m waveform_analysis.cli",
-        description="TOF-PET waveform timing pipeline: one deterministic holdout + untouched blind set",
-    )
+    parser = argparse.ArgumentParser(prog="python -m waveform_analysis.cli", description="TOF-PET waveform pipeline: selection-first, native-time preprocessing, holdout ML")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "prepare", "run"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
-    prepare = commands.choices["prepare"]
-    prepare.add_argument("--rebuild", action="store_true")
+    commands.choices["prepare"].add_argument("--rebuild", action="store_true")
     run = commands.choices["run"]
     run.add_argument("--overwrite", action="store_true")
     run.add_argument("--rebuild-preprocessing", action="store_true")
@@ -36,13 +34,13 @@ def _parser() -> argparse.ArgumentParser:
 def _prepare(config, rebuild: bool) -> int:
     roots = discover_root_files(config)
     if not roots:
-        raise FileNotFoundError("No ROOT files matched the configured data source")
-    logger = logging.getLogger("waveform-prepare")
+        raise FileNotFoundError("No ROOT files matched the configured source")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-    examples = Path(config["preprocessing"]["prepared_dir"]) / "examples"
+    logger = logging.getLogger("waveform-prepare")
     for root in roots:
-        dataset = prepare_file_dataset(config, root, rebuild=rebuild, logger=logger)
-        plot_prepared_signal_examples(dataset, examples / f"{root.stem}.png", dpi=int(config.get("reporting", {}).get("dpi", 180)))
+        selection = select_events(root, config, rebuild=rebuild, logger=logger)
+        preprocessed = preprocess_selected(root, selection, config, rebuild=rebuild, logger=logger)
+        prepare_ml_dataset(preprocessed, config, rebuild=rebuild, logger=logger)
     return len(roots)
 
 
