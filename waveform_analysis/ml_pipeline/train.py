@@ -22,17 +22,20 @@ def _fit_once(spec, model_config, parameters, train_x, train_target, *, seed, va
 def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.ndarray:
     return np.asarray(spec.predict(fitted.artifact, np.asarray(pair,dtype=np.float32)), dtype=np.float64)
 
+def _selection_metric(model_config):
+    return str((model_config.get("training",{}) or {}).get("selection_metric",model_config.get("selection_metric","validation_ctr"))).lower()
+
 def _selection_score(spec,model_config,config,residual):
-    metric=str((model_config.get("training",{}) or {}).get("selection_metric","validation_ctr")).lower()
-    values=np.asarray(residual,dtype=np.float64)
-    if spec.name=="cnn" and metric=="validation_mse": return float(np.mean(values**2))
-    if spec.name=="cnn" and metric=="validation_rmse": return float(np.sqrt(np.mean(values**2)))
-    return float(ctr_fwhm(values,config.get("fit")).ctr_ps)
+    metric=_selection_metric(model_config); values=np.asarray(residual,dtype=np.float64)
+    if metric=="validation_mse": return float(np.mean(values**2))
+    if metric=="validation_rmse": return float(np.sqrt(np.mean(values**2)))
+    if metric in {"validation_ctr","ctr"}: return float(ctr_fwhm(values,config.get("fit")).ctr_ps)
+    raise ValueError(f"Unsupported selection metric for {spec.name}: {metric}")
 
 def _score_label(spec,model_config):
-    metric=str((model_config.get("training",{}) or {}).get("selection_metric","validation_ctr")).lower()
-    if spec.name=="cnn" and metric=="validation_mse": return "MSE [ps^2]"
-    if spec.name=="cnn" and metric=="validation_rmse": return "RMSE [ps]"
+    metric=_selection_metric(model_config)
+    if metric=="validation_mse": return "MSE [ps^2]"
+    if metric=="validation_rmse": return "RMSE [ps]"
     return "CTR [ps]"
 
 def search_model(spec, model_config, config, dataset, mode: str, *, seed: int, logger=None) -> SearchResult:
