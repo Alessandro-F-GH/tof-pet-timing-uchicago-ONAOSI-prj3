@@ -8,7 +8,7 @@
     "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]]
   },
   "timing": {
-    "trigger_threshold_mV": [120.0, 120.0],
+    "trigger_threshold_mV": [100.0, 100.0],
     "vertical_scale_limit_mV": [[-20.0, 140.0], [-20.0, 140.0]],
     "rising_edge_before_trigger_ns": 1.0
   },

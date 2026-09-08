@@ -1,11 +1,11 @@
 {
   "model": "linear_svr",
   "parameters": {
-    "C": [1.0, 100.0],
-    "epsilon_ps": [10.0, 60.0]
+    "C": [0.1],
+    "epsilon_ps": [0, 10.0, 20.0, 30.0, 60 ]
   },
   "loss": "epsilon_insensitive",
-  "tolerance": 0.001,
-  "max_iterations": 100000,
+  "tolerance": 0.01,
+  "max_iterations": 10000,
   "dual": "auto"
 }

@@ -3,4 +3,5 @@ __pycache__/
 processed_data/
 old/
 .venv/
+results/
 venv/
