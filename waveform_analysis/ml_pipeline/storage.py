@@ -30,7 +30,7 @@ class RunStore:
         target=self.root/"search"/dataset/mode/f"{name}.json"; atomic_json(target,value); return target
     def model_dir(self,dataset,mode,model):
         target=self.root/"models"/dataset/mode/model; target.mkdir(parents=True,exist_ok=True); return target
-    def save_residuals(self,dataset,mode,method,values):
-        target=self.root/"artifacts"/dataset/mode/f"{method}_test_residuals_ps.npy"; target.parent.mkdir(parents=True,exist_ok=True); np.save(target,np.asarray(values,dtype=np.float64)); return target
+    def save_residuals(self,dataset,mode,method,values,*,stage="test"):
+        target=self.root/"artifacts"/dataset/mode/f"{method}_{stage}_residuals_ps.npy"; target.parent.mkdir(parents=True,exist_ok=True); np.save(target,np.asarray(values,dtype=np.float64)); return target
     def save_xai(self,dataset,mode,model,*,time_ps,importance,example_pair_mV):
         target=self.root/"artifacts"/dataset/mode/f"{model}_xai.npz"; target.parent.mkdir(parents=True,exist_ok=True); np.savez_compressed(target,time_ps=np.asarray(time_ps),importance=np.asarray(importance),example_pair_mV=np.asarray(example_pair_mV,dtype=np.float32)); return target
