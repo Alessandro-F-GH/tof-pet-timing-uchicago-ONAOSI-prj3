@@ -9,8 +9,8 @@ from .common import voltage_from_name
 from .dataset import load_prepared_dataset
 from .view import inverse_pair, waveform_view
 
-MODEL_ORDER=("led","cfd","linear_svr","cnn")
-LABELS={"led":"LED","cfd":"CFD","linear_svr":"Linear SVR","cnn":"CNN"}
+MODEL_ORDER=("led","cfd","linear_svr","localized_rocket","cnn")
+LABELS={"led":"LED","cfd":"CFD","linear_svr":"Linear SVR","localized_rocket":"Localized ROCKET","cnn":"CNN"}
 
 
 def read_results(run_dir:str|Path)->list[dict[str,Any]]:
@@ -164,19 +164,19 @@ def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
     run=Path(run_dir).resolve(); output=Path(output_dir).resolve() if output_dir else run/"plots"; output.mkdir(parents=True,exist_ok=True); all_rows=read_results(run); test_rows=[r for r in all_rows if r.get("stage")=="test"]; paths=[]
     modes=sorted({r["mode"] for r in test_rows})
     for mode in modes:
-        mode_dir=output/mode; mode_dir.mkdir(parents=True,exist_ok=True); subset=[r for r in test_rows if r["mode"]==mode]; datasets=sorted({r["dataset"] for r in subset},key=voltage_from_name)
+        mode_dir=output/mode; mode_dir.mkdir(parents=True,exist_ok=True); subset=[r for r in test_rows if r["mode"]==mode]; datasets=sorted({r["dataset"] for r in subset},key=voltage_from_name); models=[m for m in MODEL_ORDER if m not in {"led","cfd"} and any(r["method"]==m for r in subset)]
         fig,ax=plt.subplots(figsize=(8.2,4.6))
         for method in MODEL_ORDER:
             points=sorted([r for r in subset if r["method"]==method and np.isfinite(_voltage(r))],key=_voltage)
             if not points:continue
-            voltage=np.asarray([_voltage(r) for r in points]); ctr=np.asarray([_float(r["ctr_ps"]) for r in points]); error=np.asarray([_float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS[method])
+            voltage=np.asarray([_voltage(r) for r in points]); ctr=np.asarray([_float(r["ctr_ps"]) for r in points]); error=np.asarray([_float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS.get(method,method))
         ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=mode_dir/"ctr_vs_voltage.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 
         for dataset in datasets:
             _distribution_plot(mode_dir,run,all_rows,mode,dataset,"test",paths)
             _distribution_plot(mode_dir,run,all_rows,mode,dataset,"train",paths)
 
-        for model in ("linear_svr","cnn"):
+        for model in models:
             for artifact in sorted((run/"artifacts").glob(f"*/{mode}/{model}_xai.npz"),key=lambda p:voltage_from_name(p.parent.parent.name)):_xai_plot_dataset(mode_dir,artifact,mode,model,paths)
             for dataset in datasets:
                 top,worst=_correction_rankings_dataset(run,mode,model,dataset)
