@@ -12,6 +12,7 @@ presentation/*.synctex.gz
 presentation/*.toc
 
 comparison_pico_scope/scope_feature_cache
+waveform_analysis/results/
 
 # Uncomment if compiled presentations should not be committed
 # presentation/*.pdf
