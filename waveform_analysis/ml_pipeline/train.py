@@ -15,15 +15,13 @@ class FittedModel:
     artifact: Any
     metadata: dict[str, Any]
 
-def _fit_once(spec, model_config, parameters, train_x, train_target, *, seed, validation_x=None, validation_target=None, final_epochs=None, initial_artifact=None):
+def _fit_once(spec,model_config,parameters,train_x,train_target,*,seed,validation_x=None,validation_target=None,final_epochs=None,initial_artifact=None):
     kwargs=dict(seed=seed,config=model_config,validation_x=None if validation_x is None else np.asarray(validation_x,dtype=np.float32),validation_target=None if validation_target is None else np.asarray(validation_target,dtype=np.float64),final_epochs=final_epochs)
     if initial_artifact is not None: kwargs["initial_artifact"]=initial_artifact
     artifact=spec.fit(parameters,np.asarray(train_x,dtype=np.float32),np.asarray(train_target,dtype=np.float64),**kwargs)
     return FittedModel(artifact,dict(getattr(artifact,"metadata",{}) or {}))
 
-def predict_model(spec:ModelSpec,fitted:FittedModel,pair:np.ndarray)->np.ndarray:
-    return np.asarray(spec.predict(fitted.artifact,np.asarray(pair,dtype=np.float32)),dtype=np.float64)
-
+def predict_model(spec:ModelSpec,fitted:FittedModel,pair:np.ndarray)->np.ndarray: return np.asarray(spec.predict(fitted.artifact,np.asarray(pair,dtype=np.float32)),dtype=np.float64)
 def _selection_metric(model_config): return str((model_config.get("training",{}) or {}).get("selection_metric",model_config.get("selection_metric","validation_ctr"))).lower()
 def _selection_score(spec,model_config,config,residual):
     metric=_selection_metric(model_config); values=np.asarray(residual,dtype=np.float64)
@@ -32,8 +30,7 @@ def _selection_score(spec,model_config,config,residual):
     if metric in {"validation_ctr","ctr"}: return float(ctr_fwhm(values,config.get("fit")).ctr_ps)
     raise ValueError(f"Unsupported selection metric for {spec.name}: {metric}")
 def _score_label(model_config):
-    metric=_selection_metric(model_config)
-    return "MSE [ps^2]" if metric=="validation_mse" else "RMSE [ps]" if metric=="validation_rmse" else "CTR [ps]"
+    metric=_selection_metric(model_config); return "MSE [ps^2]" if metric=="validation_mse" else "RMSE [ps]" if metric=="validation_rmse" else "CTR [ps]"
 
 def search_model(spec,model_config,config,dataset,mode:str,*,seed:int,logger=None)->SearchResult:
     training=np.asarray(dataset.training,dtype=np.int64); validation=np.asarray(dataset.validation,dtype=np.int64); train_x=waveform_view(dataset,mode,training).materialize(); validation_x=waveform_view(dataset,mode,validation).materialize(); target=target_correction(dataset,mode); train_target=target[training]; validation_target=target[validation]
@@ -50,7 +47,9 @@ def search_model(spec,model_config,config,dataset,mode:str,*,seed:int,logger=Non
 def refit_selected(spec,model_config,dataset,mode:str,selected,*,seed:int)->FittedModel:
     development=np.asarray(dataset.development,dtype=np.int64); x=waveform_view(dataset,mode,development).materialize(); target=target_correction(dataset,mode)[development]; epochs=selected.metadata.get("best_epoch") if selected.metadata else None
     initial=selected.artifact.artifact if spec.name=="cnn" and selected.artifact is not None else None
-    return _fit_once(spec,model_config,selected.candidate,x,target,seed=seed,final_epochs=None if epochs is None else int(epochs),initial_artifact=initial)
+    fitted=_fit_once(spec,model_config,selected.candidate,x,target,seed=seed,final_epochs=None if epochs is None else int(epochs),initial_artifact=initial)
+    selected.artifact=None
+    return fitted
 
 def predict_indices(spec,fitted,dataset,mode,indices):
     view=waveform_view(dataset,mode,np.asarray(indices,dtype=np.int64)); pair=view.materialize(); return predict_model(spec,fitted,pair),view.time_ps,pair
