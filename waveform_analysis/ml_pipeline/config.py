@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import copy, json
+import copy,json
 from pathlib import Path
 from typing import Any
-from .storage import fingerprint
+from .common import canonical_hash
 
 CHANNEL_MODES=("energy_to_energy","energy_to_timing","timing_to_timing")
 class ConfigError(ValueError): pass
 
 def _read(path:Path)->dict[str,Any]:
-    try: value=json.loads(path.read_text(encoding="utf-8"))
+    try:value=json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc: raise ConfigError(f"Configuration file not found: {path}") from exc
     except json.JSONDecodeError as exc: raise ConfigError(f"Invalid JSON in {path}: {exc}") from exc
     if not isinstance(value,dict): raise ConfigError(f"Configuration {path} must contain an object")
@@ -17,8 +17,7 @@ def _read(path:Path)->dict[str,Any]:
 
 def merge(base,override):
     result=copy.deepcopy(base)
-    for key,value in override.items():
-        result[key]=merge(result[key],value) if isinstance(value,dict) and isinstance(result.get(key),dict) else copy.deepcopy(value)
+    for key,value in override.items(): result[key]=merge(result[key],value) if isinstance(value,dict) and isinstance(result.get(key),dict) else copy.deepcopy(value)
     return result
 
 def _relative(owner:Path,value):
@@ -86,7 +85,7 @@ def load_config(path:str|Path,project_root:str|Path|None=None):
     source=Path(path).expanduser().resolve(); root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]; config=_resolve(source); config["channel_modes"]=_enabled_modes(config); _load_models(config,root)
     if "root_folder" in config["data"]: config["data"]["root_folder"]=_project_path(root,config["data"]["root_folder"])
     for key in ("selection_store_dir","preprocessed_dir","prepared_dir"): config["preprocessing"][key]=_project_path(root,config["preprocessing"][key])
-    config["experiment"]["output_dir"]=_project_path(root,config["experiment"]["output_dir"]); config["_config_path"]=str(source); validate_config(config); config["_config_fingerprint"]=fingerprint({k:v for k,v in config.items() if not str(k).startswith("_")}); return config
+    config["experiment"]["output_dir"]=_project_path(root,config["experiment"]["output_dir"]); config["_config_path"]=str(source); validate_config(config); config["_config_fingerprint"]=canonical_hash({k:v for k,v in config.items() if not str(k).startswith("_")}); return config
 def discover_root_files(config):
     data=config["data"]; root=Path(data["root_folder"]); pattern=str(data.get("root_glob","*.root")); files=sorted(root.rglob(pattern) if bool(data.get("recursive",False)) else root.glob(pattern)); return [p.resolve() for p in files if p.is_file()]
 def public_config(config): return {k:copy.deepcopy(v) for k,v in config.items() if not str(k).startswith("_")}
