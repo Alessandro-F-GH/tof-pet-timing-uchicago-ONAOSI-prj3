@@ -9,8 +9,8 @@ from .common import voltage_from_name
 from .dataset import load_prepared_dataset
 from .view import inverse_pair, waveform_view
 
-MODEL_ORDER=("led","cfd","linear_svr","pca_ridge","cnn")
-LABELS={"led":"LED","cfd":"CFD","linear_svr":"Linear SVR","pca_ridge":"PCA Ridge","cnn":"CNN"}
+MODEL_ORDER=("led","cfd","linear_svr","pca_svr","cnn")
+LABELS={"led":"LED","cfd":"CFD","linear_svr":"Linear SVR","pca_svr":"PCA SVR","cnn":"CNN"}
 
 
 def read_results(run_dir:str|Path)->list[dict[str,Any]]:
