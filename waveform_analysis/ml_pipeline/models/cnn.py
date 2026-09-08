@@ -11,15 +11,23 @@ from .spec import ModelSpec
 
 class SharedScorerCNN(nn.Module):
     def __init__(self,architecture:dict[str,Any]):
-        super().__init__(); channels=[int(v) for v in architecture.get("channels",[16,32,64])]; kernels=[int(v) for v in architecture.get("kernels",[33,15,13])]; strides=[int(v) for v in architecture.get("strides",[2,4,4])]; dilations=[int(v) for v in architecture.get("dilations",[1,1,2])]
+        super().__init__(); channels=[int(v) for v in architecture.get("channels",[16,32,64])]; kernels=[int(v) for v in architecture.get("kernels",[9,7,5])]; strides=[int(v) for v in architecture.get("strides",[2,2,2])]; dilations=[int(v) for v in architecture.get("dilations",[1,1,1])]
         if not(len(channels)==len(kernels)==len(strides)==len(dilations)): raise ValueError("CNN channels/kernels/strides/dilations must have equal length")
+        pool_length=int(architecture.get("adaptive_pool_length",128)); pooling=str(architecture.get("pooling","avg_max")).lower()
+        if pool_length<1: raise ValueError("adaptive_pool_length must be >= 1")
+        if pooling not in {"avg","max","avg_max"}: raise ValueError("CNN pooling must be avg, max, or avg_max")
         layers=[]; incoming=1
         for outgoing,kernel,stride,dilation in zip(channels,kernels,strides,dilations):
             padding=dilation*(kernel-1)//2; layers.extend([nn.Conv1d(incoming,outgoing,kernel,stride=stride,dilation=dilation,padding=padding),nn.BatchNorm1d(outgoing),nn.SiLU()]); incoming=outgoing
-        head=[nn.AdaptiveAvgPool1d(1),nn.Flatten()]
+        self.features=nn.Sequential(*layers); self.avg_pool=nn.AdaptiveAvgPool1d(pool_length) if pooling in {"avg","avg_max"} else None; self.max_pool=nn.AdaptiveMaxPool1d(pool_length) if pooling in {"max","avg_max"} else None
+        incoming*=pool_length*(2 if pooling=="avg_max" else 1); head=[nn.Flatten()]
         for width in [int(v) for v in architecture.get("dense_units",[32])]: head.extend([nn.Linear(incoming,width),nn.SiLU()]); incoming=width
-        head.append(nn.Linear(incoming,1)); self.features=nn.Sequential(*layers); self.head=nn.Sequential(*head)
-    def score(self,waveform): return self.head(self.features(waveform[:,None,:])).squeeze(1)
+        head.append(nn.Linear(incoming,1)); self.head=nn.Sequential(*head)
+    def score(self,waveform):
+        features=self.features(waveform[:,None,:]); pooled=[]
+        if self.avg_pool is not None: pooled.append(self.avg_pool(features))
+        if self.max_pool is not None: pooled.append(self.max_pool(features))
+        return self.head(torch.cat(pooled,dim=1) if len(pooled)>1 else pooled[0]).squeeze(1)
     def forward(self,pair): return self.score(pair[:,0,:])-self.score(pair[:,1,:])
 @dataclass
 class CNNArtifact:
