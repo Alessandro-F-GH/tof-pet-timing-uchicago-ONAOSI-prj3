@@ -1,11 +1,8 @@
 from __future__ import annotations
 import csv, os, shutil, tempfile
 from pathlib import Path
-from typing import Any
 import numpy as np
-from .common import atomic_json, canonical_hash
-
-def fingerprint(value:Any)->str: return canonical_hash(value)
+from .common import atomic_json
 
 class RunStore:
     def __init__(self,root:str|Path,*,overwrite:bool=False):
