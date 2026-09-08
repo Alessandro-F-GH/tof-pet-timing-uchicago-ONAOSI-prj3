@@ -6,7 +6,9 @@
     "max_dilation": 32,
     "n_time_bins": 64,
     "features": ["ppv", "max"],
-    "seed": 20260815
+    "seed": 20260815,
+    "device": "auto",
+    "chunk_size": 512
   },
   "parameters": {
     "alpha": [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
