@@ -35,7 +35,9 @@ class CNNArtifact:
     device:str
     metadata:dict[str,Any]
 def candidates(config):
-    p=config.get("parameters",{}); return [{"learning_rate":float(lr),"weight_decay":float(wd)} for lr,wd in itertools.product(p.get("learning_rate",[1e-3]),p.get("weight_decay",[1e-5]))]
+    p=config.get("parameters",{}); training=config.get("training",{})
+    learning_rates=p.get("learning_rate",[1e-3]); weight_decays=p.get("weight_decay",[1e-5]); batch_sizes=p.get("batch_size",[training.get("batch_size",64)])
+    return [{"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch)} for lr,wd,batch in itertools.product(learning_rates,weight_decays,batch_sizes)]
 def _device(config):
     requested=str(config.get("training",{}).get("device","auto")).lower(); return torch.device("cuda" if torch.cuda.is_available() else "cpu") if requested=="auto" else torch.device(requested)
 def _loader(x,y,batch,*,shuffle,seed):
@@ -45,10 +47,16 @@ def _predict_tensor(model,x,device,batch):
     with torch.no_grad():
         for pair in loader: values.append(model(pair.to(device)).detach().cpu().numpy())
     return np.concatenate(values).astype(np.float64,copy=False)
+def _validation_score(residual,metric,fit_config):
+    values=np.asarray(residual,dtype=np.float64); metric=str(metric).lower()
+    if metric=="validation_mse": return float(np.mean(values**2))
+    if metric=="validation_rmse": return float(np.sqrt(np.mean(values**2)))
+    if metric in {"validation_ctr","ctr"}: return float(ctr_fwhm(values,fit_config).ctr_ps)
+    raise ValueError(f"Unsupported CNN selection_metric: {metric}")
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None,final_epochs=None):
     torch.manual_seed(int(seed)); np.random.seed(int(seed));
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(int(seed))
-    training=config.get("training",{}); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device); optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(training.get("batch_size",64)); max_epochs=int(final_epochs or training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta_ps",.05)); loader=_loader(train_x,train_target,batch,shuffle=True,seed=seed); best_score=float("inf"); best_epoch=max_epochs; best_state=None; stale=0
+    training=config.get("training",{}); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device); optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(final_epochs or training.get("epochs",350)); patience=int(training.get("patience",30)); metric=str(training.get("selection_metric","validation_ctr")).lower(); min_delta=float(training.get("min_delta",training.get("min_delta_ps",.05))); loader=_loader(train_x,train_target,batch,shuffle=True,seed=seed); best_score=float("inf"); best_epoch=max_epochs; best_state=None; stale=0
     for epoch in range(1,max_epochs+1):
         model.train()
         for pair,target in loader:
@@ -56,13 +64,13 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
             if clip>0: nn.utils.clip_grad_norm_(model.parameters(),clip)
             optimizer.step()
         if validation_x is None or validation_target is None or final_epochs is not None: continue
-        prediction=_predict_tensor(model,validation_x,device,batch); score=float(ctr_fwhm(prediction-np.asarray(validation_target),config.get("fit")).ctr_ps)
+        prediction=_predict_tensor(model,validation_x,device,batch); residual=prediction-np.asarray(validation_target); score=_validation_score(residual,metric,config.get("fit"))
         if score<best_score-min_delta: best_score=score; best_epoch=epoch; best_state=copy.deepcopy(model.state_dict()); stale=0
         else:
             stale+=1
             if stale>=patience: break
     if best_state is not None: model.load_state_dict(best_state)
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_ctr_ps":float(best_score)})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_score":float(best_score),"selection_metric":metric,"batch_size":batch})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
