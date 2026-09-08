@@ -5,7 +5,7 @@ from waveform_analysis.ml_pipeline.models import ModelSpec, model_names, registe
 
 class RegistryTests(unittest.TestCase):
     def test_active_registry(self):
-        self.assertEqual(set(model_names()), {"linear_svr", "cnn"})
+        self.assertEqual(set(model_names()), {"linear_svr", "pca_ridge", "cnn"})
 
     def test_dummy_model_can_register_without_study_change(self):
         dummy = ModelSpec(
