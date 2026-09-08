@@ -1,0 +1,18 @@
+{
+  "model": "pca_ridge",
+  "parameters": {
+    "n_components": [8, 16, 32, 64, 128],
+    "alpha": [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+  },
+  "pca": {
+    "whiten": true,
+    "svd_solver": "randomized",
+    "seed": 20260815
+  },
+  "ridge": {
+    "solver": "lsqr",
+    "tolerance": 0.0001,
+    "max_iterations": 2000
+  },
+  "selection_metric": "validation_mse"
+}
