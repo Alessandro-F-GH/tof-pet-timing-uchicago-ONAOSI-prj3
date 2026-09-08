@@ -1,0 +1,18 @@
+{
+  "model": "pca_svr",
+  "parameters": {
+    "n_components": [8, 16, 32, 64, 128],
+    "C": [0.1, 1.0, 10.0, 100.0],
+    "epsilon_ps": [0.0, 5.0, 10.0, 20.0]
+  },
+  "pca": {
+    "whiten": true,
+    "svd_solver": "randomized",
+    "seed": 20260815
+  },
+  "loss": "epsilon_insensitive",
+  "tolerance": 0.001,
+  "max_iterations": 100000,
+  "dual": "auto",
+  "selection_metric": "validation_mse"
+}
