@@ -27,11 +27,11 @@ def _logger(run_dir:Path):
     logger=logging.getLogger(f'waveform-study:{run_dir}'); logger.setLevel(logging.INFO); logger.handlers.clear(); fmt=logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
     for h in (logging.StreamHandler(),logging.FileHandler(run_dir/'study.log',encoding='utf-8')): h.setFormatter(fmt); logger.addHandler(h)
     return logger
-def _metric_row(config,name,voltage,mode,method,residual,population_n,seed):
+def _metric_row(config,name,voltage,mode,method,residual,population_n,seed,stage='test'):
     values=np.asarray(residual,dtype=float); finite=values[np.isfinite(values)]; minimum=int((config.get('fit') or {}).get('min_events',20))
-    if finite.size<minimum: raise RuntimeError(f'{name}/{mode}/{method}: only {finite.size} finite test residuals')
+    if finite.size<minimum: raise RuntimeError(f'{name}/{mode}/{method}: only {finite.size} finite {stage} residuals')
     nboot=int(config.get('reporting',{}).get('ctr_uncertainty_bootstrap_samples',500)); metric=bootstrap_ctr(finite,nboot,seed,config.get('fit')) if nboot else ctr_fwhm(finite,config.get('fit'))
-    return {'dataset':name,'voltage_V':voltage,'mode':mode,'method':method,'stage':'test','ctr_ps':float(metric.ctr_ps),'ctr_uncertainty_ps':float(metric.uncertainty_ps),'center_ps':float(metric.center_ps),'n':int(metric.n),'population_n':int(population_n),'crossing_efficiency':float(metric.n/max(1,int(population_n)))}
+    return {'dataset':name,'voltage_V':voltage,'mode':mode,'method':method,'stage':stage,'ctr_ps':float(metric.ctr_ps),'ctr_uncertainty_ps':float(metric.uncertainty_ps),'center_ps':float(metric.center_ps),'n':int(metric.n),'population_n':int(population_n),'crossing_efficiency':float(metric.n/max(1,int(population_n)))}
 def _selection_row(name,voltage,mode,method,score,parameters):
     return {'dataset':name,'voltage_V':voltage,'mode':mode,'method':method,'stage':'development_selection' if method in {'led','cfd'} else 'validation','ctr_ps':float(score),'ctr_uncertainty_ps':float('nan'),'center_ps':float('nan'),'n':0,'population_n':0,'crossing_efficiency':float('nan'),'parameters_json':json.dumps(parameters,sort_keys=True)}
 def _prepare_one(root,config,rebuild,logger):
@@ -54,15 +54,15 @@ def run_study(config_or_path:dict[str,Any]|str|Path,*,overwrite:bool=False,rebui
                 xai=config.get('reporting',{}).get('xai',{}) or {}
                 if bool(xai.get('enabled',True)) and spec.explain is not None:
                     limit=min(dataset.development.size,int(xai.get('max_events',1024))); chosen=dataset.development[:limit]; _prediction,time_ps,normalized=predict_indices(spec,fitted,dataset,mode,chosen); importance=spec.explain(fitted.artifact,normalized); physical=inverse_pair(dataset,mode,normalized); store.save_xai(name,mode,model_name,time_ps=time_ps,importance=importance,example_pair_mV=physical[0])
-        test=np.asarray(dataset.test,dtype=np.int64)
-        for mode in config['channel_modes']:
-            family=target_family(mode); led_mean=float(dataset.manifest['led_training_mean_ps'][family]); led=standard_delta(dataset,mode,'led')[test]-led_mean; rows.append(_metric_row(config,name,voltage,mode,'led',led,test.size,semantic_seed(seed,name,mode,'led','test'))); store.save_residuals(name,mode,'led',led)
-            if bool((config['modes'].get(mode) or {}).get('cfd',True)):
-                try: cfd=standard_delta(dataset,mode,'cfd')[test]-led_mean
-                except ValueError: cfd=None
-                if cfd is not None: rows.append(_metric_row(config,name,voltage,mode,'cfd',cfd,test.size,semantic_seed(seed,name,mode,'cfd','test'))); store.save_residuals(name,mode,'cfd',cfd)
-            anchor=anchor_delta(dataset,mode)[test]
-            for model_name in config['models']:
-                final=final_models[(mode,model_name)]; spec=get_model(model_name); correction,_time,_pair=predict_indices(spec,final.fitted,dataset,mode,test); residual=anchor+correction-led_mean; rows.append(_metric_row(config,name,voltage,mode,model_name,residual,test.size,semantic_seed(seed,name,mode,model_name,'test'))); store.save_residuals(name,mode,model_name,residual)
+        for stage,indices in (("train",np.asarray(dataset.training,dtype=np.int64)),("test",np.asarray(dataset.test,dtype=np.int64))):
+            for mode in config['channel_modes']:
+                family=target_family(mode); led_mean=float(dataset.manifest['led_training_mean_ps'][family]); led=standard_delta(dataset,mode,'led')[indices]-led_mean; rows.append(_metric_row(config,name,voltage,mode,'led',led,indices.size,semantic_seed(seed,name,mode,'led',stage),stage=stage)); store.save_residuals(name,mode,'led',led,stage=stage)
+                if bool((config['modes'].get(mode) or {}).get('cfd',True)):
+                    try: cfd=standard_delta(dataset,mode,'cfd')[indices]-led_mean
+                    except ValueError: cfd=None
+                    if cfd is not None: rows.append(_metric_row(config,name,voltage,mode,'cfd',cfd,indices.size,semantic_seed(seed,name,mode,'cfd',stage),stage=stage)); store.save_residuals(name,mode,'cfd',cfd,stage=stage)
+                anchor=anchor_delta(dataset,mode)[indices]
+                for model_name in config['models']:
+                    final=final_models[(mode,model_name)]; spec=get_model(model_name); correction,_time,_pair=predict_indices(spec,final.fitted,dataset,mode,indices); residual=anchor+correction-led_mean; rows.append(_metric_row(config,name,voltage,mode,model_name,residual,indices.size,semantic_seed(seed,name,mode,model_name,stage),stage=stage)); store.save_residuals(name,mode,model_name,residual,stage=stage)
         manifest['datasets'][name]={'prepared_dir':str(dataset.directory),'split':dataset.manifest['split'],'led_threshold_mV':dataset.manifest['led_threshold_mV'],'led_training_mean_ps':dataset.manifest['led_training_mean_ps'],'cfd_fraction':dataset.manifest['cfd_fraction'],'subsampling':int(dataset.manifest['ml_input']['subsampling'])}; store.write_results(rows); store.write_manifest(manifest)
     logger.info('Study complete | %s',store.root); return store.root
