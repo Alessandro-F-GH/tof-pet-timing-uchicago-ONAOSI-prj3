@@ -4,7 +4,6 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-import itertools
 import joblib
 import numpy as np
 from scipy.ndimage import convolve1d
@@ -32,7 +31,7 @@ class LocalizedRocketArtifact:
 
 
 _FEATURE_CACHE: OrderedDict[tuple[Any, ...], np.ndarray] = OrderedDict()
-_CACHE_ENTRIES = 6
+_CACHE_ENTRIES = 2
 
 
 def candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -96,7 +95,7 @@ def _array_key(values: np.ndarray) -> tuple[Any, ...]:
     x = np.asarray(values); return (int(x.__array_interface__["data"][0]), tuple(x.shape), tuple(x.strides), str(x.dtype))
 
 
-def _cached_features(pair: np.ndarray, config: dict[str, Any], kernels: tuple[RocketKernel, ...], n_bins: int, statistics: tuple[str, ...], signature: tuple[Any, ...]) -> np.ndarray:
+def _cached_features(pair: np.ndarray, kernels: tuple[RocketKernel, ...], n_bins: int, statistics: tuple[str, ...], signature: tuple[Any, ...]) -> np.ndarray:
     key = (_array_key(pair), signature)
     cached = _FEATURE_CACHE.get(key)
     if cached is not None:
@@ -108,7 +107,7 @@ def _cached_features(pair: np.ndarray, config: dict[str, Any], kernels: tuple[Ro
 
 def fit(params, train_x, train_target, *, seed, config, validation_x=None, validation_target=None, final_epochs=None):
     del seed, validation_x, validation_target, final_epochs
-    x = np.asarray(train_x, dtype=np.float32); transform = _transform_config(config); signature = _signature(config, x.shape[-1]); kernels = _kernel_bank(config, x.shape[-1]); n_bins = int(transform.get("n_time_bins", 64)); statistics = tuple(str(v).lower() for v in transform.get("features", ["ppv", "max"])); features = _cached_features(x, config, kernels, n_bins, statistics, signature)
+    x = np.asarray(train_x, dtype=np.float32); transform = _transform_config(config); signature = _signature(config, x.shape[-1]); kernels = _kernel_bank(config, x.shape[-1]); n_bins = int(transform.get("n_time_bins", 64)); statistics = tuple(str(v).lower() for v in transform.get("features", ["ppv", "max"])); features = _cached_features(x, kernels, n_bins, statistics, signature)
     scale = np.std(features, axis=0, dtype=np.float64); scale = np.where(scale > 1e-6, scale, 1.0).astype(np.float32)
     ridge_config = config.get("ridge", {}) or {}; model = Ridge(alpha=float(params["alpha"]), fit_intercept=False, solver=str(ridge_config.get("solver", "lsqr")), tol=float(ridge_config.get("tolerance", 1e-4)), max_iter=int(ridge_config.get("max_iterations", 2000))); model.fit(features / scale[None, :], np.asarray(train_target, dtype=np.float64))
     metadata = {"n_kernels": len(kernels), "n_time_bins": min(n_bins, x.shape[-1]), "n_features": int(features.shape[1]), "statistics": list(statistics), "fixed_transform": True}
@@ -116,7 +115,7 @@ def fit(params, train_x, train_target, *, seed, config, validation_x=None, valid
 
 
 def predict(artifact: LocalizedRocketArtifact, normalized_pair: np.ndarray) -> np.ndarray:
-    x = np.asarray(normalized_pair, dtype=np.float32); config = {"transform": {"n_kernels": len(artifact.kernels), "n_time_bins": artifact.n_time_bins, "features": list(artifact.statistics)}}; features = _cached_features(x, config, artifact.kernels, artifact.n_time_bins, artifact.statistics, artifact.signature); return np.asarray(artifact.model.predict(features / artifact.feature_scale[None, :]), dtype=np.float64)
+    x = np.asarray(normalized_pair, dtype=np.float32); features = _cached_features(x, artifact.kernels, artifact.n_time_bins, artifact.statistics, artifact.signature); return np.asarray(artifact.model.predict(features / artifact.feature_scale[None, :]), dtype=np.float64)
 
 
 def save(artifact: LocalizedRocketArtifact, path: Path) -> None:
