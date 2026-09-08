@@ -3,7 +3,7 @@
   "data_config": "../data/converted_runs_07_13.json",
   "preprocessing_config": "../preprocessing/default_ctr.json",
   "experiment": {"name": "complete", "output_dir": "results/studies/complete"},
-  "models": ["linear_svr", "pca_ridge", "cnn"],
+  "models": ["linear_svr", "pca_svr", "cnn"],
   "modes": {
     "energy_to_energy": {"enabled": true, "cfd": true},
     "energy_to_timing": {"enabled": false, "cfd": false},
