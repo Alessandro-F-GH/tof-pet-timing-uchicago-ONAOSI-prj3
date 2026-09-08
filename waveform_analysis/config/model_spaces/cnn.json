@@ -10,15 +10,17 @@
     "dense_units": [32]
   },
   "parameters": {
-    "learning_rate": [0.001],
-    "weight_decay": [0.00001]
+    "learning_rate": [0.01, 0.001, 0.0001],
+    "batch_size": [32, 64, 128],
+    "weight_decay": [0.00001, 0.0001, 0.001]
   },
   "training": {
     "device": "auto",
-    "epochs": 350,
+    "epochs": 300,
     "batch_size": 64,
-    "patience": 30,
-    "min_delta_ps": 0.05,
+    "patience": 10,
+    "selection_metric": "validation_mse",
+    "min_delta": 0.01,
     "gradient_clip_norm": 10.0
   }
 }
