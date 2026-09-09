@@ -19,7 +19,6 @@
     "epochs": 300,
     "batch_size": 64,
     "patience": 10,
-    "selection_metric": "validation_mse",
     "min_delta": 0.01,
     "gradient_clip_norm": 10.0
   }
