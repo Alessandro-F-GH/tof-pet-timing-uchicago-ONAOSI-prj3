@@ -2,24 +2,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import numpy as np
+
 from .dataset import PreparedDataset
 
-MODE_SOURCE = {"energy_to_energy": "energy", "energy_to_timing": "energy", "timing_to_timing": "timing"}
-MODE_TARGET = {"energy_to_energy": "energy", "energy_to_timing": "timing", "timing_to_timing": "timing"}
+MODE_FAMILY = {"energy_to_energy": "energy", "timing_to_timing": "timing"}
 
 
-def source_family(mode: str) -> str:
+def mode_family(mode: str) -> str:
     try:
-        return MODE_SOURCE[str(mode)]
+        return MODE_FAMILY[str(mode)]
     except KeyError as exc:
         raise ValueError(f"Unsupported channel mode: {mode}") from exc
+
+
+# These names remain semantic helpers for callers, but the two supported modes
+# deliberately use the same waveform family for input and timing target.
+def source_family(mode: str) -> str:
+    return mode_family(mode)
 
 
 def target_family(mode: str) -> str:
-    try:
-        return MODE_TARGET[str(mode)]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported channel mode: {mode}") from exc
+    return mode_family(mode)
 
 
 @dataclass(frozen=True)
@@ -33,7 +36,7 @@ class WaveformView:
 
 
 def waveform_view(dataset: PreparedDataset, mode: str, indices: np.ndarray) -> WaveformView:
-    family = source_family(mode)
+    family = mode_family(mode)
     waves, time_ps = (
         (dataset.energy_windows, dataset.energy_time_ps)
         if family == "energy"
@@ -49,7 +52,7 @@ def waveform_view(dataset: PreparedDataset, mode: str, indices: np.ndarray) -> W
 
 
 def standard_delta(dataset: PreparedDataset, mode: str, method: str) -> np.ndarray:
-    family = target_family(mode)
+    family = mode_family(mode)
     if method == "led":
         values = dataset.energy_led_time_ps if family == "energy" else dataset.timing_led_time_ps
     elif method == "cfd":
@@ -63,8 +66,7 @@ def standard_delta(dataset: PreparedDataset, mode: str, method: str) -> np.ndarr
 
 
 def calibration_bias_ps(dataset: PreparedDataset, mode: str) -> float:
-    """Training-only estimate C_hat_12 from the LED pair mean minus true TOF."""
-    family = target_family(mode)
+    family = mode_family(mode)
     try:
         mean_led = float(dataset.manifest["led_training_mean_ps"][family])
         true_tof = float(dataset.manifest["true_tof_ps"])
@@ -74,14 +76,12 @@ def calibration_bias_ps(dataset: PreparedDataset, mode: str) -> float:
 
 
 def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Slide-14 LED reference: Delta t_LED - C_hat_12 - TOF."""
     true_tof = float(dataset.manifest["true_tof_ps"])
     return standard_delta(dataset, mode, "led") - calibration_bias_ps(dataset, mode) - true_tof
 
 
 def anchor_shift_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Delta delta from slide 15, with delta_i = t_LED,i - t_a,i."""
-    family = target_family(mode)
+    family = mode_family(mode)
     values = dataset.energy_anchor_offset_ps if family == "energy" else dataset.timing_anchor_offset_ps
     if values is None:
         raise ValueError(f"{family} LED-to-anchor offsets are unavailable")
@@ -92,11 +92,7 @@ def anchor_shift_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
 
 
 def model_target(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Canonical persisted slide-15 target.
-
-    y_target = Delta t_LED - Delta delta - TOF - C_hat_12.
-    """
-    family = target_family(mode)
+    family = mode_family(mode)
     values = dataset.energy_target_ps if family == "energy" else dataset.timing_target_ps
     if values is None:
         raise ValueError(f"{family} slide-corrected ML target is unavailable")
@@ -104,7 +100,6 @@ def model_target(dataset: PreparedDataset, mode: str) -> np.ndarray:
 
 
 def corrected_timing_residual(target_ps: np.ndarray, paired_prediction_ps: np.ndarray) -> np.ndarray:
-    """CTR residual after slide-15 native-grid correction: y_target - y_theta."""
     target = np.asarray(target_ps, dtype=np.float64)
     prediction = np.asarray(paired_prediction_ps, dtype=np.float64)
     if target.shape != prediction.shape:
@@ -113,8 +108,7 @@ def corrected_timing_residual(target_ps: np.ndarray, paired_prediction_ps: np.nd
 
 
 def anchor_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Native sample-anchor pair timing, retained for diagnostics."""
-    family = target_family(mode)
+    family = mode_family(mode)
     values = dataset.energy_anchor_time_ps if family == "energy" else dataset.timing_anchor_time_ps
     if values is None:
         raise ValueError(f"{family} anchor timing is unavailable")
@@ -123,7 +117,7 @@ def anchor_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
 
 
 def inverse_pair(dataset: PreparedDataset, mode: str, normalized_pair: np.ndarray) -> np.ndarray:
-    family = source_family(mode)
+    family = mode_family(mode)
     transform = dataset.energy_transform if family == "energy" else dataset.timing_transform
     if transform is None:
         raise ValueError(f"{family} input transform is unavailable")
