@@ -4,6 +4,7 @@ import csv, json
 from pathlib import Path
 from typing import Any
 import numpy as np
+from scipy.special import ndtr
 
 from .common import voltage_from_name
 from .dataset import load_prepared_dataset
@@ -24,6 +25,25 @@ def _residual(run,dataset,method,stage="test"):
     path=run/"artifacts"/dataset/f"{method}_{stage}_residuals_ps.npy"; return np.asarray(np.load(path),dtype=float) if path.is_file() else None
 def _model_output(run,dataset,model,stage):
     path=run/"artifacts"/dataset/f"{model}_{stage}_model_output_ps.npy"; return np.asarray(np.load(path),dtype=float) if path.is_file() else None
+def _robust_display_range(samples,*,quantiles=(0.02,0.98),margin_fraction=0.06):
+    finite=[]
+    for sample in samples:
+        values=np.asarray(sample,dtype=float).reshape(-1); values=values[np.isfinite(values)]
+        if values.size:finite.append(values)
+    if not finite:return -1.0,1.0
+    pooled=np.concatenate(finite); lo=float(np.quantile(pooled,float(quantiles[0]))); hi=float(np.quantile(pooled,float(quantiles[1])))
+    if not np.isfinite(lo) or not np.isfinite(hi):return -1.0,1.0
+    if hi<=lo:
+        pad=max(abs(lo)*0.05,1.0); return lo-pad,hi+pad
+    margin=float(margin_fraction)*(hi-lo); return lo-margin,hi+margin
+def _outside_count(values,xlim):
+    values=np.asarray(values,dtype=float).reshape(-1); values=values[np.isfinite(values)]
+    return int(np.count_nonzero((values<float(xlim[0]))|(values>float(xlim[1]))))
+def _gaussian_expected_per_bin(edges,n_fit,mean_ps,sigma_ps):
+    edges=np.asarray(edges,dtype=float); sigma=float(sigma_ps); mean=float(mean_ps); n=float(n_fit)
+    if edges.size<2 or not np.isfinite(n) or n<=0 or not np.isfinite(mean) or not np.isfinite(sigma) or sigma<=0:return None
+    probabilities=np.diff(ndtr((edges-mean)/sigma)); expected=n*probabilities
+    return expected if np.all(np.isfinite(expected)) else None
 def _measurement_text(value,uncertainty):
     value=float(value); uncertainty=float(uncertainty)
     if not np.isfinite(value):return "nan"
@@ -89,26 +109,25 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
         row=next((r for r in rows if r["dataset"]==dataset and r["method"]==method and r.get("stage")==stage),None)
         if row is not None:series.append((method,residual,row))
     if not series:return
-    all_values=np.concatenate([r for _,r,_ in series]); lo,hi=np.nanpercentile(all_values,[0.5,99.5]); bins=np.linspace(lo,hi,101) if np.isfinite(lo) and np.isfinite(hi) and hi>lo else 100; fig,ax=plt.subplots(figsize=(8.6,4.8))
-    for method,residual,row in series:
-        label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · mean {np.mean(residual):+.1f} ps"; ax.hist(residual,bins=bins,histtype="step",label=label)
-    ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
-def _model_output_plot(output,run,mode,dataset,model,paths,prediction_limit_ps=None):
+    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],101); centers=0.5*(bins[:-1]+bins[1:]); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
+    for index,(method,residual,row) in enumerate(series):
+        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); mean_fit=_float(row.get("center_ps")); sigma_fit=_float(row.get("sigma_ps")); n_fit=_float(row.get("n"),float(residual.size)); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
+        ax.hist(residual,bins=bins,histtype="step",label=label,color=color)
+        expected=_gaussian_expected_per_bin(bins,n_fit,mean_fit,sigma_fit)
+        if expected is not None:ax.plot(centers,expected,ls="--",lw=1.5,color=color)
+    ax.set_xlim(*xlim); ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage} · Gaussian fits dashed"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+def _model_output_plot(output,run,mode,dataset,model,paths):
     import matplotlib.pyplot as plt
     train=_model_output(run,dataset,model,"train"); test=_model_output(run,dataset,model,"test")
     if train is None and test is None:return
     train=np.asarray([] if train is None else train,dtype=float); test=np.asarray([] if test is None else test,dtype=float); train=train[np.isfinite(train)]; test=test[np.isfinite(test)]
     if not train.size and not test.size:return
-    all_values=np.concatenate([values for values in (train,test) if values.size])
-    if prediction_limit_ps is not None and np.isfinite(prediction_limit_ps) and prediction_limit_ps>0:
-        lo,hi=-float(prediction_limit_ps),float(prediction_limit_ps)
-    else:
-        lo,hi=np.nanpercentile(all_values,[0.5,99.5]); pad=max(1.0,0.04*(hi-lo)) if np.isfinite(lo) and np.isfinite(hi) and hi>lo else 1.0; lo-=pad; hi+=pad
-    bins=np.linspace(lo,hi,121); fig,axes=plt.subplots(2,1,figsize=(8.6,6.2),sharex=True)
+    xlim=_robust_display_range([train,test],quantiles=(0.02,0.98),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],121); fig,axes=plt.subplots(2,1,figsize=(8.6,6.2),sharex=True)
     for ax,stage,values in ((axes[0],"train",train),(axes[1],"test",test)):
+        outside=_outside_count(values,xlim)
         if values.size:
-            ax.hist(values,bins=bins,histtype="step"); ax.axvline(float(np.mean(values)),ls="--",lw=1.0,label=f"mean {np.mean(values):+.1f} ps"); ax.legend()
-        ax.set_ylabel("Events / bin"); ax.set_title(f"{stage.capitalize()} · n={values.size}"); ax.grid(True,alpha=.2)
+            visible=values[(values>=xlim[0])&(values<=xlim[1])]; ax.hist(visible,bins=bins,histtype="step",label=f"n={values.size} · outside display={outside}"); ax.axvline(float(np.mean(values)),ls="--",lw=1.0,label=f"mean {np.mean(values):+.1f} ps"); ax.legend()
+        ax.set_xlim(*xlim); ax.set_ylabel("Events / bin"); ax.set_title(stage.capitalize()); ax.grid(True,alpha=.2)
     axes[1].set_xlabel(r"Learned correction $y_\theta(s_1,s_2)$ [ps]"); fig.suptitle(f"{LABELS.get(model,model)} model output · {mode.replace('_',' ')} · {dataset}"); fig.tight_layout(); target=output/f"model_output_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
     import matplotlib.pyplot as plt
@@ -124,10 +143,9 @@ def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
     for dataset in datasets:
         _distribution_plot(categories["test_distribution"],run,all_rows,mode,dataset,"test",paths); _distribution_plot(categories["train_distribution"],run,all_rows,mode,dataset,"train",paths)
     models=[m for m in ordered_methods if m not in {"led","cfd"}]
-    prediction_limit=_float(manifest.get("prediction_limit_ps"))
     for model in models:
         model_output_dir=categories["model_output"]/model; model_output_dir.mkdir(parents=True,exist_ok=True)
-        for dataset in datasets:_model_output_plot(model_output_dir,run,mode,dataset,model,paths,prediction_limit_ps=prediction_limit)
+        for dataset in datasets:_model_output_plot(model_output_dir,run,mode,dataset,model,paths)
         for artifact in sorted((run/"artifacts").glob(f"*/{model}_xai.npz"),key=lambda p:voltage_from_name(p.parent.name)):_xai_plot(categories["xai"],artifact,mode,model,paths)
         for dataset in datasets:
             top,worst=_correction_rankings(run,model,dataset)
