@@ -3,7 +3,7 @@ import numpy as np
 
 from waveform_analysis.ml_pipeline.models.cnn import CNNArtifact, SharedScorerCNN, predict as predict_cnn
 from waveform_analysis.ml_pipeline.models.linear_svr import fit as fit_svr, predict as predict_svr
-from waveform_analysis.ml_pipeline.view import corrected_led_residual
+from waveform_analysis.ml_pipeline.view import corrected_timing_residual
 
 
 class AntisymmetryTests(unittest.TestCase):
@@ -27,7 +27,10 @@ class AntisymmetryTests(unittest.TestCase):
         reverse = predict_cnn(artifact, pair[:, ::-1, :])
         np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
 
-    def test_corrected_led_is_calibrated_led_minus_prediction(self):
-        calibrated = np.asarray([35.0, -20.0, 5.0])
+    def test_corrected_timing_is_slide_target_minus_prediction(self):
+        target = np.asarray([35.0, -20.0, 5.0])
         prediction = np.asarray([10.0, -5.0, 8.0])
-        np.testing.assert_allclose(corrected_led_residual(calibrated, prediction), [25.0, -15.0, -3.0])
+        np.testing.assert_allclose(
+            corrected_timing_residual(target, prediction),
+            [25.0, -15.0, -3.0],
+        )
