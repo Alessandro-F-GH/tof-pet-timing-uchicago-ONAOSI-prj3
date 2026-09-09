@@ -76,6 +76,13 @@ def validate_config(config):
             if key not in preprocessing[family]: raise ConfigError(f"preprocessing.{family}.{key} is required")
     if "rising_edge_before_trigger_ns" in preprocessing["energy"]: raise ConfigError("preprocessing.energy.rising_edge_before_trigger_ns is obsolete; energy uses the materialized window start to peak")
     if "timing" in families and "rising_edge_before_trigger_ns" not in preprocessing["timing"]: raise ConfigError("preprocessing.timing.rising_edge_before_trigger_ns is required")
+    if "pulse_duration_mad" in preprocessing["selection"]: raise ConfigError("preprocessing.selection.pulse_duration_mad is obsolete; use preprocessing.tot_peak")
+    if "timing" in families:
+        if "tot_peak" not in preprocessing: raise ConfigError("preprocessing.tot_peak is required for timing modes")
+        tot=preprocessing["tot_peak"]; required_tot={"histogram_bin_ns","search_quantile_min","smoothing_sigma_bins","initial_half_width_ns","iteration_sigma","max_iterations","convergence_tolerance_ns","selection_sigma_low","selection_sigma_high"}; missing_tot=sorted(required_tot-set(tot))
+        if missing_tot: raise ConfigError(f"Missing preprocessing.tot_peak option(s): {missing_tot}")
+        if float(tot["histogram_bin_ns"])<=0 or float(tot["initial_half_width_ns"])<=0 or float(tot["convergence_tolerance_ns"])<=0: raise ConfigError("preprocessing.tot_peak widths/tolerance must be positive")
+        if float(tot["selection_sigma_high"])<=float(tot["selection_sigma_low"]): raise ConfigError("preprocessing.tot_peak.selection_sigma_high must exceed selection_sigma_low")
     noise=preprocessing["selection"]["baseline_noise"]
     if bool(noise.get("enabled",False)) and (len(noise["window_ns"])!=2 or float(noise["window_ns"][1])>0.): raise ConfigError("baseline_noise.window_ns must be [start, end] before the trigger")
     if not config["standard_methods"].get("led_thresholds_mV"): raise ConfigError("LED threshold list must not be empty")
