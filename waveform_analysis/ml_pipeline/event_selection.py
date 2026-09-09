@@ -59,10 +59,10 @@ def _channel_values(value,count=2):
     return v
 
 def _families(config):
-    modes=config['channel_modes']; out=[]
-    if any('energy' in m for m in modes): out.append('energy')
-    if any('timing' in m for m in modes): out.append('timing')
-    return tuple(out)
+    mode=str(config['mode'])
+    if mode=='energy_to_energy': return ('energy',)
+    if mode=='timing_to_timing': return ('timing',)
+    raise ValueError(f'Unsupported mode: {mode}')
 
 def _io_args(config,timing):
     ch=config['data']['channels']; io=config['preprocessing'].get('io',{}); max_events=int(io.get('max_events',0))
