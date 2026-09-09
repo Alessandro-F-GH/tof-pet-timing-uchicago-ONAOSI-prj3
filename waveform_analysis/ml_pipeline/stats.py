@@ -4,12 +4,13 @@ import numpy as np
 
 from utils_fit import fit_ctr_ps
 
-# The waveform pipeline owns no CTR estimator. All Gaussian fitting lives in utils_fit.
-gaussian_ctr = fit_ctr_ps
+# The waveform pipeline owns no CTR estimator. Direct fixed-bin histogram FWHM
+# and bootstrap uncertainty live in utils_fit.
+ctr_estimate = fit_ctr_ps
 
 
 def residual_summary(values_ps: np.ndarray) -> dict[str, float | int]:
-    """Compact diagnostics for timing residuals, used in fit-failure logs."""
+    """Compact diagnostics for timing residuals, used in metric-failure logs."""
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     finite = values[np.isfinite(values)]
     if finite.size == 0:
