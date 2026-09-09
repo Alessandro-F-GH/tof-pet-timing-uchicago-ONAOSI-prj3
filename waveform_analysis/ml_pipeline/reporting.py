@@ -22,6 +22,8 @@ def _voltage(row):
     value=_float(row.get("voltage_V")); return value if np.isfinite(value) else voltage_from_name(row.get("dataset", ""))
 def _residual(run,dataset,method,stage="test"):
     path=run/"artifacts"/dataset/f"{method}_{stage}_residuals_ps.npy"; return np.asarray(np.load(path),dtype=float) if path.is_file() else None
+def _model_output(run,dataset,model,stage):
+    path=run/"artifacts"/dataset/f"{model}_{stage}_model_output_ps.npy"; return np.asarray(np.load(path),dtype=float) if path.is_file() else None
 def _measurement_text(value,uncertainty):
     value=float(value); uncertainty=float(uncertainty)
     if not np.isfinite(value):return "nan"
@@ -91,20 +93,41 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
     for method,residual,row in series:
         label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · mean {np.mean(residual):+.1f} ps"; ax.hist(residual,bins=bins,histtype="step",label=label)
     ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+def _model_output_plot(output,run,mode,dataset,model,paths,prediction_limit_ps=None):
+    import matplotlib.pyplot as plt
+    train=_model_output(run,dataset,model,"train"); test=_model_output(run,dataset,model,"test")
+    if train is None and test is None:return
+    train=np.asarray([] if train is None else train,dtype=float); test=np.asarray([] if test is None else test,dtype=float); train=train[np.isfinite(train)]; test=test[np.isfinite(test)]
+    if not train.size and not test.size:return
+    all_values=np.concatenate([values for values in (train,test) if values.size])
+    if prediction_limit_ps is not None and np.isfinite(prediction_limit_ps) and prediction_limit_ps>0:
+        lo,hi=-float(prediction_limit_ps),float(prediction_limit_ps)
+    else:
+        lo,hi=np.nanpercentile(all_values,[0.5,99.5]); pad=max(1.0,0.04*(hi-lo)) if np.isfinite(lo) and np.isfinite(hi) and hi>lo else 1.0; lo-=pad; hi+=pad
+    bins=np.linspace(lo,hi,121); fig,axes=plt.subplots(2,1,figsize=(8.6,6.2),sharex=True)
+    for ax,stage,values in ((axes[0],"train",train),(axes[1],"test",test)):
+        if values.size:
+            ax.hist(values,bins=bins,histtype="step"); ax.axvline(float(np.mean(values)),ls="--",lw=1.0,label=f"mean {np.mean(values):+.1f} ps"); ax.legend()
+        ax.set_ylabel("Events / bin"); ax.set_title(f"{stage.capitalize()} · n={values.size}"); ax.grid(True,alpha=.2)
+    axes[1].set_xlabel(r"Learned correction $y_\theta(s_1,s_2)$ [ps]"); fig.suptitle(f"{LABELS.get(model,model)} model output · {mode.replace('_',' ')} · {dataset}"); fig.tight_layout(); target=output/f"model_output_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
     import matplotlib.pyplot as plt
-    run=Path(run_dir).resolve(); plot_root=Path(output_dir).resolve() if output_dir else run/"plots"; categories={name:plot_root/name for name in ("corrections","train_distribution","test_distribution","xai")}
+    run=Path(run_dir).resolve(); plot_root=Path(output_dir).resolve() if output_dir else run/"plots"; categories={name:plot_root/name for name in ("corrections","train_distribution","test_distribution","xai","model_output")}
     for directory in categories.values():directory.mkdir(parents=True,exist_ok=True)
     manifest=json.loads((run/"manifest.json").read_text(encoding="utf-8")); mode=str(manifest.get("mode") or manifest["config"]["mode"]); all_rows=read_results(run); test_rows=[r for r in all_rows if r.get("stage")=="test"]; datasets=sorted({r["dataset"] for r in test_rows},key=voltage_from_name); paths=[]; fig,ax=plt.subplots(figsize=(8.2,4.6))
-    for method in MODEL_ORDER:
+    available_methods={r["method"] for r in test_rows}; ordered_methods=[m for m in MODEL_ORDER if m in available_methods]+sorted(available_methods-set(MODEL_ORDER))
+    for method in ordered_methods:
         points=sorted([r for r in test_rows if r["method"]==method and np.isfinite(_voltage(r))],key=_voltage)
         if not points:continue
         voltage=np.asarray([_voltage(r) for r in points]); ctr=np.asarray([_float(r["ctr_ps"]) for r in points]); error=np.asarray([_float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS.get(method,method))
     ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=run/"ctr_vs_voltage.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
     for dataset in datasets:
         _distribution_plot(categories["test_distribution"],run,all_rows,mode,dataset,"test",paths); _distribution_plot(categories["train_distribution"],run,all_rows,mode,dataset,"train",paths)
-    models=[m for m in MODEL_ORDER if m not in {"led","cfd"} and any(r["method"]==m for r in test_rows)]
+    models=[m for m in ordered_methods if m not in {"led","cfd"}]
+    prediction_limit=_float(manifest.get("prediction_limit_ps"))
     for model in models:
+        model_output_dir=categories["model_output"]/model; model_output_dir.mkdir(parents=True,exist_ok=True)
+        for dataset in datasets:_model_output_plot(model_output_dir,run,mode,dataset,model,paths,prediction_limit_ps=prediction_limit)
         for artifact in sorted((run/"artifacts").glob(f"*/{model}_xai.npz"),key=lambda p:voltage_from_name(p.parent.name)):_xai_plot(categories["xai"],artifact,mode,model,paths)
         for dataset in datasets:
             top,worst=_correction_rankings(run,model,dataset)
