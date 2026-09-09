@@ -18,7 +18,6 @@
   },
   "reporting": {
     "dpi": 180,
-    "ctr_uncertainty_bootstrap_samples": 1000,
     "xai": {"enabled": true, "max_events": 1024}
   },
   "standard_methods": {
