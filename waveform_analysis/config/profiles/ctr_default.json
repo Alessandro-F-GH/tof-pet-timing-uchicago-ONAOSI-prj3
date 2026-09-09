@@ -22,6 +22,7 @@
   },
   "standard_methods": {
     "led_thresholds_mV": [5.0, 15.0, 25.0, 35.0, 45.0, 50.0, 55.0, 60.0],
+    "led_minimum_crossing_efficiency": 0.95,
     "cfd_fractions": [0.05]
   },
   "ml_input": {
