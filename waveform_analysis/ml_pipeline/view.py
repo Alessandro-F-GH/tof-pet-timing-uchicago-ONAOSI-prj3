@@ -62,26 +62,67 @@ def standard_delta(dataset: PreparedDataset, mode: str, method: str) -> np.ndarr
     return values[:, 0] - values[:, 1]
 
 
-def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Canonical supervised target: paired LED minus training-set LED mean."""
+def calibration_bias_ps(dataset: PreparedDataset, mode: str) -> float:
+    """Training-only estimate C_hat_12 from the LED pair mean minus true TOF."""
     family = target_family(mode)
-    values = dataset.energy_target_ps if family == "energy" else dataset.timing_target_ps
+    try:
+        mean_led = float(dataset.manifest["led_training_mean_ps"][family])
+        true_tof = float(dataset.manifest["true_tof_ps"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"LED calibration is unavailable for {family}") from exc
+    return mean_led - true_tof
+
+
+def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
+    """Slide-14 LED estimate after removing calibration and true TOF.
+
+    This is Delta t_LED - C_hat_12 - TOF. It is the uncorrected reference
+    residual used to compare LED against ML with the same CTR metric.
+    """
+    true_tof = float(dataset.manifest["true_tof_ps"])
+    return standard_delta(dataset, mode, "led") - calibration_bias_ps(dataset, mode) - true_tof
+
+
+def anchor_shift_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
+    """Delta delta from slide 15, with delta_i = t_LED,i - t_a,i."""
+    family = target_family(mode)
+    values = (
+        dataset.energy_anchor_offset_ps
+        if family == "energy"
+        else dataset.timing_anchor_offset_ps
+    )
     if values is None:
-        raise ValueError(f"Calibrated LED target is unavailable for {family}")
-    return np.asarray(values, dtype=np.float64)
+        raise ValueError(f"{family} LED-to-anchor offsets are unavailable")
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 2:
+        raise ValueError(f"Expected {family} anchor offsets shaped [event, detector]")
+    return values[:, 0] - values[:, 1]
 
 
-def corrected_led_residual(calibrated_led_ps: np.ndarray, paired_prediction_ps: np.ndarray) -> np.ndarray:
-    """Corrected timing used for CTR: calibrated LED minus paired model prediction."""
-    led = np.asarray(calibrated_led_ps, dtype=np.float64)
+def model_target(dataset: PreparedDataset, mode: str) -> np.ndarray:
+    """Canonical slide-15 target.
+
+    y_target = Delta t_LED - Delta delta - TOF - C_hat_12.
+    The Delta-delta term removes the discrete native-grid anchor shift from the
+    supervised correction learned from windows centered on t_a.
+    """
+    return calibrated_led(dataset, mode) - anchor_shift_delta(dataset, mode)
+
+
+def corrected_timing_residual(
+    target_ps: np.ndarray,
+    paired_prediction_ps: np.ndarray,
+) -> np.ndarray:
+    """CTR residual after slide-15 native-grid correction: y_target - y_theta."""
+    target = np.asarray(target_ps, dtype=np.float64)
     prediction = np.asarray(paired_prediction_ps, dtype=np.float64)
-    if led.shape != prediction.shape:
-        raise ValueError(f"Calibrated LED and paired prediction shapes differ: {led.shape} != {prediction.shape}")
-    return led - prediction
+    if target.shape != prediction.shape:
+        raise ValueError(f"Target and paired prediction shapes differ: {target.shape} != {prediction.shape}")
+    return target - prediction
 
 
 def anchor_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Native sample-anchor pair timing, for diagnostics only."""
+    """Native sample-anchor pair timing, retained for diagnostics."""
     family = target_family(mode)
     values = dataset.energy_anchor_time_ps if family == "energy" else dataset.timing_anchor_time_ps
     if values is None:
