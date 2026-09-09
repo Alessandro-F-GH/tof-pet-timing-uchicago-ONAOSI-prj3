@@ -44,17 +44,18 @@ def _load_models(config,root):
         if str(model.get("model",name))!=name: raise ConfigError(f"Model file {path} must declare model={name!r}")
         resolved[name]=model
     config["models"]=resolved
-def _enabled_modes(config):
-    modes=config.get("modes")
-    if not isinstance(modes,dict): raise ConfigError("modes must be an object")
-    unknown=set(modes)-set(CHANNEL_MODES)
-    if unknown: raise ConfigError(f"Unsupported channel modes: {sorted(unknown)}")
-    enabled=[name for name in CHANNEL_MODES if bool((modes.get(name) or {}).get("enabled",False))]
-    if not enabled: raise ConfigError("At least one channel mode must be enabled")
-    return enabled
+
+def _mode_families(mode:str)->set[str]:
+    if mode=="energy_to_energy": return {"energy"}
+    if mode in {"energy_to_timing","timing_to_timing"}: return {"energy","timing"} if mode=="energy_to_timing" else {"timing"}
+    raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
+
 def validate_config(config):
-    required={"data","preprocessing","validation","standard_methods","models","modes","ml_input","experiment"}; missing=sorted(required-set(config))
+    required={"data","preprocessing","validation","standard_methods","models","mode","cfd","ml_input","experiment"}; missing=sorted(required-set(config))
     if missing: raise ConfigError(f"Missing configuration section(s): {missing}")
+    mode=str(config["mode"])
+    if mode not in CHANNEL_MODES: raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
+    if not isinstance(config["cfd"],bool): raise ConfigError("cfd must be true or false")
     validation=config["validation"]; extra=sorted(set(validation)-{"seed","test_fraction","validation_fraction"})
     if extra: raise ConfigError(f"Unknown validation option(s): {extra}")
     for key in ("test_fraction","validation_fraction"):
@@ -66,23 +67,27 @@ def validate_config(config):
     preprocessing=config["preprocessing"]
     for key in ("selection_store_dir","preprocessed_dir","prepared_dir","materialized_window_ns","selection","photopeak","energy"):
         if key not in preprocessing: raise ConfigError(f"preprocessing.{key} is required")
+    families=_mode_families(mode)
     channels=config["data"]["channels"]
-    if channels.get("timing") and "timing" not in preprocessing: raise ConfigError("preprocessing.timing is required when timing channels exist")
-    for key in ("trigger_threshold_mV","vertical_scale_limit_mV"):
-        if key not in preprocessing["energy"]: raise ConfigError(f"preprocessing.energy.{key} is required")
+    if "timing" in families and not channels.get("timing"): raise ConfigError(f"mode {mode!r} requires timing channels")
+    for family in families|{"energy"}:
+        if family not in preprocessing: raise ConfigError(f"preprocessing.{family} is required")
+        for key in ("trigger_threshold_mV","vertical_scale_limit_mV"):
+            if key not in preprocessing[family]: raise ConfigError(f"preprocessing.{family}.{key} is required")
     if "rising_edge_before_trigger_ns" in preprocessing["energy"]: raise ConfigError("preprocessing.energy.rising_edge_before_trigger_ns is obsolete; energy uses the materialized window start to peak")
-    if "timing" in preprocessing:
-        for key in ("trigger_threshold_mV","vertical_scale_limit_mV","rising_edge_before_trigger_ns"):
-            if key not in preprocessing["timing"]: raise ConfigError(f"preprocessing.timing.{key} is required")
+    if "timing" in families and "rising_edge_before_trigger_ns" not in preprocessing["timing"]: raise ConfigError("preprocessing.timing.rising_edge_before_trigger_ns is required")
     noise=preprocessing["selection"]["baseline_noise"]
     if bool(noise.get("enabled",False)) and (len(noise["window_ns"])!=2 or float(noise["window_ns"][1])>0.): raise ConfigError("baseline_noise.window_ns must be [start, end] before the trigger")
     if not config["standard_methods"].get("led_thresholds_mV"): raise ConfigError("LED threshold list must not be empty")
-    if not config["standard_methods"].get("cfd_fractions"): raise ConfigError("CFD fraction list must not be empty")
+    if config["cfd"] and not config["standard_methods"].get("cfd_fractions"): raise ConfigError("CFD fraction list must not be empty when cfd=true")
     from .models import model_names
     unknown_models=set(config["models"])-set(model_names())
     if unknown_models: raise ConfigError(f"Unregistered model(s): {sorted(unknown_models)}")
+    for name,model in config["models"].items():
+        training=model.get("training",{}) or {}
+        if "selection_metric" in training or "selection_metric" in model: raise ConfigError(f"{name}: selection_metric is fixed to validation RMSE and must not be configured")
 def load_config(path:str|Path,project_root:str|Path|None=None):
-    source=Path(path).expanduser().resolve(); root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]; config=_resolve(source); config["channel_modes"]=_enabled_modes(config); _load_models(config,root)
+    source=Path(path).expanduser().resolve(); root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]; config=_resolve(source); _load_models(config,root)
     if "root_folder" in config["data"]: config["data"]["root_folder"]=_project_path(root,config["data"]["root_folder"])
     for key in ("selection_store_dir","preprocessed_dir","prepared_dir"): config["preprocessing"][key]=_project_path(root,config["preprocessing"][key])
     config["experiment"]["output_dir"]=_project_path(root,config["experiment"]["output_dir"]); config["_config_path"]=str(source); validate_config(config); config["_config_fingerprint"]=canonical_hash({k:v for k,v in config.items() if not str(k).startswith("_")}); return config
