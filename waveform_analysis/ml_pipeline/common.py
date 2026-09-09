@@ -46,8 +46,8 @@ def voltage_from_name(value: str | Path) -> float:
 
 
 def dataset_cache_dir(config: dict[str, Any], key: str, source: str | Path) -> Path:
-    """Return the mode-scoped cache directory for one source ROOT file."""
-    return Path(config["preprocessing"][key]).resolve() / str(config["mode"]) / Path(source).stem
+    """Return the cache directory for one source ROOT file."""
+    return Path(config["preprocessing"][key]).resolve() / Path(source).stem
 
 
 def channel_limits(value: Any) -> np.ndarray:
