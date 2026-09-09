@@ -7,19 +7,21 @@ from typing import Any
 
 import numpy as np
 
-DATASET_FORMAT_VERSION = 10
+DATASET_FORMAT_VERSION = 11
 
 
 @dataclass(frozen=True)
 class InputTransform:
-    mean: np.ndarray
-    scale: np.ndarray
+    minimum: np.ndarray
+    maximum: np.ndarray
 
     def transform(self, values: np.ndarray) -> np.ndarray:
-        return ((np.asarray(values, dtype=np.float32) - self.mean) / self.scale).astype(np.float32)
+        x = np.asarray(values, dtype=np.float32)
+        return ((x - self.minimum) / (self.maximum - self.minimum)).astype(np.float32)
 
     def inverse(self, values: np.ndarray) -> np.ndarray:
-        return (np.asarray(values, dtype=np.float32) * self.scale + self.mean).astype(np.float32)
+        x = np.asarray(values, dtype=np.float32)
+        return (x * (self.maximum - self.minimum) + self.minimum).astype(np.float32)
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,10 @@ def _transform(directory: Path, family: str) -> InputTransform | None:
     if not path.is_file():
         return None
     with np.load(path) as values:
-        return InputTransform(mean=np.asarray(values["mean"], dtype=np.float32), scale=np.asarray(values["scale"], dtype=np.float32))
+        return InputTransform(
+            minimum=np.asarray(values["minimum"], dtype=np.float32),
+            maximum=np.asarray(values["maximum"], dtype=np.float32),
+        )
 
 
 def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
