@@ -13,7 +13,6 @@
     "rising_edge_before_trigger_ns": 1.0
   },
   "selection": {
-    "pulse_duration_mad": {"left": 5.0, "right": 5.0},
     "baseline_noise": {
       "enabled": true,
       "window_ns": [-4.0, -1.0],
@@ -31,6 +30,17 @@
     "convergence_tolerance_mV": 0.01,
     "selection_sigma_low": -2.0,
     "selection_sigma_high": 4.0
+  },
+  "tot_peak": {
+    "histogram_bin_ns": 0.02,
+    "search_quantile_min": 0.2,
+    "smoothing_sigma_bins": 2.0,
+    "initial_half_width_ns": 0.20,
+    "iteration_sigma": 2.5,
+    "max_iterations": 6,
+    "convergence_tolerance_ns": 0.001,
+    "selection_sigma_low": -3.0,
+    "selection_sigma_high": 2.0
   },
   "io": {"step_size": "128 MB", "max_events": 0}
 }
