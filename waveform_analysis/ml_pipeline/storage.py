@@ -23,11 +23,11 @@ class RunStore:
             if os.path.exists(tmp): os.unlink(tmp)
     def save_split(self,dataset,prepared):
         target=self.root/"splits"/f"{dataset}.npz"; np.savez_compressed(target,development=np.asarray(prepared.development,dtype=np.int64),training=np.asarray(prepared.training,dtype=np.int64),validation=np.asarray(prepared.validation,dtype=np.int64),test=np.asarray(prepared.test,dtype=np.int64)); return target
-    def save_search(self,dataset,mode,name,value):
-        target=self.root/"search"/dataset/mode/f"{name}.json"; atomic_json(target,value); return target
-    def model_dir(self,dataset,mode,model):
-        target=self.root/"models"/dataset/mode/model; target.mkdir(parents=True,exist_ok=True); return target
-    def save_residuals(self,dataset,mode,method,values,*,stage="test"):
-        target=self.root/"artifacts"/dataset/mode/f"{method}_{stage}_residuals_ps.npy"; target.parent.mkdir(parents=True,exist_ok=True); np.save(target,np.asarray(values,dtype=np.float64)); return target
-    def save_xai(self,dataset,mode,model,*,time_ps,importance,example_pair_mV):
-        target=self.root/"artifacts"/dataset/mode/f"{model}_xai.npz"; target.parent.mkdir(parents=True,exist_ok=True); np.savez_compressed(target,time_ps=np.asarray(time_ps),importance=np.asarray(importance),example_pair_mV=np.asarray(example_pair_mV,dtype=np.float32)); return target
+    def save_search(self,dataset,name,value):
+        target=self.root/"search"/dataset/f"{name}.json"; atomic_json(target,value); return target
+    def model_dir(self,dataset,model):
+        target=self.root/"models"/dataset/model; target.mkdir(parents=True,exist_ok=True); return target
+    def save_residuals(self,dataset,method,values,*,stage="test"):
+        target=self.root/"artifacts"/dataset/f"{method}_{stage}_residuals_ps.npy"; target.parent.mkdir(parents=True,exist_ok=True); np.save(target,np.asarray(values,dtype=np.float64)); return target
+    def save_xai(self,dataset,model,*,time_ps,importance,example_pair_mV):
+        target=self.root/"artifacts"/dataset/f"{model}_xai.npz"; target.parent.mkdir(parents=True,exist_ok=True); np.savez_compressed(target,time_ps=np.asarray(time_ps),importance=np.asarray(importance),example_pair_mV=np.asarray(example_pair_mV,dtype=np.float32)); return target
