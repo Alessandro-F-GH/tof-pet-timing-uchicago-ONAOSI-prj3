@@ -63,18 +63,12 @@ def standard_delta(dataset: PreparedDataset, mode: str, method: str) -> np.ndarr
 
 
 def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Paired LED timing calibrated with the training-set LED mean.
-
-    This is the supervised ML target. The waveform anchor is deliberately not
-    part of the physical target; it is only the reference used to materialize
-    the waveform window.
-    """
+    """Canonical supervised target: paired LED minus training-set LED mean."""
     family = target_family(mode)
-    try:
-        mean_led = float(dataset.manifest["led_training_mean_ps"][family])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"Training LED calibration is unavailable for {family}") from exc
-    return standard_delta(dataset, mode, "led") - mean_led
+    values = dataset.energy_target_ps if family == "energy" else dataset.timing_target_ps
+    if values is None:
+        raise ValueError(f"Calibrated LED target is unavailable for {family}")
+    return np.asarray(values, dtype=np.float64)
 
 
 def anchor_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
