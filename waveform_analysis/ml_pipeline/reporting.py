@@ -45,6 +45,14 @@ def _measurement_text(value,uncertainty):
     rounded_unc=float(f"{uncertainty:.1g}"); exponent=int(np.floor(np.log10(abs(rounded_unc)))) if rounded_unc else 0; decimals=max(0,-exponent); return f"{value:.{decimals}f} ± {rounded_unc:.{decimals}f}"
 def _distribution_methods(rows,dataset,stage):
     available={r["method"] for r in rows if r["dataset"]==dataset and r.get("stage")==stage}; ordered=["led"]+[m for m in MODEL_ORDER if m not in {"led","cfd"}]; ordered.extend(sorted(available-set(ordered)-{"cfd"})); return [m for m in ordered if m in available]
+def _median_centered_display_edges(values,xlim,n_bins=20):
+    """Return about n_bins equal-width display bins with a bin centered on the sample median."""
+    values=np.asarray(values,dtype=float).reshape(-1); values=values[np.isfinite(values)]
+    low,high=float(xlim[0]),float(xlim[1]); width=(high-low)/max(1,int(n_bins))
+    if not values.size or not np.isfinite(width) or width<=0:return np.linspace(low,high,int(n_bins)+1)
+    median=float(np.median(values)); anchor=median-0.5*width; steps_left=max(0,int(np.ceil((anchor-low)/width))); start=anchor-steps_left*width; count=max(3,int(np.ceil((high-start)/width))); edges=start+np.arange(count+1,dtype=float)*width
+    if edges[-1]<high-1e-12:edges=np.append(edges,edges[-1]+width)
+    return edges
 def _stripe_importance(time_ns,importance,width_ns=1.0):
     t=np.asarray(time_ns,dtype=float); imp=np.asarray(importance,dtype=float)
     if t.size==0:return []
@@ -103,9 +111,12 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
         row=next((r for r in rows if r["dataset"]==dataset and r["method"]==method and r.get("stage")==stage),None)
         if row is not None:series.append((method,residual,row))
     if not series:return
-    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],21); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
+    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
     for index,(method,residual,row) in enumerate(series):
-        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"; ax.hist(residual,bins=bins,histtype="step",label=label,color=color)
+        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"; visible=residual[(residual>=xlim[0])&(residual<=xlim[1])]; bins=_median_centered_display_edges(visible,xlim,20); ax.hist(visible,bins=bins,histtype="stepfilled",alpha=.16,color=color,edgecolor=color,linewidth=1.35,label=label)
+        left=_float(row.get("fwhm_left_ps")); right=_float(row.get("fwhm_right_ps"))
+        if np.isfinite(left):ax.axvline(left,color=color,ls="--",lw=1.45,alpha=.9)
+        if np.isfinite(right):ax.axvline(right,color=color,ls="--",lw=1.45,alpha=.9)
     ax.set_xlim(*xlim); ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 def _model_output_plot(output,run,mode,dataset,model,paths):
     import matplotlib.pyplot as plt
