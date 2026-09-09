@@ -148,8 +148,6 @@ def _fit_histogram_all_events(
     vmin = int(np.min(values))
     vmax = int(np.max(values))
 
-    # Margin bins ensure every event is represented at every phase.
-    # No event-level timing clipping occurs in this fitter.
     low = np.floor((vmin - phase_fs) / width) * width + phase_fs - width
     high = np.ceil((vmax - phase_fs) / width) * width + phase_fs + width
     n_bins = max(5, int(np.ceil((high - low) / width)))
@@ -162,40 +160,65 @@ def _fit_histogram_all_events(
         return None
 
     minimum_sigma = max(width * 0.20, 1.0)
+    sigma_reference = max(float(initial_sigma_fs), minimum_sigma)
     maximum_sigma = max(
         float(vmax - vmin) * 2.0,
-        initial_sigma_fs * 10.0,
+        sigma_reference * 10.0,
         minimum_sigma * 10.0,
     )
+    mean_scale = max(sigma_reference, float(width), 1.0)
+
+    # Optimize in dimensionless coordinates. Directly optimizing mean in fs while
+    # optimizing log(sigma) mixes scales by orders of magnitude and can make
+    # numerical gradients fail even for an otherwise well-behaved distribution.
+    def unpack(theta: np.ndarray) -> tuple[float, float]:
+        mean = float(initial_mean_fs) + float(theta[0]) * mean_scale
+        sigma = sigma_reference * float(np.exp(theta[1]))
+        return mean, sigma
 
     def objective(theta: np.ndarray) -> float:
-        mean = float(theta[0])
-        sigma = float(np.exp(theta[1]))
+        mean, sigma = unpack(theta)
         probabilities = _bin_probabilities(edges, mean, sigma)
         if np.any(~np.isfinite(probabilities)):
             return float("inf")
         return float(-np.sum(counts * np.log(probabilities)))
 
-    x0 = np.asarray(
-        [initial_mean_fs, np.log(max(initial_sigma_fs, minimum_sigma))],
-        dtype=np.float64,
-    )
+    bounds = [
+        ((float(vmin) - width - float(initial_mean_fs)) / mean_scale,
+         (float(vmax) + width - float(initial_mean_fs)) / mean_scale),
+        (np.log(minimum_sigma / sigma_reference),
+         np.log(maximum_sigma / sigma_reference)),
+    ]
+    x0 = np.zeros(2, dtype=np.float64)
     result = minimize(
         objective,
         x0,
         method="L-BFGS-B",
-        bounds=[
-            (float(vmin) - width, float(vmax) + width),
-            (np.log(minimum_sigma), np.log(maximum_sigma)),
-        ],
-        options={"maxiter": 2000, "ftol": 1e-12},
+        bounds=bounds,
+        options={"maxiter": 2000, "ftol": 1e-12, "gtol": 1e-8},
     )
-    if not result.success or np.any(~np.isfinite(result.x)):
-        return None
 
-    mean_fs = float(result.x[0])
-    sigma_fs = float(np.exp(result.x[1]))
+    # Same likelihood, independent optimizer fallback. This is only numerical
+    # recovery; it does not change the events, histogram, or Gaussian model.
+    if not result.success or np.any(~np.isfinite(result.x)) or not np.isfinite(result.fun):
+        retry = minimize(
+            objective,
+            x0,
+            method="Powell",
+            bounds=bounds,
+            options={"maxiter": 5000, "xtol": 1e-8, "ftol": 1e-10},
+        )
+        if retry.success and np.all(np.isfinite(retry.x)) and np.isfinite(retry.fun):
+            result = retry
+        else:
+            return None
+
+    mean_fs, sigma_fs = unpack(np.asarray(result.x, dtype=np.float64))
+    if not np.isfinite(mean_fs) or not np.isfinite(sigma_fs) or sigma_fs <= 0.0:
+        return None
     probabilities = _bin_probabilities(edges, mean_fs, sigma_fs)
+    if np.any(~np.isfinite(probabilities)):
+        return None
     expected = values.size * probabilities
     deviance = _poisson_deviance(counts, expected)
     ndof = max(0, int(counts.size) - 2)
@@ -206,7 +229,7 @@ def _fit_histogram_all_events(
         inverse = result.hess_inv.todense() if hasattr(result.hess_inv, "todense") else np.asarray(result.hess_inv)
         inverse = np.asarray(inverse, dtype=np.float64)
         if inverse.shape == (2, 2):
-            mean_error_fs = float(np.sqrt(max(inverse[0, 0], 0.0)))
+            mean_error_fs = mean_scale * float(np.sqrt(max(inverse[0, 0], 0.0)))
             log_sigma_error = float(np.sqrt(max(inverse[1, 1], 0.0)))
             sigma_error_fs = sigma_fs * log_sigma_error
     except Exception:
@@ -236,8 +259,6 @@ def fit_delta_times_integer_fs(
     n_selected: int | None = None,
     config: dict[str, Any] | None = None,
 ) -> FitResult:
-    # Common scientific convention: bin-integrated Gaussian likelihood,
-    # adaptive bin width, bin-origin phase scan, and no fit-level event clipping.
     raw = np.asarray(delta_fs)
     if raw.ndim != 1:
         raw = raw.reshape(-1)
@@ -292,7 +313,7 @@ def fit_delta_times_integer_fs(
         return _failure(
             method=method, parameter=parameter, n_total=n_total,
             n_selected=n_selected, n_valid=n_valid,
-            message="Adaptive Gaussian fit failed for every bin phase",
+            message="Adaptive Gaussian fit failed for every bin phase after scaled L-BFGS-B and Powell recovery",
         )
 
     def quality(item: dict[str, Any]) -> tuple[float, float]:
