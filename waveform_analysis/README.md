@@ -16,7 +16,7 @@ There is **no denoising** and no event-wise baseline subtraction.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and evaluated with the common Gaussian CTR fitter in `utils_fit`; CFD is treated the same way when `cfd: true`. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is the native sample nearest in time to the interpolated selected LED crossing.
+LED thresholds are scanned on development and ranked by direct histogram CTR FWHM from the common `utils_fit` estimator; CFD is treated the same way when `cfd: true`. Candidate ranking uses the configured fixed histogram bin width but skips bootstrap because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is the native sample nearest in time to the interpolated selected LED crossing.
 
 For each detector the native-grid offset is
 
@@ -50,7 +50,9 @@ while the ML residual used for CTR is
 
 `y_target - y_theta`.
 
-CTR values use the repository-wide Gaussian fitter from `utils_fit`. CTR uncertainty is the uncertainty returned by that Gaussian fit (`ctr_error_ps`); no bootstrap uncertainty is used by the waveform pipeline.
+CTR is the **direct full width at half maximum of a fixed-bin timing histogram**. The default measurement bin width is `5 ps` and is configurable with `fit.bin_width_ps`. The left and right half-maximum crossings are linearly interpolated between adjacent histogram-bin centers. CTR uncertainty is the event-bootstrap standard deviation of the direct FWHM estimate; the default is `100` resamples configured with `fit.bootstrap_samples`. No parametric timing-shape fit is used for CTR.
+
+`fit.max_abs_ps` remains the symmetric physical timing range admitted to CTR estimation; the default is `±2000 ps`.
 
 Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
 
@@ -63,6 +65,8 @@ Each study stores `ctr_vs_voltage.pdf` directly in the study directory. Detailed
 - `plots/test_distribution/`
 - `plots/model_output/<model>/`
 - `plots/xai/`
+
+The reporting histograms are presentation views and use a compact robust display interval with about 20 bins. They are independent of the fixed `fit.bin_width_ps` used to measure CTR.
 
 ## CLI
 
