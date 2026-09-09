@@ -300,6 +300,7 @@ def run_study(
                     mode,
                     indices,
                 )
+                store.save_model_output(name, model_name, prediction, stage=stage)
                 residual = corrected_timing_residual(target[indices], prediction)
                 rows.append(
                     _metric_row(
