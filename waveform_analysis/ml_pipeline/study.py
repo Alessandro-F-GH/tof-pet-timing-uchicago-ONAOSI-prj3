@@ -147,11 +147,15 @@ def run_study(
             fraction = float(dataset.manifest["cfd_fraction"][family])
             rows.append(_selection_row(name, voltage, mode, "cfd", dataset.manifest["cfd_development_ctr_ps"][family], {"fraction": fraction}, "development_histogram_fwhm"))
 
+        logger.info("ML dataset %s | mode=%s | training=%d | validation=%d | test=%d", name, mode, dataset.training.size, dataset.validation.size, dataset.test.size)
+
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
             search = search_model(
                 spec, model_config, config, dataset, mode,
-                seed=semantic_seed(seed, name, mode, model_name, "search"), logger=logger,
+                seed=semantic_seed(seed, name, mode, model_name, "search"),
+                dataset_name=name,
+                logger=logger,
             )
             fitted = selected_model(search)
             save_model(spec, fitted, store.model_dir(name, model_name), search.best.candidate)
@@ -159,8 +163,8 @@ def run_study(
             fitted_models[model_name] = fitted
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_rmse"))
             logger.info(
-                "Selected %s/%s | validation RMSE %.6g ps | using selected trained model without refit | output clipped to ±%.0f ps | %s",
-                mode, model_name, search.best.score, float(config["ml_output"]["max_abs_ps"]), search.best.candidate,
+                "Selected dataset=%s | %s/%s | validation RMSE %.6g ps | using selected trained model without refit | output clipped to ±%.0f ps | %s",
+                name, mode, model_name, search.best.score, float(config["ml_output"]["max_abs_ps"]), search.best.candidate,
             )
 
             xai = config.get("reporting", {}).get("xai", {}) or {}
