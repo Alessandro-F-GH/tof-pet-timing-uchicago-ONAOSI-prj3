@@ -45,6 +45,11 @@ def voltage_from_name(value: str | Path) -> float:
     return float(match.group(1)) if match else float("nan")
 
 
+def dataset_cache_dir(config: dict[str, Any], key: str, source: str | Path) -> Path:
+    """Return the mode-scoped cache directory for one source ROOT file."""
+    return Path(config["preprocessing"][key]).resolve() / str(config["mode"]) / Path(source).stem
+
+
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(json_safe(value), indent=2, sort_keys=True, allow_nan=False) + "\n"
