@@ -4,7 +4,7 @@
 \begin{column}{0.62\textwidth}
 \centering
 \vspace{0.5cm}
-\smartimage[0.98\linewidth]{0.71\textheight}{figures/timing_fit.png}{Representative Gaussian timing fit.}
+\smartimage[0.98\linewidth]{0.71\textheight}{figures/timing_fit.png}{Representative coincidence-time histogram and direct FWHM extraction.}
 \end{column}
 
 \begin{column}{0.36\textwidth}
@@ -17,14 +17,13 @@ The selected events form the coincidence time distribution.
 \end{block}
 
 \begin{block}{Coincidence Time Resolution (CTR)}
-
+The timing histogram uses a fixed physical bin width. CTR is measured directly from the two half-maximum crossings:
 \[
-\CTR = \mathrm{FWHM}=2\sqrt{2\ln2}\,\sigma \simeq 2.35\,\sigma .
+\CTR = t_{\mathrm{right},1/2}-t_{\mathrm{left},1/2} .
 \]
-
-Lower CTR means better TOF-PET image quality.
+The crossings are linearly interpolated between adjacent bin centres.
 \end{block}
 \end{column}
 \end{columns}
-\mainmsg{The same Gaussian-fit CTR definition is used for every timing method.}
+\mainmsg{The same fixed-bin direct-FWHM definition is used for every timing method.}
 \end{frame}
