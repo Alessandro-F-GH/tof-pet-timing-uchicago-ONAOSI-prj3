@@ -4,7 +4,6 @@ import csv, json
 from pathlib import Path
 from typing import Any
 import numpy as np
-from scipy.special import ndtr
 
 from .common import voltage_from_name
 from .dataset import load_prepared_dataset
@@ -39,11 +38,6 @@ def _robust_display_range(samples,*,quantiles=(0.02,0.98),margin_fraction=0.06):
 def _outside_count(values,xlim):
     values=np.asarray(values,dtype=float).reshape(-1); values=values[np.isfinite(values)]
     return int(np.count_nonzero((values<float(xlim[0]))|(values>float(xlim[1]))))
-def _gaussian_expected_per_bin(edges,n_fit,mean_ps,sigma_ps):
-    edges=np.asarray(edges,dtype=float); sigma=float(sigma_ps); mean=float(mean_ps); n=float(n_fit)
-    if edges.size<2 or not np.isfinite(n) or n<=0 or not np.isfinite(mean) or not np.isfinite(sigma) or sigma<=0:return None
-    probabilities=np.diff(ndtr((edges-mean)/sigma)); expected=n*probabilities
-    return expected if np.all(np.isfinite(expected)) else None
 def _measurement_text(value,uncertainty):
     value=float(value); uncertainty=float(uncertainty)
     if not np.isfinite(value):return "nan"
@@ -109,13 +103,10 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
         row=next((r for r in rows if r["dataset"]==dataset and r["method"]==method and r.get("stage")==stage),None)
         if row is not None:series.append((method,residual,row))
     if not series:return
-    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],21); centers=0.5*(bins[:-1]+bins[1:]); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
+    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],21); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
     for index,(method,residual,row) in enumerate(series):
-        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); mean_fit=_float(row.get("center_ps")); sigma_fit=_float(row.get("sigma_ps")); n_fit=_float(row.get("n"),float(residual.size)); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
-        ax.hist(residual,bins=bins,histtype="step",label=label,color=color)
-        expected=_gaussian_expected_per_bin(bins,n_fit,mean_fit,sigma_fit)
-        if expected is not None:ax.plot(centers,expected,ls="--",lw=1.5,color=color)
-    ax.set_xlim(*xlim); ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage} · Gaussian fits dashed"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"; ax.hist(residual,bins=bins,histtype="step",label=label,color=color)
+    ax.set_xlim(*xlim); ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 def _model_output_plot(output,run,mode,dataset,model,paths):
     import matplotlib.pyplot as plt
     train=_model_output(run,dataset,model,"train"); test=_model_output(run,dataset,model,"test")
@@ -139,7 +130,7 @@ def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
         points=sorted([r for r in test_rows if r["method"]==method and np.isfinite(_voltage(r))],key=_voltage)
         if not points:continue
         voltage=np.asarray([_voltage(r) for r in points]); ctr=np.asarray([_float(r["ctr_ps"]) for r in points]); error=np.asarray([_float(r["ctr_uncertainty_ps"]) for r in points]); ax.errorbar(voltage,ctr,yerr=error,marker="o",label=LABELS.get(method,method))
-    ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=run/"ctr_vs_voltage.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+    ax.set_xlabel("Bias voltage [V]"); ax.set_ylabel("CTR FWHM [ps]"); ax.set_title(mode.replace("_"," ")); ax.grid(True,alpha=.25); ax.legend(); fig.tight_layout(); target=run/"ctr_vs_voltage.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
     for dataset in datasets:
         _distribution_plot(categories["test_distribution"],run,all_rows,mode,dataset,"test",paths); _distribution_plot(categories["train_distribution"],run,all_rows,mode,dataset,"train",paths)
     models=[m for m in ordered_methods if m not in {"led","cfd"}]
