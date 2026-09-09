@@ -89,8 +89,8 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
     if not series:return
     all_values=np.concatenate([r for _,r,_ in series]); lo,hi=np.nanpercentile(all_values,[0.5,99.5]); bins=np.linspace(lo,hi,101) if np.isfinite(lo) and np.isfinite(hi) and hi>lo else 100; fig,ax=plt.subplots(figsize=(8.6,4.8))
     for method,residual,row in series:
-        label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · mean {np.mean(residual):+.1f} ps"; ax.hist(residual,bins=bins,histtype="step",density=True,label=label)
-    ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Density"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
+        label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · mean {np.mean(residual):+.1f} ps"; ax.hist(residual,bins=bins,histtype="step",label=label)
+    ax.set_xlabel(f"{stage.capitalize()} residual [ps]"); ax.set_ylabel("Events / bin"); ax.set_title(f"{mode.replace('_',' ')} · {dataset} · {stage}"); ax.legend(); ax.grid(True,alpha=.2); fig.tight_layout(); target=output/f"ctr_distribution_{stage}_{dataset}.pdf"; fig.savefig(target); plt.close(fig); paths.append(target)
 def make_plots(run_dir:str|Path,output_dir:str|Path|None=None)->list[Path]:
     import matplotlib.pyplot as plt
     run=Path(run_dir).resolve(); plot_root=Path(output_dir).resolve() if output_dir else run/"plots"; categories={name:plot_root/name for name in ("corrections","train_distribution","test_distribution","xai")}
