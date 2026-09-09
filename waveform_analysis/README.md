@@ -1,16 +1,16 @@
 # Waveform timing pipeline
 
-The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**. Every experiment has exactly one configured `mode`: `energy_to_energy`, `energy_to_timing`, or `timing_to_timing`. Optional CFD evaluation is controlled by the experiment-level boolean `cfd`.
+The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**. Every experiment has exactly one configured `mode`: `energy_to_energy` or `timing_to_timing`. Optional CFD evaluation is controlled by the experiment-level boolean `cfd`.
 
 ## 1. Event selection
 
-The ROOT entry population is split into permanent **development** and **test** sets before any fitted selection. Using development only, the pipeline fits the two energy photopeaks, detects threshold hits on the waveform families required by the selected mode, derives timing ToT limits when needed, and optionally derives a baseline-RMS limit. Frozen cuts are applied unchanged to test.
+The ROOT entry population is split into permanent **development** and **test** sets before any fitted selection. Using development only, the pipeline fits the two energy photopeaks, detects threshold hits on the waveform family required by the selected mode, derives timing ToT limits for `timing_to_timing`, and optionally derives a baseline-RMS limit. Frozen cuts are applied unchanged to test.
 
 Selection, native-preprocessing and ML-prepared caches are mode-scoped, so two studies on the same ROOT source cannot reuse incompatible waveform families.
 
 ## 2. Native-time preprocessing
 
-Only selected events and waveform families required by the experiment mode are materialized. For each waveform the pipeline decodes/orients native samples, clamps them to detector-specific `vertical_scale_limit_mV`, crops around the selected main trigger, preserves native acquisition timing, and stores the rising-edge interval used by LED/CFD.
+Only selected events and the waveform family required by the experiment mode are materialized. For each waveform the pipeline decodes/orients native samples, clamps them to detector-specific `vertical_scale_limit_mV`, crops around the selected main trigger, preserves native acquisition timing, and stores the rising-edge interval used by LED/CFD.
 
 There is **no denoising** and no event-wise baseline subtraction.
 
@@ -26,11 +26,11 @@ and the paired anchor correction is `Delta delta = delta_1 - delta_2`. The fixed
 
 `C_hat_12 = mean_training(Delta t_LED) - TOF`.
 
-The canonical supervised target follows the presentation formulation:
+The canonical supervised target is
 
 `y_target = Delta t_LED - Delta delta - TOF - C_hat_12`.
 
-The ML window is materialized with `t_anchor = 0` and `ml_input.subsampling` is applied. Waveforms are then scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`. The transform is fixed by configuration: it is not fitted per event, per sample, or from the training population, and its inverse is persisted for physical-mV reporting.
+The ML window is materialized with `t_anchor = 0` and `ml_input.subsampling` is applied. Waveforms are scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`. The transform is fixed by configuration: it is not fitted per event, per sample, or from the training population, and its inverse is persisted for physical-mV reporting.
 
 ## 4. ML and final test
 
@@ -40,9 +40,9 @@ Models are constrained to paired antisymmetric corrections of the form
 
 The CNN implements the shared scorer explicitly. Linear SVR is the linear equivalent, `w^T(s1-s2) = w^T s1 - w^T s2`, with no intercept.
 
-Linear SVR and CNN candidates are trained on training and ranked **only by validation RMSE** of `y_target - y_theta`. CNN early stopping uses the same validation RMSE. The selected candidate is refit on complete development. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+Linear SVR and CNN candidates are trained on the training split and ranked **only by validation RMSE** of `y_target - y_theta`. CNN early stopping uses the same validation RMSE. **There is no final refit:** the validation-selected trained model, including the best early-stopping CNN checkpoint, is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
 
-The permanent test population is evaluated once after selection. The LED reference residual is
+The permanent test population is evaluated once after model selection. The LED reference residual is
 
 `Delta t_LED - TOF - C_hat_12`,
 
@@ -50,7 +50,7 @@ while the ML residual used for CTR is
 
 `y_target - y_theta`.
 
-CTR values and their bootstrap uncertainty use the repository-wide Gaussian fitter from `utils_fit`; the ML pipeline contains no independent CTR implementation.
+CTR values use the repository-wide Gaussian fitter from `utils_fit`. CTR uncertainty is the uncertainty returned by that Gaussian fit (`ctr_error_ps`); no bootstrap uncertainty is used by the waveform pipeline.
 
 Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
 
@@ -61,6 +61,7 @@ Each study stores `ctr_vs_voltage.pdf` directly in the study directory. Detailed
 - `plots/corrections/`
 - `plots/train_distribution/`
 - `plots/test_distribution/`
+- `plots/model_output/<model>/`
 - `plots/xai/`
 
 ## CLI
@@ -72,4 +73,4 @@ python -m waveform_analysis.cli run --config waveform_analysis/config/experiment
 python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete_energy
 ```
 
-The former multi-mode `complete.json` was intentionally removed. Use `complete_energy.json` and `complete_timing.json` as independent studies.
+Use `complete_energy.json` and `complete_timing.json` as independent studies.
