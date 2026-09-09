@@ -12,38 +12,14 @@
     "overwrite": []
   },
   "tasks": {
-    "streaming_pulse_decode": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "candidate_preprocessing": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "energy_selection": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "matching_training": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "matching_model": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "preprocessing": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "selection": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "fit": {
-      "enabled": true,
-      "overwrite": false
-    }
+    "streaming_pulse_decode": {"enabled": true, "overwrite": false},
+    "candidate_preprocessing": {"enabled": true, "overwrite": false},
+    "energy_selection": {"enabled": true, "overwrite": false},
+    "matching_training": {"enabled": true, "overwrite": false},
+    "matching_model": {"enabled": true, "overwrite": false},
+    "preprocessing": {"enabled": true, "overwrite": false},
+    "selection": {"enabled": true, "overwrite": false},
+    "fit": {"enabled": true, "overwrite": false}
   },
   "channels": {
     "signal_a": 1,
@@ -85,60 +61,24 @@
   },
   "fit": {
     "min_events": 100,
-    "min_histogram_bins": 8,
-    "max_histogram_bins": 160,
-    "min_bin_width_lsb": 2,
-    "target_events_per_bin": 35.0,
-    "smooth_sigma_bins": 1.0,
-    "initial_half_width_sigma": 2.5,
-    "refit_half_width_sigma": 2.5,
-    "iterations": 3,
-    "minimum_fit_bins": 6,
-    "minimum_fit_events": 15,
-    "minimum_sigma_bin_fraction": 0.25,
-    "maximum_sigma_range_fraction": 0.5,
-    "optimizer_maxiter": 3000,
-    "outlier_z_threshold": 5.0,
-    "outlier_minimum_scale_lsb": 2.0,
-    "outlier_bin_width_lsb": 8,
-    "outlier_seed_half_width_bins": 3,
-    "outlier_minimum_core_events": 20,
-    "adaptive_binning": {
-      "enabled": true,
-      "bins_per_fwhm": 10.0,
-      "min_bin_ps": 1.0,
-      "max_bin_ps": 25.0,
-      "phase_count": 8
-    },
+    "max_abs_ps": 2000.0,
+    "bin_width_ps": 5.0,
+    "bootstrap_samples": 100,
     "led_outlier_rejection": {
       "enabled": true,
       "zscore_limit": 4.0
     }
   },
   "plots": {
-    "matching_train": {
-      "enabled": false,
-      "overwrite": false
-    },
-    "matching_total": {
-      "enabled": false,
-      "overwrite": false
-    },
-    "peak_selection": {
-      "enabled": true,
-      "overwrite": false
-    },
-    "timing_fit": {
-      "enabled": true,
-      "overwrite": false
-    },
+    "matching_train": {"enabled": false, "overwrite": false},
+    "matching_total": {"enabled": false, "overwrite": false},
+    "peak_selection": {"enabled": true, "overwrite": false},
+    "timing_fit": {"enabled": true, "overwrite": false},
     "dpi": 180,
     "max_histogram_bins": 120,
     "matching_curve_points": 1000
   },
-  "thresholds": {
-    "consistency": "error"
-  },
+  "thresholds": {"consistency": "error"},
   "matching_model": {
     "method": "average_delay",
     "training": {
