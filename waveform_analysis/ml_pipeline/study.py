@@ -14,7 +14,7 @@ from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
-from .stats import format_residual_summary, gaussian_ctr, residual_summary
+from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
 from .train import predict_indices, save_model, search_model, selected_model
 from .view import calibrated_led, corrected_timing_residual, inverse_pair, model_target, standard_delta, target_family
@@ -31,7 +31,7 @@ def _logger(run_dir: Path):
     return logger
 
 
-def _metric_row(config, name, voltage, mode, method, residual, population_n, logger, stage="test"):
+def _metric_row(config, name, voltage, mode, method, residual, population_n, seed, logger, stage="test"):
     values = np.asarray(residual, dtype=float)
     finite = values[np.isfinite(values)]
     minimum = int((config.get("fit") or {}).get("min_events", 100))
@@ -42,25 +42,28 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, log
         logger.error("CTR metric unavailable | %s | too few finite residuals (need %d) | %s", context, minimum, detail)
         raise RuntimeError(f"{context}: only {finite.size} finite residuals; {detail}")
     try:
-        fit = gaussian_ctr(finite, config.get("fit"))
+        result = ctr_estimate(finite, config.get("fit"), seed=int(seed), bootstrap=True)
     except ValueError as exc:
         detail = format_residual_summary(summary)
-        logger.error("Gaussian CTR fit failed | %s | reason=%s | %s", context, exc, detail)
-        raise RuntimeError(f"{context}: Gaussian CTR fit failed: {exc}; {detail}") from exc
+        logger.error("Histogram FWHM CTR unavailable | %s | reason=%s | %s", context, exc, detail)
+        raise RuntimeError(f"{context}: histogram FWHM CTR unavailable: {exc}; {detail}") from exc
     return {
         "dataset": name,
         "voltage_V": voltage,
         "mode": mode,
         "method": method,
         "stage": stage,
-        "ctr_ps": float(fit.ctr_ps),
-        "ctr_uncertainty_ps": float(fit.ctr_error_ps),
-        "center_ps": float(fit.mean_ps),
-        "sigma_ps": float(fit.sigma_ps),
-        "fit_chi2_ndof": float(fit.chi2_ndof),
-        "n": int(fit.n_valid),
+        "ctr_ps": float(result.ctr_ps),
+        "ctr_uncertainty_ps": float(result.ctr_error_ps),
+        "center_ps": float(result.center_ps),
+        "fwhm_left_ps": float(result.left_half_ps),
+        "fwhm_right_ps": float(result.right_half_ps),
+        "bin_width_ps": float(result.bin_width_ps),
+        "bootstrap_samples": int(result.bootstrap_samples),
+        "bootstrap_successful": int(result.bootstrap_successful),
+        "n": int(result.n_valid),
         "population_n": int(population_n),
-        "crossing_efficiency": float(fit.n_valid / max(1, int(population_n))),
+        "crossing_efficiency": float(result.n_valid / max(1, int(population_n))),
     }
 
 
@@ -73,7 +76,7 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
         "stage": "development_selection" if method in {"led", "cfd"} else "validation",
         "selection_score": float(score),
         "selection_metric": metric,
-        "ctr_ps": float(score) if metric == "development_gaussian_ctr" else float("nan"),
+        "ctr_ps": float(score) if metric == "development_histogram_fwhm" else float("nan"),
         "ctr_uncertainty_ps": float("nan"),
         "center_ps": float("nan"),
         "n": 0,
@@ -114,7 +117,7 @@ def run_study(
     seed = int(config["validation"]["seed"])
     mode = str(config["mode"])
     manifest = {
-        "schema_version": 6,
+        "schema_version": 7,
         "protocol": "single_mode_validation_selected_model_holdout",
         "mode": mode,
         "test_used_for_selection": False,
@@ -124,8 +127,10 @@ def run_study(
         "ml_target": "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
-        "ctr_metric": "utils_fit_gaussian_fwhm",
-        "ctr_uncertainty": "gaussian_fit_ctr_error_ps",
+        "ctr_metric": "fixed_bin_histogram_fwhm",
+        "ctr_bin_width_ps": float(config["fit"]["bin_width_ps"]),
+        "ctr_uncertainty": "event_bootstrap_fwhm_std",
+        "ctr_bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
         "config": public_config(config),
         "datasets": {},
     }
@@ -137,10 +142,10 @@ def run_study(
         fitted_models = {}
         family = target_family(mode)
         threshold = float(dataset.manifest["led_threshold_mV"][family])
-        rows.append(_selection_row(name, voltage, mode, "led", dataset.manifest["led_development_ctr_ps"][family], {"threshold_mV": threshold}, "development_gaussian_ctr"))
+        rows.append(_selection_row(name, voltage, mode, "led", dataset.manifest["led_development_ctr_ps"][family], {"threshold_mV": threshold}, "development_histogram_fwhm"))
         if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
             fraction = float(dataset.manifest["cfd_fraction"][family])
-            rows.append(_selection_row(name, voltage, mode, "cfd", dataset.manifest["cfd_development_ctr_ps"][family], {"fraction": fraction}, "development_gaussian_ctr"))
+            rows.append(_selection_row(name, voltage, mode, "cfd", dataset.manifest["cfd_development_ctr_ps"][family], {"fraction": fraction}, "development_histogram_fwhm"))
 
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
@@ -171,13 +176,13 @@ def run_study(
         target = model_target(dataset, mode)
         for stage, indices in (("train", np.asarray(dataset.training, dtype=np.int64)), ("test", np.asarray(dataset.test, dtype=np.int64))):
             led = led_reference[indices]
-            rows.append(_metric_row(config, name, voltage, mode, "led", led, indices.size, logger, stage=stage))
+            rows.append(_metric_row(config, name, voltage, mode, "led", led, indices.size, semantic_seed(seed, name, mode, "led", stage), logger, stage=stage))
             store.save_residuals(name, "led", led, stage=stage)
 
             if config["cfd"]:
                 led_mean = float(dataset.manifest["led_training_mean_ps"][family])
                 cfd = standard_delta(dataset, mode, "cfd")[indices] - led_mean
-                rows.append(_metric_row(config, name, voltage, mode, "cfd", cfd, indices.size, logger, stage=stage))
+                rows.append(_metric_row(config, name, voltage, mode, "cfd", cfd, indices.size, semantic_seed(seed, name, mode, "cfd", stage), logger, stage=stage))
                 store.save_residuals(name, "cfd", cfd, stage=stage)
 
             for model_name, fitted in fitted_models.items():
@@ -185,7 +190,7 @@ def run_study(
                 prediction, _time, _pair = predict_indices(spec, fitted, dataset, mode, indices)
                 store.save_model_output(name, model_name, prediction, stage=stage)
                 residual = corrected_timing_residual(target[indices], prediction)
-                rows.append(_metric_row(config, name, voltage, mode, model_name, residual, indices.size, logger, stage=stage))
+                rows.append(_metric_row(config, name, voltage, mode, model_name, residual, indices.size, semantic_seed(seed, name, mode, model_name, stage), logger, stage=stage))
                 store.save_residuals(name, model_name, residual, stage=stage)
 
         manifest["datasets"][name] = {
