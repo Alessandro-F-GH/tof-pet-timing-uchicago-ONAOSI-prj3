@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 from ..utils.photopeak import fit_photopeak, photopeak_mask
+from ..utils.peak import fit_histogram_peak
 from .common import atomic_json, canonical_hash, source_signature
 from .energy_io import energy_event_count, iterate_energy_chunks
 from .splits import semantic_seed, split_development_test
 
-SELECTION_FORMAT_VERSION=2
+SELECTION_FORMAT_VERSION=3
 
 @dataclass(frozen=True)
 class SelectionData:
@@ -94,31 +95,28 @@ def _scan_hits(root,config,photopeak,n):
     return hits
 
 def _duration_limits(hits,dev,config):
-    # Pulse duration is meaningful only for timing signals. Energy pulses normally
-    # remain above threshold to the end of the oscilloscope trace.
-    if 'timing' not in hits:return {}
-    cut=config['preprocessing']['selection']['pulse_duration_mad']; left,right=float(cut['left']),float(cut['right']); events=hits['timing']; limits=np.full((2,2),np.nan)
+    if 'timing' not in hits:return {},[]
+    events=hits['timing']; limits=np.full((2,2),np.nan); fits=[]; fit_cfg=config['preprocessing']['tot_peak']
     for d in range(2):
-        primary=[max(h.duration_ns for h in events[row][d]) for row in np.flatnonzero(dev) if events[row][d]]; center,scale=robust_center_scale(primary)
-        if not np.isfinite(center): raise RuntimeError(f'No development hits for timing detector {d+1}')
-        scale=max(scale if np.isfinite(scale) else 0.0,max(1e-12,abs(center)*1e-6)); limits[d]=[max(0,center-left*scale),center+right*scale]
-    return {'timing':limits}
+        primary=np.asarray([max(h.duration_ns for h in events[row][d]) for row in np.flatnonzero(dev) if events[row][d]],dtype=float)
+        fit=fit_histogram_peak(primary,config=fit_cfg,unit_suffix='ns',fit_name=f'ToT detector {d+1}',value_name='pulse durations')
+        if not fit.success: raise RuntimeError(f'ToT peak fit failed for detector {d+1}: {fit.message}')
+        limits[d]=[max(0.0,float(fit.selection_low)),float(fit.selection_high)]; fits.append(fit)
+    return {'timing':limits},fits
 
-def _choose_main_hits(hits,limits,photopeak):
-    n=photopeak.size; accepted=photopeak.copy(); main_hit={}; main_trigger={}; main_stop={}
+def _choose_main_hits(hits,limits,photopeak,tot_centers=None):
+    n=photopeak.size; accepted=photopeak.copy(); main_hit={}; main_trigger={}; main_stop={}; centers=np.asarray(tot_centers,dtype=float) if tot_centers is not None else np.full(2,np.nan)
     for f,events in hits.items():
         chosen=np.full((n,2),-1,dtype=np.int32); trigger=np.full((n,2),-1,dtype=np.int32); stop=np.full((n,2),-1,dtype=np.int32); ok=np.ones(n,dtype=bool)
         for row in np.flatnonzero(photopeak):
             for d in range(2):
                 if f=='energy':
-                    # Energy is clean and its long pulse often never returns below
-                    # threshold inside the trace. The first crossing is the pulse.
                     if not events[row][d]: ok[row]=False; continue
                     i,h=0,events[row][d][0]
                 else:
                     lo,hi=limits[f][d]; valid=[(i,h) for i,h in enumerate(events[row][d]) if lo<=h.duration_ns<=hi]
                     if not valid: ok[row]=False; continue
-                    i,h=max(valid,key=lambda x:x[1].duration_ns)
+                    i,h=min(valid,key=lambda x:abs(x[1].duration_ns-centers[d])) if np.isfinite(centers[d]) else max(valid,key=lambda x:x[1].duration_ns)
                 chosen[row,d]=i; trigger[row,d]=h.leading_index; stop[row,d]=h.stop_index
         accepted&=ok; main_hit[f]=chosen; main_trigger[f]=trigger; main_stop[f]=stop
     return accepted,main_hit,main_trigger,main_stop
@@ -156,7 +154,7 @@ def _summary(path,masks,split):
             for code,label in ((0,'development'),(1,'test')): w.writerow({'criterion':name,'split':label,'remaining':int(np.count_nonzero(mask&(split==code)))})
 
 def selection_fingerprint(root,config):
-    return canonical_hash({'format_version':SELECTION_FORMAT_VERSION,'source':source_signature(root),'channels':config['data']['channels'],'validation':{'seed':config['validation']['seed'],'test_fraction':config['validation']['test_fraction']},'selection':config['preprocessing']['selection'],'photopeak':config['preprocessing']['photopeak'],'triggers':{f:config['preprocessing'][f]['trigger_threshold_mV'] for f in _families(config)},'max_events':int(config['preprocessing'].get('io',{}).get('max_events',0))})
+    return canonical_hash({'format_version':SELECTION_FORMAT_VERSION,'source':source_signature(root),'channels':config['data']['channels'],'validation':{'seed':config['validation']['seed'],'test_fraction':config['validation']['test_fraction']},'selection':config['preprocessing']['selection'],'photopeak':config['preprocessing']['photopeak'],'tot_peak':config['preprocessing'].get('tot_peak'),'triggers':{f:config['preprocessing'][f]['trigger_threshold_mV'] for f in _families(config)},'max_events':int(config['preprocessing'].get('io',{}).get('max_events',0))})
 def load_selection(directory,root,config):
     manifest=json.loads((directory/'manifest.json').read_text(encoding='utf-8'))
     if manifest.get('fingerprint')!=selection_fingerprint(root,config): raise ValueError('Selection fingerprint changed')
@@ -175,7 +173,7 @@ def select_events(root_file,config,*,rebuild,logger):
         result=fit_photopeak(amps[devfit,d],channel=int(ch),config=config['preprocessing']['photopeak']);
         if not result.success: raise RuntimeError(f'Photopeak fit failed for channel {ch}: {result.message}')
         fits.append(result); photo&=photopeak_mask(amps[:,d],result)
-    hits=_scan_hits(root_file,config,photo,n); limits=_duration_limits(hits,(split==0)&photo,config); hit_selection,main_hit,triggers,stops=_choose_main_hits(hits,limits,photo); selected=hit_selection.copy(); noise=None; noise_limits=None; noise_cfg=config['preprocessing']['selection']['baseline_noise']
+    hits=_scan_hits(root_file,config,photo,n); limits,tot_fits=_duration_limits(hits,(split==0)&photo,config); centers=[fit.mean for fit in tot_fits] if tot_fits else None; hit_selection,main_hit,triggers,stops=_choose_main_hits(hits,limits,photo,centers); selected=hit_selection.copy(); noise=None; noise_limits=None; noise_cfg=config['preprocessing']['selection']['baseline_noise']
     if bool(noise_cfg.get('enabled',False)):
         noise=_scan_noise(root_file,config,hit_selection,triggers,n); noise_limits=_noise_limits(noise,(split==0)&hit_selection,config)
         for f,v in noise.items(): selected&=np.all(np.isfinite(v)&(v<=noise_limits[f][None,:]),axis=1)
@@ -187,5 +185,5 @@ def select_events(root_file,config,*,rebuild,logger):
     for f in triggers:
         np.save(base/f'main_trigger_{f}.npy',triggers[f][rows]); np.save(base/f'main_hit_{f}.npy',main_hit[f][rows]); np.save(base/f'main_stop_{f}.npy',stops[f][rows])
     _summary(base/'selection_summary.csv',[('finite_energy_amplitude',finite),('photopeak',photo),('main_hit',hit_selection),('baseline_noise',selected)],split)
-    manifest={'format_version':SELECTION_FORMAT_VERSION,'fingerprint':selection_fingerprint(root_file,config),'source':str(root_file),'n_raw':n,'n_selected':int(rows.size),'n_development':int(np.count_nonzero(selected&(split==0))),'n_test':int(np.count_nonzero(selected&(split==1))),'photopeak':[f.as_dict() for f in fits],'energy_hit_policy':'first_hit','duration_limits_ns':{f:v.tolist() for f,v in limits.items()},'baseline_noise_limits_mV':None if noise_limits is None else {f:v.tolist() for f,v in noise_limits.items()}}
+    manifest={'format_version':SELECTION_FORMAT_VERSION,'fingerprint':selection_fingerprint(root_file,config),'source':str(root_file),'n_raw':n,'n_selected':int(rows.size),'n_development':int(np.count_nonzero(selected&(split==0))),'n_test':int(np.count_nonzero(selected&(split==1))),'photopeak':[f.as_dict() for f in fits],'tot_peak':[f.as_dict() for f in tot_fits],'energy_hit_policy':'first_hit','timing_hit_policy':'closest_to_fitted_tot_peak','duration_limits_ns':{f:v.tolist() for f,v in limits.items()},'baseline_noise_limits_mV':None if noise_limits is None else {f:v.tolist() for f,v in noise_limits.items()}}
     atomic_json(base/'manifest.json',manifest); logger.info('Event selection %s | %d/%d selected',root_file.name,rows.size,n); return load_selection(base,root_file,config)
