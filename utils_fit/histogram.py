@@ -175,8 +175,19 @@ def _config(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _fixed_edges(values_ps: np.ndarray, width_ps: float, max_abs_ps: float | None) -> np.ndarray:
+    """Build fixed-width bins with the sample median at the center of a bin.
+
+    The bin width is fixed, but the absolute phase is not tied to zero. Centering
+    a bin on the median makes the estimator translation-invariant and avoids a
+    small displacement of an otherwise identical peak changing the measured
+    FWHM simply because it falls across different bin boundaries.
+    """
     values = np.asarray(values_ps, dtype=np.float64)
+    if values.size == 0:
+        raise ValueError("Cannot build histogram edges from an empty sample")
     width = float(width_ps)
+    median = float(np.median(values))
+
     if max_abs_ps is not None:
         limit = float(max_abs_ps)
         if not np.isfinite(limit) or limit <= 0.0:
@@ -184,13 +195,19 @@ def _fixed_edges(values_ps: np.ndarray, width_ps: float, max_abs_ps: float | Non
         low = -limit
         high = limit
     else:
-        low = np.floor(float(np.min(values)) / width) * width
-        high = np.ceil(float(np.max(values)) / width) * width
+        low = float(np.min(values))
+        high = float(np.max(values))
         if high <= low:
             low -= width
             high += width
-    n_bins = max(3, int(np.ceil((high - low) / width)))
-    edges = low + np.arange(n_bins + 1, dtype=np.float64) * width
+
+    # One bin is centered exactly on the median. Extend that same fixed-width
+    # grid until it covers the requested physical range.
+    median_bin_left = median - 0.5 * width
+    steps_left = max(0, int(np.ceil((median_bin_left - low) / width)))
+    start = median_bin_left - steps_left * width
+    n_bins = max(3, int(np.ceil((high - start) / width)))
+    edges = start + np.arange(n_bins + 1, dtype=np.float64) * width
     if edges[-1] < high - 1e-12:
         edges = np.append(edges, edges[-1] + width)
     return edges
@@ -267,7 +284,9 @@ def _estimate_values(
             message=f"Only {n_valid} valid events; need {cfg['min_events']}",
         )
 
-    edges = _fixed_edges(finite, float(cfg["bin_width_ps"]), None if limit is None else float(limit))
+    max_abs = None if limit is None else float(limit)
+    width = float(cfg["bin_width_ps"])
+    edges = _fixed_edges(finite, width, max_abs)
     measured = _measure_histogram(finite, edges)
     if measured is None:
         return _failure(
@@ -288,7 +307,10 @@ def _estimate_values(
         rng = np.random.default_rng(int(seed))
         for _ in range(requested):
             sample = finite[rng.integers(0, n_valid, size=n_valid)]
-            trial = _measure_histogram(sample, edges)
+            # The estimator definition includes median-based bin alignment, so
+            # each bootstrap resample gets its own median-centered fixed-width grid.
+            trial_edges = _fixed_edges(sample, width, max_abs)
+            trial = _measure_histogram(sample, trial_edges)
             if trial is not None and np.isfinite(trial[0]):
                 bootstrap_ctrs.append(float(trial[0]))
     error = float(np.std(bootstrap_ctrs, ddof=1)) if len(bootstrap_ctrs) > 1 else float("nan")
@@ -307,7 +329,7 @@ def _estimate_values(
         left_half_ps=left,
         right_half_ps=right,
         half_max_events=0.5 * float(np.max(counts)),
-        bin_width_ps=float(cfg["bin_width_ps"]),
+        bin_width_ps=width,
         bootstrap_samples=requested,
         bootstrap_successful=len(bootstrap_ctrs),
         message="",
