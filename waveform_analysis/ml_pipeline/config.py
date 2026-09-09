@@ -47,7 +47,8 @@ def _load_models(config,root):
 
 def _mode_families(mode:str)->set[str]:
     if mode=="energy_to_energy": return {"energy"}
-    if mode in {"energy_to_timing","timing_to_timing"}: return {"energy","timing"} if mode=="energy_to_timing" else {"timing"}
+    if mode=="energy_to_timing": return {"energy","timing"}
+    if mode=="timing_to_timing": return {"timing"}
     raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
 
 def validate_config(config):
@@ -67,8 +68,7 @@ def validate_config(config):
     preprocessing=config["preprocessing"]
     for key in ("selection_store_dir","preprocessed_dir","prepared_dir","materialized_window_ns","selection","photopeak","energy"):
         if key not in preprocessing: raise ConfigError(f"preprocessing.{key} is required")
-    families=_mode_families(mode)
-    channels=config["data"]["channels"]
+    families=_mode_families(mode); channels=config["data"]["channels"]
     if "timing" in families and not channels.get("timing"): raise ConfigError(f"mode {mode!r} requires timing channels")
     for family in families|{"energy"}:
         if family not in preprocessing: raise ConfigError(f"preprocessing.{family} is required")
@@ -87,10 +87,10 @@ def validate_config(config):
         training=model.get("training",{}) or {}
         if "selection_metric" in training or "selection_metric" in model: raise ConfigError(f"{name}: selection_metric is fixed to validation RMSE and must not be configured")
 def load_config(path:str|Path,project_root:str|Path|None=None):
-    source=Path(path).expanduser().resolve(); root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]; config=_resolve(source); _load_models(config,root)
+    source=Path(path).expanduser().resolve(); root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]; config=_resolve(source); _load_models(config,root); validate_config(config); mode=str(config["mode"])
     if "root_folder" in config["data"]: config["data"]["root_folder"]=_project_path(root,config["data"]["root_folder"])
-    for key in ("selection_store_dir","preprocessed_dir","prepared_dir"): config["preprocessing"][key]=_project_path(root,config["preprocessing"][key])
-    config["experiment"]["output_dir"]=_project_path(root,config["experiment"]["output_dir"]); config["_config_path"]=str(source); validate_config(config); config["_config_fingerprint"]=canonical_hash({k:v for k,v in config.items() if not str(k).startswith("_")}); return config
+    for key in ("selection_store_dir","preprocessed_dir","prepared_dir"): config["preprocessing"][key]=str(Path(_project_path(root,config["preprocessing"][key]))/mode)
+    config["experiment"]["output_dir"]=_project_path(root,config["experiment"]["output_dir"]); config["channel_modes"]=(mode,); config["_config_path"]=str(source); config["_config_fingerprint"]=canonical_hash({k:v for k,v in config.items() if not str(k).startswith("_") and k!="channel_modes"}); return config
 def discover_root_files(config):
     data=config["data"]; root=Path(data["root_folder"]); pattern=str(data.get("root_glob","*.root")); files=sorted(root.rglob(pattern) if bool(data.get("recursive",False)) else root.glob(pattern)); return [p.resolve() for p in files if p.is_file()]
-def public_config(config): return {k:copy.deepcopy(v) for k,v in config.items() if not str(k).startswith("_")}
+def public_config(config): return {k:copy.deepcopy(v) for k,v in config.items() if not str(k).startswith("_") and k!="channel_modes"}
