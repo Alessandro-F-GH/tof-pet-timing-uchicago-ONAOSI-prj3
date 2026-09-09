@@ -28,11 +28,39 @@ def plot_ctr_histogram(
 
     fig, ax = plt.subplots(figsize=(9.2, 6.1))
     ax.bar(edges[:-1], counts, width=widths, align="edge", alpha=0.65)
-    ax.axhline(result.half_max_events, ls="--", lw=1.5, label="Half maximum")
-    ax.axvline(result.left_half_ps, ls=":", lw=1.5)
-    ax.axvline(result.right_half_ps, ls=":", lw=1.5)
+
+    half_max = float(result.half_max_events)
+    left = float(result.left_half_ps)
+    right = float(result.right_half_ps)
+
+    ax.axhline(half_max, ls="--", lw=1.3, alpha=0.75, label="Half maximum")
+    ax.axvline(left, ls=":", lw=1.4)
+    ax.axvline(right, ls=":", lw=1.4)
+
+    # Explicitly show the measured Full Width at Half Maximum.
+    ax.plot(
+        [left, right],
+        [half_max, half_max],
+        lw=3.0,
+        solid_capstyle="round",
+        label="Full Width at Half Maximum",
+    )
+    ax.scatter([left, right], [half_max, half_max], s=32, zorder=5)
+
+    peak_count = float(np.max(counts)) if counts.size else half_max
+    annotation_offset = max(0.05 * peak_count, 1.0)
+    ax.text(
+        0.5 * (left + right),
+        half_max + annotation_offset,
+        f"FWHM = {result.ctr_ps:.1f} ps",
+        ha="center",
+        va="bottom",
+        fontsize=11,
+        fontweight="bold",
+    )
+
     error_text = f" ± {result.ctr_error_ps:.1f}" if np.isfinite(result.ctr_error_ps) else ""
-    ax.plot([], [], label=f"CTR FWHM={result.ctr_ps:.1f}{error_text} ps")
+    ax.plot([], [], label=f"CTR = {result.ctr_ps:.1f}{error_text} ps")
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Events / bin")
     ax.set_title(title or f"{result.method} — parameter {result.parameter:g} — direct FWHM")
