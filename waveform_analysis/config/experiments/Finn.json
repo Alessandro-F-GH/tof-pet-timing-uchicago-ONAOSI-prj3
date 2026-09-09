@@ -2,11 +2,8 @@
   "extends": "../profiles/ctr_default.json",
   "data_config": "../data/Finn.json",
   "preprocessing_config": "../preprocessing/default_ctr.json",
-  "experiment": {"name": "complete", "output_dir": "results/studies/svr_Finn"},
+  "experiment": {"name": "svr_Finn", "output_dir": "results/studies/svr_Finn"},
   "models": ["linear_svr"],
-  "modes": {
-    "energy_to_energy": {"enabled": false, "cfd": true},
-    "energy_to_timing": {"enabled": false, "cfd": false},
-    "timing_to_timing": {"enabled": true, "cfd": false}
-  }
+  "mode": "timing_to_timing",
+  "cfd": false
 }
