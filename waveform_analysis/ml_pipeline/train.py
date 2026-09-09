@@ -61,7 +61,17 @@ def _rmse(values):
     return float(np.sqrt(np.mean(residual**2)))
 
 
-def search_model(spec, model_config, config, dataset, mode: str, *, seed: int, logger=None) -> SearchResult:
+def search_model(
+    spec,
+    model_config,
+    config,
+    dataset,
+    mode: str,
+    *,
+    seed: int,
+    dataset_name: str | None = None,
+    logger=None,
+) -> SearchResult:
     training = np.asarray(dataset.training, dtype=np.int64)
     validation = np.asarray(dataset.validation, dtype=np.int64)
     train_x = waveform_view(dataset, mode, training).materialize()
@@ -70,6 +80,7 @@ def search_model(spec, model_config, config, dataset, mode: str, *, seed: int, l
     train_target = target[training]
     validation_target = target[validation]
     output_limit = float(config["ml_output"]["max_abs_ps"])
+    dataset_label = str(dataset_name or dataset.directory.name)
 
     def fit_candidate(parameters, candidate_seed):
         return _fit_once(
@@ -89,20 +100,41 @@ def search_model(spec, model_config, config, dataset, mode: str, *, seed: int, l
 
     def on_start(number, total, candidate):
         if logger is not None:
-            logger.info("Training %s/%s | candidate %d/%d | %s", mode, spec.name, number, total, candidate)
+            logger.info(
+                "Training dataset=%s | %s/%s | candidate %d/%d | %s",
+                dataset_label,
+                mode,
+                spec.name,
+                number,
+                total,
+                candidate,
+            )
 
     def on_result(number, total, result):
         if logger is None:
             return
         if result.error is None:
             logger.info(
-                "Validation %s/%s | candidate %d/%d | slide-target RMSE %.6g ps | output clipped to ±%.0f ps | %s",
-                mode, spec.name, number, total, result.score, output_limit, result.candidate,
+                "Validation dataset=%s | %s/%s | candidate %d/%d | slide-target RMSE %.6g ps | output clipped to ±%.0f ps | %s",
+                dataset_label,
+                mode,
+                spec.name,
+                number,
+                total,
+                result.score,
+                output_limit,
+                result.candidate,
             )
         else:
             logger.warning(
-                "Candidate failed %s/%s | candidate %d/%d | %s | %s",
-                mode, spec.name, number, total, result.candidate, result.error,
+                "Candidate failed dataset=%s | %s/%s | candidate %d/%d | %s | %s",
+                dataset_label,
+                mode,
+                spec.name,
+                number,
+                total,
+                result.candidate,
+                result.error,
             )
 
     return select_candidate(
