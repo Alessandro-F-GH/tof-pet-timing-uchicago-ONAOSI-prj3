@@ -45,6 +45,21 @@ def voltage_from_name(value: str | Path) -> float:
     return float(match.group(1)) if match else float("nan")
 
 
+def dataset_cache_dir(config: dict[str, Any], key: str, source: str | Path) -> Path:
+    """Return the cache directory for one source ROOT file."""
+    return Path(config["preprocessing"][key]).resolve() / Path(source).stem
+
+
+def channel_limits(value: Any) -> np.ndarray:
+    """Normalize vertical limits to ``[detector, (low, high)]``."""
+    limits = np.asarray(value, dtype=np.float64)
+    if limits.shape == (2,):
+        limits = np.repeat(limits[None, :], 2, axis=0)
+    if limits.shape != (2, 2) or np.any(~np.isfinite(limits)) or np.any(limits[:, 0] >= limits[:, 1]):
+        raise ValueError("vertical_scale_limit_mV must be [low, high] or two detector [low, high] pairs")
+    return limits
+
+
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(json_safe(value), indent=2, sort_keys=True, allow_nan=False) + "\n"

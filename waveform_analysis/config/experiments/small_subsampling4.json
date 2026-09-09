@@ -4,11 +4,8 @@
   "preprocessing_config": "../preprocessing/default_ctr.json",
   "experiment": {"name": "small_subsampling4", "output_dir": "results/studies/small_subsampling4"},
   "models": ["linear_svr"],
-  "modes": {
-    "energy_to_energy": {"enabled": false, "cfd": true},
-    "energy_to_timing": {"enabled": false, "cfd": false},
-    "timing_to_timing": {"enabled": true, "cfd": false}
-  },
+  "mode": "timing_to_timing",
+  "cfd": false,
   "ml_input": {"window_ns": {"start": -2.0, "end": 20.0}, "subsampling": 4},
   "preprocessing": {
     "io": {"max_events": 2000},

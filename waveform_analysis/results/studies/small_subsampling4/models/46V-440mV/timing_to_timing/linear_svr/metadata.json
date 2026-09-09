@@ -1,8 +1,0 @@
-{
-  "model": "linear_svr",
-  "parameters": {
-    "C": 1.0,
-    "epsilon_ps": 60.0
-  },
-  "training": {}
-}

@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np, torch
 from torch import nn
 from torch.utils.data import DataLoader,TensorDataset
-from ..stats import ctr_fwhm
 from .spec import ModelSpec
 
 class SharedScorerCNN(nn.Module):
@@ -46,18 +45,14 @@ def _predict_tensor(model,x,device,batch):
     with torch.no_grad():
         for pair in loader: values.append(model(pair.to(device)).detach().cpu().numpy())
     return np.concatenate(values).astype(np.float64,copy=False)
-def _validation_score(residual,metric,fit_config):
-    values=np.asarray(residual,dtype=np.float64); metric=str(metric).lower()
-    if metric=="validation_mse": return float(np.mean(values**2))
-    if metric=="validation_rmse": return float(np.sqrt(np.mean(values**2)))
-    if metric in {"validation_ctr","ctr"}: return float(ctr_fwhm(values,fit_config).ctr_ps)
-    raise ValueError(f"Unsupported CNN selection_metric: {metric}")
+def _rmse(residual):
+    values=np.asarray(residual,dtype=np.float64); return float(np.sqrt(np.mean(values**2)))
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None,final_epochs=None,initial_artifact=None):
     torch.manual_seed(int(seed)); np.random.seed(int(seed))
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(int(seed))
     training=config.get("training",{}); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device)
     if initial_artifact is not None: model.load_state_dict(initial_artifact.model.state_dict())
-    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(final_epochs or training.get("epochs",350)); patience=int(training.get("patience",30)); metric=str(training.get("selection_metric","validation_ctr")).lower(); min_delta=float(training.get("min_delta",training.get("min_delta_ps",.05))); loader=_loader(train_x,train_target,batch,shuffle=True,seed=seed); best_score=float("inf"); best_epoch=max_epochs; best_state=None; stale=0
+    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(final_epochs or training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta",.05)); loader=_loader(train_x,train_target,batch,shuffle=True,seed=seed); best_score=float("inf"); best_epoch=max_epochs; best_state=None; stale=0
     for epoch in range(1,max_epochs+1):
         model.train()
         for pair,target in loader:
@@ -65,13 +60,13 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
             if clip>0: nn.utils.clip_grad_norm_(model.parameters(),clip)
             optimizer.step()
         if validation_x is None or validation_target is None or final_epochs is not None: continue
-        residual=_predict_tensor(model,validation_x,device,batch)-np.asarray(validation_target); score=_validation_score(residual,metric,config.get("fit"))
+        residual=_predict_tensor(model,validation_x,device,batch)-np.asarray(validation_target); score=_rmse(residual)
         if score<best_score-min_delta: best_score=score; best_epoch=epoch; best_state=copy.deepcopy(model.state_dict()); stale=0
         else:
             stale+=1
             if stale>=patience: break
     if best_state is not None: model.load_state_dict(best_state)
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_score":float(best_score),"selection_metric":metric,"batch_size":batch,"warm_start":bool(initial_artifact is not None)})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"selection_metric":"validation_rmse","batch_size":batch,"warm_start":bool(initial_artifact is not None)})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):

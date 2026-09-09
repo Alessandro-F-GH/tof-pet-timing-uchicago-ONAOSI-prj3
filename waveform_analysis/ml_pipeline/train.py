@@ -6,7 +6,6 @@ from typing import Any
 import numpy as np
 from .models.spec import ModelSpec
 from .search import SearchResult, select_candidate
-from .stats import ctr_fwhm
 from .storage import atomic_json
 from .view import target_correction, waveform_view
 
@@ -22,15 +21,8 @@ def _fit_once(spec,model_config,parameters,train_x,train_target,*,seed,validatio
     return FittedModel(artifact,dict(getattr(artifact,"metadata",{}) or {}))
 
 def predict_model(spec:ModelSpec,fitted:FittedModel,pair:np.ndarray)->np.ndarray: return np.asarray(spec.predict(fitted.artifact,np.asarray(pair,dtype=np.float32)),dtype=np.float64)
-def _selection_metric(model_config): return str((model_config.get("training",{}) or {}).get("selection_metric",model_config.get("selection_metric","validation_ctr"))).lower()
-def _selection_score(spec,model_config,config,residual):
-    metric=_selection_metric(model_config); values=np.asarray(residual,dtype=np.float64)
-    if metric=="validation_mse": return float(np.mean(values**2))
-    if metric=="validation_rmse": return float(np.sqrt(np.mean(values**2)))
-    if metric in {"validation_ctr","ctr"}: return float(ctr_fwhm(values,config.get("fit")).ctr_ps)
-    raise ValueError(f"Unsupported selection metric for {spec.name}: {metric}")
-def _score_label(model_config):
-    metric=_selection_metric(model_config); return "MSE [ps^2]" if metric=="validation_mse" else "RMSE [ps]" if metric=="validation_rmse" else "CTR [ps]"
+def _rmse(values):
+    residual=np.asarray(values,dtype=np.float64); return float(np.sqrt(np.mean(residual**2)))
 
 def search_model(spec,model_config,config,dataset,mode:str,*,seed:int,logger=None)->SearchResult:
     training=np.asarray(dataset.training,dtype=np.int64); validation=np.asarray(dataset.validation,dtype=np.int64); train_x=waveform_view(dataset,mode,training).materialize(); validation_x=waveform_view(dataset,mode,validation).materialize(); target=target_correction(dataset,mode); train_target=target[training]; validation_target=target[validation]
@@ -40,9 +32,9 @@ def search_model(spec,model_config,config,dataset,mode:str,*,seed:int,logger=Non
         if logger is not None: logger.info('Training %s/%s | candidate %d/%d | %s',mode,spec.name,number,total,candidate)
     def on_result(number,total,result):
         if logger is None:return
-        if result.error is None: logger.info('Validation %s/%s | candidate %d/%d | %s %.6g | %s',mode,spec.name,number,total,_score_label(model_config),result.score,result.candidate)
+        if result.error is None: logger.info('Validation %s/%s | candidate %d/%d | RMSE %.6g ps | %s',mode,spec.name,number,total,result.score,result.candidate)
         else: logger.warning('Candidate failed %s/%s | candidate %d/%d | %s | %s',mode,spec.name,number,total,result.candidate,result.error)
-    return select_candidate(spec.candidates(model_config),fit_candidate=fit_candidate,predict_candidate=predict_candidate,score_candidate=lambda residual:_selection_score(spec,model_config,config,residual),seed=seed,on_candidate_start=on_start,on_candidate_result=on_result)
+    return select_candidate(spec.candidates(model_config),fit_candidate=fit_candidate,predict_candidate=predict_candidate,score_candidate=_rmse,seed=seed,on_candidate_start=on_start,on_candidate_result=on_result)
 
 def refit_selected(spec,model_config,dataset,mode:str,selected,*,seed:int)->FittedModel:
     development=np.asarray(dataset.development,dtype=np.int64); x=waveform_view(dataset,mode,development).materialize(); target=target_correction(dataset,mode)[development]; epochs=selected.metadata.get("best_epoch") if selected.metadata else None
