@@ -74,11 +74,7 @@ def calibration_bias_ps(dataset: PreparedDataset, mode: str) -> float:
 
 
 def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Slide-14 LED estimate after removing calibration and true TOF.
-
-    This is Delta t_LED - C_hat_12 - TOF. It is the uncorrected reference
-    residual used to compare LED against ML with the same CTR metric.
-    """
+    """Slide-14 LED reference: Delta t_LED - C_hat_12 - TOF."""
     true_tof = float(dataset.manifest["true_tof_ps"])
     return standard_delta(dataset, mode, "led") - calibration_bias_ps(dataset, mode) - true_tof
 
@@ -86,11 +82,7 @@ def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
 def anchor_shift_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
     """Delta delta from slide 15, with delta_i = t_LED,i - t_a,i."""
     family = target_family(mode)
-    values = (
-        dataset.energy_anchor_offset_ps
-        if family == "energy"
-        else dataset.timing_anchor_offset_ps
-    )
+    values = dataset.energy_anchor_offset_ps if family == "energy" else dataset.timing_anchor_offset_ps
     if values is None:
         raise ValueError(f"{family} LED-to-anchor offsets are unavailable")
     values = np.asarray(values, dtype=np.float64)
@@ -100,19 +92,18 @@ def anchor_shift_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
 
 
 def model_target(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    """Canonical slide-15 target.
+    """Canonical persisted slide-15 target.
 
     y_target = Delta t_LED - Delta delta - TOF - C_hat_12.
-    The Delta-delta term removes the discrete native-grid anchor shift from the
-    supervised correction learned from windows centered on t_a.
     """
-    return calibrated_led(dataset, mode) - anchor_shift_delta(dataset, mode)
+    family = target_family(mode)
+    values = dataset.energy_target_ps if family == "energy" else dataset.timing_target_ps
+    if values is None:
+        raise ValueError(f"{family} slide-corrected ML target is unavailable")
+    return np.asarray(values, dtype=np.float64)
 
 
-def corrected_timing_residual(
-    target_ps: np.ndarray,
-    paired_prediction_ps: np.ndarray,
-) -> np.ndarray:
+def corrected_timing_residual(target_ps: np.ndarray, paired_prediction_ps: np.ndarray) -> np.ndarray:
     """CTR residual after slide-15 native-grid correction: y_target - y_theta."""
     target = np.asarray(target_ps, dtype=np.float64)
     prediction = np.asarray(paired_prediction_ps, dtype=np.float64)
