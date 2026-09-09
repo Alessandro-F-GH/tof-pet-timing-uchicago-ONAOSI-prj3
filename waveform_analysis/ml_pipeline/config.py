@@ -52,7 +52,7 @@ def _mode_families(mode:str)->set[str]:
     raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
 
 def validate_config(config):
-    required={"data","preprocessing","validation","standard_methods","models","mode","cfd","ml_input","experiment"}; missing=sorted(required-set(config))
+    required={"data","preprocessing","validation","standard_methods","models","mode","cfd","ml_input","ml_output","experiment"}; missing=sorted(required-set(config))
     if missing: raise ConfigError(f"Missing configuration section(s): {missing}")
     mode=str(config["mode"])
     if mode not in CHANNEL_MODES: raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
@@ -65,6 +65,11 @@ def validate_config(config):
     if set(ml_input)-{"window_ns","subsampling"}: raise ConfigError("ml_input accepts only window_ns and subsampling")
     if float(ml_input["window_ns"]["end"])<=float(ml_input["window_ns"]["start"]): raise ConfigError("ml_input.window_ns.end must exceed start")
     if int(ml_input.get("subsampling",1))<=0: raise ConfigError("ml_input.subsampling must be positive")
+    ml_output=config["ml_output"]
+    if set(ml_output)!={"max_abs_ps"}: raise ConfigError("ml_output must contain only max_abs_ps")
+    if float(ml_output["max_abs_ps"])<=0: raise ConfigError("ml_output.max_abs_ps must be positive")
+    fit=config.get("fit") or {}
+    if "max_abs_ps" in fit and float(fit["max_abs_ps"])<=0: raise ConfigError("fit.max_abs_ps must be positive")
     preprocessing=config["preprocessing"]
     for key in ("selection_store_dir","preprocessed_dir","prepared_dir","materialized_window_ns","selection","photopeak","energy"):
         if key not in preprocessing: raise ConfigError(f"preprocessing.{key} is required")
@@ -85,8 +90,11 @@ def validate_config(config):
         if float(tot["selection_sigma_high"])<=float(tot["selection_sigma_low"]): raise ConfigError("preprocessing.tot_peak.selection_sigma_high must exceed selection_sigma_low")
     noise=preprocessing["selection"]["baseline_noise"]
     if bool(noise.get("enabled",False)) and (len(noise["window_ns"])!=2 or float(noise["window_ns"][1])>0.): raise ConfigError("baseline_noise.window_ns must be [start, end] before the trigger")
-    if not config["standard_methods"].get("led_thresholds_mV"): raise ConfigError("LED threshold list must not be empty")
-    if config["cfd"] and not config["standard_methods"].get("cfd_fractions"): raise ConfigError("CFD fraction list must not be empty when cfd=true")
+    standard=config["standard_methods"]
+    if not standard.get("led_thresholds_mV"): raise ConfigError("LED threshold list must not be empty")
+    if not 0.<float(standard.get("led_minimum_crossing_efficiency",0.95))<=1.: raise ConfigError("standard_methods.led_minimum_crossing_efficiency must be in (0, 1]")
+    if float(standard.get("led_coincidence_window_ns",2.0))<=0: raise ConfigError("standard_methods.led_coincidence_window_ns must be positive")
+    if config["cfd"] and not standard.get("cfd_fractions"): raise ConfigError("CFD fraction list must not be empty when cfd=true")
     from .models import model_names
     unknown_models=set(config["models"])-set(model_names())
     if unknown_models: raise ConfigError(f"Unregistered model(s): {sorted(unknown_models)}")
