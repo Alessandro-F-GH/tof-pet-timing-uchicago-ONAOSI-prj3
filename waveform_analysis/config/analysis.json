@@ -1,19 +1,8 @@
 {
   "channels": {
-    "energy": [
-      1,
-      2
-    ],
-    "timing": [
-      3,
-      4
-    ],
-    "polarities": [
-      1,
-      1,
-      1,
-      1
-    ]
+    "energy": [1, 2],
+    "timing": [3, 4],
+    "polarities": [1, 1, 1, 1]
   },
   "io": {
     "step_size": "128 MB",
@@ -53,32 +42,14 @@
   },
   "selection": {
     "timing_noise_max_mV": 2.0,
-    "energy_trigger_index_range": [
-      2000,
-      3500
-    ],
+    "energy_trigger_index_range": [2000, 3500],
     "require_valid_timing_trigger": true
   },
   "fit": {
-    "histogram_range_ps": [
-      -5000.0,
-      5000.0
-    ],
-    "histogram_bin_ps": 10.0,
-    "initial_half_width_ps": 500.0,
-    "iteration_sigma": 2.5,
-    "max_iterations": 6,
-    "convergence_tolerance_ps": 0.01,
     "min_events": 100,
-    "minimum_fit_bins": 9,
-    "minimum_sigma_bins": 0.5,
-    "adaptive_binning": {
-      "enabled": true,
-      "bins_per_fwhm": 10.0,
-      "min_bin_ps": 1.0,
-      "max_bin_ps": 25.0,
-      "phase_count": 8
-    }
+    "max_abs_ps": 2000.0,
+    "bin_width_ps": 5.0,
+    "bootstrap_samples": 100
   },
   "plot": {
     "dpi": 180,
