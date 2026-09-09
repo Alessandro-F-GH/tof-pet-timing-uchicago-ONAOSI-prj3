@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from ..utils.peak import fit_histogram_peak
 from .event_selection import SelectionData, _choose_main_hits, _noise_limits, _scan_amplitudes, _scan_hits, _scan_noise
 from .splits import semantic_seed, split_development_test
 
@@ -39,7 +40,7 @@ def _write_summary(path: Path, stages, split: np.ndarray) -> None:
             previous = mask.copy()
 
 
-def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits, noise, noise_limits) -> None:
+def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits, noise, noise_limits, config) -> None:
     import matplotlib.pyplot as plt
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -59,14 +60,19 @@ def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits,
 
     if 'timing' in hits:
         fig, axes = plt.subplots(2, 1, figsize=(8, 5.6), squeeze=False, sharex=True)
-        events = hits['timing']
+        events = hits['timing']; fit_cfg=config['preprocessing']['tot_peak']
         for detector in range(2):
             ax = axes[detector, 0]
             values = np.asarray([max(h.duration_ns for h in events[row][detector]) for row in np.flatnonzero(dev & photopeak) if events[row][detector]], dtype=float)
+            fit = fit_histogram_peak(values,config=fit_cfg,unit_suffix='ns',fit_name=f'ToT detector {detector+1}',value_name='pulse durations')
             low, high = duration_limits['timing'][detector]
             selected = int(np.count_nonzero((values >= low) & (values <= high))); rejected = int(values.size - selected)
-            if values.size: ax.hist(values, bins=100, histtype="step", label=f"Candidate hits (n={values.size})")
+            if fit.edges.size >= 2 and fit.counts.size:
+                ax.stairs(fit.counts,fit.edges,label=f"Candidate hits (n={values.size})")
+                centers=0.5*(fit.edges[:-1]+fit.edges[1:])
+                if fit.expected.size==centers.size: ax.plot(centers,fit.expected,label=f"Gaussian peak fit μ={fit.mean:.3f} ns, σ={fit.sigma:.3f} ns")
             ax.axvspan(low, high, alpha=.2, label=f"Selected {selected} | rejected {rejected}")
+            ax.axvline(float(fit.mean),ls='--',lw=1.0,label='Peak center')
             ax.set_title(f"Timing detector {detector+1} ToT"); ax.set_xlabel("Pulse duration [ns]"); ax.set_ylabel("Events / bin"); ax.legend()
         fig.tight_layout(); fig.savefig(directory/"tot_selection.png", dpi=180); plt.close(fig)
 
@@ -91,11 +97,11 @@ def ensure_selection_outputs(root_file: Path, selection: SelectionData, config: 
     if noise_enabled: expected.append(plots/"baseline_noise_selection.png")
     if all(path.is_file() for path in expected): return
     n = int(selection.manifest["n_raw"]); entries = np.arange(n,dtype=np.int64); raw = split_development_test(entries,test_fraction=float(config["validation"]["test_fraction"]),seed=semantic_seed(int(config["validation"]["seed"]),Path(root_file).name)); split = np.ones(n,dtype=np.int8); split[raw.development] = 0
-    event_index, amplitudes = _scan_amplitudes(Path(root_file),config,n); finite = np.all(np.isfinite(amplitudes),axis=1); fits = list(selection.manifest["photopeak"]); photopeak = _photopeak_mask(amplitudes,fits); hits = _scan_hits(Path(root_file),config,photopeak,n); limits = {family:np.asarray(value,dtype=np.float64) for family,value in selection.manifest["duration_limits_ns"].items()}; hit_selection,_main,triggers,_stops = _choose_main_hits(hits,limits,photopeak); noise = None; noise_limits = None; final = hit_selection.copy()
+    event_index, amplitudes = _scan_amplitudes(Path(root_file),config,n); finite = np.all(np.isfinite(amplitudes),axis=1); fits = list(selection.manifest["photopeak"]); photopeak = _photopeak_mask(amplitudes,fits); hits = _scan_hits(Path(root_file),config,photopeak,n); limits = {family:np.asarray(value,dtype=np.float64) for family,value in selection.manifest["duration_limits_ns"].items()}; tot_centers=[float(item['mean']) for item in selection.manifest.get('tot_peak',[])]; hit_selection,_main,triggers,_stops = _choose_main_hits(hits,limits,photopeak,tot_centers or None); noise = None; noise_limits = None; final = hit_selection.copy()
     if noise_enabled:
         noise = _scan_noise(Path(root_file),config,hit_selection,triggers,n); stored = selection.manifest.get("baseline_noise_limits_mV") or {}; noise_limits = {family:np.asarray(value,dtype=np.float64) for family,value in stored.items()}
         if not noise_limits: noise_limits = _noise_limits(noise,(split==0)&hit_selection,config)
         for family,values in noise.items(): final &= np.all(np.isfinite(values) & (values <= noise_limits[family][None,:]),axis=1)
     _save_hits(directory/"hits.npz",hits,event_index); stages = [("finite_energy_amplitude",finite),("photopeak",photopeak),("main_hit",hit_selection)]
     if noise_enabled: stages.append(("baseline_noise",final))
-    _write_summary(directory/"selection_summary.csv",stages,split); _plots(plots,amplitudes,split,fits,photopeak,hits,limits,noise,noise_limits); logger.info("Selection diagnostics written | %s",plots)
+    _write_summary(directory/"selection_summary.csv",stages,split); _plots(plots,amplitudes,split,fits,photopeak,hits,limits,noise,noise_limits,config); logger.info("Selection diagnostics written | %s",plots)
