@@ -87,7 +87,7 @@ def mode_family(mode: str) -> str:
 
 
 def validate_config(config):
-    required = {"data", "preprocessing", "validation", "standard_methods", "models", "mode", "cfd", "ml_input", "ml_output", "experiment"}
+    required = {"data", "preprocessing", "validation", "standard_methods", "models", "mode", "cfd", "ml_input", "ml_output", "fit", "experiment"}
     missing = sorted(required - set(config))
     if missing:
         raise ConfigError(f"Missing configuration section(s): {missing}")
@@ -115,7 +115,21 @@ def validate_config(config):
     ml_output = config["ml_output"]
     if set(ml_output) != {"max_abs_ps"} or float(ml_output["max_abs_ps"]) <= 0:
         raise ConfigError("ml_output must contain one positive max_abs_ps")
-    fit = config.get("fit") or {}
+
+    fit = config["fit"]
+    allowed_fit = {"min_events", "max_abs_ps", "bin_width_ps", "bootstrap_samples"}
+    obsolete_fit = set(fit) - allowed_fit
+    if obsolete_fit:
+        raise ConfigError(
+            f"Unknown/obsolete fit option(s): {sorted(obsolete_fit)}. CTR uses fixed-bin histogram FWHM with fit.bin_width_ps."
+        )
+    if int(fit.get("min_events", 0)) < 3:
+        raise ConfigError("fit.min_events must be an integer >= 3")
+    if float(fit.get("bin_width_ps", 0.0)) <= 0:
+        raise ConfigError("fit.bin_width_ps must be positive")
+    bootstrap_samples = fit.get("bootstrap_samples")
+    if isinstance(bootstrap_samples, bool) or int(bootstrap_samples) != bootstrap_samples or int(bootstrap_samples) < 2:
+        raise ConfigError("fit.bootstrap_samples must be an integer >= 2")
     if "max_abs_ps" in fit and float(fit["max_abs_ps"]) <= 0:
         raise ConfigError("fit.max_abs_ps must be positive")
 
