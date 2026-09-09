@@ -16,13 +16,39 @@ There is **no denoising** and no event-wise baseline subtraction.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and evaluated with the common Gaussian CTR fitter in `utils_fit`; CFD is treated the same way when `cfd: true`. The native sample closest to the selected LED threshold becomes the ML anchor.
+LED thresholds are scanned on development and evaluated with the common Gaussian CTR fitter in `utils_fit`; CFD is treated the same way when `cfd: true`. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is the native sample nearest in time to the interpolated selected LED crossing.
+
+For each detector the native-grid offset is
+
+`delta_i = t_LED,i - t_a,i`,
+
+and the paired anchor correction is `Delta delta = delta_1 - delta_2`. The fixed channel calibration is estimated from training only as
+
+`C_hat_12 = mean_training(Delta t_LED) - TOF`.
+
+The canonical supervised target follows the presentation formulation:
+
+`y_target = Delta t_LED - Delta delta - TOF - C_hat_12`.
 
 The ML window is materialized with `t_anchor = 0` and `ml_input.subsampling` is applied. Waveforms are then scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`. The transform is fixed by configuration: it is not fitted per event, per sample, or from the training population, and its inverse is persisted for physical-mV reporting.
 
 ## 4. ML and final test
 
-Linear SVR and CNN candidates are trained on training and ranked **only by validation RMSE**. CNN early stopping uses the same validation RMSE. The selected candidate is refit on complete development. The permanent test population is evaluated once after selection.
+Models are constrained to paired antisymmetric corrections of the form
+
+`y_theta(s1, s2) = g_theta(s1) - g_theta(s2)`.
+
+The CNN implements the shared scorer explicitly. Linear SVR is the linear equivalent, `w^T(s1-s2) = w^T s1 - w^T s2`, with no intercept.
+
+Linear SVR and CNN candidates are trained on training and ranked **only by validation RMSE** of `y_target - y_theta`. CNN early stopping uses the same validation RMSE. The selected candidate is refit on complete development. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+
+The permanent test population is evaluated once after selection. The LED reference residual is
+
+`Delta t_LED - TOF - C_hat_12`,
+
+while the ML residual used for CTR is
+
+`y_target - y_theta`.
 
 CTR values and their bootstrap uncertainty use the repository-wide Gaussian fitter from `utils_fit`; the ML pipeline contains no independent CTR implementation.
 
