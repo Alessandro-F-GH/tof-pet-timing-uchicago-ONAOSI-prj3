@@ -1,0 +1,9 @@
+{
+  "extends": "../profiles/ctr_default.json",
+  "data_config": "../data/converted_runs_07_13.json",
+  "preprocessing_config": "../preprocessing/default_ctr.json",
+  "experiment": {"name": "complete_timing", "output_dir": "results/studies/complete_timing"},
+  "models": ["linear_svr", "cnn"],
+  "mode": "timing_to_timing",
+  "cfd": false
+}
