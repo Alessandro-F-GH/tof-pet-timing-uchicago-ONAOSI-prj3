@@ -49,13 +49,12 @@ class PreprocessedData:
 
 
 def used_families(config: dict[str, Any]) -> tuple[str, ...]:
-    modes = config["channel_modes"]
-    out: list[str] = []
-    if any("energy" in mode for mode in modes):
-        out.append("energy")
-    if any("timing" in mode for mode in modes):
-        out.append("timing")
-    return tuple(out)
+    mode = str(config["mode"])
+    if mode == "energy_to_energy":
+        return ("energy",)
+    if mode == "timing_to_timing":
+        return ("timing",)
+    raise ValueError(f"Unsupported mode: {mode}")
 
 
 def _limits(value: Any) -> np.ndarray:
@@ -63,53 +62,31 @@ def _limits(value: Any) -> np.ndarray:
     if limits.shape == (2,):
         limits = np.repeat(limits[None, :], 2, axis=0)
     if limits.shape != (2, 2) or np.any(limits[:, 0] >= limits[:, 1]):
-        raise ValueError(
-            "vertical_scale_limit_mV must be [low, high] or two detector pairs"
-        )
+        raise ValueError("vertical_scale_limit_mV must be [low, high] or two detector pairs")
     return limits
 
 
 def _family_arrays(chunk: Any, family: str):
     if family == "energy":
-        return (
-            chunk.samples,
-            chunk.vertical_gain_v_per_count,
-            chunk.vertical_offset_v,
-            chunk.horizontal_interval_s,
-            chunk.horizontal_offset_s,
-        )
-    return (
-        chunk.timing_samples,
-        chunk.timing_vertical_gain_v_per_count,
-        chunk.timing_vertical_offset_v,
-        chunk.timing_horizontal_interval_s,
-        chunk.timing_horizontal_offset_s,
-    )
+        return chunk.samples, chunk.vertical_gain_v_per_count, chunk.vertical_offset_v, chunk.horizontal_interval_s, chunk.horizontal_offset_s
+    return chunk.timing_samples, chunk.timing_vertical_gain_v_per_count, chunk.timing_vertical_offset_v, chunk.timing_horizontal_interval_s, chunk.timing_horizontal_offset_s
 
 
 def preprocessing_fingerprint(root, selection, config):
     family_config = {}
     for family in used_families(config):
-        values = {
-            "vertical_scale_limit_mV": config["preprocessing"][family][
-                "vertical_scale_limit_mV"
-            ]
-        }
+        values = {"vertical_scale_limit_mV": config["preprocessing"][family]["vertical_scale_limit_mV"]}
         if family == "timing":
-            values["rising_edge_before_trigger_ns"] = config["preprocessing"][family][
-                "rising_edge_before_trigger_ns"
-            ]
+            values["rising_edge_before_trigger_ns"] = config["preprocessing"][family]["rising_edge_before_trigger_ns"]
         family_config[family] = values
-    return canonical_hash(
-        {
-            "format_version": PREPROCESS_FORMAT_VERSION,
-            "source": source_signature(root),
-            "selection": selection.manifest["fingerprint"],
-            "families": used_families(config),
-            "materialized_window_ns": config["preprocessing"]["materialized_window_ns"],
-            "family_config": family_config,
-        }
-    )
+    return canonical_hash({
+        "format_version": PREPROCESS_FORMAT_VERSION,
+        "source": source_signature(root),
+        "selection": selection.manifest["fingerprint"],
+        "families": used_families(config),
+        "materialized_window_ns": config["preprocessing"]["materialized_window_ns"],
+        "family_config": family_config,
+    })
 
 
 def _optional(directory, name):
@@ -122,21 +99,15 @@ def load_preprocessed(directory, root, selection, config):
     if manifest.get("fingerprint") != preprocessing_fingerprint(root, selection, config):
         raise ValueError("Preprocessing fingerprint changed")
     return PreprocessedData(
-        directory,
-        manifest,
+        directory, manifest,
         np.load(directory / "event_index.npy", mmap_mode="r"),
         np.load(directory / "split.npy", mmap_mode="r"),
         np.load(directory / "bias_voltage_V.npy", mmap_mode="r"),
-        _optional(directory, "energy_windows_mV"),
-        _optional(directory, "timing_windows_mV"),
-        _optional(directory, "energy_window_start_time_s"),
-        _optional(directory, "timing_window_start_time_s"),
-        _optional(directory, "energy_sample_interval_s"),
-        _optional(directory, "timing_sample_interval_s"),
-        _optional(directory, "energy_rising_start"),
-        _optional(directory, "timing_rising_start"),
-        _optional(directory, "energy_rising_stop"),
-        _optional(directory, "timing_rising_stop"),
+        _optional(directory, "energy_windows_mV"), _optional(directory, "timing_windows_mV"),
+        _optional(directory, "energy_window_start_time_s"), _optional(directory, "timing_window_start_time_s"),
+        _optional(directory, "energy_sample_interval_s"), _optional(directory, "timing_sample_interval_s"),
+        _optional(directory, "energy_rising_start"), _optional(directory, "timing_rising_start"),
+        _optional(directory, "energy_rising_stop"), _optional(directory, "timing_rising_stop"),
     )
 
 
@@ -186,29 +157,13 @@ def preprocess_selected(root_file, selection, config, *, rebuild, logger):
 
     bias = open_memmap(base / "bias_voltage_V.npy", mode="w+", dtype=np.float64, shape=(n,))
     bias[:] = np.nan
-    targets = {}
-    starts = {}
-    intervals = {}
-    rise_a = {}
-    rise_b = {}
-    lengths = {}
-    seen = np.zeros(n, dtype=bool)
-    keep = np.zeros(n, dtype=bool)
-    excluded_window = np.zeros(n, dtype=bool)
+    targets = {}; starts = {}; intervals = {}; rise_a = {}; rise_b = {}; lengths = {}
+    seen = np.zeros(n, dtype=bool); keep = np.zeros(n, dtype=bool); excluded_window = np.zeros(n, dtype=bool)
 
     ch = config["data"]["channels"]
-    pol = {
-        "energy": np.asarray(ch.get("polarities", [1, 1]), dtype=np.int8),
-        "timing": np.asarray(ch.get("timing_polarities", [1, 1]), dtype=np.int8),
-    }
-    triggers = {
-        "energy": selection.main_trigger_energy,
-        "timing": selection.main_trigger_timing,
-    }
-    stops = {
-        "energy": selection.main_stop_energy,
-        "timing": selection.main_stop_timing,
-    }
+    pol = {"energy": np.asarray(ch.get("polarities", [1, 1]), dtype=np.int8), "timing": np.asarray(ch.get("timing_polarities", [1, 1]), dtype=np.int8)}
+    triggers = {"energy": selection.main_trigger_energy, "timing": selection.main_trigger_timing}
+    stops = {"energy": selection.main_stop_energy, "timing": selection.main_stop_timing}
     mat = config["preprocessing"]["materialized_window_ns"]
     before, after = float(mat["before"]), float(mat["after"])
     io = config["preprocessing"].get("io", {})
@@ -223,102 +178,56 @@ def preprocess_selected(root_file, selection, config, *, rebuild, logger):
     entry = 0
     for chunk in iterate_energy_chunks(root_file, **args):
         for local in range(chunk.event_index.size):
-            row = lookup.get(entry)
-            entry += 1
-            if row is None:
-                continue
-            seen[row] = True
-            bias[row] = float(chunk.bias_voltage_V[local])
-            event_payload = {}
-            event_ok = True
-
+            row = lookup.get(entry); entry += 1
+            if row is None: continue
+            seen[row] = True; bias[row] = float(chunk.bias_voltage_V[local]); event_payload = {}; event_ok = True
             for f in families:
                 raw, gain, off, dt, hoff = _family_arrays(chunk, f)
                 assert raw is not None and gain is not None and off is not None and dt is not None and hoff is not None and triggers[f] is not None
                 lim = _limits(config["preprocessing"][f]["vertical_scale_limit_mV"])
                 windows, st, iv, ra, rb = [], [], [], [], []
                 pre = float(config["preprocessing"]["timing"]["rising_edge_before_trigger_ns"]) if f == "timing" else None
-
                 for d in range(2):
-                    s = decode_oriented(
-                        np.asarray(raw[d][local], dtype=np.int16),
-                        gain[local, d], off[local, d], int(pol[f][d])
-                    )
+                    s = decode_oriented(np.asarray(raw[d][local], dtype=np.int16), gain[local, d], off[local, d], int(pol[f][d]))
                     s = np.clip(s, lim[d, 0], lim[d, 1])
-                    interval = float(dt[local, d])
-                    dt_ns = interval * 1e9
-                    trig = int(triggers[f][row, d])
+                    interval = float(dt[local, d]); dt_ns = interval * 1e9; trig = int(triggers[f][row, d])
                     bounds = _window_bounds(trig, s.size, dt_ns, before, after)
                     if bounds is None:
-                        excluded_window[row] = True
-                        event_ok = False
-                        break
-                    a, b = bounds
-                    w = np.asarray(s[a:b], dtype=np.float32)
-
+                        excluded_window[row] = True; event_ok = False; break
+                    a, b = bounds; w = np.asarray(s[a:b], dtype=np.float32)
                     if f == "energy":
-                        # Energy pulses are clean and long-lived. Search LED from the
-                        # start of the materialized pre-trigger baseline up to the peak.
-                        onset = a
-                        pulse = s[trig:b]
-                        peak = trig + int(np.nanargmax(pulse)) if pulse.size else trig
+                        onset = a; pulse = s[trig:b]; peak = trig + int(np.nanargmax(pulse)) if pulse.size else trig
                     else:
                         assert stops[f] is not None and pre is not None
-                        pulse_stop = int(stops[f][row, d])
-                        search = max(a, trig - int(np.ceil(pre / dt_ns)))
-                        preseg = s[search:trig + 1]
+                        pulse_stop = int(stops[f][row, d]); search = max(a, trig - int(np.ceil(pre / dt_ns))); preseg = s[search:trig + 1]
                         onset = search + int(np.nanargmin(preseg)) if preseg.size else trig
-                        peak_stop = min(s.size - 1, max(trig, pulse_stop))
-                        pulse = s[trig:peak_stop + 1]
-                        peak = trig + int(np.nanargmax(pulse)) if pulse.size else trig
-
+                        peak_stop = min(s.size - 1, max(trig, pulse_stop)); pulse = s[trig:peak_stop + 1]; peak = trig + int(np.nanargmax(pulse)) if pulse.size else trig
                     if peak <= onset:
-                        raise RuntimeError(
-                            f"{root_file.name} event {selection.event_index[row]} {f} detector {d+1}: unable to define rising edge interval"
-                        )
-                    windows.append(w)
-                    st.append(float(hoff[local, d]) + a * interval)
-                    iv.append(interval)
-                    ra.append(onset - a)
-                    rb.append(peak - a)
-
-                if not event_ok:
-                    break
+                        raise RuntimeError(f"{root_file.name} event {selection.event_index[row]} {f} detector {d+1}: unable to define rising edge interval")
+                    windows.append(w); st.append(float(hoff[local, d]) + a * interval); iv.append(interval); ra.append(onset - a); rb.append(peak - a)
+                if not event_ok: break
                 event_payload[f] = (windows, st, iv, ra, rb)
-
-            if not event_ok:
-                continue
-
+            if not event_ok: continue
             for f, payload in event_payload.items():
                 windows, st, iv, ra, rb = payload
                 if f not in targets:
                     L = windows[0].size
-                    if any(x.size != L for x in windows):
-                        raise ValueError(f"{f} detector grids differ")
+                    if any(x.size != L for x in windows): raise ValueError(f"{f} detector grids differ")
                     lengths[f] = L
                     targets[f] = open_memmap(base / f"{f}_windows_mV.npy", mode="w+", dtype=np.float32, shape=(n, 2, L))
                     starts[f] = open_memmap(base / f"{f}_window_start_time_s.npy", mode="w+", dtype=np.float64, shape=(n, 2))
                     intervals[f] = open_memmap(base / f"{f}_sample_interval_s.npy", mode="w+", dtype=np.float64, shape=(n, 2))
                     rise_a[f] = open_memmap(base / f"{f}_rising_start.npy", mode="w+", dtype=np.int32, shape=(n, 2))
                     rise_b[f] = open_memmap(base / f"{f}_rising_stop.npy", mode="w+", dtype=np.int32, shape=(n, 2))
-                if any(x.size != lengths[f] for x in windows):
-                    raise ValueError(f"{f} sample interval changed")
-                targets[f][row] = np.stack(windows)
-                starts[f][row] = st
-                intervals[f][row] = iv
-                rise_a[f][row] = ra
-                rise_b[f][row] = rb
+                if any(x.size != lengths[f] for x in windows): raise ValueError(f"{f} sample interval changed")
+                targets[f][row] = np.stack(windows); starts[f][row] = st; intervals[f][row] = iv; rise_a[f][row] = ra; rise_b[f][row] = rb
             keep[row] = True
 
-    if not np.all(seen):
-        raise RuntimeError(f"Failed to inspect {np.count_nonzero(~seen)} selected events")
-    if not np.any(keep):
-        raise RuntimeError("No selected events have a valid preprocessing window")
-
+    if not np.all(seen): raise RuntimeError(f"Failed to inspect {np.count_nonzero(~seen)} selected events")
+    if not np.any(keep): raise RuntimeError("No selected events have a valid preprocessing window")
     _close(bias)
     for group in (targets, starts, intervals, rise_a, rise_b):
-        for a in group.values():
-            _close(a)
+        for a in group.values(): _close(a)
 
     kept_rows = np.flatnonzero(keep)
     if kept_rows.size != n:
@@ -327,8 +236,7 @@ def preprocess_selected(root_file, selection, config, *, rebuild, logger):
             for suffix in ("windows_mV", "window_start_time_s", "sample_interval_s", "rising_start", "rising_stop"):
                 _compact_npy(base / f"{f}_{suffix}.npy", kept_rows)
 
-    np.save(base / "event_index.npy", full_event_index[kept_rows])
-    np.save(base / "split.npy", full_split[kept_rows])
+    np.save(base / "event_index.npy", full_event_index[kept_rows]); np.save(base / "split.npy", full_split[kept_rows])
     excluded_count = int(np.count_nonzero(excluded_window))
     manifest = {
         "format_version": PREPROCESS_FORMAT_VERSION,
@@ -346,8 +254,5 @@ def preprocess_selected(root_file, selection, config, *, rebuild, logger):
         "denoising": False,
     }
     atomic_json(base / "manifest.json", manifest)
-    logger.info(
-        "Preprocessing %s | n=%d/%d | excluded_window=%d | families=%s",
-        root_file.name, kept_rows.size, n, excluded_count, ",".join(families)
-    )
+    logger.info("Preprocessing %s | n=%d/%d | excluded_window=%d | families=%s", root_file.name, kept_rows.size, n, excluded_count, ",".join(families))
     return load_preprocessed(base, root_file, selection, config)
