@@ -71,6 +71,15 @@ def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
     return np.asarray(values, dtype=np.float64)
 
 
+def corrected_led_residual(calibrated_led_ps: np.ndarray, paired_prediction_ps: np.ndarray) -> np.ndarray:
+    """Corrected timing used for CTR: calibrated LED minus paired model prediction."""
+    led = np.asarray(calibrated_led_ps, dtype=np.float64)
+    prediction = np.asarray(paired_prediction_ps, dtype=np.float64)
+    if led.shape != prediction.shape:
+        raise ValueError(f"Calibrated LED and paired prediction shapes differ: {led.shape} != {prediction.shape}")
+    return led - prediction
+
+
 def anchor_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
     """Native sample-anchor pair timing, for diagnostics only."""
     family = target_family(mode)
