@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-
 import math
 import time
 from pathlib import Path
@@ -16,7 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
 from utils_fit import fit_delta_times_ps
 from utils_fit.outliers import robust_mad_filter
 from utils_fit.io import load_fit_csv, write_fit_csv
-from utils_fit.plotting import plot_gaussian_fit
+from utils_fit.plotting import plot_ctr_histogram
 
 from .binary_io import (
     atomic_write_csv,
@@ -44,16 +43,8 @@ from .matching import (
     write_training_csv,
 )
 from .models import EnergySelectionResult, PeakSelection, SelectionResult
-from .plotting import (
-    plot_matching_total,
-    plot_matching_training,
-    plot_peak_selection,
-)
-from .preprocessing import (
-    preprocess_binary,
-    preprocess_candidates,
-    preprocess_streaming_from_index,
-)
+from .plotting import plot_matching_total, plot_matching_training, plot_peak_selection
+from .preprocessing import preprocess_binary, preprocess_candidates, preprocess_streaming_from_index
 from .streaming_cache import (
     build_streaming_candidate_index,
     candidate_index_outputs,
@@ -79,23 +70,20 @@ SUMMARY_FIELDS = [
     "E_th",
     "T_th",
     "fit_metric",
-    "gaussian_area_events",
-    "gaussian_area_error_events",
-    "gaussian_mean_ps",
-    "gaussian_mean_error_ps",
-    "gaussian_sigma_ps",
-    "gaussian_sigma_error_ps",
+    "ctr_bin_width_ps",
+    "fwhm_center_ps",
+    "fwhm_left_ps",
+    "fwhm_right_ps",
+    "bootstrap_samples",
+    "bootstrap_successful",
     "CTR_ps",
     "CTR_error_ps",
-    "average_delay_corrected_alignments"
+    "average_delay_corrected_alignments",
 ]
 
 
 def _normalise_run_ids(values: list[Any]) -> set[str]:
-    output: set[str] = set()
-    for value in values:
-        output.add(canonical_run_id(str(value))[0])
-    return output
+    return {canonical_run_id(str(value))[0] for value in values}
 
 
 def _log(run_id: str, stage: str, message: str) -> None:
@@ -107,6 +95,7 @@ def _elapsed(start: float) -> str:
 
 
 def _selection_from_cache(measurements, duration_mask, alignment_mask, metadata: dict[str, Any]) -> SelectionResult:
+    del measurements
     return SelectionResult(
         peak_a=PeakSelection(**metadata["peak_a"]),
         peak_b=PeakSelection(**metadata["peak_b"]),
@@ -153,25 +142,25 @@ def _number(value: Any) -> float | str:
 
 
 def _summary_row(run, run_info, fit, toa_lsb_ps: float | None, average_delay_corrected_alignments: int) -> dict[str, Any]:
-    del toa_lsb_ps  # Common FitResult is already expressed in ps.
-    row: dict[str, Any] = {
+    del toa_lsb_ps
+    return {
         "run_id": run.run_id,
         "Voltage": run.voltage,
         "AcquisitionMode": run_info.acquisition_mode,
         "E_th": run_info.energy_threshold_mv,
         "T_th": run_info.timing_threshold_mv,
-        "fit_metric": "common_bin_integrated_gaussian_all_events",
-        "gaussian_area_events": _number(fit.n_fit),
-        "gaussian_area_error_events": "",
-        "gaussian_mean_ps": _number(fit.mean_ps),
-        "gaussian_mean_error_ps": _number(fit.mean_error_ps),
-        "gaussian_sigma_ps": _number(fit.sigma_ps),
-        "gaussian_sigma_error_ps": _number(fit.sigma_error_ps),
+        "fit_metric": "fixed_bin_histogram_fwhm",
+        "ctr_bin_width_ps": _number(fit.bin_width_ps),
+        "fwhm_center_ps": _number(fit.center_ps),
+        "fwhm_left_ps": _number(fit.left_half_ps),
+        "fwhm_right_ps": _number(fit.right_half_ps),
+        "bootstrap_samples": int(fit.bootstrap_samples),
+        "bootstrap_successful": int(fit.bootstrap_successful),
         "CTR_ps": _number(fit.ctr_ps),
         "CTR_error_ps": _number(fit.ctr_error_ps),
         "average_delay_corrected_alignments": int(average_delay_corrected_alignments),
     }
-    return row
+
 
 def _load_summary(path: Path) -> dict[str, dict[str, str]]:
     if not path.exists():
@@ -190,44 +179,21 @@ def _summary_rows_equal(left: dict[str, Any] | None, right: dict[str, Any]) -> b
     return all(str(left.get(field, "")) == str(right.get(field, "")) for field in SUMMARY_FIELDS)
 
 
-def _reuse_stage(
-    state: dict[str, Any],
-    stage: str,
-    signatures: list[str],
-    outputs: list[Path],
-    overwrite: bool,
-    migration_mode: bool,
-) -> bool:
+def _reuse_stage(state, stage, signatures, outputs, overwrite, migration_mode) -> bool:
     if overwrite:
         return False
-    return stage_valid_any(state, stage, signatures, outputs) or stage_migratable(
-        state, stage, outputs, migration_mode
-    )
+    return stage_valid_any(state, stage, signatures, outputs) or stage_migratable(state, stage, outputs, migration_mode)
 
 
-def _refresh_stage_signature(
-    state: dict[str, Any],
-    stage: str,
-    stage_signature: str,
-    outputs: list[Path],
-) -> bool:
+def _refresh_stage_signature(state, stage, stage_signature, outputs) -> bool:
     record = state["stages"][stage]
     if record.get("signature") == stage_signature:
         return False
-    mark_stage(
-        state,
-        stage,
-        stage_signature,
-        outputs,
-        dict(record.get("metadata", {})),
-    )
+    mark_stage(state, stage, stage_signature, outputs, dict(record.get("metadata", {})))
     return True
 
 
-def _energy_selection_metadata(
-    selection: EnergySelectionResult,
-    toa_lsb_ps: float,
-) -> dict[str, Any]:
+def _energy_selection_metadata(selection: EnergySelectionResult, toa_lsb_ps: float) -> dict[str, Any]:
     return {
         "toa_lsb_ps": toa_lsb_ps,
         "peak_a": {
@@ -247,10 +213,7 @@ def _energy_selection_metadata(
     }
 
 
-def _energy_selection_from_cache(
-    duration_mask: np.ndarray,
-    metadata: dict[str, Any],
-) -> EnergySelectionResult:
+def _energy_selection_from_cache(duration_mask: np.ndarray, metadata: dict[str, Any]) -> EnergySelectionResult:
     return EnergySelectionResult(
         peak_a=PeakSelection(**metadata["peak_a"]),
         peak_b=PeakSelection(**metadata["peak_b"]),
@@ -266,11 +229,7 @@ def run_pipeline(cfg: dict) -> None:
     analysis_root = output_dir / "analysis"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    runs = discover_runs(
-        input_dir,
-        cfg["files"]["data_pattern"],
-        bool(cfg["files"]["recursive"]),
-    )
+    runs = discover_runs(input_dir, cfg["files"]["data_pattern"], bool(cfg["files"]["recursive"]))
     include = _normalise_run_ids(cfg["runs"]["include"])
     overwrite_runs = _normalise_run_ids(cfg["runs"]["overwrite"])
     if include:
@@ -287,9 +246,7 @@ def run_pipeline(cfg: dict) -> None:
         state_path = run_dir / "state.json"
         pulse_cache_dir = run_dir / "streaming_pulses"
         candidate_index_dir = run_dir / "streaming_candidates"
-        candidate_path = (
-            run_dir / "candidate_preprocessed" / f"{run.run_id}_candidates.dat"
-        )
+        candidate_path = run_dir / "candidate_preprocessed" / f"{run.run_id}_candidates.dat"
         preprocessed_path = run_dir / "preprocessed" / f"{run.run_id}_list.dat"
         csv_dir = run_dir / "csv"
         models_dir = run_dir / "models"
@@ -315,769 +272,246 @@ def run_pipeline(cfg: dict) -> None:
         state_changed = False
 
         try:
-            run_info = parse_run_info(
-                run.info_path,
-                cfg["thresholds"]["consistency"],
-            )
+            run_info = parse_run_info(run.info_path, cfg["thresholds"]["consistency"])
             raw_signature = file_signature(run.data_path)
 
-            # 1. Build the single compact STREAMING matched-event candidate cache.
             pulse_cache_signature = None
             pulse_outputs: list[Path] = []
             if run_info.acquisition_mode == "STREAMING":
-                configured_channels = {
-                    int(cfg["channels"][key])
-                    for key in ("signal_a", "time_a", "signal_b", "time_b")
-                }
-                pulse_outputs = pulse_cache_outputs(
-                    pulse_cache_dir,
-                    configured_channels,
-                )
+                configured_channels = {int(cfg["channels"][key]) for key in ("signal_a", "time_a", "signal_b", "time_b")}
+                pulse_outputs = pulse_cache_outputs(pulse_cache_dir, configured_channels)
                 pulse_cache_signature = signature(
-                    {
-                        "data": raw_signature,
-                        "acquisition_mode": run_info.acquisition_mode,
-                    },
+                    {"data": raw_signature, "acquisition_mode": run_info.acquisition_mode},
                     stage_config(cfg, "streaming_pulse_decode"),
                 )
-                pulse_overwrite = force_run or bool(
-                    cfg["tasks"]["streaming_pulse_decode"]["overwrite"]
-                )
-                if _reuse_stage(
-                    state,
-                    "streaming_pulse_decode",
-                    [pulse_cache_signature],
-                    pulse_outputs,
-                    pulse_overwrite,
-                    False,
-                ):
-                    pulse_metadata = state["stages"]["streaming_pulse_decode"][
-                        "metadata"
-                    ]
-                    _log(
-                        run.run_id,
-                        "streaming_pulse_decode",
-                        "SKIPPED — overwrite=false and compact event cache is valid",
-                    )
+                pulse_overwrite = force_run or bool(cfg["tasks"]["streaming_pulse_decode"]["overwrite"])
+                if _reuse_stage(state, "streaming_pulse_decode", [pulse_cache_signature], pulse_outputs, pulse_overwrite, False):
+                    pulse_metadata = state["stages"]["streaming_pulse_decode"]["metadata"]
+                    _log(run.run_id, "streaming_pulse_decode", "SKIPPED — overwrite=false and compact event cache is valid")
                 elif not cfg["tasks"]["streaming_pulse_decode"]["enabled"]:
-                    raise RuntimeError(
-                        "STREAMING pulse decode is disabled and no valid cache exists"
-                    )
+                    raise RuntimeError("STREAMING pulse decode is disabled and no valid cache exists")
                 else:
                     start = time.perf_counter()
-                    _log(
-                        run.run_id,
-                        "streaming_pulse_decode",
-                        "STARTED — ordered energy-leading matching and timing candidate indexing",
-                    )
-                    pulse_metadata = decode_streaming_pulse_cache(
-                        run.data_path,
-                        pulse_cache_dir,
-                        cfg,
-                        run_info.acquisition_mode,
-                    )
-                    mark_stage(
-                        state,
-                        "streaming_pulse_decode",
-                        pulse_cache_signature,
-                        pulse_outputs,
-                        pulse_metadata,
-                    )
+                    _log(run.run_id, "streaming_pulse_decode", "STARTED — ordered energy-leading matching and timing candidate indexing")
+                    pulse_metadata = decode_streaming_pulse_cache(run.data_path, pulse_cache_dir, cfg, run_info.acquisition_mode)
+                    mark_stage(state, "streaming_pulse_decode", pulse_cache_signature, pulse_outputs, pulse_metadata)
                     save_state(state_path, state)
                     any_completed = True
-                    pulse_count = sum(
-                        int(item["pulses"])
-                        for item in pulse_metadata["channels"].values()
-                    )
-                    duplicate_count = sum(
-                        int(item["duplicate_leading_edges_removed"])
-                        + int(item["duplicate_trailing_edges_removed"])
-                        for item in pulse_metadata["channels"].values()
-                    )
-                    invalid_tot_count = sum(
-                        int(item["rejected_tot_too_short"])
-                        + int(item["rejected_tot_too_long"])
-                        for item in pulse_metadata["channels"].values()
-                    )
-                    recorded_tot_pairs = sum(
-                        int(item.get("recorded_tot_pairs", 0))
-                        for item in pulse_metadata["channels"].values()
-                    )
-                    fallback_pairs = sum(
-                        int(item.get("fallback_pairs", 0))
-                        for item in pulse_metadata["channels"].values()
-                    )
-                    inconsistent_recorded_tot = sum(
-                        int(item.get("recorded_tot_no_matching_lead", 0))
-                        for item in pulse_metadata["channels"].values()
-                    )
-                    _log(
-                        run.run_id,
-                        "streaming_pulse_decode",
-                        f"COMPLETED in {_elapsed(start)} — "
-                        f"{pulse_metadata['raw_records_read']} blocks, "
-                        f"{pulse_count} in-memory reconstructed/leading records, "
-                        f"{recorded_tot_pairs} energy pulses paired from recorded ToT, "
-                        f"{fallback_pairs} paired by missing-ToT fallback, "
-                        f"{inconsistent_recorded_tot} recorded-ToT records without a compatible lead, "
-                        f"{duplicate_count} duplicate edges removed, "
-                        f"{invalid_tot_count} invalid-ToT pulses rejected",
-                    )
+                    _log(run.run_id, "streaming_pulse_decode", f"COMPLETED in {_elapsed(start)}")
 
-            # 2. Candidate-preserving preprocessing: no timing choice is made here.
             candidate_stage_cfg = stage_config(cfg, "candidate_preprocessing")
             if run_info.acquisition_mode == "STREAMING":
-                candidate_inputs = {
-                    "pulse_cache": [file_signature(path) for path in pulse_outputs],
-                    "acquisition_mode": run_info.acquisition_mode,
-                }
+                candidate_inputs = {"pulse_cache": [file_signature(path) for path in pulse_outputs], "acquisition_mode": run_info.acquisition_mode}
                 candidate_outputs = pulse_outputs
             else:
                 candidate_stage_cfg = dict(candidate_stage_cfg)
                 candidate_stage_cfg.pop("streaming_physical_time", None)
-                candidate_inputs = {
-                    "data": raw_signature,
-                    "acquisition_mode": run_info.acquisition_mode,
-                }
+                candidate_inputs = {"data": raw_signature, "acquisition_mode": run_info.acquisition_mode}
                 candidate_outputs = [candidate_path]
             candidate_signature = signature(candidate_inputs, candidate_stage_cfg)
-            candidate_overwrite = force_run or bool(
-                cfg["tasks"]["candidate_preprocessing"]["overwrite"]
-            )
-            if _reuse_stage(
-                state,
-                "candidate_preprocessing",
-                [candidate_signature],
-                candidate_outputs,
-                candidate_overwrite,
-                False,
-            ):
-                candidate_metadata = state["stages"]["candidate_preprocessing"][
-                    "metadata"
-                ]
+            candidate_overwrite = force_run or bool(cfg["tasks"]["candidate_preprocessing"]["overwrite"])
+            if _reuse_stage(state, "candidate_preprocessing", [candidate_signature], candidate_outputs, candidate_overwrite, False):
+                candidate_metadata = state["stages"]["candidate_preprocessing"]["metadata"]
                 toa_lsb_ps = float(candidate_metadata["toa_lsb_ps"])
-                _log(
-                    run.run_id,
-                    "candidate_preprocessing",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+                _log(run.run_id, "candidate_preprocessing", "SKIPPED — overwrite=false and cached result is valid")
             elif not cfg["tasks"]["candidate_preprocessing"]["enabled"]:
-                raise RuntimeError(
-                    "Candidate preprocessing is disabled and no valid cached result exists"
-                )
+                raise RuntimeError("Candidate preprocessing is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
                 if run_info.acquisition_mode == "STREAMING":
-                    _log(
-                        run.run_id,
-                        "candidate_preprocessing",
-                        "STARTED — validating integrated compact candidate cache",
-                    )
-                    candidate_metadata = build_streaming_candidate_index(
-                        pulse_cache_dir, candidate_index_dir, cfg
-                    )
+                    candidate_metadata = build_streaming_candidate_index(pulse_cache_dir, candidate_index_dir, cfg)
                 else:
-                    candidate_metadata = preprocess_candidates(
-                        run.data_path,
-                        candidate_path,
-                        cfg,
-                        run_info.acquisition_mode,
-                    )
-                mark_stage(
-                    state,
-                    "candidate_preprocessing",
-                    candidate_signature,
-                    candidate_outputs,
-                    candidate_metadata,
-                )
+                    candidate_metadata = preprocess_candidates(run.data_path, candidate_path, cfg, run_info.acquisition_mode)
+                mark_stage(state, "candidate_preprocessing", candidate_signature, candidate_outputs, candidate_metadata)
                 save_state(state_path, state)
                 toa_lsb_ps = float(candidate_metadata["toa_lsb_ps"])
                 any_completed = True
-                if run_info.acquisition_mode == "STREAMING":
-                    pairing_note = (
-                        f" — {candidate_metadata['energy_leading_pairs_total']} "
-                        "ordered ch1-ch5 leading-edge pairs, "
-                        f"{candidate_metadata['candidate_events']} events with "
-                        "timing candidates on both sides, "
-                        f"{candidate_metadata['candidate_references_a']} ch3 and "
-                        f"{candidate_metadata['candidate_references_b']} ch7 references"
-                    )
-                else:
-                    pairing_note = (
-                        f" — {candidate_metadata['raw_records_read']} triggers, "
-                        f"{candidate_metadata['candidate_events_written']} "
-                        "candidate events"
-                    )
-                _log(
-                    run.run_id,
-                    "candidate_preprocessing",
-                    f"COMPLETED in {_elapsed(start)}{pairing_note}",
-                )
+                _log(run.run_id, "candidate_preprocessing", f"COMPLETED in {_elapsed(start)}")
 
-            # 3. Energy peak selection before timing matching.
-            if run_info.acquisition_mode == "STREAMING":
-                candidate_source_signature = [
-                    file_signature(path) for path in candidate_outputs
-                ]
-            else:
-                candidate_source_signature = file_signature(candidate_path)
-            energy_selection_signature = signature(
-                {"candidate_preprocessed": candidate_source_signature},
-                stage_config(cfg, "energy_selection"),
-            )
+            candidate_source_signature = [file_signature(path) for path in candidate_outputs] if run_info.acquisition_mode == "STREAMING" else file_signature(candidate_path)
+            energy_selection_signature = signature({"candidate_preprocessed": candidate_source_signature}, stage_config(cfg, "energy_selection"))
             energy_selection_outputs = [energy_selection_path]
-            energy_selection_overwrite = force_run or bool(
-                cfg["tasks"]["energy_selection"]["overwrite"]
-            )
-            if _reuse_stage(
-                state,
-                "energy_selection",
-                [energy_selection_signature],
-                energy_selection_outputs,
-                energy_selection_overwrite,
-                False,
-            ):
-                energy_measurements, duration_mask = load_energy_selection_csv(
-                    energy_selection_path
-                )
+            energy_selection_overwrite = force_run or bool(cfg["tasks"]["energy_selection"]["overwrite"])
+            if _reuse_stage(state, "energy_selection", [energy_selection_signature], energy_selection_outputs, energy_selection_overwrite, False):
+                energy_measurements, duration_mask = load_energy_selection_csv(energy_selection_path)
                 energy_metadata = state["stages"]["energy_selection"]["metadata"]
-                energy_selection = _energy_selection_from_cache(
-                    duration_mask,
-                    energy_metadata,
-                )
+                energy_selection = _energy_selection_from_cache(duration_mask, energy_metadata)
                 toa_lsb_ps = float(energy_metadata["toa_lsb_ps"])
-                _log(
-                    run.run_id,
-                    "energy_selection",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+                _log(run.run_id, "energy_selection", "SKIPPED — overwrite=false and cached result is valid")
             elif not cfg["tasks"]["energy_selection"]["enabled"]:
-                raise RuntimeError(
-                    "Energy selection is disabled and no valid cached result exists"
-                )
+                raise RuntimeError("Energy selection is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
                 if run_info.acquisition_mode == "STREAMING":
-                    energy_measurements, toa_lsb_ps = (
-                        collect_streaming_energy_measurements(
-                            pulse_cache_dir, candidate_index_dir, cfg
-                        )
-                    )
+                    energy_measurements, toa_lsb_ps = collect_streaming_energy_measurements(pulse_cache_dir, candidate_index_dir, cfg)
                 else:
-                    energy_measurements, toa_lsb_ps = collect_energy_measurements(
-                        candidate_path, cfg
-                    )
+                    energy_measurements, toa_lsb_ps = collect_energy_measurements(candidate_path, cfg)
                 energy_selection = select_energy_events(energy_measurements, cfg)
-                write_energy_selection_csv(
-                    energy_selection_path,
-                    energy_measurements,
-                    energy_selection,
-                    cfg["analysis_output"]["diagnostic_mode"],
-                )
-                energy_metadata = _energy_selection_metadata(
-                    energy_selection,
-                    toa_lsb_ps,
-                )
-                mark_stage(
-                    state,
-                    "energy_selection",
-                    energy_selection_signature,
-                    energy_selection_outputs,
-                    energy_metadata,
-                )
+                write_energy_selection_csv(energy_selection_path, energy_measurements, energy_selection, cfg["analysis_output"]["diagnostic_mode"])
+                energy_metadata = _energy_selection_metadata(energy_selection, toa_lsb_ps)
+                mark_stage(state, "energy_selection", energy_selection_signature, energy_selection_outputs, energy_metadata)
                 save_state(state_path, state)
                 any_completed = True
-                _log(
-                    run.run_id,
-                    "energy_selection",
-                    f"COMPLETED in {_elapsed(start)}",
-                )
+                _log(run.run_id, "energy_selection", f"COMPLETED in {_elapsed(start)}")
 
-            selected_event_indices = set(
-                int(value)
-                for value in energy_measurements.event_index[
-                    energy_selection.duration_mask
-                ]
-            )
+            selected_event_indices = set(int(value) for value in energy_measurements.event_index[energy_selection.duration_mask])
             if not selected_event_indices:
                 raise RuntimeError("Energy peak selection retained no events")
 
-            # Peak plot belongs to the pre-matching energy-selection stage.
             if cfg["plots"]["peak_selection"]["enabled"]:
-                peak_plot_signature = signature(
-                    {"energy_selection": file_signature(energy_selection_path)},
-                    stage_config(cfg, "plot_peak_selection"),
-                )
+                peak_plot_signature = signature({"energy_selection": file_signature(energy_selection_path)}, stage_config(cfg, "plot_peak_selection"))
                 peak_outputs = [peak_plot_path]
-                peak_overwrite = force_run or bool(
-                    cfg["plots"]["peak_selection"]["overwrite"]
-                )
-                if _reuse_stage(
-                    state,
-                    "plot_peak_selection",
-                    [peak_plot_signature],
-                    peak_outputs,
-                    peak_overwrite,
-                    False,
-                ):
-                    _log(
-                        run.run_id,
-                        "plot_peak_selection",
-                        "SKIPPED — overwrite=false and cached result is valid",
-                    )
+                peak_overwrite = force_run or bool(cfg["plots"]["peak_selection"]["overwrite"])
+                if _reuse_stage(state, "plot_peak_selection", [peak_plot_signature], peak_outputs, peak_overwrite, False):
+                    _log(run.run_id, "plot_peak_selection", "SKIPPED — overwrite=false and cached result is valid")
                 else:
                     start = time.perf_counter()
-                    plot_peak_selection(
-                        peak_plot_path,
-                        run.run_id,
-                        energy_measurements,
-                        energy_selection,
-                        toa_lsb_ps,
-                        cfg,
-                    )
-                    mark_stage(
-                        state,
-                        "plot_peak_selection",
-                        peak_plot_signature,
-                        peak_outputs,
-                    )
+                    plot_peak_selection(peak_plot_path, run.run_id, energy_measurements, energy_selection, toa_lsb_ps, cfg)
+                    mark_stage(state, "plot_peak_selection", peak_plot_signature, peak_outputs)
                     save_state(state_path, state)
                     any_completed = True
-                    _log(
-                        run.run_id,
-                        "plot_peak_selection",
-                        f"COMPLETED in {_elapsed(start)}",
-                    )
+                    _log(run.run_id, "plot_peak_selection", f"COMPLETED in {_elapsed(start)}")
             else:
                 _log(run.run_id, "plot_peak_selection", "SKIPPED — disabled")
 
-            # 3. Training labels are collected only from energy-selected events.
             training_signature = signature(
-                {
-                    "candidate_preprocessed": candidate_source_signature,
-                    "energy_selection": file_signature(energy_selection_path),
-                    "acquisition_mode": run_info.acquisition_mode,
-                },
+                {"candidate_preprocessed": candidate_source_signature, "energy_selection": file_signature(energy_selection_path), "acquisition_mode": run_info.acquisition_mode},
                 stage_config(cfg, "matching_training"),
             )
             training_outputs = [training_path]
-            training_overwrite = force_run or bool(
-                cfg["tasks"]["matching_training"]["overwrite"]
-            )
-            if _reuse_stage(
-                state,
-                "matching_training",
-                [training_signature],
-                training_outputs,
-                training_overwrite,
-                False,
-            ):
+            training_overwrite = force_run or bool(cfg["tasks"]["matching_training"]["overwrite"])
+            if _reuse_stage(state, "matching_training", [training_signature], training_outputs, training_overwrite, False):
                 matching_samples = load_training_csv(training_path)
                 training_metadata = state["stages"]["matching_training"]["metadata"]
                 toa_lsb_ps = float(training_metadata["toa_lsb_ps"])
-                _log(
-                    run.run_id,
-                    "matching_training",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+                _log(run.run_id, "matching_training", "SKIPPED — overwrite=false and cached result is valid")
             elif not cfg["tasks"]["matching_training"]["enabled"]:
-                raise RuntimeError(
-                    "Matching training is disabled and no valid cached result exists"
-                )
+                raise RuntimeError("Matching training is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
                 if run_info.acquisition_mode == "STREAMING":
-                    matching_samples, training_metadata = (
-                        scan_streaming_matching_training(
-                            pulse_cache_dir,
-                            candidate_index_dir,
-                            cfg,
-                            selected_event_indices,
-                        )
-                    )
+                    matching_samples, training_metadata = scan_streaming_matching_training(pulse_cache_dir, candidate_index_dir, cfg, selected_event_indices)
                 else:
-                    matching_samples, training_metadata = scan_matching_training(
-                        candidate_path,
-                        run_info.acquisition_mode,
-                        cfg,
-                        selected_event_indices,
-                    )
+                    matching_samples, training_metadata = scan_matching_training(candidate_path, run_info.acquisition_mode, cfg, selected_event_indices)
                 training_rows = training_metadata.pop("rows")
-                write_training_csv(
-                    training_path,
-                    training_rows,
-                    cfg["analysis_output"]["diagnostic_mode"],
-                )
-                mark_stage(
-                    state,
-                    "matching_training",
-                    training_signature,
-                    training_outputs,
-                    training_metadata,
-                )
+                write_training_csv(training_path, training_rows, cfg["analysis_output"]["diagnostic_mode"])
+                mark_stage(state, "matching_training", training_signature, training_outputs, training_metadata)
                 save_state(state_path, state)
                 toa_lsb_ps = float(training_metadata["toa_lsb_ps"])
                 any_completed = True
-                _log(
-                    run.run_id,
-                    "matching_training",
-                    f"COMPLETED in {_elapsed(start)}",
-                )
+                _log(run.run_id, "matching_training", f"COMPLETED in {_elapsed(start)}")
 
-            # 4. Per-run average-delay calibration.
-            model_signature = signature(
-                {"training": file_signature(training_path)},
-                stage_config(cfg, "matching_model"),
-            )
-            model_outputs = [
-                model_a_path,
-                model_b_path,
-                model_metrics_path,
-            ]
-            model_overwrite = force_run or bool(
-                cfg["tasks"]["matching_model"]["overwrite"]
-            )
-            if _reuse_stage(
-                state,
-                "matching_model",
-                [model_signature],
-                model_outputs,
-                model_overwrite,
-                False,
-            ):
-                matching_models = {
-                    "a": load_model(model_a_path),
-                    "b": load_model(model_b_path),
-                }
+            model_signature = signature({"training": file_signature(training_path)}, stage_config(cfg, "matching_model"))
+            model_outputs = [model_a_path, model_b_path, model_metrics_path]
+            model_overwrite = force_run or bool(cfg["tasks"]["matching_model"]["overwrite"])
+            if _reuse_stage(state, "matching_model", [model_signature], model_outputs, model_overwrite, False):
+                matching_models = {"a": load_model(model_a_path), "b": load_model(model_b_path)}
                 filtered_matching_samples = matching_samples
-                _log(
-                    run.run_id,
-                    "matching_model",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+                _log(run.run_id, "matching_model", "SKIPPED — overwrite=false and cached result is valid")
             elif not cfg["tasks"]["matching_model"]["enabled"]:
-                raise RuntimeError(
-                    "Matching model is disabled and no valid cached result exists"
-                )
+                raise RuntimeError("Matching model is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
-                matching_models, filtered_matching_samples = train_matching_models(
-                    matching_samples,
-                    cfg,
-                )
+                matching_models, filtered_matching_samples = train_matching_models(matching_samples, cfg)
                 write_model(model_a_path, matching_models["a"])
                 write_model(model_b_path, matching_models["b"])
                 write_model_metrics(model_metrics_path, matching_models)
-                mark_stage(
-                    state,
-                    "matching_model",
-                    model_signature,
-                    model_outputs,
-                )
+                mark_stage(state, "matching_model", model_signature, model_outputs)
                 save_state(state_path, state)
                 any_completed = True
-                _log(
-                    run.run_id,
-                    "matching_model",
-                    f"COMPLETED in {_elapsed(start)}",
-                )
+                _log(run.run_id, "matching_model", f"COMPLETED in {_elapsed(start)}")
 
             if cfg["plots"]["matching_train"]["enabled"]:
                 train_plot_signature = signature(
-                    {
-                        "training": file_signature(training_path),
-                        "model_a": file_signature(model_a_path),
-                        "model_b": file_signature(model_b_path),
-                        "energy_selection": file_signature(energy_selection_path),
-                    },
+                    {"training": file_signature(training_path), "model_a": file_signature(model_a_path), "model_b": file_signature(model_b_path), "energy_selection": file_signature(energy_selection_path)},
                     stage_config(cfg, "plot_matching_train"),
                 )
-                train_plot_outputs = [matching_train_plot_path]
-                train_plot_overwrite = force_run or bool(
-                    cfg["plots"]["matching_train"]["overwrite"]
-                )
-                if _reuse_stage(
-                    state,
-                    "plot_matching_train",
-                    [train_plot_signature],
-                    train_plot_outputs,
-                    train_plot_overwrite,
-                    False,
-                ):
-                    _log(
-                        run.run_id,
-                        "plot_matching_train",
-                        "SKIPPED — overwrite=false and cached result is valid",
-                    )
+                if _reuse_stage(state, "plot_matching_train", [train_plot_signature], [matching_train_plot_path], force_run or bool(cfg["plots"]["matching_train"]["overwrite"]), False):
+                    _log(run.run_id, "plot_matching_train", "SKIPPED — overwrite=false and cached result is valid")
                 else:
-                    start = time.perf_counter()
-                    plot_matching_training(
-                        matching_train_plot_path,
-                        run.run_id,
-                        filtered_matching_samples,
-                        matching_models,
-                        toa_lsb_ps,
-                        cfg,
-                        energy_selection,
-                    )
-                    mark_stage(
-                        state,
-                        "plot_matching_train",
-                        train_plot_signature,
-                        train_plot_outputs,
-                    )
+                    plot_matching_training(matching_train_plot_path, run.run_id, filtered_matching_samples, matching_models, toa_lsb_ps, cfg, energy_selection)
+                    mark_stage(state, "plot_matching_train", train_plot_signature, [matching_train_plot_path])
                     save_state(state_path, state)
                     any_completed = True
-                    _log(
-                        run.run_id,
-                        "plot_matching_train",
-                        f"COMPLETED in {_elapsed(start)}",
-                    )
-            else:
-                _log(run.run_id, "plot_matching_train", "SKIPPED — disabled")
 
-            # 5. Matching is finally applied only to energy-selected events.
             preprocessing_signature = signature(
-                {
-                    "candidate_preprocessed": candidate_source_signature,
-                    "energy_selection": file_signature(energy_selection_path),
-                    "model_a": file_signature(model_a_path),
-                    "model_b": file_signature(model_b_path),
-                    "acquisition_mode": run_info.acquisition_mode,
-                },
+                {"candidate_preprocessed": candidate_source_signature, "energy_selection": file_signature(energy_selection_path), "model_a": file_signature(model_a_path), "model_b": file_signature(model_b_path), "acquisition_mode": run_info.acquisition_mode},
                 stage_config(cfg, "preprocessing"),
             )
             preprocessing_outputs = [preprocessed_path, matching_core_path, matching_total_path]
-            preprocessing_overwrite = force_run or bool(
-                cfg["tasks"]["preprocessing"]["overwrite"]
-            )
-            if _reuse_stage(
-                state,
-                "preprocessing",
-                [preprocessing_signature],
-                preprocessing_outputs,
-                preprocessing_overwrite,
-                False,
-            ):
-                _log(
-                    run.run_id,
-                    "preprocessing",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+            preprocessing_overwrite = force_run or bool(cfg["tasks"]["preprocessing"]["overwrite"])
+            if _reuse_stage(state, "preprocessing", [preprocessing_signature], preprocessing_outputs, preprocessing_overwrite, False):
+                _log(run.run_id, "preprocessing", "SKIPPED — overwrite=false and cached result is valid")
             elif not cfg["tasks"]["preprocessing"]["enabled"]:
-                raise RuntimeError(
-                    "Final matching preprocessing is disabled and no valid cached result exists"
-                )
+                raise RuntimeError("Final matching preprocessing is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
                 if run_info.acquisition_mode == "STREAMING":
-                    preprocessing_metadata, matching_total_rows = (
-                        preprocess_streaming_from_index(
-                            run.data_path,
-                            pulse_cache_dir,
-                            candidate_index_dir,
-                            preprocessed_path,
-                            cfg,
-                            matching_models,
-                            selected_event_indices,
-                        )
+                    preprocessing_metadata, matching_total_rows = preprocess_streaming_from_index(
+                        run.data_path, pulse_cache_dir, candidate_index_dir, preprocessed_path, cfg, matching_models, selected_event_indices
                     )
                 else:
                     preprocessing_metadata, matching_total_rows = preprocess_binary(
-                        candidate_path,
-                        preprocessed_path,
-                        cfg,
-                        run_info.acquisition_mode,
-                        matching_models,
-                        selected_event_indices,
+                        candidate_path, preprocessed_path, cfg, run_info.acquisition_mode, matching_models, selected_event_indices
                     )
                 write_total_cache(matching_core_path, matching_total_rows)
-                write_total_csv(
-                    matching_total_path,
-                    matching_total_rows,
-                    cfg["analysis_output"]["diagnostic_mode"],
-                )
-                mark_stage(
-                    state,
-                    "preprocessing",
-                    preprocessing_signature,
-                    preprocessing_outputs,
-                    preprocessing_metadata,
-                )
+                write_total_csv(matching_total_path, matching_total_rows, cfg["analysis_output"]["diagnostic_mode"])
+                mark_stage(state, "preprocessing", preprocessing_signature, preprocessing_outputs, preprocessing_metadata)
                 save_state(state_path, state)
                 any_completed = True
-                _log(
-                    run.run_id,
-                    "preprocessing",
-                    f"COMPLETED in {_elapsed(start)}",
-                )
+                _log(run.run_id, "preprocessing", f"COMPLETED in {_elapsed(start)}")
 
             if cfg["plots"]["matching_total"]["enabled"]:
                 total_plot_signature = signature(
-                    {
-                        "total_cache": file_signature(matching_core_path),
-                        "total_diagnostic": file_signature(matching_total_path),
-                        "model_a": file_signature(model_a_path),
-                        "model_b": file_signature(model_b_path),
-                        "energy_selection": file_signature(energy_selection_path),
-                    },
+                    {"total_cache": file_signature(matching_core_path), "total_diagnostic": file_signature(matching_total_path), "model_a": file_signature(model_a_path), "model_b": file_signature(model_b_path), "energy_selection": file_signature(energy_selection_path)},
                     stage_config(cfg, "plot_matching_total"),
                 )
-                total_plot_outputs = [matching_total_plot_path]
-                total_plot_overwrite = force_run or bool(
-                    cfg["plots"]["matching_total"]["overwrite"]
-                )
-                if _reuse_stage(
-                    state,
-                    "plot_matching_total",
-                    [total_plot_signature],
-                    total_plot_outputs,
-                    total_plot_overwrite,
-                    False,
-                ):
-                    _log(
-                        run.run_id,
-                        "plot_matching_total",
-                        "SKIPPED — overwrite=false and cached result is valid",
-                    )
+                if _reuse_stage(state, "plot_matching_total", [total_plot_signature], [matching_total_plot_path], force_run or bool(cfg["plots"]["matching_total"]["overwrite"]), False):
+                    _log(run.run_id, "plot_matching_total", "SKIPPED — overwrite=false and cached result is valid")
                 else:
-                    start = time.perf_counter()
-                    plot_matching_total(
-                        matching_total_plot_path,
-                        run.run_id,
-                        load_total_cache(matching_core_path),
-                        matching_models,
-                        toa_lsb_ps,
-                        cfg,
-                        energy_selection,
-                    )
-                    mark_stage(
-                        state,
-                        "plot_matching_total",
-                        total_plot_signature,
-                        total_plot_outputs,
-                    )
+                    plot_matching_total(matching_total_plot_path, run.run_id, load_total_cache(matching_core_path), matching_models, toa_lsb_ps, cfg, energy_selection)
+                    mark_stage(state, "plot_matching_total", total_plot_signature, [matching_total_plot_path])
                     save_state(state_path, state)
                     any_completed = True
-                    _log(
-                        run.run_id,
-                        "plot_matching_total",
-                        f"COMPLETED in {_elapsed(start)}",
-                    )
-            else:
-                _log(run.run_id, "plot_matching_total", "SKIPPED — disabled")
 
-            # 6. Alignment selection and all timing analysis use the matched binary.
             selection_signature = signature(
-                {
-                    "preprocessed": file_signature(preprocessed_path),
-                    "energy_selection": file_signature(energy_selection_path),
-                },
+                {"preprocessed": file_signature(preprocessed_path), "energy_selection": file_signature(energy_selection_path)},
                 stage_config(cfg, "selection"),
             )
             selection_outputs = [selection_path]
-            selection_overwrite = force_run or bool(
-                cfg["tasks"]["selection"]["overwrite"]
-            )
-            if _reuse_stage(
-                state,
-                "selection",
-                [selection_signature],
-                selection_outputs,
-                selection_overwrite,
-                migration_mode,
-            ):
-                measurements, duration_mask, alignment_mask = load_selection_csv(
-                    selection_path
-                )
+            selection_overwrite = force_run or bool(cfg["tasks"]["selection"]["overwrite"])
+            if _reuse_stage(state, "selection", [selection_signature], selection_outputs, selection_overwrite, migration_mode):
+                measurements, duration_mask, alignment_mask = load_selection_csv(selection_path)
                 metadata = state["stages"]["selection"]["metadata"]
-                selection = _selection_from_cache(
-                    measurements,
-                    duration_mask,
-                    alignment_mask,
-                    metadata,
-                )
+                selection = _selection_from_cache(measurements, duration_mask, alignment_mask, metadata)
                 toa_lsb_ps = float(metadata["toa_lsb_ps"])
-                state_changed |= _refresh_stage_signature(
-                    state,
-                    "selection",
-                    selection_signature,
-                    selection_outputs,
-                )
-                _log(
-                    run.run_id,
-                    "selection",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+                state_changed |= _refresh_stage_signature(state, "selection", selection_signature, selection_outputs)
+                _log(run.run_id, "selection", "SKIPPED — overwrite=false and cached result is valid")
             elif not cfg["tasks"]["selection"]["enabled"]:
-                raise RuntimeError(
-                    "Post-matching selection is disabled and no valid cached result exists"
-                )
+                raise RuntimeError("Post-matching selection is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
-                measurements, toa_lsb_ps = collect_measurements(
-                    preprocessed_path,
-                    cfg,
-                )
-                selection = select_matched_events(
-                    measurements,
-                    energy_selection.peak_a,
-                    energy_selection.peak_b,
-                    cfg,
-                )
-                write_selection_csv(
-                    selection_path,
-                    measurements,
-                    selection,
-                    cfg["analysis_output"]["diagnostic_mode"],
-                )
+                measurements, toa_lsb_ps = collect_measurements(preprocessed_path, cfg)
+                selection = select_matched_events(measurements, energy_selection.peak_a, energy_selection.peak_b, cfg)
+                write_selection_csv(selection_path, measurements, selection, cfg["analysis_output"]["diagnostic_mode"])
                 metadata = _selection_metadata(selection, toa_lsb_ps)
-                mark_stage(
-                    state,
-                    "selection",
-                    selection_signature,
-                    selection_outputs,
-                    metadata,
-                )
+                mark_stage(state, "selection", selection_signature, selection_outputs, metadata)
                 save_state(state_path, state)
                 any_completed = True
                 _log(run.run_id, "selection", f"COMPLETED in {_elapsed(start)}")
 
-            selection_file_signature = file_signature(selection_path)
-            fit_signature = signature(
-                {"selection": selection_file_signature},
-                stage_config(cfg, "fit"),
-            )
+            fit_signature = signature({"selection": file_signature(selection_path)}, stage_config(cfg, "fit"))
             fit_outputs = [fit_path]
             fit_overwrite = force_run or bool(cfg["tasks"]["fit"]["overwrite"])
-            if _reuse_stage(
-                state,
-                "fit",
-                [fit_signature],
-                fit_outputs,
-                fit_overwrite,
-                migration_mode,
-            ):
+            if _reuse_stage(state, "fit", [fit_signature], fit_outputs, fit_overwrite, migration_mode):
                 fit = load_fit_csv(fit_path)
-                state_changed |= _refresh_stage_signature(
-                    state,
-                    "fit",
-                    fit_signature,
-                    fit_outputs,
-                )
-                _log(
-                    run.run_id,
-                    "fit",
-                    "SKIPPED — overwrite=false and cached result is valid",
-                )
+                state_changed |= _refresh_stage_signature(state, "fit", fit_signature, fit_outputs)
+                _log(run.run_id, "fit", "SKIPPED — overwrite=false and cached CTR estimate is valid")
             elif not cfg["tasks"]["fit"]["enabled"]:
-                raise RuntimeError("Fit is disabled and no valid cached result exists")
+                raise RuntimeError("CTR estimation is disabled and no valid cached result exists")
             else:
                 start = time.perf_counter()
-                timing_ps_all = (
-                    measurements.timing_lsb[selection.final_mask].astype(np.float64)
-                    * float(toa_lsb_ps)
-                )
+                timing_ps_all = measurements.timing_lsb[selection.final_mask].astype(np.float64) * float(toa_lsb_ps)
                 led_rejection_cfg = cfg["fit"].get("led_outlier_rejection", {})
                 led_rejection = robust_mad_filter(
                     timing_ps_all,
@@ -1085,12 +519,10 @@ def run_pipeline(cfg: dict) -> None:
                     zscore_limit=float(led_rejection_cfg.get("zscore_limit", 4.0)),
                 )
                 timing_ps = timing_ps_all[led_rejection.mask]
-                lambda message: _log(run.run_id, "fit", message)(
-                    f"LED 4σ rejection: retained={timing_ps.size}/{timing_ps_all.size}, "
-                    f"rejected={led_rejection.rejected}, "
-                    f"median={led_rejection.center:.3f} ps, "
-                    f"robust_sigma={led_rejection.robust_sigma:.3f} ps, "
-                    f"limit=±{led_rejection.max_distance:.3f} ps"
+                _log(
+                    run.run_id,
+                    "fit",
+                    f"LED robust rejection: retained={timing_ps.size}/{timing_ps_all.size}, rejected={led_rejection.rejected}, median={led_rejection.center:.3f} ps, robust_sigma={led_rejection.robust_sigma:.3f} ps, limit=±{led_rejection.max_distance:.3f} ps",
                 )
                 fit = fit_delta_times_ps(
                     timing_ps,
@@ -1099,71 +531,40 @@ def run_pipeline(cfg: dict) -> None:
                     n_total=int(measurements.size),
                     n_selected=int(timing_ps.size),
                     config=cfg["fit"],
+                    seed=0,
+                    bootstrap=True,
                 )
                 if not fit.success:
-                    raise RuntimeError(f"Common Gaussian fit failed: {fit.message}")
-                write_fit_csv(
-                    fit_path, fit, cfg["analysis_output"]["diagnostic_mode"]
-                )
+                    raise RuntimeError(f"Histogram FWHM CTR estimation failed: {fit.message}")
+                write_fit_csv(fit_path, fit, cfg["analysis_output"]["diagnostic_mode"])
                 mark_stage(state, "fit", fit_signature, fit_outputs)
                 save_state(state_path, state)
                 any_completed = True
                 _log(run.run_id, "fit", f"COMPLETED in {_elapsed(start)}")
 
             if cfg["plots"]["timing_fit"]["enabled"]:
-                timing_plot_signature = signature(
-                    file_signature(fit_path),
-                    stage_config(cfg, "plot_timing_fit"),
-                )
+                timing_plot_signature = signature(file_signature(fit_path), stage_config(cfg, "plot_timing_fit"))
                 timing_outputs = [timing_plot_path]
-                timing_overwrite = force_run or bool(
-                    cfg["plots"]["timing_fit"]["overwrite"]
-                )
-                if _reuse_stage(
-                    state,
-                    "plot_timing_fit",
-                    [timing_plot_signature],
-                    timing_outputs,
-                    timing_overwrite,
-                    migration_mode,
-                ):
-                    state_changed |= _refresh_stage_signature(
-                        state,
-                        "plot_timing_fit",
-                        timing_plot_signature,
-                        timing_outputs,
-                    )
-                    _log(
-                        run.run_id,
-                        "plot_timing_fit",
-                        "SKIPPED — overwrite=false and cached result is valid",
-                    )
+                timing_overwrite = force_run or bool(cfg["plots"]["timing_fit"]["overwrite"])
+                if _reuse_stage(state, "plot_timing_fit", [timing_plot_signature], timing_outputs, timing_overwrite, migration_mode):
+                    state_changed |= _refresh_stage_signature(state, "plot_timing_fit", timing_plot_signature, timing_outputs)
+                    _log(run.run_id, "plot_timing_fit", "SKIPPED — overwrite=false and cached result is valid")
                 else:
                     start = time.perf_counter()
-                    plot_gaussian_fit(
+                    plot_ctr_histogram(
                         fit,
                         timing_plot_path,
                         dpi=int(cfg["plots"]["dpi"]),
-                        title=f"{run.run_id} — Pico-TDC timing fit",
+                        title=f"{run.run_id} — Pico-TDC timing CTR",
                         xlabel="ch7 − ch3 [ps]",
                     )
-                    mark_stage(
-                        state,
-                        "plot_timing_fit",
-                        timing_plot_signature,
-                        timing_outputs,
-                    )
+                    mark_stage(state, "plot_timing_fit", timing_plot_signature, timing_outputs)
                     save_state(state_path, state)
                     any_completed = True
-                    _log(
-                        run.run_id,
-                        "plot_timing_fit",
-                        f"COMPLETED in {_elapsed(start)}",
-                    )
+                    _log(run.run_id, "plot_timing_fit", f"COMPLETED in {_elapsed(start)}")
             else:
                 _log(run.run_id, "plot_timing_fit", "SKIPPED — disabled")
 
-        
             average_delay_corrected_alignments = count_model_corrected_alignments(
                 load_total_cache(matching_core_path),
                 center_a_lsb=selection.alignment_a_center_lsb,
@@ -1172,13 +573,7 @@ def run_pipeline(cfg: dict) -> None:
                 scale_b_lsb=selection.alignment_b_scale_lsb,
                 z_threshold=float(cfg["alignment_filter"]["z_threshold"]),
             )
-            new_summary_row = _summary_row(
-                run,
-                run_info,
-                fit,
-                toa_lsb_ps,
-                average_delay_corrected_alignments,
-            )
+            new_summary_row = _summary_row(run, run_info, fit, toa_lsb_ps, average_delay_corrected_alignments)
             if _summary_rows_equal(summary_rows.get(run.run_id), new_summary_row):
                 _log(run.run_id, "summary", "SKIPPED — unchanged")
             else:
