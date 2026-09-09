@@ -1,0 +1,9 @@
+{
+  "extends": "../profiles/ctr_default.json",
+  "data_config": "../data/converted_runs_07_13.json",
+  "preprocessing_config": "../preprocessing/default_ctr.json",
+  "experiment": {"name": "complete_energy", "output_dir": "results/studies/complete_energy"},
+  "models": ["linear_svr", "cnn"],
+  "mode": "energy_to_energy",
+  "cfd": true
+}
