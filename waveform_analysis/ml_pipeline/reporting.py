@@ -109,7 +109,7 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
         row=next((r for r in rows if r["dataset"]==dataset and r["method"]==method and r.get("stage")==stage),None)
         if row is not None:series.append((method,residual,row))
     if not series:return
-    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],101); centers=0.5*(bins[:-1]+bins[1:]); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
+    xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],21); centers=0.5*(bins[:-1]+bins[1:]); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
     for index,(method,residual,row) in enumerate(series):
         color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); mean_fit=_float(row.get("center_ps")); sigma_fit=_float(row.get("sigma_ps")); n_fit=_float(row.get("n"),float(residual.size)); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
         ax.hist(residual,bins=bins,histtype="step",label=label,color=color)
@@ -122,7 +122,7 @@ def _model_output_plot(output,run,mode,dataset,model,paths):
     if train is None and test is None:return
     train=np.asarray([] if train is None else train,dtype=float); test=np.asarray([] if test is None else test,dtype=float); train=train[np.isfinite(train)]; test=test[np.isfinite(test)]
     if not train.size and not test.size:return
-    xlim=_robust_display_range([train,test],quantiles=(0.02,0.98),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],121); fig,axes=plt.subplots(2,1,figsize=(8.6,6.2),sharex=True)
+    xlim=_robust_display_range([train,test],quantiles=(0.02,0.98),margin_fraction=0.06); bins=np.linspace(xlim[0],xlim[1],21); fig,axes=plt.subplots(2,1,figsize=(8.6,6.2),sharex=True)
     for ax,stage,values in ((axes[0],"train",train),(axes[1],"test",test)):
         outside=_outside_count(values,xlim)
         if values.size:
