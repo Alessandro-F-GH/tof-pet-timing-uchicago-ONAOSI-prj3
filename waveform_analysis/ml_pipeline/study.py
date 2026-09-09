@@ -16,7 +16,7 @@ from .splits import semantic_seed
 from .stats import bootstrap_ctr_uncertainty, format_residual_summary, gaussian_ctr, residual_summary
 from .storage import RunStore
 from .train import FittedModel, predict_indices, refit_selected, save_model, search_model
-from .view import calibrated_led, inverse_pair, standard_delta, target_family
+from .view import calibrated_led, corrected_led_residual, inverse_pair, standard_delta, target_family
 
 @dataclass
 class FinalModel:
@@ -69,6 +69,6 @@ def run_study(config_or_path:dict[str,Any]|str|Path,*,overwrite:bool=False,rebui
             if config['cfd']:
                 led_mean=float(dataset.manifest['led_training_mean_ps'][family]); cfd=standard_delta(dataset,mode,'cfd')[indices]-led_mean; rows.append(_metric_row(config,name,voltage,mode,'cfd',cfd,indices.size,semantic_seed(seed,name,mode,'cfd',stage),logger,stage=stage)); store.save_residuals(name,'cfd',cfd,stage=stage)
             for model_name in config['models']:
-                final=final_models[model_name]; spec=get_model(model_name); prediction,_time,_pair=predict_indices(spec,final.fitted,dataset,mode,indices); residual=calibrated[indices]-prediction; rows.append(_metric_row(config,name,voltage,mode,model_name,residual,indices.size,semantic_seed(seed,name,mode,model_name,stage),logger,stage=stage)); store.save_residuals(name,model_name,residual,stage=stage)
+                final=final_models[model_name]; spec=get_model(model_name); prediction,_time,_pair=predict_indices(spec,final.fitted,dataset,mode,indices); residual=corrected_led_residual(calibrated[indices],prediction); rows.append(_metric_row(config,name,voltage,mode,model_name,residual,indices.size,semantic_seed(seed,name,mode,model_name,stage),logger,stage=stage)); store.save_residuals(name,model_name,residual,stage=stage)
         manifest['datasets'][name]={'prepared_dir':str(dataset.directory),'split':dataset.manifest['split'],'led_threshold_mV':dataset.manifest['led_threshold_mV'],'led_training_mean_ps':dataset.manifest['led_training_mean_ps'],'cfd_fraction':dataset.manifest['cfd_fraction'],'subsampling':int(dataset.manifest['ml_input']['subsampling']),'target_definition':dataset.manifest.get('target_definition'),'corrected_definition':dataset.manifest.get('corrected_definition')}; store.write_results(rows); store.write_manifest(manifest)
     logger.info('Study complete | %s',store.root); return store.root
