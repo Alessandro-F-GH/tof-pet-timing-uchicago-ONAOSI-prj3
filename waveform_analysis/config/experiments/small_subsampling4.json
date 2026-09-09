@@ -12,7 +12,6 @@
     "selection": {"minimum_events_per_split": 50}
   },
   "reporting": {
-    "ctr_uncertainty_bootstrap_samples": 100,
     "xai": {"enabled": false, "max_events": 128}
   },
   "fit": {"min_events": 50}
