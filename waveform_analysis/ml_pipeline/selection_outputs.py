@@ -40,53 +40,96 @@ def _write_summary(path: Path, stages, split: np.ndarray) -> None:
             previous = mask.copy()
 
 
+def _shared_display_range(samples, *, references=(), quantiles=(0.005, 0.995), margin_fraction=0.06):
+    """Robust common display range for comparable detector histograms."""
+    finite_parts = []
+    for sample in samples:
+        values = np.asarray(sample, dtype=np.float64).reshape(-1)
+        values = values[np.isfinite(values)]
+        if values.size:
+            finite_parts.append(values)
+    if not finite_parts:
+        return 0.0, 1.0
+    pooled = np.concatenate(finite_parts)
+    low = float(np.quantile(pooled, float(quantiles[0])))
+    high = float(np.quantile(pooled, float(quantiles[1])))
+    refs = np.asarray(list(references), dtype=np.float64).reshape(-1)
+    refs = refs[np.isfinite(refs)]
+    if refs.size:
+        low = min(low, float(np.min(refs)))
+        high = max(high, float(np.max(refs)))
+    if high <= low:
+        pad = max(abs(low) * 0.05, 1e-6)
+        return low - pad, high + pad
+    margin = float(margin_fraction) * (high - low)
+    return low - margin, high + margin
+
+
+def _outside_count(values, xlim):
+    values = np.asarray(values, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    return int(np.count_nonzero((finite < float(xlim[0])) | (finite > float(xlim[1]))))
+
+
 def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits, noise, noise_limits, config) -> None:
     import matplotlib.pyplot as plt
 
     directory.mkdir(parents=True, exist_ok=True)
     dev = split == 0
 
+    photo_samples = [np.asarray(amplitudes[dev, detector], dtype=float) for detector in range(2)]
+    photo_refs = []
+    for fit in fits:
+        photo_refs.extend([float(fit["selection_low_mV"]), float(fit["selection_high_mV"])])
+    photo_xlim = _shared_display_range(photo_samples, references=photo_refs)
+    photo_bins = np.linspace(photo_xlim[0], photo_xlim[1], 121)
     fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True)
     for detector, ax in enumerate(np.atleast_1d(axes)):
-        values = amplitudes[dev, detector]; values = values[np.isfinite(values)]
+        values = photo_samples[detector]; values = values[np.isfinite(values)]
         fit = fits[detector]; low, high = float(fit["selection_low_mV"]), float(fit["selection_high_mV"])
-        selected = int(np.count_nonzero((values >= low) & (values <= high))); rejected = int(values.size - selected)
-        ax.hist(values, bins=120, histtype="step", label=f"Development events (n={values.size})")
-        ax.axvspan(low, high, alpha=.2, label=f"Selected {selected} | rejected {rejected}")
-        ax.set_title(f"Energy ch {fit['channel']}"); ax.set_xlabel("Amplitude [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
+        selected = int(np.count_nonzero((values >= low) & (values <= high))); rejected = int(values.size - selected); outside = _outside_count(values, photo_xlim)
+        ax.hist(values, bins=photo_bins, histtype="step", label=f"Development events (n={values.size})")
+        ax.axvspan(low, high, alpha=.2, label=f"Selected {selected} | rejected {rejected} | outside display {outside}")
+        ax.set_xlim(*photo_xlim); ax.set_title(f"Energy ch {fit['channel']}"); ax.set_xlabel("Amplitude [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
     photo_selected = int(np.count_nonzero(dev & photopeak)); photo_total = int(np.count_nonzero(dev))
     fig.suptitle(f"Development photopeak AND: selected {photo_selected} | rejected {photo_total-photo_selected}")
     fig.tight_layout(); fig.savefig(directory/"photopeak_selection.png", dpi=180); plt.close(fig)
 
     if 'timing' in hits:
-        fig, axes = plt.subplots(2, 1, figsize=(8, 5.6), squeeze=False, sharex=True)
-        events = hits['timing']; fit_cfg=config['preprocessing']['tot_peak']
+        events = hits['timing']; fit_cfg=config['preprocessing']['tot_peak']; tot_samples=[]; tot_fits=[]; tot_refs=[]
         for detector in range(2):
-            ax = axes[detector, 0]
-            values = np.asarray([max(h.duration_ns for h in events[row][detector]) for row in np.flatnonzero(dev & photopeak) if events[row][detector]], dtype=float)
-            fit = fit_histogram_peak(values,config=fit_cfg,unit_suffix='ns',fit_name=f'ToT detector {detector+1}',value_name='pulse durations')
-            low, high = duration_limits['timing'][detector]
-            selected = int(np.count_nonzero((values >= low) & (values <= high))); rejected = int(values.size - selected)
-            if fit.edges.size >= 2 and fit.counts.size:
-                ax.stairs(fit.counts,fit.edges,label=f"Candidate hits (n={values.size})")
-                centers=0.5*(fit.edges[:-1]+fit.edges[1:])
-                if fit.expected.size==centers.size: ax.plot(centers,fit.expected,label=f"Gaussian peak fit μ={fit.mean:.3f} ns, σ={fit.sigma:.3f} ns")
-            ax.axvspan(low, high, alpha=.2, label=f"Selected {selected} | rejected {rejected}")
-            ax.axvline(float(fit.mean),ls='--',lw=1.0,label='Peak center')
-            ax.set_title(f"Timing detector {detector+1} ToT"); ax.set_xlabel("Pulse duration [ns]"); ax.set_ylabel("Events / bin"); ax.legend()
-        fig.tight_layout(); fig.savefig(directory/"tot_selection.png", dpi=180); plt.close(fig)
+            values = np.asarray([max(h.duration_ns for h in events[row][detector]) for row in np.flatnonzero(dev & photopeak) if events[row][detector]], dtype=float); tot_samples.append(values)
+            fit = fit_histogram_peak(values,config=fit_cfg,unit_suffix='ns',fit_name=f'ToT detector {detector+1}',value_name='pulse durations'); tot_fits.append(fit)
+            low, high = duration_limits['timing'][detector]; tot_refs.extend([float(low),float(high),float(fit.fit_low),float(fit.fit_high)])
+        tot_xlim = _shared_display_range(tot_samples, references=tot_refs)
+        bin_width = float(fit_cfg['histogram_bin_ns']); n_bins=max(10,int(np.ceil((tot_xlim[1]-tot_xlim[0])/bin_width))); tot_bins=np.linspace(tot_xlim[0],tot_xlim[1],n_bins+1)
+        fig, axes = plt.subplots(2, 1, figsize=(8, 5.6), squeeze=False, sharex=True)
+        for detector in range(2):
+            ax=axes[detector,0]; values=tot_samples[detector]; fit=tot_fits[detector]; low,high=duration_limits['timing'][detector]
+            selected=int(np.count_nonzero((values>=low)&(values<=high))); rejected=int(values.size-selected); outside=_outside_count(values,tot_xlim)
+            ax.hist(values,bins=tot_bins,histtype='step',label=f"Candidate hits (n={values.size})")
+            if fit.expected.size and fit.edges.size>=2:
+                centers=0.5*(fit.edges[:-1]+fit.edges[1:]); visible=(centers>=tot_xlim[0])&(centers<=tot_xlim[1])
+                if np.any(visible) and fit.expected.size==centers.size: ax.plot(centers[visible],fit.expected[visible],label=f"Gaussian peak fit μ={fit.mean:.3f} ns, σ={fit.sigma:.3f} ns")
+            ax.axvspan(low,high,alpha=.2,label=f"Selected {selected} | rejected {rejected} | outside display {outside}")
+            if np.isfinite(fit.mean): ax.axvline(float(fit.mean),ls='--',lw=1.0,label='Peak center')
+            ax.set_xlim(*tot_xlim); ax.set_title(f"Timing detector {detector+1} ToT"); ax.set_xlabel("Pulse duration [ns]"); ax.set_ylabel("Events / bin"); ax.legend()
+        fig.tight_layout(); fig.savefig(directory/"tot_selection.png",dpi=180); plt.close(fig)
 
     if noise is not None and noise_limits is not None:
-        panels = 2 * len(noise); fig, axes = plt.subplots(panels, 1, figsize=(8, 2.8*panels), squeeze=False, sharex=True); panel = 0
+        noise_samples=[]; noise_refs=[]
         for family, values in noise.items():
             for detector in range(2):
-                ax = axes[panel, 0]; panel += 1
-                sample = values[dev, detector]; sample = sample[np.isfinite(sample)]; limit = float(noise_limits[family][detector])
-                selected = int(np.count_nonzero(sample <= limit)); rejected = int(sample.size - selected)
-                if sample.size: ax.hist(sample, bins=100, histtype="step", label=f"Candidates (n={sample.size})")
-                ax.axvline(limit, label=f"Selected {selected} | rejected {rejected}")
-                ax.set_title(f"{family} detector {detector+1} baseline RMS"); ax.set_xlabel("RMS [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
-        fig.tight_layout(); fig.savefig(directory/"baseline_noise_selection.png", dpi=180); plt.close(fig)
+                sample=np.asarray(values[dev,detector],dtype=float); sample=sample[np.isfinite(sample)]; noise_samples.append((family,detector,sample)); noise_refs.append(float(noise_limits[family][detector]))
+        noise_xlim=_shared_display_range([item[2] for item in noise_samples],references=noise_refs,quantiles=(0.0,0.995))
+        noise_bins=np.linspace(noise_xlim[0],noise_xlim[1],101)
+        panels=len(noise_samples); fig,axes=plt.subplots(panels,1,figsize=(8,2.8*panels),squeeze=False,sharex=True)
+        for panel,(family,detector,sample) in enumerate(noise_samples):
+            ax=axes[panel,0]; limit=float(noise_limits[family][detector]); selected=int(np.count_nonzero(sample<=limit)); rejected=int(sample.size-selected); outside=_outside_count(sample,noise_xlim)
+            if sample.size: ax.hist(sample,bins=noise_bins,histtype='step',label=f"Candidates (n={sample.size})")
+            ax.axvline(limit,label=f"Selected {selected} | rejected {rejected} | outside display {outside}")
+            ax.set_xlim(*noise_xlim); ax.set_title(f"{family} detector {detector+1} baseline RMS"); ax.set_xlabel("RMS [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
+        fig.tight_layout(); fig.savefig(directory/"baseline_noise_selection.png",dpi=180); plt.close(fig)
 
 
 def ensure_selection_outputs(root_file: Path, selection: SelectionData, config: dict[str, Any], logger: Any) -> None:
