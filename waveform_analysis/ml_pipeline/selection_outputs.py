@@ -40,7 +40,7 @@ def _write_summary(path: Path, stages, split: np.ndarray) -> None:
             previous = mask.copy()
 
 
-def _shared_display_range(samples, *, references=(), quantiles=(0.005, 0.995), margin_fraction=0.06):
+def _shared_display_range(samples, *, references=(), quantiles=(0.02, 0.98), margin_fraction=0.06):
     """Robust common display range for comparable detector histograms."""
     finite_parts = []
     for sample in samples:
