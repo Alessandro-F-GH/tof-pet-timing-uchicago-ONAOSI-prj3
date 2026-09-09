@@ -7,13 +7,12 @@
   },
   "fit": {
     "min_events": 100,
-    "fwhm": {
-      "bandwidth_multiplier": 1.0,
-      "min_bandwidth_ps": 0.05,
-      "search_half_width_scale": 10.0,
-      "samples_per_bandwidth": 6.0,
-      "min_bins": 512,
-      "max_bins": 8192
+    "adaptive_binning": {
+      "enabled": true,
+      "bins_per_fwhm": 10.0,
+      "min_bin_ps": 1.0,
+      "max_bin_ps": 25.0,
+      "phase_count": 8
     }
   },
   "reporting": {
@@ -22,7 +21,7 @@
     "xai": {"enabled": true, "max_events": 1024}
   },
   "standard_methods": {
-    "led_thresholds_mV": [5.0, 15.0, 25.0, 35.0, 45.0,50, 55, 60],
+    "led_thresholds_mV": [5.0, 15.0, 25.0, 35.0, 45.0, 50.0, 55.0, 60.0],
     "cfd_fractions": [0.05]
   },
   "ml_input": {
