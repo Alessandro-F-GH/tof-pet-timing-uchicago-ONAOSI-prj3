@@ -52,7 +52,7 @@ def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits,
         selected = int(np.count_nonzero((values >= low) & (values <= high))); rejected = int(values.size - selected)
         ax.hist(values, bins=120, histtype="step", label=f"Development events (n={values.size})")
         ax.axvspan(low, high, alpha=.2, label=f"Selected {selected} | rejected {rejected}")
-        ax.set_title(f"Energy ch {fit['channel']}"); ax.set_xlabel("Amplitude [mV]"); ax.legend()
+        ax.set_title(f"Energy ch {fit['channel']}"); ax.set_xlabel("Amplitude [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
     photo_selected = int(np.count_nonzero(dev & photopeak)); photo_total = int(np.count_nonzero(dev))
     fig.suptitle(f"Development photopeak AND: selected {photo_selected} | rejected {photo_total-photo_selected}")
     fig.tight_layout(); fig.savefig(directory/"photopeak_selection.png", dpi=180); plt.close(fig)
@@ -67,7 +67,7 @@ def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits,
             selected = int(np.count_nonzero((values >= low) & (values <= high))); rejected = int(values.size - selected)
             if values.size: ax.hist(values, bins=100, histtype="step", label=f"Candidate hits (n={values.size})")
             ax.axvspan(low, high, alpha=.2, label=f"Selected {selected} | rejected {rejected}")
-            ax.set_title(f"Timing detector {detector+1} ToT"); ax.set_xlabel("Pulse duration [ns]"); ax.legend()
+            ax.set_title(f"Timing detector {detector+1} ToT"); ax.set_xlabel("Pulse duration [ns]"); ax.set_ylabel("Events / bin"); ax.legend()
         fig.tight_layout(); fig.savefig(directory/"tot_selection.png", dpi=180); plt.close(fig)
 
     if noise is not None and noise_limits is not None:
@@ -79,13 +79,13 @@ def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits,
                 selected = int(np.count_nonzero(sample <= limit)); rejected = int(sample.size - selected)
                 if sample.size: ax.hist(sample, bins=100, histtype="step", label=f"Candidates (n={sample.size})")
                 ax.axvline(limit, label=f"Selected {selected} | rejected {rejected}")
-                ax.set_title(f"{family} detector {detector+1} baseline RMS"); ax.set_xlabel("RMS [mV]"); ax.legend()
+                ax.set_title(f"{family} detector {detector+1} baseline RMS"); ax.set_xlabel("RMS [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
         fig.tight_layout(); fig.savefig(directory/"baseline_noise_selection.png", dpi=180); plt.close(fig)
 
 
 def ensure_selection_outputs(root_file: Path, selection: SelectionData, config: dict[str, Any], logger: Any) -> None:
     directory = selection.directory; plots = directory / "plots"
-    noise_enabled = bool(config["preprocessing"]["selection"]["baseline_noise"].get("enabled",False)); timing_enabled = any('timing' in mode for mode in config['channel_modes'])
+    noise_enabled = bool(config["preprocessing"]["selection"]["baseline_noise"].get("enabled",False)); timing_enabled = 'timing' in str(config['mode'])
     expected = [directory/"hits.npz", plots/"photopeak_selection.png"]
     if timing_enabled: expected.append(plots/"tot_selection.png")
     if noise_enabled: expected.append(plots/"baseline_noise_selection.png")
