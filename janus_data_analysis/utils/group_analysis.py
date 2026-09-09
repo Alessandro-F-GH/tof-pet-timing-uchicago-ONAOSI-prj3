@@ -20,7 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 from utils_fit import fit_delta_times_ps
 from utils_fit.outliers import robust_mad_filter
 from utils_fit.io import load_fit_csv, write_fit_csv
-from utils_fit.plotting import plot_gaussian_fit
+from utils_fit.plotting import plot_ctr_histogram
 
 from .binary_io import (
     HEADER_SIZE,
@@ -163,24 +163,20 @@ GROUP_SUMMARY_FIELDS = [
     "average_delay_b_training_events",
     "fit_success",
     "fit_status",
-    "gaussian_area_events",
-    "gaussian_area_error_events",
-    "gaussian_mean_ps",
-    "gaussian_mean_error_ps",
-    "gaussian_sigma_ps",
-    "gaussian_sigma_error_ps",
+    "ctr_bin_width_ps",
+    "fwhm_center_ps",
+    "fwhm_left_ps",
+    "fwhm_right_ps",
+    "bootstrap_samples",
+    "bootstrap_successful",
     "CTR_ps",
     "CTR_error_ps",
-    "chi_square",
-    "ndof",
-    "reduced_chi_square",
     "average_delay_corrected_alignments",
     "result_dir",
 ]
 
 GROUP_STATUS_COMPLETE = 0
 GROUP_STATUS_FAILED = 1
-
 
 
 def _log(group_name: str, stage: str, message: str) -> None:
@@ -229,9 +225,7 @@ def _find_run_dir(path: str | Path) -> Path:
     for candidate in (current, *current.parents):
         if _RUN_NAME_RE.fullmatch(candidate.name):
             return candidate
-    raise DataError(
-        f"Cannot find a RunXXXX output directory in {Path(path)!s}"
-    )
+    raise DataError(f"Cannot find a RunXXXX output directory in {Path(path)!s}")
 
 
 def _float_equal(left: float, right: float) -> bool:
@@ -248,10 +242,7 @@ def _files_signature(paths: list[Path]) -> list[dict[str, Any]]:
 
 
 def _filter_configured_runs(runs: list[Any], cfg: dict) -> list[Any]:
-    include = {
-        canonical_run_id(str(value))[0]
-        for value in cfg.get("runs", {}).get("include", [])
-    }
+    include = {canonical_run_id(str(value))[0] for value in cfg.get("runs", {}).get("include", [])}
     if not include:
         return runs
     return [run for run in runs if run.run_id in include]
@@ -286,10 +277,7 @@ def _energy_from_cache(mask: np.ndarray, metadata: dict[str, Any]) -> EnergySele
 
 
 def _selection_metadata(selection: SelectionResult, toa_lsb_ps: float) -> dict[str, Any]:
-    metadata = _energy_metadata(
-        EnergySelectionResult(selection.peak_a, selection.peak_b, selection.duration_mask),
-        toa_lsb_ps,
-    )
+    metadata = _energy_metadata(EnergySelectionResult(selection.peak_a, selection.peak_b, selection.duration_mask), toa_lsb_ps)
     metadata.update(
         {
             "alignment_a_center_lsb": float(selection.alignment_a_center_lsb),
@@ -301,11 +289,7 @@ def _selection_metadata(selection: SelectionResult, toa_lsb_ps: float) -> dict[s
     return metadata
 
 
-def _selection_from_cache(
-    duration_mask: np.ndarray,
-    alignment_mask: np.ndarray,
-    metadata: dict[str, Any],
-) -> SelectionResult:
+def _selection_from_cache(duration_mask: np.ndarray, alignment_mask: np.ndarray, metadata: dict[str, Any]) -> SelectionResult:
     duration_mask = np.asarray(duration_mask, dtype=bool)
     alignment_mask = np.asarray(alignment_mask, dtype=bool)
     return SelectionResult(
@@ -323,16 +307,10 @@ def _selection_from_cache(
 
 def _required_candidate_outputs(run: CompatibleRun, cfg: dict) -> list[Path]:
     if run.acquisition_mode == "STREAMING":
-        channels = {
-            int(cfg["channels"][key])
-            for key in ("signal_a", "time_a", "signal_b", "time_b")
-        }
+        channels = {int(cfg["channels"][key]) for key in ("signal_a", "time_a", "signal_b", "time_b")}
         assert run.pulse_cache_dir is not None
         assert run.candidate_index_dir is not None
-        return [
-            *pulse_cache_outputs(run.pulse_cache_dir, channels),
-            *candidate_index_outputs(run.candidate_index_dir),
-        ]
+        return [*pulse_cache_outputs(run.pulse_cache_dir, channels), *candidate_index_outputs(run.candidate_index_dir)]
     assert run.candidate_path is not None
     return [run.candidate_path]
 
@@ -341,27 +319,16 @@ def _candidate_signature(run: CompatibleRun, cfg: dict) -> list[dict[str, Any]]:
     return _files_signature(_required_candidate_outputs(run, cfg))
 
 
-def _discover_compatible_runs(
-    main_run_dir: Path,
-    cfg: dict,
-    skip_missing: bool,
-) -> list[CompatibleRun]:
+def _discover_compatible_runs(main_run_dir: Path, cfg: dict, skip_missing: bool) -> list[CompatibleRun]:
     main_run_id, _ = canonical_run_id(main_run_dir.name)
     analysis_root = main_run_dir.parent
     discovered = _filter_configured_runs(
-        discover_runs(
-            cfg["paths"]["input_dir"],
-            cfg["files"]["data_pattern"],
-            bool(cfg["files"]["recursive"]),
-        ),
+        discover_runs(cfg["paths"]["input_dir"], cfg["files"]["data_pattern"], bool(cfg["files"]["recursive"])),
         cfg,
     )
     run_map = {run.run_id: run for run in discovered}
     if main_run_id not in run_map:
-        raise DataError(
-            f"{main_run_id} is not present in configured input directory "
-            f"{cfg['paths']['input_dir']}"
-        )
+        raise DataError(f"{main_run_id} is not present in configured input directory {cfg['paths']['input_dir']}")
 
     main_input = run_map[main_run_id]
     main_info = parse_run_info(main_input.info_path, cfg["thresholds"]["consistency"])
@@ -370,76 +337,69 @@ def _discover_compatible_runs(
     compatible: list[CompatibleRun] = []
     missing: list[str] = []
     for run_input in discovered:
-        run_info = parse_run_info(
-            run_input.info_path, cfg["thresholds"]["consistency"]
-        )
+        run_info = parse_run_info(run_input.info_path, cfg["thresholds"]["consistency"])
         if run_input.voltage != main_input.voltage:
             continue
         if run_info.acquisition_mode != main_info.acquisition_mode:
             continue
-        if not _float_equal(
-            run_info.energy_threshold_mv, main_info.energy_threshold_mv
-        ):
+        if not _float_equal(run_info.energy_threshold_mv, main_info.energy_threshold_mv):
             continue
-        if not _float_equal(
-            run_info.timing_threshold_mv, main_info.timing_threshold_mv
-        ):
+        if not _float_equal(run_info.timing_threshold_mv, main_info.timing_threshold_mv):
             continue
         meta = read_meta(run_input.data_path, run_info.acquisition_mode)
         if meta.measurement_mode != main_meta.measurement_mode:
             continue
-        if not _float_equal(meta.toa_lsb_ps, main_meta.toa_lsb_ps):
-            continue
-        if not _float_equal(meta.tot_lsb_ps, main_meta.tot_lsb_ps):
+        if not _float_equal(meta.toa_lsb_ps, main_meta.toa_lsb_ps) or not _float_equal(meta.tot_lsb_ps, main_meta.tot_lsb_ps):
             continue
 
         output_dir = analysis_root / run_input.run_id
         if run_info.acquisition_mode == "STREAMING":
-            candidate_kind = "streaming_event_cache"
-            candidate_path = None
-            pulse_cache_dir = output_dir / "streaming_pulses"
-            candidate_index_dir = output_dir / "streaming_candidates"
+            candidate = CompatibleRun(
+                run_id=run_input.run_id,
+                run_number=run_input.run_number,
+                voltage=run_input.voltage,
+                acquisition_mode=run_info.acquisition_mode,
+                energy_threshold_mv=run_info.energy_threshold_mv,
+                timing_threshold_mv=run_info.timing_threshold_mv,
+                data_path=run_input.data_path,
+                info_path=run_input.info_path,
+                output_dir=output_dir,
+                toa_lsb_ps=meta.toa_lsb_ps,
+                tot_lsb_ps=meta.tot_lsb_ps,
+                measurement_mode=meta.measurement_mode,
+                candidate_kind="streaming_event_cache",
+                candidate_path=None,
+                pulse_cache_dir=output_dir / "streaming_pulses",
+                candidate_index_dir=output_dir / "streaming_candidates",
+            )
         else:
-            candidate_kind = "candidate_binary"
-            candidate_path = (
-                output_dir
-                / "candidate_preprocessed"
-                / f"{run_input.run_id}_candidates.dat"
+            candidate = CompatibleRun(
+                run_id=run_input.run_id,
+                run_number=run_input.run_number,
+                voltage=run_input.voltage,
+                acquisition_mode=run_info.acquisition_mode,
+                energy_threshold_mv=run_info.energy_threshold_mv,
+                timing_threshold_mv=run_info.timing_threshold_mv,
+                data_path=run_input.data_path,
+                info_path=run_input.info_path,
+                output_dir=output_dir,
+                toa_lsb_ps=meta.toa_lsb_ps,
+                tot_lsb_ps=meta.tot_lsb_ps,
+                measurement_mode=meta.measurement_mode,
+                candidate_kind="candidate_binary",
+                candidate_path=output_dir / "candidate_preprocessed" / f"{run_input.run_id}_candidates.dat",
+                pulse_cache_dir=None,
+                candidate_index_dir=None,
             )
-            pulse_cache_dir = None
-            candidate_index_dir = None
-
-        candidate = CompatibleRun(
-            run_id=run_input.run_id,
-            run_number=run_input.run_number,
-            voltage=run_input.voltage,
-            acquisition_mode=run_info.acquisition_mode,
-            energy_threshold_mv=run_info.energy_threshold_mv,
-            timing_threshold_mv=run_info.timing_threshold_mv,
-            data_path=run_input.data_path,
-            info_path=run_input.info_path,
-            output_dir=output_dir,
-            toa_lsb_ps=meta.toa_lsb_ps,
-            tot_lsb_ps=meta.tot_lsb_ps,
-            measurement_mode=meta.measurement_mode,
-            candidate_kind=candidate_kind,
-            candidate_path=candidate_path,
-            pulse_cache_dir=pulse_cache_dir,
-            candidate_index_dir=candidate_index_dir,
-        )
-        required = _required_candidate_outputs(candidate, cfg)
-        absent = [path for path in required if not path.exists()]
+        absent = [path for path in _required_candidate_outputs(candidate, cfg) if not path.exists()]
         if absent:
-            missing.append(
-                f"{run_input.run_id}: " + ", ".join(str(path) for path in absent)
-            )
+            missing.append(f"{run_input.run_id}: " + ", ".join(str(path) for path in absent))
             continue
         compatible.append(candidate)
 
     if missing and not skip_missing:
         raise RuntimeError(
-            "Compatible runs are missing candidate-preprocessing outputs. "
-            "Run main.py for those runs first, or use --skip-missing:\n  "
+            "Compatible runs are missing candidate-preprocessing outputs. Run main.py for those runs first, or use --skip-missing:\n  "
             + "\n  ".join(missing)
         )
     if not compatible:
@@ -449,9 +409,7 @@ def _discover_compatible_runs(
     return sorted(compatible, key=lambda item: int(item.run_number))
 
 
-def _collect_group_energy(
-    runs: list[CompatibleRun], cfg: dict
-) -> EnergyMeasurements:
+def _collect_group_energy(runs: list[CompatibleRun], cfg: dict) -> EnergyMeasurements:
     event_parts: list[np.ndarray] = []
     duration_a_parts: list[np.ndarray] = []
     duration_b_parts: list[np.ndarray] = []
@@ -462,14 +420,10 @@ def _collect_group_energy(
         if run.acquisition_mode == "STREAMING":
             assert run.pulse_cache_dir is not None
             assert run.candidate_index_dir is not None
-            measurements, toa_lsb_ps = collect_streaming_energy_measurements(
-                run.pulse_cache_dir, run.candidate_index_dir, cfg
-            )
+            measurements, toa_lsb_ps = collect_streaming_energy_measurements(run.pulse_cache_dir, run.candidate_index_dir, cfg)
         else:
             assert run.candidate_path is not None
-            measurements, toa_lsb_ps = collect_energy_measurements(
-                run.candidate_path, cfg
-            )
+            measurements, toa_lsb_ps = collect_energy_measurements(run.candidate_path, cfg)
         if not _float_equal(toa_lsb_ps, run.toa_lsb_ps):
             raise DataError(f"Unexpected ToA LSB for {run.run_id}")
         run.energy_measurements = measurements
@@ -491,9 +445,7 @@ def _collect_group_energy(
     )
 
 
-def _restore_run_offsets_from_manifest(
-    runs: list[CompatibleRun], manifest_path: Path
-) -> None:
+def _restore_run_offsets_from_manifest(runs: list[CompatibleRun], manifest_path: Path) -> None:
     rows = {row["run_id"]: row for row in read_csv(manifest_path)}
     for run in runs:
         row = rows.get(run.run_id)
@@ -506,11 +458,7 @@ def _restore_run_offsets_from_manifest(
 def _write_manifest(path: Path, runs: list[CompatibleRun]) -> None:
     rows: list[dict[str, Any]] = []
     for run in runs:
-        source = (
-            run.pulse_cache_dir
-            if run.acquisition_mode == "STREAMING"
-            else run.candidate_path
-        )
+        source = run.pulse_cache_dir if run.acquisition_mode == "STREAMING" else run.candidate_path
         rows.append(
             {
                 "run_id": run.run_id,
@@ -532,23 +480,13 @@ def _write_manifest(path: Path, runs: list[CompatibleRun]) -> None:
     atomic_write_csv(path, MANIFEST_FIELDS, rows)
 
 
-def _selected_local_indices(
-    run: CompatibleRun,
-    measurements: EnergyMeasurements,
-    mask: np.ndarray,
-    cfg: dict,
-) -> set[int]:
+def _selected_local_indices(run: CompatibleRun, measurements: EnergyMeasurements, mask: np.ndarray, cfg: dict) -> set[int]:
     local_mask = np.asarray(mask[run.global_offset : run.global_stop], dtype=bool)
     if run.energy_measurements is None:
-        # Re-read only the compact candidate representation to recover exact local
-        # event indices. This matters when a candidate binary contains a skipped or
-        # malformed event and keeps cached group selection scientifically correct.
         if run.acquisition_mode == "STREAMING":
             assert run.pulse_cache_dir is not None
             assert run.candidate_index_dir is not None
-            local_measurements, _ = collect_streaming_energy_measurements(
-                run.pulse_cache_dir, run.candidate_index_dir, cfg
-            )
+            local_measurements, _ = collect_streaming_energy_measurements(run.pulse_cache_dir, run.candidate_index_dir, cfg)
         else:
             assert run.candidate_path is not None
             local_measurements, _ = collect_energy_measurements(run.candidate_path, cfg)
@@ -556,59 +494,34 @@ def _selected_local_indices(
     local_event_index = run.energy_measurements.event_index
     if local_event_index.size != local_mask.size:
         raise DataError(
-            f"Cached group manifest is inconsistent with {run.run_id}: "
-            f"{local_mask.size} pooled rows versus {local_event_index.size} local rows"
+            f"Cached group manifest is inconsistent with {run.run_id}: {local_mask.size} pooled rows versus {local_event_index.size} local rows"
         )
     return set(int(value) for value in local_event_index[local_mask])
 
 
-def _collect_group_training(
-    runs: list[CompatibleRun],
-    cfg: dict,
-    selected_by_run: dict[str, set[int]],
-) -> dict[str, MatchingSamples]:
-    parts: dict[str, dict[str, list[np.ndarray]]] = {
-        pair: {"event": [], "duration": [], "delay": []} for pair in ("a", "b")
-    }
+def _collect_group_training(runs: list[CompatibleRun], cfg: dict, selected_by_run: dict[str, set[int]]) -> dict[str, MatchingSamples]:
+    parts: dict[str, dict[str, list[np.ndarray]]] = {pair: {"event": [], "duration": [], "delay": []} for pair in ("a", "b")}
     for run in runs:
         selected = selected_by_run[run.run_id]
         if run.acquisition_mode == "STREAMING":
             assert run.pulse_cache_dir is not None
             assert run.candidate_index_dir is not None
-            samples, _ = scan_streaming_matching_training(
-                run.pulse_cache_dir,
-                run.candidate_index_dir,
-                cfg,
-                selected,
-            )
+            samples, _ = scan_streaming_matching_training(run.pulse_cache_dir, run.candidate_index_dir, cfg, selected)
         else:
             assert run.candidate_path is not None
-            samples, _ = scan_matching_training(
-                run.candidate_path,
-                run.acquisition_mode,
-                cfg,
-                selected,
-            )
+            samples, _ = scan_matching_training(run.candidate_path, run.acquisition_mode, cfg, selected)
         for pair in ("a", "b"):
             local = samples[pair]
-            parts[pair]["event"].append(
-                local.event_index.astype(np.int64, copy=False) + run.global_offset
-            )
+            parts[pair]["event"].append(local.event_index.astype(np.int64, copy=False) + run.global_offset)
             parts[pair]["duration"].append(local.energy_duration_lsb)
             parts[pair]["delay"].append(local.delay_lsb)
 
     result: dict[str, MatchingSamples] = {}
     for pair in ("a", "b"):
         result[pair] = MatchingSamples(
-            event_index=np.concatenate(parts[pair]["event"])
-            if parts[pair]["event"]
-            else np.empty(0, dtype=np.int64),
-            energy_duration_lsb=np.concatenate(parts[pair]["duration"])
-            if parts[pair]["duration"]
-            else np.empty(0, dtype=np.int64),
-            delay_lsb=np.concatenate(parts[pair]["delay"])
-            if parts[pair]["delay"]
-            else np.empty(0, dtype=np.int64),
+            event_index=np.concatenate(parts[pair]["event"]) if parts[pair]["event"] else np.empty(0, dtype=np.int64),
+            energy_duration_lsb=np.concatenate(parts[pair]["duration"]) if parts[pair]["duration"] else np.empty(0, dtype=np.int64),
+            delay_lsb=np.concatenate(parts[pair]["delay"]) if parts[pair]["delay"] else np.empty(0, dtype=np.int64),
         )
     return result
 
@@ -633,18 +546,12 @@ def _training_rows(samples: dict[str, MatchingSamples], cfg: dict) -> list[dict[
                 "energy_leading_lsb": "",
                 "timing_leading_lsb": "",
             }
-            for event_index, duration, delay in zip(
-                pair_samples.event_index,
-                pair_samples.energy_duration_lsb,
-                pair_samples.delay_lsb,
-            )
+            for event_index, duration, delay in zip(pair_samples.event_index, pair_samples.energy_duration_lsb, pair_samples.delay_lsb)
         )
     return rows
 
 
-def _concatenate_binary_files(
-    sources: list[Path], destination: Path, expected_mode: str
-) -> dict[str, Any]:
+def _concatenate_binary_files(sources: list[Path], destination: Path, expected_mode: str) -> dict[str, Any]:
     if not sources:
         raise RuntimeError("No matched per-run binaries are available to concatenate")
     metas = [read_meta(path, expected_mode) for path in sources]
@@ -688,14 +595,8 @@ def _concatenate_binary_files(
     }
 
 
-def _write_group_total(
-    path: Path,
-    rows: list[dict[str, Any]],
-    cfg: dict,
-) -> None:
-    write_total_csv(
-        path, rows, cfg["analysis_output"]["diagnostic_mode"]
-    )
+def _write_group_total(path: Path, rows: list[dict[str, Any]], cfg: dict) -> None:
+    write_total_csv(path, rows, cfg["analysis_output"]["diagnostic_mode"])
 
 
 def _finite_number(value: Any) -> float | str:
@@ -729,15 +630,9 @@ def _summary_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
             return float(row.get(name, math.inf))
         except (TypeError, ValueError):
             return math.inf
-
     return (
-        number("Voltage"),
-        number("E_th"),
-        number("T_th"),
-        str(row.get("AcquisitionMode", "")),
-        number("measurement_mode"),
-        number("toa_lsb_ps"),
-        str(row.get("group_id", "")),
+        number("Voltage"), number("E_th"), number("T_th"), str(row.get("AcquisitionMode", "")),
+        number("measurement_mode"), number("toa_lsb_ps"), str(row.get("group_id", "")),
     )
 
 
@@ -749,8 +644,7 @@ def _update_group_summary(path: Path, row: dict[str, Any]) -> None:
             if key:
                 existing[key] = previous
     existing[str(row["group_id"])] = row
-    ordered = sorted(existing.values(), key=_summary_sort_key)
-    atomic_write_csv(path, GROUP_SUMMARY_FIELDS, ordered)
+    atomic_write_csv(path, GROUP_SUMMARY_FIELDS, sorted(existing.values(), key=_summary_sort_key))
 
 
 def _build_summary_row(
@@ -786,7 +680,7 @@ def _build_summary_row(
         "AcquisitionMode": first.acquisition_mode,
         "E_th": first.energy_threshold_mv,
         "T_th": first.timing_threshold_mv,
-        "fit_metric": "common_bin_integrated_gaussian_all_events",
+        "fit_metric": "fixed_bin_histogram_fwhm",
         "measurement_mode": first.measurement_mode,
         "toa_lsb_ps": first.toa_lsb_ps,
         "tot_lsb_ps": first.tot_lsb_ps,
@@ -814,17 +708,14 @@ def _build_summary_row(
         "average_delay_b_training_events": model_b.training_samples,
         "fit_success": int(bool(fit.success)),
         "fit_status": "success" if fit.success else str(fit.message),
-        "gaussian_area_events": _finite_number(fit.n_fit),
-        "gaussian_area_error_events": "",
-        "gaussian_mean_ps": _finite_number(fit.mean_ps),
-        "gaussian_mean_error_ps": _finite_number(fit.mean_error_ps),
-        "gaussian_sigma_ps": _finite_number(fit.sigma_ps),
-        "gaussian_sigma_error_ps": _finite_number(fit.sigma_error_ps),
+        "ctr_bin_width_ps": _finite_number(fit.bin_width_ps),
+        "fwhm_center_ps": _finite_number(fit.center_ps),
+        "fwhm_left_ps": _finite_number(fit.left_half_ps),
+        "fwhm_right_ps": _finite_number(fit.right_half_ps),
+        "bootstrap_samples": int(fit.bootstrap_samples),
+        "bootstrap_successful": int(fit.bootstrap_successful),
         "CTR_ps": _finite_number(fit.ctr_ps),
         "CTR_error_ps": _finite_number(fit.ctr_error_ps),
-        "chi_square": _finite_number(fit.chi2),
-        "ndof": fit.ndof,
-        "reduced_chi_square": _finite_number(fit.chi2_ndof),
         "average_delay_corrected_alignments": count_model_corrected_alignments(
             matching_total_rows,
             center_a_lsb=selection.alignment_a_center_lsb,
@@ -837,12 +728,7 @@ def _build_summary_row(
     }
 
 
-def _failed_summary_row(
-    group_dir: Path,
-    group: str,
-    runs: list[CompatibleRun],
-    error: Exception,
-) -> dict[str, Any]:
+def _failed_summary_row(group_dir: Path, group: str, runs: list[CompatibleRun], error: Exception) -> dict[str, Any]:
     first = runs[0]
     row = {field: "" for field in GROUP_SUMMARY_FIELDS}
     row.update(
@@ -875,15 +761,7 @@ def run_compatible_group_analysis(
     skip_missing: bool = False,
     output_root: str | Path | None = None,
 ) -> Path:
-    """Pool compatible candidate-preprocessed runs and run one global analysis.
-
-    Compatibility requires equal voltage, acquisition mode, energy/timing
-    thresholds, measurement mode and ToA/ToT LSB. Energy peak selection and the
-    matching model are estimated from the pooled candidates. The global model is
-    then applied separately to each run, the matched binaries are concatenated,
-    and post-matching selection plus timing fit are performed on the concatenated
-    dataset.
-    """
+    """Pool compatible candidate-preprocessed runs and run one global analysis."""
     main_run_dir = _find_run_dir(main_run_output)
     runs = _discover_compatible_runs(main_run_dir, cfg, skip_missing)
     first = runs[0]
@@ -897,11 +775,7 @@ def run_compatible_group_analysis(
         first.tot_lsb_ps,
     )
     analysis_root = main_run_dir.parent
-    group_dir = (
-        Path(output_root).expanduser().resolve() / name
-        if output_root is not None
-        else analysis_root.parent / "grouped_analysis" / name
-    )
+    group_dir = Path(output_root).expanduser().resolve() / name if output_root is not None else analysis_root.parent / "grouped_analysis" / name
     csv_dir = group_dir / "csv"
     models_dir = group_dir / "models"
     plots_dir = group_dir / "plots"
@@ -930,9 +804,7 @@ def run_compatible_group_analysis(
     previous_mode = state.get("metadata", {}).get("AcquisitionMode")
     if previous_mode not in (None, first.acquisition_mode):
         raise RuntimeError(
-            f"Group folder {group_dir} already belongs to acquisition mode "
-            f"{previous_mode}, while the main run uses {first.acquisition_mode}. "
-            "Choose a different --output-root to avoid mixing binary formats."
+            f"Group folder {group_dir} already belongs to acquisition mode {previous_mode}, while the main run uses {first.acquisition_mode}. Choose a different --output-root to avoid mixing binary formats."
         )
     state["metadata"] = {
         "group_name": name,
@@ -944,9 +816,7 @@ def run_compatible_group_analysis(
         "T_th": first.timing_threshold_mv,
     }
 
-    candidate_signatures = {
-        run.run_id: _candidate_signature(run, cfg) for run in runs
-    }
+    candidate_signatures = {run.run_id: _candidate_signature(run, cfg) for run in runs}
     manifest_signature = signature(
         {
             "runs": [
@@ -962,20 +832,11 @@ def run_compatible_group_analysis(
         {"group_analysis_version": 1},
     )
 
-    # 1. Virtual concatenation of candidate-preprocessed data and global energy selection.
-    energy_signature = signature(
-        {"manifest": manifest_signature}, stage_config(cfg, "energy_selection")
-    )
-    if not overwrite and stage_valid_any(
-        state, "energy_selection", [energy_signature], [manifest_path, energy_selection_path]
-    ):
-        energy_measurements, duration_mask = load_energy_selection_csv(
-            energy_selection_path
-        )
+    energy_signature = signature({"manifest": manifest_signature}, stage_config(cfg, "energy_selection"))
+    if not overwrite and stage_valid_any(state, "energy_selection", [energy_signature], [manifest_path, energy_selection_path]):
+        energy_measurements, duration_mask = load_energy_selection_csv(energy_selection_path)
         _restore_run_offsets_from_manifest(runs, manifest_path)
-        energy_selection = _energy_from_cache(
-            duration_mask, state["stages"]["energy_selection"]["metadata"]
-        )
+        energy_selection = _energy_from_cache(duration_mask, state["stages"]["energy_selection"]["metadata"])
         _log(name, "energy_selection", "SKIPPED — cached pooled selection is valid")
     else:
         start = time.perf_counter()
@@ -984,111 +845,47 @@ def run_compatible_group_analysis(
             raise RuntimeError("Compatible candidate data contain no energy events")
         energy_selection = select_energy_events(energy_measurements, cfg)
         _write_manifest(manifest_path, runs)
-        write_energy_selection_csv(
-            energy_selection_path,
-            energy_measurements,
-            energy_selection,
-            cfg["analysis_output"]["diagnostic_mode"],
-        )
-        mark_stage(
-            state,
-            "energy_selection",
-            energy_signature,
-            [manifest_path, energy_selection_path],
-            _energy_metadata(energy_selection, first.toa_lsb_ps),
-        )
+        write_energy_selection_csv(energy_selection_path, energy_measurements, energy_selection, cfg["analysis_output"]["diagnostic_mode"])
+        mark_stage(state, "energy_selection", energy_signature, [manifest_path, energy_selection_path], _energy_metadata(energy_selection, first.toa_lsb_ps))
         save_state(state_path, state)
-        _log(
-            name,
-            "energy_selection",
-            f"COMPLETED in {_elapsed(start)} — {energy_measurements.size} pooled candidates, "
-            f"{int(np.count_nonzero(energy_selection.duration_mask))} selected",
-        )
+        _log(name, "energy_selection", f"COMPLETED in {_elapsed(start)} — {energy_measurements.size} pooled candidates, {int(np.count_nonzero(energy_selection.duration_mask))} selected")
 
     selected_by_run = {
-        run.run_id: _selected_local_indices(
-            run, energy_measurements, energy_selection.duration_mask, cfg
-        )
+        run.run_id: _selected_local_indices(run, energy_measurements, energy_selection.duration_mask, cfg)
         for run in runs
     }
 
-    # Peak selection plot.
     if cfg["plots"]["peak_selection"]["enabled"]:
-        plot_signature = signature(
-            file_signature(energy_selection_path),
-            stage_config(cfg, "plot_peak_selection"),
-        )
-        if overwrite or not stage_valid_any(
-            state, "plot_peak_selection", [plot_signature], [peak_plot_path]
-        ):
-            plot_peak_selection(
-                peak_plot_path,
-                name,
-                energy_measurements,
-                energy_selection,
-                first.toa_lsb_ps,
-                cfg,
-            )
-            mark_stage(
-                state,
-                "plot_peak_selection",
-                plot_signature,
-                [peak_plot_path],
-            )
+        plot_signature = signature(file_signature(energy_selection_path), stage_config(cfg, "plot_peak_selection"))
+        if overwrite or not stage_valid_any(state, "plot_peak_selection", [plot_signature], [peak_plot_path]):
+            plot_peak_selection(peak_plot_path, name, energy_measurements, energy_selection, first.toa_lsb_ps, cfg)
+            mark_stage(state, "plot_peak_selection", plot_signature, [peak_plot_path])
             save_state(state_path, state)
 
-    # 2. Global matching training labels.
     training_signature = signature(
-        {
-            "energy_selection": file_signature(energy_selection_path),
-            "candidates": candidate_signatures,
-        },
+        {"energy_selection": file_signature(energy_selection_path), "candidates": candidate_signatures},
         stage_config(cfg, "matching_training"),
     )
-    if not overwrite and stage_valid_any(
-        state, "matching_training", [training_signature], [training_path]
-    ):
+    if not overwrite and stage_valid_any(state, "matching_training", [training_signature], [training_path]):
         matching_samples = load_training_csv(training_path)
         _log(name, "matching_training", "SKIPPED — cached pooled labels are valid")
     else:
         start = time.perf_counter()
         matching_samples = _collect_group_training(runs, cfg, selected_by_run)
-        write_training_csv(
-            training_path,
-            _training_rows(matching_samples, cfg),
-            cfg["analysis_output"]["diagnostic_mode"],
-        )
+        write_training_csv(training_path, _training_rows(matching_samples, cfg), cfg["analysis_output"]["diagnostic_mode"])
         mark_stage(
             state,
             "matching_training",
             training_signature,
             [training_path],
-            {
-                "pair_a_samples": matching_samples["a"].size,
-                "pair_b_samples": matching_samples["b"].size,
-                "toa_lsb_ps": first.toa_lsb_ps,
-            },
+            {"pair_a_samples": matching_samples["a"].size, "pair_b_samples": matching_samples["b"].size, "toa_lsb_ps": first.toa_lsb_ps},
         )
         save_state(state_path, state)
-        _log(
-            name,
-            "matching_training",
-            f"COMPLETED in {_elapsed(start)} — a={matching_samples['a'].size}, "
-            f"b={matching_samples['b'].size}",
-        )
+        _log(name, "matching_training", f"COMPLETED in {_elapsed(start)} — a={matching_samples['a'].size}, b={matching_samples['b'].size}")
 
-    # 3. One global matching model per channel pair.
-    model_signature = signature(
-        file_signature(training_path), stage_config(cfg, "matching_model")
-    )
-    model_outputs = [
-        model_a_path,
-        model_b_path,
-        model_metrics_path,
-    ]
-    if not overwrite and stage_valid_any(
-        state, "matching_model", [model_signature], model_outputs
-    ):
+    model_signature = signature(file_signature(training_path), stage_config(cfg, "matching_model"))
+    model_outputs = [model_a_path, model_b_path, model_metrics_path]
+    if not overwrite and stage_valid_any(state, "matching_model", [model_signature], model_outputs):
         models = {"a": load_model(model_a_path), "b": load_model(model_b_path)}
         filtered_samples = matching_samples
         _log(name, "matching_model", "SKIPPED — cached global models are valid")
@@ -1104,42 +901,19 @@ def run_compatible_group_analysis(
 
     if cfg["plots"]["matching_train"]["enabled"]:
         plot_signature = signature(
-            {
-                "training": file_signature(training_path),
-                "model_a": file_signature(model_a_path),
-                "model_b": file_signature(model_b_path),
-                "selection": file_signature(energy_selection_path),
-            },
+            {"training": file_signature(training_path), "model_a": file_signature(model_a_path), "model_b": file_signature(model_b_path), "selection": file_signature(energy_selection_path)},
             stage_config(cfg, "plot_matching_train"),
         )
-        if overwrite or not stage_valid_any(
-            state, "plot_matching_train", [plot_signature], [matching_train_plot_path]
-        ):
-            plot_matching_training(
-                matching_train_plot_path,
-                name,
-                filtered_samples,
-                models,
-                first.toa_lsb_ps,
-                cfg,
-                energy_selection,
-            )
-            mark_stage(
-                state,
-                "plot_matching_train",
-                plot_signature,
-                [matching_train_plot_path],
-            )
+        if overwrite or not stage_valid_any(state, "plot_matching_train", [plot_signature], [matching_train_plot_path]):
+            plot_matching_training(matching_train_plot_path, name, filtered_samples, models, first.toa_lsb_ps, cfg, energy_selection)
+            mark_stage(state, "plot_matching_train", plot_signature, [matching_train_plot_path])
             save_state(state_path, state)
 
-    # 4. Apply the global model run-by-run. Each run has an independent cache.
     all_total_rows: list[dict[str, Any]] = []
     matched_files: list[Path] = []
     for run in runs:
         matched_path = matched_runs_dir / f"{run.run_id}_list.dat"
-        diagnostics_path = table_path(
-            matched_runs_dir, f"{run.run_id}_matching_total", cfg
-        )
+        diagnostics_path = table_path(matched_runs_dir, f"{run.run_id}_matching_total", cfg)
         core_path = matched_runs_dir / f"{run.run_id}_matching_core.npz"
         selected_local = selected_by_run[run.run_id]
         run_stage = f"matching_{run.run_id}"
@@ -1153,9 +927,7 @@ def run_compatible_group_analysis(
             },
             stage_config(cfg, "preprocessing"),
         )
-        if not overwrite and stage_valid_any(
-            state, run_stage, [run_signature], [matched_path, core_path, diagnostics_path]
-        ):
+        if not overwrite and stage_valid_any(state, run_stage, [run_signature], [matched_path, core_path, diagnostics_path]):
             run_rows = load_total_cache(core_path)
             _log(name, run_stage, "SKIPPED — cached matched run is valid")
         else:
@@ -1163,44 +935,15 @@ def run_compatible_group_analysis(
             if run.acquisition_mode == "STREAMING":
                 assert run.pulse_cache_dir is not None
                 assert run.candidate_index_dir is not None
-                metadata, run_rows = preprocess_streaming_from_index(
-                    run.data_path,
-                    run.pulse_cache_dir,
-                    run.candidate_index_dir,
-                    matched_path,
-                    cfg,
-                    models,
-                    selected_local,
-                )
+                metadata, run_rows = preprocess_streaming_from_index(run.data_path, run.pulse_cache_dir, run.candidate_index_dir, matched_path, cfg, models, selected_local)
             else:
                 assert run.candidate_path is not None
-                metadata, run_rows = preprocess_binary(
-                    run.candidate_path,
-                    matched_path,
-                    cfg,
-                    run.acquisition_mode,
-                    models,
-                    selected_local,
-                )
+                metadata, run_rows = preprocess_binary(run.candidate_path, matched_path, cfg, run.acquisition_mode, models, selected_local)
             write_total_cache(core_path, run_rows)
-            write_total_csv(
-                diagnostics_path,
-                run_rows,
-                cfg["analysis_output"]["diagnostic_mode"],
-            )
-            mark_stage(
-                state,
-                run_stage,
-                run_signature,
-                [matched_path, core_path, diagnostics_path],
-                metadata,
-            )
+            write_total_csv(diagnostics_path, run_rows, cfg["analysis_output"]["diagnostic_mode"])
+            mark_stage(state, run_stage, run_signature, [matched_path, core_path, diagnostics_path], metadata)
             save_state(state_path, state)
-            _log(
-                name,
-                run_stage,
-                f"COMPLETED in {_elapsed(start)} — {metadata['events_written']} events",
-            )
+            _log(name, run_stage, f"COMPLETED in {_elapsed(start)} — {metadata['events_written']} events")
         matched_files.append(matched_path)
         for row in run_rows:
             local_event_index = int(row["event_index"])
@@ -1214,143 +957,60 @@ def run_compatible_group_analysis(
     total_signature = signature(
         {
             "matched_runs": [file_signature(path) for path in matched_files],
-            "matching_core": [
-                file_signature(matched_runs_dir / f"{run.run_id}_matching_core.npz")
-                for run in runs
-            ],
-            "diagnostics": [
-                file_signature(
-                    table_path(matched_runs_dir, f"{run.run_id}_matching_total", cfg)
-                )
-                for run in runs
-            ],
+            "matching_core": [file_signature(matched_runs_dir / f"{run.run_id}_matching_core.npz") for run in runs],
+            "diagnostics": [file_signature(table_path(matched_runs_dir, f"{run.run_id}_matching_total", cfg)) for run in runs],
         },
         {"group_total_version": 2},
     )
-    if overwrite or not stage_valid_any(
-        state, "matching_total", [total_signature], [matching_total_path]
-    ):
+    if overwrite or not stage_valid_any(state, "matching_total", [total_signature], [matching_total_path]):
         _write_group_total(matching_total_path, all_total_rows, cfg)
         mark_stage(state, "matching_total", total_signature, [matching_total_path])
         save_state(state_path, state)
 
     if cfg["plots"]["matching_total"]["enabled"]:
         plot_signature = signature(
-            {
-                "total": file_signature(matching_total_path),
-                "model_a": file_signature(model_a_path),
-                "model_b": file_signature(model_b_path),
-                "selection": file_signature(energy_selection_path),
-            },
+            {"total": file_signature(matching_total_path), "model_a": file_signature(model_a_path), "model_b": file_signature(model_b_path), "selection": file_signature(energy_selection_path)},
             stage_config(cfg, "plot_matching_total"),
         )
-        if overwrite or not stage_valid_any(
-            state, "plot_matching_total", [plot_signature], [matching_total_plot_path]
-        ):
-            plot_matching_total(
-                matching_total_plot_path,
-                name,
-                all_total_rows,
-                models,
-                first.toa_lsb_ps,
-                cfg,
-                energy_selection,
-            )
-            mark_stage(
-                state,
-                "plot_matching_total",
-                plot_signature,
-                [matching_total_plot_path],
-            )
+        if overwrite or not stage_valid_any(state, "plot_matching_total", [plot_signature], [matching_total_plot_path]):
+            plot_matching_total(matching_total_plot_path, name, all_total_rows, models, first.toa_lsb_ps, cfg, energy_selection)
+            mark_stage(state, "plot_matching_total", plot_signature, [matching_total_plot_path])
             save_state(state_path, state)
 
-    # 5. Concatenate the matched preprocessed binaries.
-    concatenation_signature = signature(
-        [file_signature(path) for path in matched_files],
-        {"binary_concatenation_version": 1},
-    )
-    if not overwrite and stage_valid_any(
-        state,
-        "concatenate_preprocessed",
-        [concatenation_signature],
-        [concatenated_path],
-    ):
+    concatenation_signature = signature([file_signature(path) for path in matched_files], {"binary_concatenation_version": 1})
+    if not overwrite and stage_valid_any(state, "concatenate_preprocessed", [concatenation_signature], [concatenated_path]):
         _log(name, "concatenate_preprocessed", "SKIPPED — cached binary is valid")
     else:
         start = time.perf_counter()
-        concat_metadata = _concatenate_binary_files(
-            matched_files, concatenated_path, first.acquisition_mode
-        )
-        mark_stage(
-            state,
-            "concatenate_preprocessed",
-            concatenation_signature,
-            [concatenated_path],
-            concat_metadata,
-        )
+        concat_metadata = _concatenate_binary_files(matched_files, concatenated_path, first.acquisition_mode)
+        mark_stage(state, "concatenate_preprocessed", concatenation_signature, [concatenated_path], concat_metadata)
         save_state(state_path, state)
         _log(name, "concatenate_preprocessed", f"COMPLETED in {_elapsed(start)}")
 
-    # 6. Post-matching selection and fit on the concatenated binary.
     selection_signature = signature(
-        {
-            "preprocessed": file_signature(concatenated_path),
-            "energy_selection": file_signature(energy_selection_path),
-        },
+        {"preprocessed": file_signature(concatenated_path), "energy_selection": file_signature(energy_selection_path)},
         stage_config(cfg, "selection"),
     )
-    if not overwrite and stage_valid_any(
-        state, "selection", [selection_signature], [selection_path]
-    ):
+    if not overwrite and stage_valid_any(state, "selection", [selection_signature], [selection_path]):
         measurements, duration_mask, alignment_mask = load_selection_csv(selection_path)
-        selection = _selection_from_cache(
-            duration_mask,
-            alignment_mask,
-            state["stages"]["selection"]["metadata"],
-        )
+        selection = _selection_from_cache(duration_mask, alignment_mask, state["stages"]["selection"]["metadata"])
         _log(name, "selection", "SKIPPED — cached post-matching selection is valid")
     else:
         start = time.perf_counter()
         measurements, toa_lsb_ps = collect_measurements(concatenated_path, cfg)
-        selection = select_matched_events(
-            measurements,
-            energy_selection.peak_a,
-            energy_selection.peak_b,
-            cfg,
-        )
-        write_selection_csv(
-            selection_path,
-            measurements,
-            selection,
-            cfg["analysis_output"]["diagnostic_mode"],
-        )
-        mark_stage(
-            state,
-            "selection",
-            selection_signature,
-            [selection_path],
-            _selection_metadata(selection, toa_lsb_ps),
-        )
+        selection = select_matched_events(measurements, energy_selection.peak_a, energy_selection.peak_b, cfg)
+        write_selection_csv(selection_path, measurements, selection, cfg["analysis_output"]["diagnostic_mode"])
+        mark_stage(state, "selection", selection_signature, [selection_path], _selection_metadata(selection, toa_lsb_ps))
         save_state(state_path, state)
-        _log(
-            name,
-            "selection",
-            f"COMPLETED in {_elapsed(start)} — {measurements.size} matched, "
-            f"{int(np.count_nonzero(selection.final_mask))} retained",
-        )
+        _log(name, "selection", f"COMPLETED in {_elapsed(start)} — {measurements.size} matched, {int(np.count_nonzero(selection.final_mask))} retained")
 
-    fit_signature = signature(
-        file_signature(selection_path), stage_config(cfg, "fit")
-    )
+    fit_signature = signature(file_signature(selection_path), stage_config(cfg, "fit"))
     if not overwrite and stage_valid_any(state, "fit", [fit_signature], [fit_path]):
         fit = load_fit_csv(fit_path)
-        _log(name, "fit", "SKIPPED — cached fit is valid")
+        _log(name, "fit", "SKIPPED — cached CTR estimate is valid")
     else:
         start = time.perf_counter()
-        timing_ps_all = (
-            measurements.timing_lsb[selection.final_mask].astype(np.float64)
-            * float(first.toa_lsb_ps)
-        )
+        timing_ps_all = measurements.timing_lsb[selection.final_mask].astype(np.float64) * float(first.toa_lsb_ps)
         led_rejection_cfg = cfg["fit"].get("led_outlier_rejection", {})
         led_rejection = robust_mad_filter(
             timing_ps_all,
@@ -1358,12 +1018,10 @@ def run_compatible_group_analysis(
             zscore_limit=float(led_rejection_cfg.get("zscore_limit", 4.0)),
         )
         timing_ps = timing_ps_all[led_rejection.mask]
-        lambda message: _log(name, "fit", message)(
-            f"LED 4σ rejection: retained={timing_ps.size}/{timing_ps_all.size}, "
-            f"rejected={led_rejection.rejected}, "
-            f"median={led_rejection.center:.3f} ps, "
-            f"robust_sigma={led_rejection.robust_sigma:.3f} ps, "
-            f"limit=±{led_rejection.max_distance:.3f} ps"
+        _log(
+            name,
+            "fit",
+            f"LED robust rejection: retained={timing_ps.size}/{timing_ps_all.size}, rejected={led_rejection.rejected}, median={led_rejection.center:.3f} ps, robust_sigma={led_rejection.robust_sigma:.3f} ps, limit=±{led_rejection.max_distance:.3f} ps",
         )
         fit = fit_delta_times_ps(
             timing_ps,
@@ -1372,63 +1030,39 @@ def run_compatible_group_analysis(
             n_total=int(measurements.size),
             n_selected=int(timing_ps.size),
             config=cfg["fit"],
+            seed=0,
+            bootstrap=True,
         )
         if not fit.success:
-            raise RuntimeError(f"Common Gaussian fit failed: {fit.message}")
-        write_fit_csv(
-            fit_path, fit, cfg["analysis_output"]["diagnostic_mode"]
-        )
+            raise RuntimeError(f"Histogram FWHM CTR estimation failed: {fit.message}")
+        write_fit_csv(fit_path, fit, cfg["analysis_output"]["diagnostic_mode"])
         mark_stage(state, "fit", fit_signature, [fit_path])
         save_state(state_path, state)
         _log(name, "fit", f"COMPLETED in {_elapsed(start)}")
 
     if cfg["plots"]["timing_fit"]["enabled"]:
-        plot_signature = signature(
-            file_signature(fit_path), stage_config(cfg, "plot_timing_fit")
-        )
-        if overwrite or not stage_valid_any(
-            state, "plot_timing_fit", [plot_signature], [timing_plot_path]
-        ):
-            plot_gaussian_fit(
+        plot_signature = signature(file_signature(fit_path), stage_config(cfg, "plot_timing_fit"))
+        if overwrite or not stage_valid_any(state, "plot_timing_fit", [plot_signature], [timing_plot_path]):
+            plot_ctr_histogram(
                 fit,
                 timing_plot_path,
                 dpi=int(cfg["plots"]["dpi"]),
-                title=f"{name} — Pico-TDC grouped timing fit",
+                title=f"{name} — Pico-TDC timing CTR",
                 xlabel="ch7 − ch3 [ps]",
             )
-            mark_stage(
-                state,
-                "plot_timing_fit",
-                plot_signature,
-                [timing_plot_path],
-            )
+            mark_stage(state, "plot_timing_fit", plot_signature, [timing_plot_path])
             save_state(state_path, state)
 
     summary_row = _build_summary_row(
-        group_dir,
-        name,
-        runs,
-        energy_measurements,
-        energy_selection,
-        measurements,
-        selection,
-        fit,
-        models,
-        first.toa_lsb_ps,
-        all_total_rows,
-        cfg,
+        group_dir, name, runs, energy_measurements, energy_selection, measurements,
+        selection, fit, models, first.toa_lsb_ps, all_total_rows, cfg,
     )
     _update_group_summary(summary_path, summary_row)
     legacy_summary_path.unlink(missing_ok=True)
     state["metadata"]["summary"] = str(summary_path)
     save_state(state_path, state)
-    _log(
-        name,
-        "group",
-        f"COMPLETED — {len(runs)} compatible runs; results in {group_dir}",
-    )
+    _log(name, "group", f"COMPLETED — {len(runs)} compatible runs; results in {group_dir}")
     return group_dir
-
 
 
 def _compatibility_key(run: CompatibleRun) -> tuple[Any, ...]:
@@ -1446,18 +1080,12 @@ def _compatibility_key(run: CompatibleRun) -> tuple[Any, ...]:
 def _discover_all_group_members(cfg: dict) -> list[list[CompatibleRun]]:
     analysis_root = Path(cfg["paths"]["output_dir"]) / "analysis"
     discovered = _filter_configured_runs(
-        discover_runs(
-            cfg["paths"]["input_dir"],
-            cfg["files"]["data_pattern"],
-            bool(cfg["files"]["recursive"]),
-        ),
+        discover_runs(cfg["paths"]["input_dir"], cfg["files"]["data_pattern"], bool(cfg["files"]["recursive"])),
         cfg,
     )
     groups: dict[tuple[Any, ...], list[CompatibleRun]] = {}
     for run_input in discovered:
-        run_info = parse_run_info(
-            run_input.info_path, cfg["thresholds"]["consistency"]
-        )
+        run_info = parse_run_info(run_input.info_path, cfg["thresholds"]["consistency"])
         meta = read_meta(run_input.data_path, run_info.acquisition_mode)
         output_dir = analysis_root / run_input.run_id
         if run_info.acquisition_mode == "STREAMING":
@@ -1494,19 +1122,12 @@ def _discover_all_group_members(cfg: dict) -> list[list[CompatibleRun]]:
                 tot_lsb_ps=meta.tot_lsb_ps,
                 measurement_mode=meta.measurement_mode,
                 candidate_kind="candidate_binary",
-                candidate_path=(
-                    output_dir
-                    / "candidate_preprocessed"
-                    / f"{run_input.run_id}_candidates.dat"
-                ),
+                candidate_path=output_dir / "candidate_preprocessed" / f"{run_input.run_id}_candidates.dat",
                 pulse_cache_dir=None,
                 candidate_index_dir=None,
             )
         groups.setdefault(_compatibility_key(candidate), []).append(candidate)
-    return [
-        sorted(members, key=lambda item: int(item.run_number))
-        for _, members in sorted(groups.items(), key=lambda item: item[0])
-    ]
+    return [sorted(members, key=lambda item: int(item.run_number)) for _, members in sorted(groups.items(), key=lambda item: item[0])]
 
 
 def run_all_compatible_group_analyses(
@@ -1521,15 +1142,9 @@ def run_all_compatible_group_analyses(
     if not groups:
         raise RuntimeError("No runs were found for grouped analysis")
 
-    summary_root = (
-        Path(output_root).expanduser().resolve()
-        if output_root is not None
-        else Path(cfg["paths"]["output_dir"]) / "grouped_analysis"
-    )
+    summary_root = Path(output_root).expanduser().resolve() if output_root is not None else Path(cfg["paths"]["output_dir"]) / "grouped_analysis"
     summary_root.mkdir(parents=True, exist_ok=True)
     summary_path = summary_root / GROUP_SUMMARY_FILENAME
-    # Dataset-wide execution is authoritative: remove rows for groups that are no
-    # longer present in the configured input/include set.
     summary_path.unlink(missing_ok=True)
     failures: list[str] = []
 
@@ -1545,11 +1160,7 @@ def run_all_compatible_group_analyses(
             first.tot_lsb_ps,
         )
         group_dir = summary_root / name
-        available = [
-            run
-            for run in members
-            if all(path.exists() for path in _required_candidate_outputs(run, cfg))
-        ]
+        available = [run for run in members if all(path.exists() for path in _required_candidate_outputs(run, cfg))]
         representative = available[0] if available else first
         try:
             run_compatible_group_analysis(
@@ -1560,16 +1171,13 @@ def run_all_compatible_group_analyses(
                 output_root=summary_root,
             )
         except Exception as exc:
-            _update_group_summary(
-                summary_path,
-                _failed_summary_row(group_dir, name, members, exc),
-            )
+            _update_group_summary(summary_path, _failed_summary_row(group_dir, name, members, exc))
             failures.append(f"{name}: {type(exc).__name__}: {exc}")
             _log(name, "group", f"FAILED — {type(exc).__name__}: {exc}")
 
     if failures:
         raise RuntimeError(
-            f"{len(failures)} grouped analyses failed; partial results and failure "
-            f"rows were written to {summary_path}:\n  " + "\n  ".join(failures)
+            f"{len(failures)} grouped analyses failed; partial results and failure rows were written to {summary_path}:\n  "
+            + "\n  ".join(failures)
         )
     return summary_path
