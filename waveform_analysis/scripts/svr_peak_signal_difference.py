@@ -21,8 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Group events by peaks of the final model timing-residual distribution and compare "
-            "the mean physical waveform difference s1(t)-s2(t) between groups. Designed to "
-            "diagnose the multi-peak Linear-SVR residual distribution."
+            "the peak-conditioned physical waveform difference s1(t)-s2(t) after subtracting "
+            "the global mean difference. Designed to expose subtle Linear-SVR multi-peak structure."
         )
     )
     parser.add_argument("--run-dir", type=Path, required=True, help="Completed study directory.")
@@ -211,7 +211,6 @@ def _detect_groups(
         peak_centers = np.asarray(centers[peak_indices], dtype=np.float64)
         prominences = np.asarray(prominences_all[order], dtype=np.float64)
 
-    # Natural group boundaries are histogram valleys between adjacent residual peaks.
     boundaries = []
     for left_index, right_index in zip(peak_indices[:-1], peak_indices[1:]):
         lo, hi = sorted((int(left_index), int(right_index)))
@@ -255,7 +254,7 @@ def _physical_difference_statistics(
     n_groups: int,
     *,
     batch_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if prepared_indices.size != groups.size:
         raise ValueError("Split indices and residual peak assignments are not aligned")
     first = waveform_view(dataset, mode, prepared_indices[:1])
@@ -290,7 +289,12 @@ def _physical_difference_statistics(
         if n > 1:
             variance = np.maximum((sums_sq[group] - n * mean[group] ** 2) / (n - 1), 0.0)
             sem[group] = np.sqrt(variance / n)
-    return time_ps, mean, sem, counts
+
+    total = int(np.sum(counts))
+    if total == 0:
+        raise RuntimeError("No events were assigned to residual-peak groups")
+    global_mean = np.sum(sums, axis=0) / total
+    return time_ps, mean, sem, counts, global_mean
 
 
 def _source_metadata(dataset: PreparedDataset, prepared_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -323,7 +327,6 @@ def _plot_peak_assignment(path: Path, residual: np.ndarray, analysis: dict[str, 
     values = values[np.isfinite(values)]
     edges = np.asarray(analysis["edges"], dtype=np.float64)
     centers = np.asarray(analysis["bin_centers"], dtype=np.float64)
-    counts = np.asarray(analysis["counts"], dtype=np.float64)
     smooth = np.asarray(analysis["smooth"], dtype=np.float64)
     peak_centers = np.asarray(analysis["peak_centers_ps"], dtype=np.float64)
     boundaries = np.asarray(analysis["boundaries_ps"], dtype=np.float64)
@@ -345,11 +348,12 @@ def _plot_peak_assignment(path: Path, residual: np.ndarray, analysis: dict[str, 
     plt.close(fig)
 
 
-def _plot_average_difference(
+def _plot_centered_difference(
     path: Path,
     time_ps: np.ndarray,
     mean: np.ndarray,
     sem: np.ndarray,
+    global_mean: np.ndarray,
     counts: np.ndarray,
     residual: np.ndarray,
     groups: np.ndarray,
@@ -364,16 +368,17 @@ def _plot_average_difference(
         if n == 0:
             continue
         values = np.asarray(residual[groups == group], dtype=np.float64)
+        deviation = mean[group] - global_mean
         label = (
             f"Peak {group + 1} ({peak_centers[group]:+.1f} ps) · n={n} · "
             f"residual {np.mean(values):+.1f}±{np.std(values):.1f} ps"
         )
-        line = ax.plot(time_ns, mean[group], lw=1.8, label=label)[0]
+        line = ax.plot(time_ns, deviation, lw=1.8, label=label)[0]
         finite_sem = np.where(np.isfinite(sem[group]), sem[group], 0.0)
         ax.fill_between(
             time_ns,
-            mean[group] - finite_sem,
-            mean[group] + finite_sem,
+            deviation - finite_sem,
+            deviation + finite_sem,
             color=line.get_color(),
             alpha=0.14,
             linewidth=0,
@@ -381,8 +386,8 @@ def _plot_average_difference(
     ax.axhline(0.0, color="black", lw=0.8, alpha=0.6)
     ax.axvline(0.0, color="black", ls="--", lw=0.9, alpha=0.6)
     ax.set_xlabel("Time relative to LED/native anchor [ns]")
-    ax.set_ylabel(r"Mean signal difference $s_1-s_2$ [mV]")
-    ax.set_title(f"{dataset_name} · {method} · mean waveform difference by final residual peak")
+    ax.set_ylabel(r"$\langle s_1-s_2\rangle_{peak}-\langle s_1-s_2\rangle_{all}$ [mV]")
+    ax.set_title(f"{dataset_name} · {method} · peak-specific waveform-difference deviation")
     ax.grid(alpha=0.2)
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
@@ -460,7 +465,7 @@ def analyse_dataset(
     peak_centers = np.asarray(analysis["peak_centers_ps"], dtype=np.float64)
 
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
-    time_ps, mean, sem, counts = _physical_difference_statistics(
+    time_ps, mean, sem, counts, global_mean = _physical_difference_statistics(
         dataset,
         mode,
         indices,
@@ -472,11 +477,12 @@ def analyse_dataset(
     dataset_dir = output_root / dataset_name
     dataset_dir.mkdir(parents=True, exist_ok=True)
     _plot_peak_assignment(dataset_dir / "residual_peak_groups.pdf", residual, analysis, args.method, dataset_name)
-    _plot_average_difference(
-        dataset_dir / "average_signal_difference_by_peak.pdf",
+    _plot_centered_difference(
+        dataset_dir / "signal_difference_deviation_by_peak.pdf",
         time_ps,
         mean,
         sem,
+        global_mean,
         counts,
         residual,
         groups,
@@ -548,6 +554,7 @@ def analyse_dataset(
 
     waveform_rows = []
     for group in range(peak_centers.size):
+        deviation = mean[group] - global_mean
         for sample, time in enumerate(time_ps):
             waveform_rows.append(
                 {
@@ -555,11 +562,13 @@ def analyse_dataset(
                     "peak_center_ps": float(peak_centers[group]),
                     "n": int(counts[group]),
                     "time_ns": float(time / 1000.0),
-                    "mean_signal_difference_mV": float(mean[group, sample]),
+                    "peak_mean_signal_difference_mV": float(mean[group, sample]),
+                    "global_mean_signal_difference_mV": float(global_mean[sample]),
+                    "peak_minus_global_mV": float(deviation[sample]),
                     "sem_signal_difference_mV": float(sem[group, sample]),
                 }
             )
-    _write_csv(dataset_dir / "average_signal_difference.csv", waveform_rows)
+    _write_csv(dataset_dir / "signal_difference_deviation.csv", waveform_rows)
 
     summary = {
         "dataset": dataset_name,
@@ -576,8 +585,8 @@ def analyse_dataset(
         "boundaries_ps": np.asarray(analysis["boundaries_ps"], dtype=float).tolist(),
         "group_counts": counts.tolist(),
         "assignment": "histogram valleys between adjacent residual peaks",
-        "signal_quantity": "physical_mV_detector1_minus_detector2",
-        "uncertainty_band": "SEM across events within each residual-peak group",
+        "signal_quantity": "mean(s1-s2 | residual peak) - mean(s1-s2 | all grouped events), physical mV",
+        "uncertainty_band": "SEM of s1-s2 across events within each residual-peak group",
     }
     with (dataset_dir / "summary.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2, allow_nan=True)
