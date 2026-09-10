@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from utils_fit import fit_ctr_ps
+from utils_fit import CORE_FWHM_METRIC_NAME, CTR_METRIC_NAME, fit_ctr_ps
 
 
 class RobustCTRTests(unittest.TestCase):
@@ -24,6 +24,9 @@ class RobustCTRTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertLess(abs(result.ctr_ps - expected) / expected, 0.04)
         self.assertAlmostEqual(result.coverage_fraction, 0.90)
+        metadata = result.as_dict()
+        self.assertEqual(metadata["fit_metric"], CTR_METRIC_NAME)
+        self.assertEqual(metadata["core_metric"], CORE_FWHM_METRIC_NAME)
         self.assertGreaterEqual(result.interval_events, int(np.ceil(0.90 * values.size)))
         self.assertAlmostEqual(
             result.ctr_ps,
