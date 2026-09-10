@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import linregress, pearsonr, spearmanr
 
-from utils_fit import fit_ctr_ps
+from utils_fit import CTR_METRIC_NAME, fit_ctr_ps
 from waveform_analysis.ml_pipeline.dataset import PreparedDataset, load_prepared_dataset
 from waveform_analysis.ml_pipeline.view import calibrated_led, inverse_pair, waveform_view
 
@@ -618,7 +618,7 @@ def analyse_dataset(
         "requested_window_ns": None if window_ns is None else list(window_ns),
         "actual_sample_window_ns": actual_window,
         "led_error_definition": "abs(calibrated_led_pair_residual_ps)",
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_metric": CTR_METRIC_NAME,
         "ctr_estimator": "canonical repository fit_ctr_ps: Gaussian-equivalent shortest configured-coverage interval",
         "ctr_coverage_fraction": float(fit_config.get("coverage_fraction", 0.90)),
         "core_fwhm_bin_width_ps": float(fit_config.get("bin_width_ps", np.nan)),
