@@ -130,21 +130,24 @@ def validate_config(config):
         raise ConfigError("ml_output must contain one positive max_abs_ps")
 
     fit = config["fit"]
-    allowed_fit = {"min_events", "max_abs_ps", "bin_width_ps", "bootstrap_samples"}
+    allowed_fit = {"min_events", "coverage_fraction", "bin_width_ps", "bootstrap_samples"}
     obsolete_fit = set(fit) - allowed_fit
     if obsolete_fit:
         raise ConfigError(
-            f"Unknown/obsolete fit option(s): {sorted(obsolete_fit)}. CTR uses fixed-bin histogram FWHM with fit.bin_width_ps."
+            f"Unknown/obsolete fit option(s): {sorted(obsolete_fit)}. "
+            "Canonical CTR is the Gaussian-equivalent shortest coverage interval; "
+            "bin_width_ps is used only for the secondary core-FWHM diagnostic."
         )
     if int(fit.get("min_events", 0)) < 3:
         raise ConfigError("fit.min_events must be an integer >= 3")
+    coverage = float(fit.get("coverage_fraction", 0.90))
+    if not 0.5 < coverage < 1.0:
+        raise ConfigError("fit.coverage_fraction must be in (0.5, 1.0)")
     if float(fit.get("bin_width_ps", 0.0)) <= 0:
         raise ConfigError("fit.bin_width_ps must be positive")
     bootstrap_samples = fit.get("bootstrap_samples")
     if isinstance(bootstrap_samples, bool) or int(bootstrap_samples) != bootstrap_samples or int(bootstrap_samples) < 2:
         raise ConfigError("fit.bootstrap_samples must be an integer >= 2")
-    if "max_abs_ps" in fit and float(fit["max_abs_ps"]) <= 0:
-        raise ConfigError("fit.max_abs_ps must be positive")
 
     preprocessing = config["preprocessing"]
     for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir", "materialized_window_ns", "selection", "photopeak", "energy"):
