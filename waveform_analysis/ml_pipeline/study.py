@@ -21,7 +21,7 @@ from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
-from .train import predict_indices, save_model, search_model, selected_model
+from .train import predict_indices, save_model, search_model, selected_model, target_range_counts
 from .view import calibrated_led, corrected_timing_residual, inverse_pair, model_target, standard_delta, target_family
 
 
@@ -50,8 +50,8 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
         result = ctr_estimate(finite, config.get("fit"), seed=int(seed), bootstrap=True)
     except ValueError as exc:
         detail = format_residual_summary(summary)
-        logger.error("Robust CTR unavailable | %s | reason=%s | %s", context, exc, detail)
-        raise RuntimeError(f"{context}: robust CTR unavailable: {exc}; {detail}") from exc
+        logger.error("CTR unavailable | %s | reason=%s | %s", context, exc, detail)
+        raise RuntimeError(f"{context}: CTR unavailable: {exc}; {detail}") from exc
     return {
         "dataset": name,
         "voltage_V": voltage,
@@ -91,7 +91,7 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
         "stage": "development_selection" if method in {"led", "cfd"} else "validation",
         "selection_score": float(score),
         "selection_metric": metric,
-        "ctr_ps": float(score) if metric in {"development_robust_ctr", "validation_robust_ctr", "development_ctr", "validation_ctr"} else float("nan"),
+        "ctr_ps": float(score) if metric in {"development_ctr", "validation_robust_ctr", "development_ctr", "validation_ctr"} else float("nan"),
         "ctr_uncertainty_ps": float("nan"),
         "center_ps": float("nan"),
         "n": 0,
@@ -207,6 +207,12 @@ def run_study(
             "source_count": len(roots),
         }
 
+    logger.info(
+        "Study | mode=%s | selection=validation CTR | prediction clip=±%.6g ps | validation/test unfiltered",
+        mode,
+        float(config["ml_output"]["max_abs_ps"]),
+    )
+
     for dataset in datasets:
         name = _dataset_name(dataset)
         voltage = _dataset_voltage(dataset, name)
@@ -222,7 +228,7 @@ def run_study(
                 "led",
                 dataset.manifest["led_development_ctr_ps"][family],
                 {"threshold_mV": threshold},
-                "development_robust_ctr",
+                "development_ctr",
             )
         )
         if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
@@ -235,24 +241,26 @@ def run_study(
                     "cfd",
                     dataset.manifest["cfd_development_ctr_ps"][family],
                     {"fraction": fraction},
-                    "development_robust_ctr",
+                    "development_ctr",
                 )
             )
 
         logger.info(
-            "ML dataset %s | mode=%s | training=%d | validation=%d | test=%d",
+            "Dataset %s | train=%d | validation=%d | test=%d",
             name,
-            mode,
             dataset.training.size,
             dataset.validation.size,
             dataset.test.size,
         )
-        logger.info(
-            "Training target filter candidates | dataset=%s | %s | |target| <= %s ps | validation/test unfiltered",
-            name,
-            mode,
-            ", ".join(f"{float(value):g}" for value in config["ml_training"]["target_abs_max_ps"]),
+        training_target = model_target(dataset, mode)[np.asarray(dataset.training, dtype=np.int64)]
+        filter_summary = " | ".join(
+            f"±{limit:g} ps: {used}/{total} ({100.0 * fraction:.1f}%)"
+            for limit, used, total, fraction in target_range_counts(
+                training_target,
+                config["ml_training"]["target_abs_max_ps"],
+            )
         )
+        logger.info("Target filters | %s", filter_summary)
 
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
@@ -271,18 +279,20 @@ def run_study(
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_ctr"))
+            selected_parameters = {
+                key: value
+                for key, value in search.best.candidate.items()
+                if key != "target_abs_max_ps"
+            }
             logger.info(
-                "Selected dataset=%s | %s/%s | validation CTR %.6g ps | selected train filter |target| <= %.6g ps | train used=%d/%d (%.1f%%) | validation/test unfiltered | output clipped to ±%.0f ps | %s",
-                name,
-                mode,
-                model_name,
+                "Selected %s | CTR=%.6g ps | range=±%.6g ps | train=%d/%d (%.1f%%) | %s",
+                LABELS.get(model_name, model_name),
                 search.best.score,
                 float(search.best.metadata["training_target_abs_max_ps"]),
                 int(search.best.metadata["training_events_used"]),
                 int(search.best.metadata["training_events_available"]),
                 100.0 * float(search.best.metadata["training_fraction_used"]),
-                float(config["ml_output"]["max_abs_ps"]),
-                search.best.candidate,
+                "default" if not selected_parameters else selected_parameters,
             )
 
             xai = config.get("reporting", {}).get("xai", {}) or {}
