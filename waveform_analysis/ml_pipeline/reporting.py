@@ -15,7 +15,7 @@ from .shapelet_reporting import plot_fixed_shapelets
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
 
-MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "difference_cnn", "difference_shapelet")
+MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "difference_cnn", "difference_shapelet", "difference_knn")
 LABELS = {
     "led": "LED",
     "cfd": "CFD",
@@ -23,6 +23,7 @@ LABELS = {
     "cnn": "CNN",
     "difference_cnn": "Difference CNN",
     "difference_shapelet": "Fixed-shapelet regressor",
+    "difference_knn": "Difference k-NN",
 }
 
 
@@ -533,8 +534,12 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         for artifact in sorted((run / "artifacts").glob(f"*/{model}_xai.npz"), key=lambda p: voltage_from_name(p.parent.name)):
             _xai_plot(categories["xai"], artifact, mode, model, paths)
         if model == "difference_shapelet":
+            shapelet_dir = categories["xai"] / "shapelets"
+            shapelet_dir.mkdir(parents=True, exist_ok=True)
             for dataset in datasets:
-                plot_fixed_shapelets(run, categories["xai"], dataset, paths)
+                path = plot_fixed_shapelets(run, dataset, shapelet_dir)
+                if path is not None:
+                    paths.append(path)
         for dataset in datasets:
             top, worst = _correction_rankings(run, model, dataset)
             if top or worst:
