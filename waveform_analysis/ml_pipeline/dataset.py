@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-DATASET_FORMAT_VERSION = 16
+DATASET_FORMAT_VERSION = 17
 
 
 @dataclass(frozen=True)
@@ -41,8 +41,6 @@ class PreparedDataset:
     timing_transform: InputTransform | None
     energy_target_ps: np.ndarray | None
     timing_target_ps: np.ndarray | None
-    energy_anchor_time_ps: np.ndarray | None
-    timing_anchor_time_ps: np.ndarray | None
     energy_led_time_ps: np.ndarray | None
     timing_led_time_ps: np.ndarray | None
     energy_cfd_time_ps: np.ndarray | None
@@ -98,8 +96,6 @@ def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
         _transform(directory, "timing"),
         _optional(directory, "energy_target_ps"),
         _optional(directory, "timing_target_ps"),
-        _optional(directory, "energy_anchor_time_ps"),
-        _optional(directory, "timing_anchor_time_ps"),
         _optional(directory, "energy_led_time_ps"),
         _optional(directory, "timing_led_time_ps"),
         _optional(directory, "energy_cfd_time_ps"),
