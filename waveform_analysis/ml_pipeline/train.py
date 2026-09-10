@@ -76,6 +76,24 @@ def _target_range_mask(target_ps: np.ndarray, abs_max_ps: float) -> np.ndarray:
     return np.isfinite(target) & (np.abs(target) <= limit)
 
 
+def target_range_counts(target_ps: np.ndarray, ranges_ps) -> list[tuple[float, int, int, float]]:
+    """Return retained-event counts for each symmetric training-target range."""
+    target = np.asarray(target_ps, dtype=np.float64)
+    total = int(target.size)
+    rows = []
+    for value in ranges_ps:
+        limit = float(value)
+        used = int(np.count_nonzero(_target_range_mask(target, limit)))
+        rows.append((limit, used, total, float(used / max(1, total))))
+    return rows
+
+
+def _candidate_log_parts(candidate: dict[str, Any]) -> tuple[float, str]:
+    values = dict(candidate)
+    target_range = float(values.pop("target_abs_max_ps"))
+    return target_range, ("default" if not values else str(values))
+
+
 def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.ndarray:
     values = np.asarray(spec.predict(fitted.artifact, np.asarray(pair, dtype=np.float32)), dtype=np.float64)
     if fitted.output_max_abs_ps is not None:
@@ -161,50 +179,44 @@ def search_model(
 
     def on_start(number, total, candidate):
         if logger is not None:
-            logger.info(
-                "Training dataset=%s | %s/%s | candidate %d/%d | full-validation scoring | %s",
-                dataset_label,
-                mode,
-                spec.name,
+            target_range, parameters = _candidate_log_parts(candidate)
+            logger.debug(
+                "  %d/%d | starting | range=±%.6g ps | %s",
                 number,
                 total,
-                candidate,
+                target_range,
+                parameters,
             )
 
     def on_result(number, total, result):
         if logger is None:
             return
+        target_range, parameters = _candidate_log_parts(result.candidate)
         if result.error is None:
             logger.info(
-                "Validation dataset=%s | %s/%s | candidate %d/%d | CTR %.6g ps | train range ±%.6g ps | train used=%d/%d (%.1f%%) | full validation=%d | output clipped to ±%.0f ps | %s",
-                dataset_label,
-                mode,
-                spec.name,
+                "  %d/%d | CTR=%.6g ps | range=±%.6g ps | %s",
                 number,
                 total,
                 result.score,
-                float(result.metadata["training_target_abs_max_ps"]),
-                int(result.metadata["training_events_used"]),
-                int(result.metadata["training_events_available"]),
-                100.0 * float(result.metadata["training_fraction_used"]),
-                validation_target.size,
-                output_limit,
-                result.candidate,
+                target_range,
+                parameters,
             )
         else:
             logger.warning(
-                "Candidate failed dataset=%s | %s/%s | candidate %d/%d | %s | %s",
-                dataset_label,
-                mode,
-                spec.name,
+                "  %d/%d | FAILED | range=±%.6g ps | %s | %s",
                 number,
                 total,
-                result.candidate,
+                target_range,
+                parameters,
                 result.error,
             )
 
+    candidates = _target_range_candidates(spec, model_config, config)
+    if logger is not None:
+        logger.info("%s search | candidates=%d", spec.name, len(candidates))
+
     return select_candidate(
-        _target_range_candidates(spec, model_config, config),
+        candidates,
         fit_candidate=fit_candidate,
         predict_candidate=predict_candidate,
         score_candidate=score_candidate,
