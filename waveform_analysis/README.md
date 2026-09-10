@@ -16,7 +16,7 @@ There is **no denoising** and no event-wise baseline subtraction.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and ranked by the common robust CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Each ML waveform is then resampled by linear interpolation on a common continuous time grid relative to that crossing, so `t=0` is exactly the selected LED threshold for every event and detector.
+LED thresholds are scanned on development and ranked by the common CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Each ML waveform is then resampled by linear interpolation on a common continuous time grid relative to that crossing, so `t=0` is exactly the selected LED threshold for every event and detector.
 
 The fixed channel calibration is estimated from training only as
 
@@ -93,7 +93,7 @@ Detailed reporting is grouped under:
 - `plots/model_output/<model>/`
 - `plots/xai/<model>/`: XAI outputs grouped by model
 
-The reporting histograms are presentation views with one model compared against LED per figure. Legends are placed in the upper-right with extra plot headroom and a wider residual display range to avoid obscuring the distributions. The canonical robust CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
+The reporting histograms are presentation views with one model compared against LED per figure. Legends are placed in the upper-right with extra plot headroom and a wider residual display range to avoid obscuring the distributions. The canonical CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
 
 ## CLI
 
