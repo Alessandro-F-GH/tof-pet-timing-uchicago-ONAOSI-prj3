@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
-from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from .cnn import _device, _loader, _rmse
@@ -40,6 +39,26 @@ def candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _fixed_starts(input_length: int, length: int, count: int) -> np.ndarray:
+    maximum = int(input_length) - int(length)
+    if maximum < 0:
+        raise ValueError(f"Shapelet length {length} exceeds input length {input_length}")
+    if count < 1:
+        raise ValueError("Every shapelet group must contain at least one shapelet")
+    if count > maximum + 1:
+        raise ValueError(
+            f"Cannot place {count} distinct fixed shapelets of length {length} in {input_length} samples"
+        )
+    if count == 1:
+        return np.asarray([maximum // 2], dtype=np.int64)
+    starts = np.rint(np.linspace(0, maximum, count)).astype(np.int64)
+    if np.unique(starts).size != starts.size:
+        raise ValueError(
+            f"Fixed shapelet positions are not distinct for length={length}, count={count}, input={input_length}"
+        )
+    return starts
+
+
 def _shapelet_layout(architecture: dict[str, Any], input_length: int):
     lengths = [int(v) for v in architecture.get("shapelet_lengths", [17, 33, 65])]
     raw = architecture.get("shapelets_per_length", [8] * len(lengths))
@@ -48,38 +67,36 @@ def _shapelet_layout(architecture: dict[str, Any], input_length: int):
         raise ValueError("shapelet_lengths and shapelets_per_length must be non-empty and have equal length")
     if any(v < 2 or v > input_length for v in lengths):
         raise ValueError(f"Shapelet lengths must lie in [2, {input_length}], got {lengths}")
-    if any(v < 1 for v in counts):
-        raise ValueError("Every shapelet group must contain at least one shapelet")
-    return lengths, counts
+    starts = [_fixed_starts(input_length, length, count) for length, count in zip(lengths, counts)]
+    return lengths, counts, starts
 
 
-def _initialize_shapelets(x, lengths, counts, *, seed):
+def _initialize_shapelets(x, lengths, starts, *, seed):
     rng = np.random.default_rng(int(seed))
-    n_events, n_samples = x.shape
+    n_events = int(x.shape[0])
     groups = []
-    for length, count in zip(lengths, counts):
-        templates = np.empty((count, 1, length), dtype=np.float32)
-        for i in range(count):
+    for length, group_starts in zip(lengths, starts):
+        templates = np.empty((len(group_starts), length), dtype=np.float32)
+        for i, start in enumerate(group_starts):
             event = int(rng.integers(0, n_events))
-            start = int(rng.integers(0, n_samples - length + 1))
-            templates[i, 0] = x[event, start:start + length]
+            templates[i] = x[event, int(start) : int(start) + int(length)]
         groups.append(templates)
     return groups
 
 
-class LearnableShapeletTransform(nn.Module):
-    """Learn local templates and return each template's minimum subsequence MSE."""
+class FixedShapeletTransform(nn.Module):
+    """Compare learned templates only with their fixed synchronized-time supports."""
 
-    def __init__(self, initial_shapelets, *, match_stride):
+    def __init__(self, initial_shapelets, starts):
         super().__init__()
-        if int(match_stride) < 1:
-            raise ValueError("match_stride must be >= 1")
-        self.match_stride = int(match_stride)
+        if len(initial_shapelets) != len(starts):
+            raise ValueError("Shapelet groups and fixed-position groups must have equal length")
         self.shapelets = nn.ParameterList(
-            [nn.Parameter(torch.from_numpy(np.asarray(g, dtype=np.float32))) for g in initial_shapelets]
+            [nn.Parameter(torch.from_numpy(np.asarray(group, dtype=np.float32))) for group in initial_shapelets]
         )
-        self.lengths = [int(g.shape[-1]) for g in initial_shapelets]
-        self.counts = [int(g.shape[0]) for g in initial_shapelets]
+        self.starts = [np.asarray(group, dtype=np.int64) for group in starts]
+        self.lengths = [int(group.shape[-1]) for group in initial_shapelets]
+        self.counts = [int(group.shape[0]) for group in initial_shapelets]
 
     @property
     def n_features(self):
@@ -88,21 +105,20 @@ class LearnableShapeletTransform(nn.Module):
     def forward(self, difference):
         if difference.ndim != 2:
             raise ValueError(f"Shapelet transform expects [batch, time], got {tuple(difference.shape)}")
-        signal = difference[:, None, :]
         features = []
-        for shapelets, length in zip(self.shapelets, self.lengths):
-            cross = F.conv1d(signal, shapelets, stride=self.match_stride)
-            signal_sq = F.avg_pool1d(signal.square(), kernel_size=length, stride=self.match_stride)
-            shapelet_sq = shapelets.square().mean(dim=2).view(1, -1, 1)
-            distance = signal_sq - (2.0 / float(length)) * cross + shapelet_sq
-            features.append(distance.clamp_min(0.0).amin(dim=2))
+        for shapelets, starts, length in zip(self.shapelets, self.starts, self.lengths):
+            windows = torch.stack(
+                [difference[:, int(start) : int(start) + int(length)] for start in starts],
+                dim=1,
+            )
+            features.append((windows - shapelets[None, :, :]).square().mean(dim=2))
         return torch.cat(features, dim=1)
 
 
 class DifferenceShapeletRegressor(nn.Module):
-    def __init__(self, initial_shapelets, *, match_stride, dense_units, dropout):
+    def __init__(self, initial_shapelets, starts, *, dense_units, dropout):
         super().__init__()
-        self.transform = LearnableShapeletTransform(initial_shapelets, match_stride=match_stride)
+        self.transform = FixedShapeletTransform(initial_shapelets, starts)
         incoming = self.transform.n_features
         head = [nn.LayerNorm(incoming)]
         for width in dense_units:
@@ -120,6 +136,7 @@ class DifferenceShapeletRegressor(nn.Module):
 @dataclass
 class DifferenceShapeletArtifact:
     model: DifferenceShapeletRegressor
+    input_time_ps: np.ndarray
     device: str
     metadata: dict[str, Any]
 
@@ -150,20 +167,17 @@ def fit(params, train_x, train_target, *, seed, config, validation_x=None, valid
     train_difference = _difference(train_x)
     validation_difference = _difference(validation_x)
     architecture = config.get("architecture", {})
-    lengths, counts = _shapelet_layout(architecture, train_difference.shape[1])
-    match_stride = int(architecture.get("match_stride", 4))
+    lengths, counts, starts = _shapelet_layout(architecture, train_difference.shape[1])
     dense_units = [int(v) for v in architecture.get("dense_units", [32, 16])]
     dropout = float(architecture.get("dropout", 0.05))
-    if match_stride < 1:
-        raise ValueError("architecture.match_stride must be >= 1")
     if not 0.0 <= dropout < 1.0:
         raise ValueError("architecture.dropout must be in [0, 1)")
 
-    initial_shapelets = _initialize_shapelets(train_difference, lengths, counts, seed=seed)
+    initial_shapelets = _initialize_shapelets(train_difference, lengths, starts, seed=seed)
     device = _device(config)
     model = DifferenceShapeletRegressor(
         initial_shapelets,
-        match_stride=match_stride,
+        starts,
         dense_units=dense_units,
         dropout=dropout,
     ).to(device)
@@ -219,12 +233,26 @@ def fit(params, train_x, train_target, *, seed, config, validation_x=None, valid
     model.load_state_dict(best_state)
 
     input_time_ps = np.asarray(config.get("_input_time_ps", []), dtype=np.float64)
-    if input_time_ps.size > 1:
-        dt_ps = float(np.median(np.diff(input_time_ps)))
-        durations_ps = [float((length - 1) * dt_ps) for length in lengths]
+    if input_time_ps.size not in {0, train_difference.shape[1]}:
+        raise ValueError(
+            f"input_time_ps has {input_time_ps.size} samples but waveform has {train_difference.shape[1]}"
+        )
+    if input_time_ps.size:
+        group_start_times_ps = [[float(input_time_ps[int(start)]) for start in group] for group in starts]
+        group_end_times_ps = [
+            [float(input_time_ps[int(start) + int(length) - 1]) for start in group]
+            for length, group in zip(lengths, starts)
+        ]
+        group_center_times_ps = [
+            [0.5 * (left + right) for left, right in zip(lefts, rights)]
+            for lefts, rights in zip(group_start_times_ps, group_end_times_ps)
+        ]
+        dt_ps = float(np.median(np.diff(input_time_ps))) if input_time_ps.size > 1 else float("nan")
     else:
+        group_start_times_ps = [[] for _ in lengths]
+        group_end_times_ps = [[] for _ in lengths]
+        group_center_times_ps = [[] for _ in lengths]
         dt_ps = float("nan")
-        durations_ps = [float("nan")] * len(lengths)
 
     metadata = {
         "best_epoch": int(best_epoch),
@@ -232,18 +260,26 @@ def fit(params, train_x, train_target, *, seed, config, validation_x=None, valid
         "selection_metric": "validation_rmse",
         "batch_size": batch_size,
         "output_max_abs_ps": None if output_limit is None else float(output_limit),
-        "input_definition": "normalized window difference d(t)=s1(t)-s2(t)",
-        "representation": "learnable shapelet transform: minimum sliding mean-squared distance per shapelet",
-        "prediction_definition": "nonlinear regression from learned shapelet-distance features of s1-s2 [ps]",
+        "input_definition": "normalized synchronized-window difference d(t)=s1(t)-s2(t)",
+        "representation": "position-locked learnable shapelets: MSE between each learned template and its fixed time support",
+        "prediction_definition": "nonlinear regression from fixed-position learned shapelet distances of s1-s2 [ps]",
         "shapelet_lengths_samples": lengths,
         "shapelets_per_length": counts,
-        "shapelet_durations_ps": durations_ps,
+        "shapelet_starts_samples": [group.tolist() for group in starts],
+        "shapelet_start_times_ps": group_start_times_ps,
+        "shapelet_end_times_ps": group_end_times_ps,
+        "shapelet_center_times_ps": group_center_times_ps,
         "input_sample_interval_ps": dt_ps,
-        "match_stride_samples": match_stride,
         "n_shapelet_features": int(sum(counts)),
-        "shapelet_initialization": "random training subsequences",
+        "shapelet_position_policy": "fixed supports evenly distributed across the synchronized input window; no sliding or minimum-over-position",
+        "shapelet_initialization": "random training-event subsequence at the same fixed support",
     }
-    return DifferenceShapeletArtifact(model=model, device=str(device), metadata=metadata)
+    return DifferenceShapeletArtifact(
+        model=model,
+        input_time_ps=input_time_ps,
+        device=str(device),
+        metadata=metadata,
+    )
 
 
 def predict(artifact, normalized_pair):
@@ -261,13 +297,20 @@ def save(artifact, path: Path):
         {"state_dict": artifact.model.state_dict(), "metadata": artifact.metadata},
         path / "model.pt",
     )
-    shapelets = {
-        f"length_{length}_group_{index}": parameter.detach().cpu().numpy()
-        for index, (length, parameter) in enumerate(
-            zip(artifact.model.transform.lengths, artifact.model.transform.shapelets)
-        )
+    arrays: dict[str, np.ndarray] = {
+        "input_time_ps": np.asarray(artifact.input_time_ps, dtype=np.float64),
     }
-    np.savez_compressed(path / "learned_shapelets.npz", **shapelets)
+    for group_index, (length, starts, parameter) in enumerate(
+        zip(
+            artifact.model.transform.lengths,
+            artifact.model.transform.starts,
+            artifact.model.transform.shapelets,
+        )
+    ):
+        arrays[f"group_{group_index}_shapelets"] = parameter.detach().cpu().numpy().astype(np.float32)
+        arrays[f"group_{group_index}_starts_samples"] = np.asarray(starts, dtype=np.int64)
+        arrays[f"group_{group_index}_length_samples"] = np.asarray([length], dtype=np.int64)
+    np.savez_compressed(path / "learned_shapelets.npz", **arrays)
 
 
 def explain(artifact, normalized_pair):
