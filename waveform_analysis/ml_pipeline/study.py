@@ -173,7 +173,7 @@ def run_study(
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 11,
+        "schema_version": 12,
         "protocol": "single_mode_validation_robust_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
@@ -181,8 +181,8 @@ def run_study(
         "model_selection_metric": "validation_robust_ctr",
         "selected_model_policy": "use_validation_selected_trained_model_without_refit",
         "model_architecture_constraint": "model-specific; see per-model metadata",
-        "ml_target": "delta_t_led - true_tof - calibration_bias",
-        "corrected_residual": "ml_target - paired_model_prediction",
+        "ml_target": "calibrated_led = delta_t_led - true_tof - calibration_bias",
+        "corrected_residual": "calibrated_led - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
         "ctr_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": coverage,
@@ -350,11 +350,15 @@ def run_study(
             "led_training_mean_ps": dataset.manifest["led_training_mean_ps"],
             "cfd_fraction": dataset.manifest["cfd_fraction"],
             "subsampling": int(dataset.manifest["ml_input"]["subsampling"]),
+            "time_reference": dataset.manifest.get("time_reference"),
+            "interpolation": dataset.manifest.get("interpolation"),
+            "crossing_sample_policy": dataset.manifest.get("crossing_sample_policy"),
+            "dead_region_mask": dataset.manifest.get("dead_region_mask"),
             "target_definition": dataset.manifest.get(
                 "target_definition",
-                "delta_t_led - true_tof - calibration_bias",
+                "calibrated_led = delta_t_led - true_tof - calibration_bias",
             ),
-            "corrected_definition": "target - paired_model_prediction",
+            "corrected_definition": "calibrated_led - paired_model_prediction",
             "concatenated": bool(dataset.manifest.get("concatenated", False)),
         }
         if bool(dataset.manifest.get("concatenated", False)):
