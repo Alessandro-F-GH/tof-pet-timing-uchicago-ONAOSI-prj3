@@ -171,7 +171,7 @@ def run_study(
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 9,
+        "schema_version": 10,
         "protocol": "single_mode_validation_robust_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
