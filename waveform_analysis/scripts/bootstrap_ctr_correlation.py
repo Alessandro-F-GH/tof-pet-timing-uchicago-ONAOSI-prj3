@@ -130,14 +130,7 @@ def _paired_values(
             "Residual artifacts do not have the same length; paired bootstrap requires event-wise aligned arrays"
         )
 
-    finite = np.isfinite(reference_values) & np.isfinite(method_values)
-    mask = finite.copy()
-    limit = fit_config.get("max_abs_ps")
-    if limit is not None:
-        limit = float(limit)
-        if not np.isfinite(limit) or limit <= 0:
-            raise ValueError("fit.max_abs_ps must be positive when configured")
-        mask &= (np.abs(reference_values) <= limit) & (np.abs(method_values) <= limit)
+    mask = np.isfinite(reference_values) & np.isfinite(method_values)
 
     counts = {
         "n_total": int(reference_values.size),
@@ -288,9 +281,9 @@ def _plot_pairs(
     ax.set_xlim(low, high)
     ax.set_ylim(low, high)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel(f"{reference_name} bootstrap CTR FWHM [ps]")
-    ax.set_ylabel(f"{method_name} bootstrap CTR FWHM [ps]")
-    ax.set_title(f"{dataset} · {stage} · paired CTR bootstrap")
+    ax.set_xlabel(f"{reference_name} bootstrap robust CTR [ps]")
+    ax.set_ylabel(f"{method_name} bootstrap robust CTR [ps]")
+    ax.set_title(f"{dataset} · {stage} · paired robust CTR bootstrap")
     ax.grid(alpha=0.2)
     ax.legend(loc="best")
     ax.text(
