@@ -6,4 +6,3 @@ scikit-learn>=1.4
 torch>=2.2
 uproot>=5.2
 awkward>=2.6
-aeon>=1.2
