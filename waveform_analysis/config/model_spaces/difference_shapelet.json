@@ -3,7 +3,6 @@
   "architecture": {
     "shapelet_lengths": [17, 33, 65],
     "shapelets_per_length": [8, 8, 8],
-    "match_stride": 4,
     "dense_units": [32, 16],
     "dropout": 0.05
   },
