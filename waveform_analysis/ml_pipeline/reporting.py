@@ -231,15 +231,15 @@ def _write_rankings(output, dataset, model, top, worst):
     return target
 
 
-def _correction_examples(output, run, mode, model, dataset, top, worst, paths):
+def _correction_example_group(output, run, mode, model, dataset, group, rows, paths):
     import matplotlib.pyplot as plt
 
-    selected = [("Top", r) for r in top] + [("Worst", r) for r in reversed(worst)]
+    selected = list(rows)
     if not selected:
         return
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-    fig, axes = plt.subplots(3, 2, figsize=(11, 9), squeeze=False)
-    for ax, (group, row) in zip(axes.flat, selected):
+    fig, axes = plt.subplots(len(selected), 1, figsize=(8.8, 3.0 * len(selected)), squeeze=False)
+    for ax, row in zip(axes[:, 0], selected):
         try:
             prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
             with np.load(run / "splits" / f"{dataset}.npz") as split:
@@ -251,66 +251,111 @@ def _correction_examples(output, run, mode, model, dataset, top, worst, paths):
             ax.plot(time, pair[0], label="detector 1")
             ax.plot(time, pair[1], label="detector 2")
             ax.axvline(0.0, ls="--", lw=1.0, alpha=.8)
-            ax.set_title(f"{group} #{row['event_index']} | improvement {row['improvement_ps']:.1f} ps")
+            ax.set_title(f"event #{row['event_index']} | improvement {row['improvement_ps']:.1f} ps")
             ax.set_xlabel("Time [ns]")
             ax.set_ylabel("Signal [mV]")
             ax.grid(True, alpha=.2)
         except Exception as exc:
             ax.text(.5, .5, f"Unable to load example\n{exc}", ha="center", va="center", transform=ax.transAxes)
-    axes[0, 0].legend()
-    fig.suptitle(f"{dataset} · {mode.replace('_', ' ')} · {LABELS.get(model, model)} top/worst corrections")
+    axes[0, 0].legend(loc="upper right")
+    fig.suptitle(f"{dataset} · {mode.replace('_', ' ')} · {LABELS.get(model, model)} · {group.lower()} corrections")
     fig.tight_layout()
-    target = output / f"correction_examples_{dataset}_{model}.pdf"
+    target = output / f"correction_examples_{group.lower()}_{dataset}_{model}.pdf"
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
+
+
+def _correction_examples(output, run, mode, model, dataset, top, worst, paths):
+    _correction_example_group(output, run, mode, model, dataset, "Top", top, paths)
+    _correction_example_group(output, run, mode, model, dataset, "Worst", list(reversed(worst)), paths)
 
 
 def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
     import matplotlib.pyplot as plt
 
-    series = []
+    available = []
     for method in _distribution_methods(rows, dataset, stage):
         residual = _residual(run, dataset, method, stage)
         if residual is None:
             continue
+        residual = np.asarray(residual, dtype=float)
         residual = residual[np.isfinite(residual)]
         if not residual.size:
             continue
-        row = next((r for r in rows if r["dataset"] == dataset and r["method"] == method and r.get("stage") == stage), None)
+        row = next(
+            (
+                r for r in rows
+                if r["dataset"] == dataset
+                and r["method"] == method
+                and r.get("stage") == stage
+            ),
+            None,
+        )
         if row is not None:
-            series.append((method, residual, row))
-    if not series:
+            available.append((method, residual, row))
+
+    led = next((item for item in available if item[0] == "led"), None)
+    models = [item for item in available if item[0] not in {"led", "cfd"}]
+    if led is None or not models:
         return
 
-    xlim = _robust_display_range([r for _, r, _ in series], quantiles=(0.005, 0.995), margin_fraction=0.06)
-    fig, ax = plt.subplots(figsize=(8.6, 4.8))
-    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
-    for index, (method, residual, row) in enumerate(series):
-        color = colors[index % len(colors)] if colors else None
-        outside = _outside_count(residual, xlim)
-        label = f"{LABELS.get(method, method)} · robust CTR {_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
-        visible = residual[(residual >= xlim[0]) & (residual <= xlim[1])]
-        bins = _median_centered_display_edges(visible, xlim, 20)
-        ax.hist(visible, bins=bins, histtype="stepfilled", alpha=.4, color=color, edgecolor=color, linewidth=1.35, label=label)
-        low = _float(row.get("interval_low_ps"))
-        high = _float(row.get("interval_high_ps"))
-        if np.isfinite(low):
-            ax.axvline(low, color=color, ls="--", lw=1.45, alpha=.9)
-        if np.isfinite(high):
-            ax.axvline(high, color=color, ls="--", lw=1.45, alpha=.9)
-    ax.set_xlim(*xlim)
-    ax.set_xlabel(f"{stage.capitalize()} residual [ps]")
-    ax.set_ylabel("Events / bin")
-    ax.set_title(f"{mode.replace('_', ' ')} · {dataset} · {stage}")
-    ax.legend()
-    ax.grid(True, alpha=.2)
-    fig.tight_layout()
-    target = output / f"ctr_distribution_{stage}_{dataset}.pdf"
-    fig.savefig(target)
-    plt.close(fig)
-    paths.append(target)
+    for model, model_residual, model_row in models:
+        pair = [led, (model, model_residual, model_row)]
+        xlim = _robust_display_range(
+            [residual for _method, residual, _row in pair],
+            quantiles=(0.001, 0.999),
+            margin_fraction=0.12,
+        )
+        fig, ax = plt.subplots(figsize=(8.8, 5.2))
+        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        peak = 0.0
+        for index, (method, residual, row) in enumerate(pair):
+            color = colors[index % len(colors)] if colors else None
+            outside = _outside_count(residual, xlim)
+            label = (
+                f"{LABELS.get(method, method)} · CTR "
+                f"{_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps"
+                f" · outside {outside}"
+            )
+            visible = residual[(residual >= xlim[0]) & (residual <= xlim[1])]
+            bins = _median_centered_display_edges(visible, xlim, 22)
+            counts, _ = np.histogram(visible, bins=bins)
+            if counts.size:
+                peak = max(peak, float(np.max(counts)))
+            ax.hist(
+                visible,
+                bins=bins,
+                histtype="stepfilled",
+                alpha=.34,
+                color=color,
+                edgecolor=color,
+                linewidth=1.35,
+                label=label,
+            )
+            low = _float(row.get("interval_low_ps"))
+            high = _float(row.get("interval_high_ps"))
+            if np.isfinite(low):
+                ax.axvline(low, color=color, ls="--", lw=1.4, alpha=.9)
+            if np.isfinite(high):
+                ax.axvline(high, color=color, ls="--", lw=1.4, alpha=.9)
 
+        if peak > 0:
+            ax.set_ylim(0.0, peak * 1.28)
+        ax.set_xlim(*xlim)
+        ax.set_xlabel(f"{stage.capitalize()} residual [ps]")
+        ax.set_ylabel("Events / bin")
+        ax.set_title(
+            f"{mode.replace('_', ' ')} · {dataset} · {stage} · "
+            f"{LABELS.get(model, model)} vs LED"
+        )
+        ax.legend(loc="upper right")
+        ax.grid(True, alpha=.2)
+        fig.tight_layout()
+        target = output / f"ctr_distribution_{stage}_{dataset}_{model}.pdf"
+        fig.savefig(target)
+        plt.close(fig)
+        paths.append(target)
 
 def _model_output_plot(output, run, mode, dataset, model, paths):
     import matplotlib.pyplot as plt
@@ -381,7 +426,7 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     ax.set_xticks(x)
     ax.set_xticklabels([f"{v:g} V" for v in voltages])
     ax.set_xlabel("Bias voltage")
-    ax.set_ylabel("Robust CTR [ps]")
+    ax.set_ylabel("CTR [ps]")
     ax.set_ylim(bottom=0.0)
     ax.set_title(mode.replace("_", " "))
     ax.grid(axis="y", alpha=.22)
@@ -489,8 +534,8 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
     ax.set_xticks(x)
     ax.set_xticklabels([f"{v:g} V" for v in voltages])
     ax.set_xlabel("Bias voltage")
-    ax.set_ylabel("Robust CTR improvement over LED [%]")
-    ax.set_title(f"{mode.replace('_', ' ')} · paired-bootstrap robust CTR improvement")
+    ax.set_ylabel("CTR improvement over LED [%]")
+    ax.set_title(f"{mode.replace('_', ' ')} · paired-bootstrap CTR improvement")
     ax.grid(axis="y", alpha=.22)
     ax.legend()
     fig.tight_layout()
