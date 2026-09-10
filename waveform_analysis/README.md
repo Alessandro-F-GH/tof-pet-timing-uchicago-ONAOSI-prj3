@@ -53,7 +53,7 @@ A ready timing configuration is available at `config/experiments/timing_concaten
 
 ## 4. ML and final test
 
-Models may use paired or waveform-difference representations; their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the training split and ranked **only by validation robust CTR** of `y_target - y_theta`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+The standard CNN comparison uses two paired-input architectures. `cnn` is the shared 1-D scorer: the same 1-D network scores each detector waveform and the correction is `score(s1)-score(s2)`, enforcing detector-swap antisymmetry. `cnn_2d` is one joint 2-D network over the stacked `[2,time]` detector pair; its first convolution spans both detector rows and predicts one correction directly. The two model-space configs use the same temporal channels, kernels, strides, dilations, pooling and dense head so the comparison isolates the shared-1-D versus joint-2-D structure. Their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the training split and ranked **only by validation CTR** of `y_target - y_theta`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
 
 The permanent test population is evaluated once after model selection. The LED reference residual is
 
@@ -81,7 +81,7 @@ Study outputs are type-separated from creation time:
 - `plots/relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
 - `plots/corrections/<dataset>/`: top/worst correction figures;
 - `csv/corrections/<dataset>/`: corresponding correction ranking tables;
-- `plots/xai/<model>/`: model-grouped XAI plots;
+- `plots/xai/<model>/`: model-grouped XAI plots; CNN and 2-D CNN importance is input-gradient importance aggregated onto the exact waveform time axis;
 - `csv/xai/<model>/`: tabular XAI/shapelet exports when present;
 - `plots/model_output_diagnostics/` and `csv/model_output_diagnostics/`: prediction/correlation diagnostics separated by file type.
 
