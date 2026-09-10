@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-CACHE_SCHEMA_VERSION = 6
+CACHE_SCHEMA_VERSION = 7
 
 
 def load_state(path: str | Path) -> dict[str, Any]:
