@@ -82,11 +82,8 @@ def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
 
 
 def model_target(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    family = mode_family(mode)
-    values = dataset.energy_target_ps if family == "energy" else dataset.timing_target_ps
-    if values is None:
-        raise ValueError(f"{family} calibrated-LED ML target is unavailable")
-    return np.asarray(values, dtype=np.float64)
+    """The supervised target is exactly the calibrated LED residual."""
+    return calibrated_led(dataset, mode)
 
 
 def corrected_timing_residual(target_ps: np.ndarray, paired_prediction_ps: np.ndarray) -> np.ndarray:
