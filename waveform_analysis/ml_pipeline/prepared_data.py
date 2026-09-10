@@ -62,7 +62,7 @@ def _best_column(
     if total <= 0:
         raise RuntimeError(f"No development events available for {label} selection")
 
-    # Candidate selection uses the same robust CTR estimator as final reporting,
+    # Candidate selection uses the same CTR estimator as final reporting,
     # but skips bootstrap because uncertainty is not part of threshold ranking.
     for i, candidate in enumerate(candidates):
         residual = pair_delta(np.asarray(grid[:, :, i], dtype=np.float64)) - float(true_tof)
@@ -89,7 +89,7 @@ def _best_column(
         except ValueError as exc:
             if logger is not None:
                 logger.warning(
-                    "%s candidate %.6g robust CTR unavailable | coincidence efficiency %.2f%% (%d/%d) | reason=%s | %s",
+                    "%s candidate %.6g CTR unavailable | coincidence efficiency %.2f%% (%d/%d) | reason=%s | %s",
                     label,
                     float(candidate),
                     100.0 * efficiency,
@@ -106,7 +106,7 @@ def _best_column(
     if best is None:
         raise RuntimeError(
             f"No {label} candidate satisfies the minimum coincidence efficiency "
-            f"{100.0 * float(minimum_efficiency):.1f}% and provides a valid robust CTR; "
+            f"{100.0 * float(minimum_efficiency):.1f}% and provides a valid CTR; "
             f"best observed efficiency={100.0 * best_observed_efficiency:.2f}%"
         )
     return best[1], best[2], best[3], best[4]
@@ -304,7 +304,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             label=f"{family} LED",
         )
         logger.info(
-            "Selected %s LED | threshold %.6g mV | development robust CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
+            "Selected %s LED | threshold %.6g mV | development CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
             family,
             led_choice[family],
             led_score[family],
