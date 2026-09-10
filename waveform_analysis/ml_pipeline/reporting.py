@@ -302,14 +302,24 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
 
     for model, model_residual, model_row in models:
         pair = [led, (model, model_residual, model_row)]
-        xlim = _robust_display_range(
-            [residual for _method, residual, _row in pair],
-            quantiles=(0.001, 0.999),
-            margin_fraction=0.12,
-        )
+
+        lows = [_float(row.get("interval_low_ps")) for _method, _residual, row in pair]
+        highs = [_float(row.get("interval_high_ps")) for _method, _residual, row in pair]
+        finite_lows = [value for value in lows if np.isfinite(value)]
+        finite_highs = [value for value in highs if np.isfinite(value)]
+        if finite_lows and finite_highs:
+            xlim = (min(finite_lows) - 20.0, max(finite_highs) + 20.0)
+        else:
+            xlim = _robust_display_range(
+                [residual for _method, residual, _row in pair],
+                quantiles=(0.005, 0.995),
+                margin_fraction=0.06,
+            )
+
         fig, ax = plt.subplots(figsize=(8.8, 5.2))
         colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
         peak = 0.0
+
         for index, (method, residual, row) in enumerate(pair):
             color = colors[index % len(colors)] if colors else None
             outside = _outside_count(residual, xlim)
@@ -320,28 +330,36 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
             )
             visible = residual[(residual >= xlim[0]) & (residual <= xlim[1])]
             bins = _median_centered_display_edges(visible, xlim, 22)
-            counts, _ = np.histogram(visible, bins=bins)
+            counts, edges = np.histogram(visible, bins=bins)
             if counts.size:
                 peak = max(peak, float(np.max(counts)))
+
             ax.hist(
                 visible,
                 bins=bins,
                 histtype="stepfilled",
-                alpha=.34,
+                alpha=0.5,
                 color=color,
                 edgecolor=color,
                 linewidth=1.35,
                 label=label,
             )
-            low = _float(row.get("interval_low_ps"))
-            high = _float(row.get("interval_high_ps"))
-            if np.isfinite(low):
-                ax.axvline(low, color=color, ls="--", lw=1.4, alpha=.9)
-            if np.isfinite(high):
-                ax.axvline(high, color=color, ls="--", lw=1.4, alpha=.9)
+
+            core_fwhm = _float(row.get("core_fwhm_ps"))
+            if counts.size and np.isfinite(core_fwhm) and core_fwhm > 0:
+                half_height = 0.5 * float(np.max(counts))
+                centers = 0.5 * (edges[:-1] + edges[1:])
+                peak_center = float(centers[int(np.argmax(counts))])
+                ax.hlines(
+                    half_height,
+                    peak_center - 0.5 * core_fwhm,
+                    peak_center + 0.5 * core_fwhm,
+                    colors=color,
+                    linewidth=3.0,
+                )
 
         if peak > 0:
-            ax.set_ylim(0.0, peak * 1.28)
+            ax.set_ylim(0.0, peak * 1.20)
         ax.set_xlim(*xlim)
         ax.set_xlabel(f"{stage.capitalize()} residual [ps]")
         ax.set_ylabel("Events / bin")
