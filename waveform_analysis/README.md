@@ -88,12 +88,12 @@ Concatenated-dataset studies intentionally do **not** produce voltage-comparison
 Detailed reporting is grouped under:
 
 - `plots/corrections/`
-- `plots/train_distribution/`
-- `plots/test_distribution/`
+- `plots/train_distribution/`: one LED-versus-model CTR distribution per model;
+- `plots/test_distribution/`: one LED-versus-model CTR distribution per model;
 - `plots/model_output/<model>/`
-- `plots/xai/`
+- `plots/xai/<model>/`: XAI outputs grouped by model
 
-The reporting histograms are presentation views and use a compact display interval with about 20 bins. The canonical robust CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
+The reporting histograms are presentation views with one model compared against LED per figure. Legends are placed in the upper-right with extra plot headroom and a wider residual display range to avoid obscuring the distributions. The canonical robust CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
 
 ## CLI
 
