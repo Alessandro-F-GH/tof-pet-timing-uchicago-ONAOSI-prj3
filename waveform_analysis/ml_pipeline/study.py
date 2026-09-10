@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import json, logging
+import copy
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .common import voltage_from_name
+from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
 from .event_selection import select_events
@@ -93,10 +96,46 @@ def _prepare_one(root, config, rebuild, logger):
     return prepare_ml_dataset(preprocessed, config, rebuild=rebuild, logger=logger)
 
 
+def _dataset_name(dataset):
+    if bool(dataset.manifest.get("concatenated", False)):
+        return str(dataset.manifest.get("dataset_name", "concatenated"))
+    return Path(dataset.manifest["source"]).stem
+
+
 def _dataset_voltage(dataset, name):
+    if bool(dataset.manifest.get("concatenated", False)):
+        return float("nan")
     values = np.asarray(dataset.bias_voltage_V, dtype=float)
     finite = values[np.isfinite(values)]
     return float(np.median(finite)) if finite.size else voltage_from_name(name)
+
+
+def _prepare_study_datasets(roots, config, rebuild_preprocessing, logger):
+    experiment = config["experiment"]
+    concatenate = bool(experiment.get("concatenate_datasets", False))
+    if not concatenate:
+        return [_prepare_one(root, config, rebuild_preprocessing, logger) for root in roots]
+
+    fixed_led = float(experiment["fixed_led_threshold_mV"])
+    prep_config = copy.deepcopy(config)
+    prep_config["standard_methods"]["led_thresholds_mV"] = [fixed_led]
+    logger.info(
+        "Concatenated experiment enabled | sources=%d | fixed LED threshold=%.6g mV",
+        len(roots),
+        fixed_led,
+    )
+    prepared = [_prepare_one(root, prep_config, rebuild_preprocessing, logger) for root in roots]
+    name = str(experiment.get("concatenated_dataset_name", "concatenated"))
+    directory = Path(config["preprocessing"]["prepared_dir"]) / name
+    return [
+        concatenate_prepared_datasets(
+            prepared,
+            directory,
+            config,
+            name=name,
+            logger=logger,
+        )
+    ]
 
 
 def run_study(
@@ -112,14 +151,16 @@ def run_study(
     if not roots:
         raise FileNotFoundError("No ROOT files matched the configured source")
 
-    datasets = [_prepare_one(root, config, rebuild_preprocessing, logger) for root in roots]
+    datasets = _prepare_study_datasets(roots, config, rebuild_preprocessing, logger)
     rows = []
     seed = int(config["validation"]["seed"])
     mode = str(config["mode"])
+    concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     manifest = {
-        "schema_version": 7,
+        "schema_version": 8,
         "protocol": "single_mode_validation_selected_model_holdout",
         "mode": mode,
+        "concatenate_datasets": concatenate,
         "test_used_for_selection": False,
         "model_selection_metric": "validation_rmse",
         "selected_model_policy": "use_validation_selected_trained_model_without_refit",
@@ -134,25 +175,62 @@ def run_study(
         "config": public_config(config),
         "datasets": {},
     }
+    if concatenate:
+        manifest["concatenated_dataset"] = {
+            "name": str(config["experiment"].get("concatenated_dataset_name", "concatenated")),
+            "fixed_led_threshold_mV": float(config["experiment"]["fixed_led_threshold_mV"]),
+            "source_count": len(roots),
+        }
 
     for dataset in datasets:
-        name = Path(dataset.manifest["source"]).stem
+        name = _dataset_name(dataset)
         voltage = _dataset_voltage(dataset, name)
         store.save_split(name, dataset)
         fitted_models = {}
         family = target_family(mode)
         threshold = float(dataset.manifest["led_threshold_mV"][family])
-        rows.append(_selection_row(name, voltage, mode, "led", dataset.manifest["led_development_ctr_ps"][family], {"threshold_mV": threshold}, "development_histogram_fwhm"))
+        rows.append(
+            _selection_row(
+                name,
+                voltage,
+                mode,
+                "led",
+                dataset.manifest["led_development_ctr_ps"][family],
+                {"threshold_mV": threshold},
+                "development_histogram_fwhm",
+            )
+        )
         if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
             fraction = float(dataset.manifest["cfd_fraction"][family])
-            rows.append(_selection_row(name, voltage, mode, "cfd", dataset.manifest["cfd_development_ctr_ps"][family], {"fraction": fraction}, "development_histogram_fwhm"))
+            rows.append(
+                _selection_row(
+                    name,
+                    voltage,
+                    mode,
+                    "cfd",
+                    dataset.manifest["cfd_development_ctr_ps"][family],
+                    {"fraction": fraction},
+                    "development_histogram_fwhm",
+                )
+            )
 
-        logger.info("ML dataset %s | mode=%s | training=%d | validation=%d | test=%d", name, mode, dataset.training.size, dataset.validation.size, dataset.test.size)
+        logger.info(
+            "ML dataset %s | mode=%s | training=%d | validation=%d | test=%d",
+            name,
+            mode,
+            dataset.training.size,
+            dataset.validation.size,
+            dataset.test.size,
+        )
 
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
             search = search_model(
-                spec, model_config, config, dataset, mode,
+                spec,
+                model_config,
+                config,
+                dataset,
+                mode,
                 seed=semantic_seed(seed, name, mode, model_name, "search"),
                 dataset_name=name,
                 logger=logger,
@@ -164,7 +242,12 @@ def run_study(
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_rmse"))
             logger.info(
                 "Selected dataset=%s | %s/%s | validation RMSE %.6g ps | using selected trained model without refit | output clipped to ±%.0f ps | %s",
-                name, mode, model_name, search.best.score, float(config["ml_output"]["max_abs_ps"]), search.best.candidate,
+                name,
+                mode,
+                model_name,
+                search.best.score,
+                float(config["ml_output"]["max_abs_ps"]),
+                search.best.candidate,
             )
 
             xai = config.get("reporting", {}).get("xai", {}) or {}
@@ -178,15 +261,44 @@ def run_study(
 
         led_reference = calibrated_led(dataset, mode)
         target = model_target(dataset, mode)
-        for stage, indices in (("train", np.asarray(dataset.training, dtype=np.int64)), ("test", np.asarray(dataset.test, dtype=np.int64))):
+        for stage, indices in (
+            ("train", np.asarray(dataset.training, dtype=np.int64)),
+            ("test", np.asarray(dataset.test, dtype=np.int64)),
+        ):
             led = led_reference[indices]
-            rows.append(_metric_row(config, name, voltage, mode, "led", led, indices.size, semantic_seed(seed, name, mode, "led", stage), logger, stage=stage))
+            rows.append(
+                _metric_row(
+                    config,
+                    name,
+                    voltage,
+                    mode,
+                    "led",
+                    led,
+                    indices.size,
+                    semantic_seed(seed, name, mode, "led", stage),
+                    logger,
+                    stage=stage,
+                )
+            )
             store.save_residuals(name, "led", led, stage=stage)
 
             if config["cfd"]:
                 led_mean = float(dataset.manifest["led_training_mean_ps"][family])
                 cfd = standard_delta(dataset, mode, "cfd")[indices] - led_mean
-                rows.append(_metric_row(config, name, voltage, mode, "cfd", cfd, indices.size, semantic_seed(seed, name, mode, "cfd", stage), logger, stage=stage))
+                rows.append(
+                    _metric_row(
+                        config,
+                        name,
+                        voltage,
+                        mode,
+                        "cfd",
+                        cfd,
+                        indices.size,
+                        semantic_seed(seed, name, mode, "cfd", stage),
+                        logger,
+                        stage=stage,
+                    )
+                )
                 store.save_residuals(name, "cfd", cfd, stage=stage)
 
             for model_name, fitted in fitted_models.items():
@@ -194,19 +306,40 @@ def run_study(
                 prediction, _time, _pair = predict_indices(spec, fitted, dataset, mode, indices)
                 store.save_model_output(name, model_name, prediction, stage=stage)
                 residual = corrected_timing_residual(target[indices], prediction)
-                rows.append(_metric_row(config, name, voltage, mode, model_name, residual, indices.size, semantic_seed(seed, name, mode, model_name, stage), logger, stage=stage))
+                rows.append(
+                    _metric_row(
+                        config,
+                        name,
+                        voltage,
+                        mode,
+                        model_name,
+                        residual,
+                        indices.size,
+                        semantic_seed(seed, name, mode, model_name, stage),
+                        logger,
+                        stage=stage,
+                    )
+                )
                 store.save_residuals(name, model_name, residual, stage=stage)
 
-        manifest["datasets"][name] = {
+        dataset_manifest = {
             "prepared_dir": str(dataset.directory),
             "split": dataset.manifest["split"],
             "led_threshold_mV": dataset.manifest["led_threshold_mV"],
             "led_training_mean_ps": dataset.manifest["led_training_mean_ps"],
             "cfd_fraction": dataset.manifest["cfd_fraction"],
             "subsampling": int(dataset.manifest["ml_input"]["subsampling"]),
-            "target_definition": "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
+            "target_definition": dataset.manifest.get(
+                "target_definition",
+                "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
+            ),
             "corrected_definition": "target - paired_model_prediction",
+            "concatenated": bool(dataset.manifest.get("concatenated", False)),
         }
+        if bool(dataset.manifest.get("concatenated", False)):
+            dataset_manifest["source_datasets"] = dataset.manifest.get("source_datasets", [])
+            dataset_manifest["fixed_led_threshold_mV"] = threshold
+        manifest["datasets"][name] = dataset_manifest
         store.write_results(rows)
         store.write_manifest(manifest)
 
