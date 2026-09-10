@@ -1,0 +1,18 @@
+{
+  "extends": "../profiles/ctr_default.json",
+  "data_config": "../data/converted_runs_07_13.json",
+  "preprocessing_config": "../preprocessing/default_ctr.json",
+  "experiment": {
+    "name": "complete_timing_concatenated_cnn_2d",
+    "output_dir": "results/studies/complete_timing_concatenated_cnn_2d",
+    "concatenate_datasets": true,
+    "concatenated_dataset_name": "timing_all_bias",
+    "fixed_led_threshold_mV": 15.0
+  },
+  "standard_methods": {
+    "led_thresholds_mV": [15.0]
+  },
+  "models": ["cnn", "cnn_2d"],
+  "mode": "timing_to_timing",
+  "cfd": false
+}
