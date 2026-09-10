@@ -48,12 +48,29 @@ def _concat_optional(datasets: list[PreparedDataset], attribute: str) -> np.ndar
     return np.concatenate([np.asarray(array) for array in arrays], axis=0)
 
 
+def concatenated_fingerprint(datasets: list[PreparedDataset], config: dict[str, Any], name: str) -> str:
+    return canonical_hash(
+        {
+            "kind": "concatenated_prepared_dataset",
+            "format_version": DATASET_FORMAT_VERSION,
+            "name": str(name),
+            "mode": str(config["mode"]),
+            "fixed_led_threshold_mV": float(config["experiment"]["fixed_led_threshold_mV"]),
+            "true_tof_ps": float(config["data"]["true_tof_ps"]),
+            "fit": config.get("fit"),
+            "ml_input": config.get("ml_input"),
+            "sources": [dataset.manifest.get("fingerprint") for dataset in datasets],
+        }
+    )
+
+
 def concatenate_prepared_datasets(
     datasets: list[PreparedDataset],
     directory: str | Path,
     config: dict[str, Any],
     *,
     name: str,
+    rebuild: bool = False,
     logger=None,
 ) -> PreparedDataset:
     """Materialize one ML dataset from separately prepared bias-voltage datasets.
@@ -73,6 +90,20 @@ def concatenate_prepared_datasets(
     fixed_led = float(experiment["fixed_led_threshold_mV"])
     true_tof = float(config["data"]["true_tof_ps"])
     output = Path(directory).resolve()
+    fingerprint = concatenated_fingerprint(datasets, config, name)
+
+    if output.is_dir() and not rebuild:
+        try:
+            existing = load_prepared_dataset(output)
+        except Exception as exc:
+            raise ValueError(f"Concatenated prepared dataset is stale or unreadable: {output}: {exc}") from exc
+        if existing.manifest.get("fingerprint") != fingerprint:
+            raise ValueError(
+                f"Concatenated prepared dataset is stale: {output}. Re-run with preprocessing rebuild enabled."
+            )
+        if logger is not None:
+            logger.info("Reusing concatenated ML dataset %s | %s", name, output)
+        return existing
     if output.exists():
         shutil.rmtree(output)
     output.mkdir(parents=True)
@@ -177,14 +208,7 @@ def concatenate_prepared_datasets(
 
     manifest = {
         "format_version": DATASET_FORMAT_VERSION,
-        "fingerprint": canonical_hash(
-            {
-                "kind": "concatenated_prepared_dataset",
-                "mode": mode,
-                "fixed_led_threshold_mV": fixed_led,
-                "sources": [row["fingerprint"] for row in source_rows],
-            }
-        ),
+        "fingerprint": fingerprint,
         "dataset_name": str(name),
         "source": f"concatenated::{name}",
         "concatenated": True,
