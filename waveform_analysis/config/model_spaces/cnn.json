@@ -1,18 +1,38 @@
 {
   "model": "cnn",
   "architecture": {
-    "channels": [16, 32, 64],
-    "kernels": [9, 7, 5],
-    "strides": [2, 2, 2],
-    "dilations": [1, 1, 1],
+    "channels": [
+        16,
+        32,
+        64
+      ],
+
+      "kernel_sizes": [
+        33,
+        15,
+        13
+      ],
+
+      "strides": [
+        2,
+        4,
+        4
+      ],
+
+      "dilations": [
+        1,
+        1,
+        2
+      ],
+      
     "adaptive_pool_length": 128,
     "pooling": "avg_max",
     "dense_units": [32]
   },
   "parameters": {
-    "learning_rate": [0.01, 0.001, 0.0001],
-    "batch_size": [32, 64, 128],
-    "weight_decay": [0.00001, 0.0001, 0.001]
+    "learning_rate": [ 0.001],
+    "batch_size": [128],
+    "weight_decay": [1e-5 ]
   },
   "training": {
     "device": "auto",

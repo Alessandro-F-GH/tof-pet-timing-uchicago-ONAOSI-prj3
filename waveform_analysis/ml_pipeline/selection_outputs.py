@@ -121,7 +121,7 @@ def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits,
         for family, values in noise.items():
             for detector in range(2):
                 sample=np.asarray(values[dev,detector],dtype=float); sample=sample[np.isfinite(sample)]; noise_samples.append((family,detector,sample)); noise_refs.append(float(noise_limits[family][detector]))
-        noise_xlim=_shared_display_range([item[2] for item in noise_samples],references=noise_refs,quantiles=(0.0,0.995))
+        noise_xlim=_shared_display_range([item[2] for item in noise_samples],references=noise_refs,quantiles=(0.01, 0.99))
         noise_bins=np.linspace(noise_xlim[0],noise_xlim[1],101)
         panels=len(noise_samples); fig,axes=plt.subplots(panels,1,figsize=(8,2.8*panels),squeeze=False,sharex=True)
         for panel,(family,detector,sample) in enumerate(noise_samples):

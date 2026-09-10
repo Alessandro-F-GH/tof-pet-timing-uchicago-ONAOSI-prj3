@@ -8,13 +8,13 @@
     "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]]
   },
   "timing": {
-    "trigger_threshold_mV": [60.0, 60.0],
+    "trigger_threshold_mV": [120.0, 120.0],
     "vertical_scale_limit_mV": [[-20.0, 140.0], [-20.0, 140.0]],
     "rising_edge_before_trigger_ns": 1.0
   },
   "selection": {
     "baseline_noise": {
-      "enabled": false,
+      "enabled": true,
       "window_ns": [-4.0, -1.0],
       "lambda_mad": 5.0
     },
@@ -32,15 +32,15 @@
     "selection_sigma_high": 4.0
   },
   "tot_peak": {
-    "histogram_bin_ns": 0.02,
+    "histogram_bin_ns": 5e-3,
     "search_quantile_min": 0.5,
     "smoothing_sigma_bins": 2.0,
     "initial_half_width_ns": 0.20,
     "iteration_sigma": 2.5,
     "max_iterations": 6,
     "convergence_tolerance_ns": 0.001,
-    "selection_sigma_low": -2.0,
-    "selection_sigma_high": 1.0
+    "selection_sigma_low": -3.0,
+    "selection_sigma_high": 3.0
   },
   "io": {"step_size": "128 MB", "max_events": 0}
 }

@@ -113,7 +113,7 @@ def _distribution_plot(output,run,rows,mode,dataset,stage,paths):
     if not series:return
     xlim=_robust_display_range([r for _,r,_ in series],quantiles=(0.005,0.995),margin_fraction=0.06); fig,ax=plt.subplots(figsize=(8.6,4.8)); colors=plt.rcParams["axes.prop_cycle"].by_key().get("color",[])
     for index,(method,residual,row) in enumerate(series):
-        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"; visible=residual[(residual>=xlim[0])&(residual<=xlim[1])]; bins=_median_centered_display_edges(visible,xlim,20); ax.hist(visible,bins=bins,histtype="stepfilled",alpha=.16,color=color,edgecolor=color,linewidth=1.35,label=label)
+        color=colors[index%len(colors)] if colors else None; outside=_outside_count(residual,xlim); label=f"{LABELS.get(method,method)} · CTR {_measurement_text(_float(row.get('ctr_ps')),_float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"; visible=residual[(residual>=xlim[0])&(residual<=xlim[1])]; bins=_median_centered_display_edges(visible,xlim,20); ax.hist(visible,bins=bins,histtype="stepfilled",alpha=.4,color=color,edgecolor=color,linewidth=1.35,label=label)
         left=_float(row.get("fwhm_left_ps")); right=_float(row.get("fwhm_right_ps"))
         if np.isfinite(left):ax.axvline(left,color=color,ls="--",lw=1.45,alpha=.9)
         if np.isfinite(right):ax.axvline(right,color=color,ls="--",lw=1.45,alpha=.9)

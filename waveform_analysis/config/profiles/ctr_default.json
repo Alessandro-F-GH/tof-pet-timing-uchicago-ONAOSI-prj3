@@ -1,9 +1,9 @@
 {
   "model_spaces_dir": "config/model_spaces",
   "validation": {
-    "seed": 20260813,
-    "test_fraction": 0.20,
-    "validation_fraction": 0.20
+    "seed": 20260909,
+    "test_fraction": 0.40,
+    "validation_fraction": 0.2
   },
   "fit": {
     "min_events": 100,
