@@ -2,30 +2,55 @@
   "model_spaces_dir": "config/model_spaces",
   "validation": {
     "seed": 20260909,
-    "test_fraction": 0.40,
+    "test_fraction": 0.4,
     "validation_fraction": 0.2
   },
   "fit": {
     "min_events": 100,
-    "coverage_fraction": 0.90,
-    "bin_width_ps": 5.0,
+    "coverage_fraction": 0.9,
+    "bin_width_ps": 5,
     "bootstrap_samples": 500
   },
   "reporting": {
     "dpi": 180,
-    "xai": {"enabled": true, "max_events": 1024}
+    "xai": {
+      "enabled": true,
+      "max_events": 1024
+    }
   },
   "standard_methods": {
-    "led_thresholds_mV": [5.0, 15.0, 25.0, 35.0, 45.0, 50.0, 55.0, 60.0],
+    "led_thresholds_mV": [
+      5,
+      15,
+      25,
+      35,
+      45,
+      50,
+      55,
+      60
+    ],
     "led_minimum_crossing_efficiency": 0.95,
-    "led_coincidence_window_ns": 2.0,
-    "cfd_fractions": [0.05]
+    "led_coincidence_window_ns": 2,
+    "cfd_fractions": [
+      0.05
+    ]
   },
   "ml_output": {
-    "max_abs_ps": 2000.0
+    "max_abs_ps": 2000
   },
   "ml_input": {
-    "window_ns": {"start": -2.0, "end": 30.0},
+    "window_ns": {
+      "start": -2,
+      "end": 30
+    },
     "subsampling": 1
+  },
+  "ml_training": {
+    "target_abs_max_ps": [
+      100,
+      200,
+      400,
+      800
+    ]
   }
 }
