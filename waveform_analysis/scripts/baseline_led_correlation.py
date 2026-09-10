@@ -19,15 +19,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Standalone diagnostic of baseline-level difference versus LED timing error. "
-            "It reads existing native-preprocessed caches and does not modify or run the main pipeline."
+            "Only events inside the configured LED coincidence window are analysed. "
+            "Existing native-preprocessed caches are read without modifying the main pipeline."
         )
     )
-    parser.add_argument("--config", type=Path, required=True, help="Experiment JSON used to locate caches and timing settings.")
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument(
         "--split",
         choices=("development", "test", "all"),
         default="development",
-        help="Population to analyse. Default: development, so the blind test is not inspected.",
+        help="Population to analyse before coincidence filtering. Default: development.",
     )
     parser.add_argument(
         "--baseline-window-ns",
@@ -35,25 +36,25 @@ def parse_args() -> argparse.Namespace:
         nargs=2,
         metavar=("START", "STOP"),
         default=None,
-        help="Baseline window relative to the selected trigger. Default: preprocessing.selection.baseline_noise.window_ns.",
+        help="Baseline window relative to selected trigger. Default: baseline_noise.window_ns.",
     )
     parser.add_argument(
         "--threshold-mv",
         type=float,
         default=None,
-        help="Override the selected LED threshold. Otherwise read it from the prepared-dataset manifest.",
+        help="Override selected LED threshold; otherwise read it from the prepared manifest.",
     )
     parser.add_argument(
         "--dataset",
         action="append",
         default=None,
-        help="Optional dataset-name filter. May be repeated; exact ROOT stem is expected.",
+        help="Optional exact ROOT stem filter. May be repeated.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Output directory. Default: <study_output>/baseline_led_correlation.",
+        help="Default: <study_output>/baseline_led_correlation.",
     )
     return parser.parse_args()
 
@@ -83,14 +84,7 @@ def _family_arrays(directory: Path, family: str) -> tuple[np.ndarray, ...]:
     )
 
 
-def _crossing_ps(
-    signal: np.ndarray,
-    start_time_s: float,
-    interval_s: float,
-    rising_start: int,
-    rising_stop: int,
-    level_mV: float,
-) -> float:
+def _crossing_ps(signal, start_time_s, interval_s, rising_start, rising_stop, level_mV) -> float:
     """Same two-sample LED interpolation used by the waveform pipeline."""
     y = np.asarray(signal, dtype=np.float64)
     a, b = int(rising_start), int(rising_stop)
@@ -112,12 +106,7 @@ def _crossing_ps(
     return (float(start_time_s) + (float(lower) + fraction) * float(interval_s)) * 1.0e12
 
 
-def _baseline_level(
-    signal: np.ndarray,
-    interval_s: float,
-    materialized_before_ns: float,
-    baseline_window_ns: tuple[float, float],
-) -> float:
+def _baseline_level(signal, interval_s, materialized_before_ns, baseline_window_ns) -> float:
     """Mean baseline level in a window expressed relative to the selected trigger."""
     y = np.asarray(signal, dtype=np.float64)
     dt_ns = float(interval_s) * 1.0e9
@@ -132,11 +121,7 @@ def _baseline_level(
     return float(np.mean(y[mask]))
 
 
-def _selected_threshold(
-    prepared_manifest: dict[str, Any] | None,
-    family: str,
-    override: float | None,
-) -> tuple[float, str]:
+def _selected_threshold(prepared_manifest, family: str, override: float | None) -> tuple[float, str]:
     if override is not None:
         return float(override), "command_line_override"
     if prepared_manifest is None:
@@ -153,6 +138,7 @@ def _selected_threshold(
 def _calibration_bias(
     delta_led_ps: np.ndarray,
     split: np.ndarray,
+    coincidence_mask: np.ndarray,
     true_tof_ps: float,
     family: str,
     threshold_mV: float,
@@ -166,13 +152,11 @@ def _calibration_bias(
             if np.isfinite(training_mean):
                 return training_mean - float(true_tof_ps), "prepared_training_mean"
 
-    development = (np.asarray(split) == 0) & np.isfinite(delta_led_ps)
+    development = (np.asarray(split) == 0) & np.asarray(coincidence_mask, dtype=bool) & np.isfinite(delta_led_ps)
     if np.count_nonzero(development) < 2:
-        raise RuntimeError("Not enough development LED pairs to estimate the fixed channel offset")
-    # A constant centering term does not change correlation. Mean is used here to
-    # match the pipeline calibration convention when an explicit threshold is tested.
+        raise RuntimeError("Not enough development coincidence events to estimate the fixed channel offset")
     mean_delta = float(np.mean(np.asarray(delta_led_ps)[development]))
-    return mean_delta - float(true_tof_ps), f"development_mean_at_{threshold_mV:g}mV"
+    return mean_delta - float(true_tof_ps), f"development_coincidence_mean_at_{threshold_mV:g}mV"
 
 
 def _stats(x: np.ndarray, y: np.ndarray) -> dict[str, float]:
@@ -218,7 +202,6 @@ def _write_events(path: Path, rows: list[dict[str, Any]]) -> None:
         "led_2_ps",
         "raw_led_error_ps",
         "calibrated_led_error_ps",
-        "inside_pipeline_coincidence",
     ]
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -235,21 +218,16 @@ def _plot(
     baseline_window_ns: tuple[float, float],
     delta_baseline: np.ndarray,
     led_error: np.ndarray,
-    inside_coincidence: np.ndarray,
     statistics: dict[str, float],
 ) -> None:
     finite = np.isfinite(delta_baseline) & np.isfinite(led_error)
     x = np.asarray(delta_baseline)[finite]
     y = np.asarray(led_error)[finite]
-    inside = np.asarray(inside_coincidence, dtype=bool)[finite]
     if x.size == 0:
         return
 
     fig, ax = plt.subplots(figsize=(8.8, 5.8))
-    if np.any(inside):
-        ax.scatter(x[inside], y[inside], s=18, alpha=0.25, label=f"inside coincidence ({np.count_nonzero(inside)})")
-    if np.any(~inside):
-        ax.scatter(x[~inside], y[~inside], s=24, alpha=0.55, marker="x", label=f"outside coincidence ({np.count_nonzero(~inside)})")
+    ax.scatter(x, y, s=18, alpha=0.25, label=f"coincidence events ({x.size})")
 
     slope = statistics["slope_ps_per_mV"]
     intercept = statistics["intercept_ps"]
@@ -261,7 +239,7 @@ def _plot(
     ax.axvline(0.0, ls="--", lw=1.0, alpha=0.5)
     ax.set_xlabel(r"Baseline-level difference $B_1-B_2$ [mV]")
     ax.set_ylabel("Calibrated LED timing error [ps]")
-    ax.set_title(f"{dataset} · {family} · LED {threshold_mV:g} mV · {split_name}")
+    ax.set_title(f"{dataset} · {family} · LED {threshold_mV:g} mV · {split_name} · coincidence only")
     ax.grid(alpha=0.2)
     ax.legend(loc="best")
     ax.text(
@@ -283,12 +261,7 @@ def _plot(
     plt.close(fig)
 
 
-def analyse_dataset(
-    root: Path,
-    config: dict[str, Any],
-    args: argparse.Namespace,
-    output_root: Path,
-) -> dict[str, Any]:
+def analyse_dataset(root: Path, config: dict[str, Any], args: argparse.Namespace, output_root: Path) -> dict[str, Any]:
     dataset = root.stem
     family = mode_family(str(config["mode"]))
     preprocessed = Path(config["preprocessing"]["preprocessed_dir"]) / dataset
@@ -334,9 +307,12 @@ def analyse_dataset(
     delta_baseline = baseline[:, 0] - baseline[:, 1]
     delta_led = led[:, 0] - led[:, 1]
     raw_error = delta_led - true_tof_ps
+    coincidence = np.isfinite(raw_error) & (np.abs(raw_error) <= coincidence_window_ps)
+
     calibration_bias_ps, calibration_source = _calibration_bias(
         delta_led,
         split,
+        coincidence,
         true_tof_ps,
         family,
         threshold_mV,
@@ -344,7 +320,6 @@ def analyse_dataset(
         prepared_manifest,
     )
     calibrated_error = raw_error - calibration_bias_ps
-    inside_coincidence = np.isfinite(raw_error) & (np.abs(raw_error) <= coincidence_window_ps)
 
     if args.split == "development":
         requested = split == 0
@@ -352,28 +327,28 @@ def analyse_dataset(
         requested = split == 1
     else:
         requested = np.ones(n, dtype=bool)
-    finite = requested & np.isfinite(delta_baseline) & np.isfinite(calibrated_error)
-    statistics = _stats(delta_baseline[finite], calibrated_error[finite])
-    inside_stats = _stats(delta_baseline[finite & inside_coincidence], calibrated_error[finite & inside_coincidence])
+
+    # Non-coincidence events are intentionally excluded from every correlation
+    # statistic, exported event table, and scatter plot.
+    analysed = requested & coincidence & np.isfinite(delta_baseline) & np.isfinite(calibrated_error)
+    statistics = _stats(delta_baseline[analysed], calibrated_error[analysed])
 
     dataset_dir = output_root / dataset
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    event_rows = []
-    for i in np.flatnonzero(requested):
-        event_rows.append(
-            {
-                "event_index": int(event_index[i]),
-                "split": "development" if split[i] == 0 else "test",
-                "baseline_1_mV": float(baseline[i, 0]),
-                "baseline_2_mV": float(baseline[i, 1]),
-                "delta_baseline_mV": float(delta_baseline[i]),
-                "led_1_ps": float(led[i, 0]),
-                "led_2_ps": float(led[i, 1]),
-                "raw_led_error_ps": float(raw_error[i]),
-                "calibrated_led_error_ps": float(calibrated_error[i]),
-                "inside_pipeline_coincidence": bool(inside_coincidence[i]),
-            }
-        )
+    event_rows = [
+        {
+            "event_index": int(event_index[i]),
+            "split": "development" if split[i] == 0 else "test",
+            "baseline_1_mV": float(baseline[i, 0]),
+            "baseline_2_mV": float(baseline[i, 1]),
+            "delta_baseline_mV": float(delta_baseline[i]),
+            "led_1_ps": float(led[i, 0]),
+            "led_2_ps": float(led[i, 1]),
+            "raw_led_error_ps": float(raw_error[i]),
+            "calibrated_led_error_ps": float(calibrated_error[i]),
+        }
+        for i in np.flatnonzero(analysed)
+    ]
     _write_events(dataset_dir / "events.csv", event_rows)
     _plot(
         dataset_dir / "baseline_vs_led_error.pdf",
@@ -382,9 +357,8 @@ def analyse_dataset(
         args.split,
         threshold_mV,
         baseline_window_ns,
-        delta_baseline[requested],
-        calibrated_error[requested],
-        inside_coincidence[requested],
+        delta_baseline[analysed],
+        calibrated_error[analysed],
         statistics,
     )
 
@@ -402,20 +376,14 @@ def analyse_dataset(
         "calibration_source": calibration_source,
         "coincidence_window_ps": coincidence_window_ps,
         "baseline_noise_filter_enabled": bool(config["preprocessing"]["selection"]["baseline_noise"].get("enabled", False)),
-        "n_requested": int(np.count_nonzero(requested)),
-        "n_finite": int(np.count_nonzero(finite)),
-        "n_inside_pipeline_coincidence": int(np.count_nonzero(finite & inside_coincidence)),
-        "delta_baseline_mean_mV": float(np.mean(delta_baseline[finite])) if np.any(finite) else float("nan"),
-        "delta_baseline_std_mV": float(np.std(delta_baseline[finite])) if np.any(finite) else float("nan"),
-        "led_error_mean_ps": float(np.mean(calibrated_error[finite])) if np.any(finite) else float("nan"),
-        "led_error_std_ps": float(np.std(calibrated_error[finite])) if np.any(finite) else float("nan"),
+        "n_requested_before_coincidence": int(np.count_nonzero(requested)),
+        "n_excluded_noncoincidence": int(np.count_nonzero(requested & ~coincidence)),
+        "n_analysed": int(np.count_nonzero(analysed)),
+        "delta_baseline_mean_mV": float(np.mean(delta_baseline[analysed])) if np.any(analysed) else float("nan"),
+        "delta_baseline_std_mV": float(np.std(delta_baseline[analysed])) if np.any(analysed) else float("nan"),
+        "led_error_mean_ps": float(np.mean(calibrated_error[analysed])) if np.any(analysed) else float("nan"),
+        "led_error_std_ps": float(np.std(calibrated_error[analysed])) if np.any(analysed) else float("nan"),
         **statistics,
-        "inside_coincidence_pearson_r": inside_stats["pearson_r"],
-        "inside_coincidence_pearson_p": inside_stats["pearson_p"],
-        "inside_coincidence_spearman_rho": inside_stats["spearman_rho"],
-        "inside_coincidence_spearman_p": inside_stats["spearman_p"],
-        "inside_coincidence_slope_ps_per_mV": inside_stats["slope_ps_per_mV"],
-        "inside_coincidence_r_squared": inside_stats["r_squared"],
     }
     with (dataset_dir / "summary.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2, allow_nan=True)
@@ -426,9 +394,8 @@ def analyse_dataset(
 def write_summary(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
-    fields = list(rows[0])
     with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
 
@@ -445,12 +412,12 @@ def main() -> None:
         roots = [root for root in roots if root.stem in wanted]
         missing = wanted - {root.stem for root in roots}
         if missing:
-            raise FileNotFoundError(f"Requested dataset(s) not found in config ROOT discovery: {sorted(missing)}")
+            raise FileNotFoundError(f"Requested dataset(s) not found: {sorted(missing)}")
     if not roots:
         raise FileNotFoundError("No ROOT datasets matched the configured source")
 
     if bool(config["preprocessing"]["selection"]["baseline_noise"].get("enabled", False)):
-        print("WARNING: baseline_noise selection is enabled; the analysed preprocessed population is already baseline-noise selected.")
+        print("WARNING: baseline_noise selection is enabled; the cached population is already baseline-noise selected.")
 
     summaries = []
     for root in roots:
@@ -458,8 +425,9 @@ def main() -> None:
         summary = analyse_dataset(root, config, args, output_root)
         summaries.append(summary)
         print(
-            f"  n={summary['n_finite']} | Pearson r={summary['pearson_r']:+.4f} | "
-            f"Spearman rho={summary['spearman_rho']:+.4f} | slope={summary['slope_ps_per_mV']:+.3f} ps/mV"
+            f"  n={summary['n_analysed']} | excluded non-coincidence={summary['n_excluded_noncoincidence']} | "
+            f"Pearson r={summary['pearson_r']:+.4f} | Spearman rho={summary['spearman_rho']:+.4f} | "
+            f"slope={summary['slope_ps_per_mV']:+.3f} ps/mV"
         )
 
     write_summary(output_root / "summary.csv", summaries)
