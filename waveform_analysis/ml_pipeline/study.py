@@ -132,6 +132,7 @@ def _prepare_study_datasets(roots, config, rebuild_preprocessing, logger):
 
     fixed_led = float(experiment["fixed_led_threshold_mV"])
     prep_config = copy.deepcopy(config)
+    prep_config["_defer_dead_region_mask"] = True
     prep_config["standard_methods"]["led_thresholds_mV"] = [fixed_led]
     logger.info(
         "Concatenated experiment enabled | sources=%d | fixed LED threshold=%.6g mV",
