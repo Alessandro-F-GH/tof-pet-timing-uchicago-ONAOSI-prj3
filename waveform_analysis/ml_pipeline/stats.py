@@ -4,8 +4,9 @@ import numpy as np
 
 from utils_fit import fit_ctr_ps
 
-# The waveform pipeline owns no CTR estimator. Direct fixed-bin histogram FWHM
-# and bootstrap uncertainty live in utils_fit.
+# The waveform pipeline owns no CTR estimator. The canonical robust shortest-
+# coverage CTR and its bootstrap uncertainty live in utils_fit; histogram FWHM
+# is only a secondary core diagnostic.
 ctr_estimate = fit_ctr_ps
 
 
