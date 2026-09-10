@@ -166,11 +166,9 @@ def concatenate_prepared_datasets(
     np.savez_compressed(output / "splits.npz", training=training, validation=validation, test=test)
 
     led = _concat_optional(datasets, f"{family}_led_time_ps")
-    anchor = _concat_optional(datasets, f"{family}_anchor_time_ps")
-    if led is None or anchor is None:
-        raise ValueError(f"Cannot concatenate: {family} LED/anchor arrays are incomplete")
+    if led is None:
+        raise ValueError(f"Cannot concatenate: {family} LED timing is incomplete")
     np.save(output / f"{family}_led_time_ps.npy", np.asarray(led, dtype=np.float64))
-    np.save(output / f"{family}_anchor_time_ps.npy", np.asarray(anchor, dtype=np.float64))
 
     led_pair = np.asarray(led[:, 0] - led[:, 1], dtype=np.float64)
     mean_led = float(np.mean(led_pair[training]))
@@ -235,10 +233,12 @@ def concatenate_prepared_datasets(
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
         "normalization": first.manifest["normalization"],
-        "target_definition": "delta_t_led - true_tof - global_concatenated_calibration_bias",
-        "anchor_definition": first.manifest.get("anchor_definition"),
-        "corrected_definition": "target - paired_model_prediction",
+        "target_definition": "calibrated_led = delta_t_led - true_tof - global_concatenated_calibration_bias",
+        "corrected_definition": "calibrated_led - paired_model_prediction",
         "time_reference": first.manifest.get("time_reference"),
+        "interpolation": first.manifest.get("interpolation"),
+        "crossing_sample_policy": first.manifest.get("crossing_sample_policy"),
+        "dead_region_mask": first.manifest.get("dead_region_mask"),
     }
     atomic_json(output / "manifest.json", manifest)
     if logger is not None:
