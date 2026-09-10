@@ -12,10 +12,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import linregress, pearsonr, spearmanr
 
+from utils_fit import fit_ctr_ps
 from waveform_analysis.ml_pipeline.dataset import PreparedDataset, load_prepared_dataset
 from waveform_analysis.ml_pipeline.view import calibrated_led, inverse_pair, waveform_view
-
-WIDTH_FACTOR = 2.35
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Relate event-wise waveform-channel distance to absolute calibrated LED timing error. "
             "The selection scan accepts events closest to the mean waveform distance, using "
-            "abs(distance - mean_distance). For this diagnostic only, timing width is 2.35*sigma."
+            "abs(distance - mean_distance). CTR uses the canonical repository histogram-FWHM estimator."
         )
     )
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -46,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-samples",
         type=int,
         default=None,
-        help="Bootstrap repeats for uncertainty of 2.35*sigma. Default: study fit.bootstrap_samples.",
+        help="CTR bootstrap repeats. Default: study fit.bootstrap_samples.",
     )
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -229,7 +228,11 @@ def _plot_relation(
         low = ty - np.asarray([r["abs_led_error_q16_ps"] for r in trend])
         high = np.asarray([r["abs_led_error_q84_ps"] for r in trend]) - ty
         ax.errorbar(
-            tx, ty, yerr=np.vstack([low, high]), marker="o", capsize=3,
+            tx,
+            ty,
+            yerr=np.vstack([low, high]),
+            marker="o",
+            capsize=3,
             label="equal-count-bin median ± 16–84%",
         )
     ax.set_xlabel(xlabel)
@@ -238,50 +241,18 @@ def _plot_relation(
     ax.grid(alpha=0.2)
     ax.legend(loc="best")
     ax.text(
-        0.02, 0.98,
+        0.02,
+        0.98,
         f"n={stats['n']}\nPearson r={stats['pearson_r']:+.3f}\n"
         f"Spearman ρ={stats['spearman_rho']:+.3f}\nlinear R²={stats['linear_r_squared']:.3f}",
-        transform=ax.transAxes, ha="left", va="top",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
         bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.9},
     )
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
-
-
-def _width(values: np.ndarray) -> float:
-    x = np.asarray(values, dtype=np.float64)
-    x = x[np.isfinite(x)]
-    if x.size < 2:
-        raise ValueError("At least two finite values are required")
-    return float(WIDTH_FACTOR * np.std(x, ddof=1))
-
-
-def _width_with_bootstrap(values: np.ndarray, *, samples: int, seed: int) -> tuple[float, float, int]:
-    x = np.asarray(values, dtype=np.float64)
-    x = x[np.isfinite(x)]
-    central = _width(x)
-    if samples < 2:
-        return central, float("nan"), 0
-    rng = np.random.default_rng(seed)
-    estimates = np.asarray(
-        [_width(x[rng.integers(0, x.size, size=x.size)]) for _ in range(samples)],
-        dtype=np.float64,
-    )
-    estimates = estimates[np.isfinite(estimates)]
-    uncertainty = float(np.std(estimates, ddof=1)) if estimates.size > 1 else float("nan")
-    return central, uncertainty, int(estimates.size)
-
-
-def _selection_score(distance: np.ndarray, finite_mask: np.ndarray | None = None) -> tuple[float, np.ndarray]:
-    distance = np.asarray(distance, dtype=np.float64)
-    finite = np.isfinite(distance) if finite_mask is None else (np.isfinite(distance) & finite_mask)
-    if not np.any(finite):
-        raise ValueError("No finite waveform distances")
-    mean_distance = float(np.mean(distance[finite]))
-    score = np.abs(distance - mean_distance)
-    score[~np.isfinite(distance)] = np.nan
-    return mean_distance, score
 
 
 def _efficiency_grid(step_percent: float) -> np.ndarray:
@@ -291,20 +262,33 @@ def _efficiency_grid(step_percent: float) -> np.ndarray:
     return np.append(np.arange(step, 100.0, step, dtype=np.float64), 100.0)
 
 
+def _fit_ctr(
+    values: np.ndarray,
+    fit_config: dict[str, Any],
+    *,
+    bootstrap_samples: int,
+    seed: int,
+):
+    config = dict(fit_config)
+    config["bootstrap_samples"] = int(bootstrap_samples)
+    return fit_ctr_ps(values, config, seed=int(seed), bootstrap=True)
+
+
 def _selection_scan(
     distance: np.ndarray,
     signed_error: np.ndarray,
+    fit_config: dict[str, Any],
     *,
-    minimum: int,
     efficiency_step_percent: float,
     bootstrap_samples: int,
     seed: int,
-) -> tuple[float, np.ndarray, list[dict[str, Any]]]:
+) -> tuple[float, list[dict[str, Any]]]:
     finite = np.isfinite(distance) & np.isfinite(signed_error)
     x = np.asarray(distance[finite], dtype=np.float64)
     error = np.asarray(signed_error[finite], dtype=np.float64)
     mean_distance = float(np.mean(x))
     deviation = np.abs(x - mean_distance)
+    minimum = int(fit_config.get("min_events", 100))
     rows = []
 
     for i, requested_percent in enumerate(_efficiency_grid(efficiency_step_percent)):
@@ -313,9 +297,15 @@ def _selection_scan(
         n = int(np.count_nonzero(accepted))
         if n < minimum:
             continue
-        width, uncertainty, successful = _width_with_bootstrap(
-            error[accepted], samples=bootstrap_samples, seed=seed + i
-        )
+        try:
+            result = _fit_ctr(
+                error[accepted],
+                fit_config,
+                bootstrap_samples=bootstrap_samples,
+                seed=seed + i,
+            )
+        except ValueError:
+            continue
         rows.append(
             {
                 "requested_efficiency_percent": float(requested_percent),
@@ -326,14 +316,16 @@ def _selection_scan(
                 "accepted_distance_high_mV": mean_distance + threshold,
                 "n_accepted": n,
                 "n_total": int(x.size),
-                "width_2p35sigma_ps": width,
-                "width_uncertainty_ps": uncertainty,
-                "bootstrap_successful": successful,
+                "ctr_ps": float(result.ctr_ps),
+                "ctr_uncertainty_ps": float(result.ctr_error_ps),
+                "bootstrap_successful": int(result.bootstrap_successful),
+                "fwhm_left_ps": float(result.left_half_ps),
+                "fwhm_right_ps": float(result.right_half_ps),
                 "mean_abs_led_error_ps": float(np.mean(np.abs(error[accepted]))),
                 "median_abs_led_error_ps": float(np.median(np.abs(error[accepted]))),
             }
         )
-    return mean_distance, deviation, rows
+    return mean_distance, rows
 
 
 def _plot_selection_scan(
@@ -345,13 +337,13 @@ def _plot_selection_scan(
 ) -> None:
     if not rows:
         return
-    efficiency = np.asarray([r["efficiency_percent"] for r in rows])
-    width = np.asarray([r["width_2p35sigma_ps"] for r in rows])
-    uncertainty = np.asarray([r["width_uncertainty_ps"] for r in rows])
+    efficiency = np.asarray([r["efficiency_percent"] for r in rows], dtype=np.float64)
+    ctr = np.asarray([r["ctr_ps"] for r in rows], dtype=np.float64)
+    uncertainty = np.asarray([r["ctr_uncertainty_ps"] for r in rows], dtype=np.float64)
     fig, ax = plt.subplots(figsize=(8.2, 5.0))
-    ax.errorbar(efficiency, width, yerr=uncertainty, marker=".", ms=4, capsize=2, lw=1.0)
+    ax.errorbar(efficiency, ctr, yerr=uncertainty, marker=".", ms=4, capsize=2, lw=1.0)
     ax.set_xlabel("Accepted events closest to mean waveform distance [%]")
-    ax.set_ylabel(r"Timing width $2.35\sigma$ [ps]")
+    ax.set_ylabel("CTR FWHM [ps]")
     ax.set_title(f"{dataset_name} · {stage} · |{metric} distance − mean| selection")
     ax.grid(alpha=0.2)
     fig.tight_layout()
@@ -378,47 +370,44 @@ def _plot_best_distribution(
     metric: str,
     values: np.ndarray,
     best: dict[str, Any],
+    fit_config: dict[str, Any],
     *,
     bootstrap_samples: int,
     seed: int,
 ) -> dict[str, Any]:
-    values = np.asarray(values, dtype=np.float64)
-    values = values[np.isfinite(values)]
-    width, uncertainty, successful = _width_with_bootstrap(values, samples=bootstrap_samples, seed=seed)
-    mean = float(np.mean(values))
-    sigma = float(np.std(values, ddof=1))
-
-    # Histogram is visualization only. Width is computed directly from all selected samples.
-    low, high = np.quantile(values, [0.005, 0.995])
-    if high <= low:
-        low, high = float(np.min(values)), float(np.max(values))
-    margin = 0.06 * max(float(high - low), 1.0)
-    edges = np.linspace(float(low - margin), float(high + margin), 31)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    bin_width = float(edges[1] - edges[0])
-    gaussian = (
-        values.size * bin_width / (sigma * np.sqrt(2.0 * np.pi))
-        * np.exp(-0.5 * ((centers - mean) / sigma) ** 2)
-    ) if sigma > 0.0 else np.zeros_like(centers)
-
-    deviation_threshold = float(best["abs_distance_minus_mean_threshold_mV"])
+    result = _fit_ctr(
+        np.asarray(values, dtype=np.float64),
+        fit_config,
+        bootstrap_samples=bootstrap_samples,
+        seed=seed,
+    )
     mean_distance = float(best["mean_distance_mV"])
+    deviation_threshold = float(best["abs_distance_minus_mean_threshold_mV"])
+
     fig, ax = plt.subplots(figsize=(8.4, 5.1))
-    ax.hist(values, bins=edges, histtype="stepfilled", alpha=0.42, edgecolor="black", label="selected events")
-    ax.plot(centers, gaussian, lw=1.8, label="Gaussian with sample mean and σ")
+    if result.edges_ps.size == result.counts.size + 1:
+        ax.stairs(result.counts, result.edges_ps, fill=True, alpha=0.42, label="selected events")
+    else:
+        ax.hist(values, bins=30, histtype="stepfilled", alpha=0.42, label="selected events")
+    ax.axhline(float(result.half_max_events), ls=":", lw=1.2, label="half maximum")
+    ax.axvline(float(result.left_half_ps), ls="--", lw=1.4, label="FWHM crossings")
+    ax.axvline(float(result.right_half_ps), ls="--", lw=1.4)
     ax.set_xlabel("Calibrated LED timing residual [ps]")
-    ax.set_ylabel("Events / display bin")
+    ax.set_ylabel(f"Events / {float(result.bin_width_ps):g} ps bin")
     ax.set_title(f"{dataset_name} · best |{metric} distance − mean| selection ({stage})")
     ax.grid(axis="y", alpha=0.2)
     ax.legend(loc="best")
     ax.text(
-        0.02, 0.97,
+        0.02,
+        0.97,
         f"efficiency = {float(best['efficiency_percent']):.1f}%\n"
         f"mean distance = {mean_distance:.4g} mV\n"
         f"|distance − mean| ≤ {deviation_threshold:.4g} mV\n"
-        f"n = {int(best['n_accepted'])}\nσ = {sigma:.2f} ps\n"
-        f"2.35σ = {width:.2f} ± {uncertainty:.2f} ps",
-        transform=ax.transAxes, ha="left", va="top",
+        f"n = {int(best['n_accepted'])}\n"
+        f"CTR = {float(result.ctr_ps):.2f} ± {float(result.ctr_error_ps):.2f} ps",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
         bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.9},
     )
     fig.tight_layout()
@@ -427,10 +416,13 @@ def _plot_best_distribution(
 
     return {
         **best,
-        "sigma_ps": sigma,
-        "recomputed_width_2p35sigma_ps": width,
-        "recomputed_width_uncertainty_ps": uncertainty,
-        "bootstrap_successful": successful,
+        "recomputed_ctr_ps": float(result.ctr_ps),
+        "recomputed_ctr_uncertainty_ps": float(result.ctr_error_ps),
+        "fwhm_left_ps": float(result.left_half_ps),
+        "fwhm_right_ps": float(result.right_half_ps),
+        "half_max_events": float(result.half_max_events),
+        "bin_width_ps": float(result.bin_width_ps),
+        "bootstrap_successful": int(result.bootstrap_successful),
     }
 
 
@@ -440,6 +432,8 @@ def _remove_stale_outputs(directory: Path) -> None:
         "best_low_distance_ctr_distribution.pdf",
         "led_2p35sigma_vs_low_distance_efficiency.pdf",
         "best_low_distance_2p35sigma_distribution.pdf",
+        "led_2p35sigma_vs_distance_to_mean_efficiency.pdf",
+        "best_distance_to_mean_2p35sigma_distribution.pdf",
         "low_distance_selection_scan.csv",
     ):
         path = directory / name
@@ -447,8 +441,11 @@ def _remove_stale_outputs(directory: Path) -> None:
             path.unlink()
 
 
-def _per_voltage_summary(x_values: np.ndarray, absolute_error: np.ndarray,
-                         voltage: np.ndarray) -> list[dict[str, Any]]:
+def _per_voltage_summary(
+    x_values: np.ndarray,
+    absolute_error: np.ndarray,
+    voltage: np.ndarray,
+) -> list[dict[str, Any]]:
     rows = []
     voltage = np.asarray(voltage, dtype=np.float64)
     for value in np.unique(voltage[np.isfinite(voltage)]):
@@ -488,13 +485,11 @@ def analyse_dataset(
 
     source_dataset, source_event = _source_metadata(dataset, indices)
     voltage = np.asarray(dataset.bias_voltage_V[indices], dtype=np.float64)
-
     raw_stats = _correlation(distance, absolute_error)
     raw_trend = _binned_trend(distance, absolute_error, int(args.trend_bins))
 
     config = manifest.get("config") or {}
     fit_config = dict(config.get("fit") or {})
-    minimum = int(fit_config.get("min_events", 100))
     bootstrap_samples = int(
         args.bootstrap_samples
         if args.bootstrap_samples is not None
@@ -502,10 +497,10 @@ def analyse_dataset(
     )
     seed = int((config.get("validation") or {}).get("seed", 0))
 
-    mean_distance, finite_deviation, scan = _selection_scan(
+    mean_distance, scan = _selection_scan(
         distance,
         signed_error,
-        minimum=minimum,
+        fit_config,
         efficiency_step_percent=float(args.efficiency_step_percent),
         bootstrap_samples=bootstrap_samples,
         seed=seed,
@@ -541,7 +536,7 @@ def analyse_dataset(
         title_quantity="distance from mean distance",
     )
     _plot_selection_scan(
-        dataset_dir / "led_2p35sigma_vs_distance_to_mean_efficiency.pdf",
+        dataset_dir / "led_ctr_vs_distance_to_mean_efficiency.pdf",
         dataset_name,
         args.stage,
         args.distance,
@@ -551,7 +546,7 @@ def analyse_dataset(
     best = None
     eligible = [r for r in scan if float(r["efficiency_percent"]) > 10.0]
     if eligible:
-        best_scan = min(eligible, key=lambda r: float(r["width_2p35sigma_ps"]))
+        best_scan = min(eligible, key=lambda r: float(r["ctr_ps"]))
         selected = _selected_values(
             distance,
             signed_error,
@@ -559,12 +554,13 @@ def analyse_dataset(
             deviation_threshold=float(best_scan["abs_distance_minus_mean_threshold_mV"]),
         )
         best = _plot_best_distribution(
-            dataset_dir / "best_distance_to_mean_2p35sigma_distribution.pdf",
+            dataset_dir / "best_distance_to_mean_ctr_distribution.pdf",
             dataset_name,
             args.stage,
             args.distance,
             selected,
             best_scan,
+            fit_config,
             bootstrap_samples=bootstrap_samples,
             seed=seed + 100000,
         )
@@ -619,8 +615,8 @@ def analyse_dataset(
         "requested_window_ns": None if window_ns is None else list(window_ns),
         "actual_sample_window_ns": actual_window,
         "led_error_definition": "abs(calibrated_led_pair_residual_ps)",
-        "resolution_estimator": "2.35 * sample standard deviation (ddof=1), using all finite selected residuals",
-        "histogram_used_for_resolution": False,
+        "ctr_estimator": "canonical repository fit_ctr_ps: direct fixed-bin histogram FWHM with configured bootstrap",
+        "fit_config": fit_config,
         "efficiency_step_percent": float(args.efficiency_step_percent),
         "n_requested": int(indices.size),
         "n_finite_pairs": int(np.count_nonzero(finite)),
@@ -630,7 +626,7 @@ def analyse_dataset(
         "best_selection_above_10_percent": best,
         "selection_scan_note": (
             "Selection accepts events with the smallest abs(distance - mean_distance), not the smallest raw distance. "
-            "This standalone diagnostic uses 2.35*sigma only; histograms are display-only."
+            "CTR uses the same canonical repository estimator as the main pipeline."
         ),
     }
     (dataset_dir / "summary.json").write_text(
@@ -646,8 +642,8 @@ def analyse_dataset(
     )
     if best is not None:
         print(
-            f"  best selection >10%: 2.35*sigma={best['recomputed_width_2p35sigma_ps']:.2f} ± "
-            f"{best['recomputed_width_uncertainty_ps']:.2f} ps | "
+            f"  best selection >10%: CTR={best['recomputed_ctr_ps']:.2f} ± "
+            f"{best['recomputed_ctr_uncertainty_ps']:.2f} ps | "
             f"efficiency={best['efficiency_percent']:.1f}% | "
             f"|distance-mean| <= {best['abs_distance_minus_mean_threshold_mV']:.4g} mV"
         )
