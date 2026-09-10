@@ -52,8 +52,8 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
         result = ctr_estimate(finite, config.get("fit"), seed=int(seed), bootstrap=True)
     except ValueError as exc:
         detail = format_residual_summary(summary)
-        logger.error("Robust CTR unavailable | %s | reason=%s | %s", context, exc, detail)
-        raise RuntimeError(f"{context}: robust CTR unavailable: {exc}; {detail}") from exc
+        logger.error("CTR unavailable | %s | reason=%s | %s", context, exc, detail)
+        raise RuntimeError(f"{context}: CTR unavailable: {exc}; {detail}") from exc
     return {
         "dataset": name,
         "voltage_V": voltage,
