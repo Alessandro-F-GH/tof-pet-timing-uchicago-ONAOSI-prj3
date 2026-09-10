@@ -14,7 +14,7 @@ from .splits import semantic_seed, split_training_validation
 from utils_fit import CTR_METRIC_NAME
 
 from .stats import ctr_estimate, format_residual_summary, residual_summary
-from .timing import anchor_grid, cfd_grid, led_grid, pair_delta
+from .timing import cfd_grid, family_arrays, interpolate_relative, led_grid, pair_delta
 from .view import source_family, target_family
 
 
@@ -111,54 +111,102 @@ def _best_column(
     return best[1], best[2], best[3], best[4]
 
 
-def _input_offsets(interval_s, config):
+def _input_time_grid(interval_s, config):
+    """Common continuous time grid relative to the interpolated LED crossing."""
     window = config["ml_input"]["window_ns"]
-    dt_ns = float(interval_s) * 1e9
-    first = int(np.ceil(float(window["start"]) / dt_ns - 1e-9))
-    last = int(np.floor(float(window["end"]) / dt_ns + 1e-9))
-    offsets = np.arange(first, last + 1, dtype=np.int64)
+    dt_ps = float(interval_s) * 1.0e12
     factor = int(config["ml_input"].get("subsampling", 1))
-    offsets = offsets[::factor]
-    if offsets.size < 2:
-        raise ValueError("ML input window contains fewer than two samples")
-    return offsets, offsets.astype(float) * dt_ns * 1000.0
+    step_ps = dt_ps * factor
+    start_ps = 1000.0 * float(window["start"])
+    end_ps = 1000.0 * float(window["end"])
+    first = int(np.ceil(start_ps / step_ps - 1e-12))
+    last = int(np.floor(end_ps / step_ps + 1e-12))
+    time_ps = np.arange(first, last + 1, dtype=np.float64) * step_ps
+    if time_ps.size < 2:
+        raise ValueError("ML input window contains fewer than two interpolated samples")
+    if not np.any(np.isclose(time_ps, 0.0, rtol=0.0, atol=max(1e-9, abs(step_ps) * 1e-12))):
+        raise ValueError("Interpolated ML grid must contain t=0 at the selected LED crossing")
+    return time_ps
 
 
-def _family_offsets_and_invalid(data, family, anchor_index, config):
-    waves = data.energy_windows_mV if family == "energy" else data.timing_windows_mV
-    intervals = data.energy_sample_interval_s if family == "energy" else data.timing_sample_interval_s
-    if waves is None or intervals is None:
-        raise ValueError(f"{family} waveform unavailable")
+def _family_time_grid_and_invalid(data, family, led_time_ps, config):
+    waves, starts, intervals, _rising_start, _rising_stop = family_arrays(data, family)
     ref = float(np.asarray(intervals)[0, 0])
     if not np.allclose(np.asarray(intervals), ref, rtol=1e-9, atol=0):
         raise ValueError(f"{family} sampling interval must be common")
-    offsets, time_ps = _input_offsets(ref, config)
-    idx = np.asarray(anchor_index, dtype=np.int64)
+    time_ps = _input_time_grid(ref, config)
+    led = np.asarray(led_time_ps, dtype=np.float64)
+    if led.shape != (data.n_events, 2):
+        raise ValueError(f"{family} LED timing array has unexpected shape {led.shape}")
+    target_start_s = led * 1.0e-12 + float(time_ps[0]) * 1.0e-12
+    target_end_s = led * 1.0e-12 + float(time_ps[-1]) * 1.0e-12
+    source_start_s = np.asarray(starts, dtype=np.float64)
+    source_end_s = source_start_s + (waves.shape[2] - 1) * np.asarray(intervals, dtype=np.float64)
+    tolerance = max(abs(ref) * 1.0e-9, 1.0e-18)
     invalid = np.any(
-        (idx + int(offsets[0]) < 0) | (idx + int(offsets[-1]) >= waves.shape[2]),
+        ~np.isfinite(led)
+        | (target_start_s < source_start_s - tolerance)
+        | (target_end_s > source_end_s + tolerance),
         axis=1,
     )
-    return offsets, time_ps, invalid
+    return time_ps, invalid
 
 
-def _materialize_family(data, family, anchor_index, kept_rows, config):
-    waves = data.energy_windows_mV if family == "energy" else data.timing_windows_mV
-    intervals = data.energy_sample_interval_s if family == "energy" else data.timing_sample_interval_s
-    if waves is None or intervals is None:
-        raise ValueError(f"{family} waveform unavailable")
+def _materialize_family(data, family, led_time_ps, kept_rows, config, threshold_mV):
+    waves, starts, intervals, _rising_start, _rising_stop = family_arrays(data, family)
     ref = float(np.asarray(intervals)[0, 0])
-    offsets, time_ps = _input_offsets(ref, config)
-    output = np.empty((kept_rows.size, 2, offsets.size), dtype=np.float32)
+    time_ps = _input_time_grid(ref, config)
+    output = np.empty((kept_rows.size, 2, time_ps.size), dtype=np.float32)
+    zero = int(np.flatnonzero(np.isclose(time_ps, 0.0, rtol=0.0, atol=max(1e-9, abs(ref) * 1e3)))[0])
     for out_event, event in enumerate(kept_rows):
         for detector in range(2):
-            idx = int(anchor_index[event, detector]) + offsets
-            output[out_event, detector] = np.asarray(waves[event, detector, idx], dtype=np.float32)
+            values = interpolate_relative(
+                waves[event, detector],
+                starts[event, detector],
+                intervals[event, detector],
+                led_time_ps[event, detector],
+                time_ps,
+            )
+            values[zero] = float(threshold_mV)
+            output[out_event, detector] = values.astype(np.float32, copy=False)
+    return output, time_ps
+
+
+def _dominant_fraction(values: np.ndarray) -> float:
+    x = np.asarray(values).reshape(-1)
+    if x.size == 0:
+        return 0.0
+    _unique, counts = np.unique(x, return_counts=True)
+    return float(np.max(counts) / x.size)
+
+
+def _learn_dead_time_mask(raw: np.ndarray, development_indices: np.ndarray, time_ps: np.ndarray, threshold: float = 0.99):
+    """Learn time coordinates carrying no useful variation on development only."""
+    x = np.asarray(raw, dtype=np.float32)
+    dev = np.asarray(development_indices, dtype=np.int64)
+    if x.ndim != 3 or x.shape[1] != 2:
+        raise ValueError(f"Expected [event, detector=2, time], got {x.shape}")
+    if dev.size == 0:
+        raise ValueError("Cannot learn dead-region mask without development events")
+    fractions = np.empty((2, x.shape[2]), dtype=np.float64)
+    for detector in range(2):
+        for sample in range(x.shape[2]):
+            fractions[detector, sample] = _dominant_fraction(x[dev, detector, sample])
+    dead = np.all(fractions >= float(threshold), axis=0)
+    zero = np.isclose(np.asarray(time_ps, dtype=np.float64), 0.0, rtol=0.0, atol=1e-9)
+    dead |= zero
+    keep = ~dead
+    if np.count_nonzero(keep) < 2:
+        raise ValueError("Dead-region removal leaves fewer than two ML input coordinates")
+    return keep, fractions
+
+
+def _normalize_family(raw, family, config):
     limits = channel_limits(config["preprocessing"][family]["vertical_scale_limit_mV"])
     minimum = limits[:, 0, None].astype(np.float32)
     maximum = limits[:, 1, None].astype(np.float32)
-    normalized = ((output - minimum[None, :, :]) / (maximum - minimum)[None, :, :]).astype(np.float32)
-    return normalized, time_ps, minimum, maximum
-
+    normalized = ((np.asarray(raw, dtype=np.float32) - minimum[None, :, :]) / (maximum - minimum)[None, :, :]).astype(np.float32)
+    return normalized, minimum, maximum
 
 def _remap_split(indices, keep):
     mapping = np.full(keep.size, -1, dtype=np.int64)
@@ -232,8 +280,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     cfd_score = {}
     led_times = {}
     cfd_times = {}
-    anchor_idx = {}
-    anchor_times = {}
     led_coverage = {}
     led_missing_crossing = {}
     led_noncoincidence = {}
@@ -279,7 +325,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         led_missing_crossing[family] = ~finite_pair
         led_noncoincidence[family] = finite_pair & ~in_coincidence
         led_coverage[family] = in_coincidence
-        anchor_idx[family], anchor_times[family] = anchor_grid(preprocessed, family, led_choice[family])
 
         if config["cfd"] and family in targets:
             dev_cfd = cfd_grid(preprocessed, family, development, fractions)
@@ -342,7 +387,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
 
     ml_window_invalid = np.zeros(preprocessed.n_events, dtype=bool)
     for family in sorted(sources):
-        _offsets, _time, bad = _family_offsets_and_invalid(preprocessed, family, anchor_idx[family], config)
+        _time, bad = _family_time_grid_and_invalid(preprocessed, family, led_times[family], config)
         ml_window_invalid |= bad
         candidates = np.flatnonzero(bad & ~invalid_led)
         if not candidates.size:
@@ -378,13 +423,33 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     np.savez_compressed(base / "splits.npz", training=training_new, validation=validation_new, test=test_new)
 
     transforms = {}
+    dead_regions = {}
+    development_new = np.concatenate([training_new, validation_new])
     for family in sorted(sources):
-        normalized, time_ps, minimum, maximum = _materialize_family(preprocessed, family, anchor_idx[family], kept_rows, config)
+        raw, full_time_ps = _materialize_family(
+            preprocessed,
+            family,
+            led_times[family],
+            kept_rows,
+            config,
+            led_choice[family],
+        )
+        feature_keep, dominant_fraction = _learn_dead_time_mask(
+            raw,
+            development_new,
+            full_time_ps,
+            threshold=0.99,
+        )
+        time_ps = np.asarray(full_time_ps[feature_keep], dtype=np.float64)
+        raw = raw[:, :, feature_keep]
+        normalized, minimum, maximum = _normalize_family(raw, family, config)
         target = open_memmap(base / f"{family}_windows.npy", mode="w+", dtype=np.float32, shape=normalized.shape)
         target[:] = normalized
         target.flush()
         del target
         np.save(base / f"{family}_time_ps.npy", time_ps)
+        np.save(base / f"{family}_feature_keep_mask.npy", feature_keep)
+        np.save(base / f"{family}_dead_dominant_fraction.npy", dominant_fraction)
         np.savez_compressed(base / f"{family}_transform.npz", minimum=minimum, maximum=maximum)
         transforms[family] = {
             "type": "min_max",
@@ -393,6 +458,24 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             "minimum_mV": minimum[:, 0].tolist(),
             "maximum_mV": maximum[:, 0].tolist(),
         }
+        dead_regions[family] = {
+            "criterion": "same_exact_value_in_each_detector_for_at_least_99_percent_of_development_events",
+            "threshold": 0.99,
+            "n_before": int(full_time_ps.size),
+            "n_removed": int(np.count_nonzero(~feature_keep)),
+            "n_after": int(time_ps.size),
+            "removed_time_ps": np.asarray(full_time_ps[~feature_keep], dtype=float).tolist(),
+            "feature_keep_mask_file": f"{family}_feature_keep_mask.npy",
+            "dominant_fraction_file": f"{family}_dead_dominant_fraction.npy",
+        }
+        logger.info(
+            "%s interpolated ML grid | samples=%d -> %d | removed dead=%d | t=0 removed=%s",
+            family,
+            full_time_ps.size,
+            time_ps.size,
+            np.count_nonzero(~feature_keep),
+            not np.any(np.isclose(time_ps, 0.0, rtol=0.0, atol=1e-9)),
+        )
 
     led_training_mean = {}
     calibration_bias = {}
@@ -404,7 +487,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         led_training_mean[family] = mean_led
         calibration_bias[family] = c_hat
         np.save(base / f"{family}_led_time_ps.npy", led_times[family][keep])
-        np.save(base / f"{family}_anchor_time_ps.npy", anchor_times[family][keep])
         np.save(base / f"{family}_target_ps.npy", target_values)
         if family in cfd_times:
             np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[family][keep])
@@ -444,11 +526,13 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
         "normalization": transforms,
+        "dead_region_mask": dead_regions,
         "diagnostic_examples": diagnostic_examples,
-        "target_definition": "delta_t_led - true_tof - calibration_bias",
-        "anchor_definition": "native sample nearest in time to interpolated selected LED crossing",
-        "corrected_definition": "target - paired_model_prediction",
-        "time_reference": "native_grid_anchor_nearest_interpolated_led",
+        "target_definition": "calibrated_led = delta_t_led - true_tof - calibration_bias",
+        "corrected_definition": "calibrated_led - paired_model_prediction",
+        "time_reference": "continuous_time_relative_to_interpolated_led_crossing",
+        "interpolation": "linear",
+        "crossing_sample_policy": "t=0 forced to selected LED threshold then removed from ML features",
     }
     atomic_json(base / "manifest.json", manifest)
     _ensure_diagnostics(preprocessed, config, manifest)
