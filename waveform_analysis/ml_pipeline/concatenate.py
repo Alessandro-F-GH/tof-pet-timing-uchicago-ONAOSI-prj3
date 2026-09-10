@@ -12,6 +12,7 @@ from utils_fit import CTR_METRIC_NAME, fit_ctr_ps
 from .common import atomic_json, canonical_hash, voltage_from_name
 from .config import mode_family
 from .dataset import DATASET_FORMAT_VERSION, PreparedDataset, load_prepared_dataset
+from .prepared_data import _learn_dead_time_mask
 
 
 def _same_array(left: np.ndarray, right: np.ndarray, label: str) -> None:
@@ -146,13 +147,66 @@ def concatenate_prepared_datasets(
     development = np.concatenate([training, validation])
     total = int(sum(sizes))
 
-    _copy_windows(datasets, family, output / f"{family}_windows.npy")
-    np.save(output / f"{family}_time_ps.npy", np.asarray(first_time, dtype=np.float64))
+    source_mask = ((first.manifest.get("dead_region_mask") or {}).get(family) or {})
+    if "deferred_to_concatenated_development" not in str(source_mask.get("criterion", "")):
+        raise ValueError(
+            "Concatenated source datasets must defer 99% dead-region learning until after pooling development"
+        )
+    for dataset in datasets[1:]:
+        current = ((dataset.manifest.get("dead_region_mask") or {}).get(family) or {})
+        if "deferred_to_concatenated_development" not in str(current.get("criterion", "")):
+            raise ValueError(
+                "All concatenated source datasets must defer 99% dead-region learning"
+            )
+
+    full_windows_path = output / f"{family}_windows_full.npy"
+    _copy_windows(datasets, family, full_windows_path)
+    full_windows = np.load(full_windows_path, mmap_mode="r")
+    feature_keep, dominant_fraction = _learn_dead_time_mask(
+        full_windows,
+        development,
+        np.asarray(first_time, dtype=np.float64),
+        threshold=0.99,
+    )
+    final_shape = (total, 2, int(np.count_nonzero(feature_keep)))
+    final_windows = open_memmap(
+        output / f"{family}_windows.npy",
+        mode="w+",
+        dtype=np.float32,
+        shape=final_shape,
+    )
+    for start in range(0, total, 4096):
+        stop = min(total, start + 4096)
+        final_windows[start:stop] = np.asarray(full_windows[start:stop, :, feature_keep], dtype=np.float32)
+    final_windows.flush()
+    del final_windows
+    full_mmap = getattr(full_windows, "_mmap", None)
+    if full_mmap is not None:
+        full_mmap.close()
+    del full_windows
+    full_windows_path.unlink()
+
+    final_time = np.asarray(first_time, dtype=np.float64)[feature_keep]
+    np.save(output / f"{family}_time_ps.npy", final_time)
+    np.save(output / f"{family}_feature_keep_mask.npy", feature_keep)
+    np.save(output / f"{family}_dead_dominant_fraction.npy", dominant_fraction)
     np.savez_compressed(
         output / f"{family}_transform.npz",
         minimum=np.asarray(first_transform.minimum, dtype=np.float32),
         maximum=np.asarray(first_transform.maximum, dtype=np.float32),
     )
+    dead_region_mask = {
+        family: {
+            "criterion": "same_exact_value_in_each_detector_for_at_least_99_percent_of_pooled_development_events",
+            "threshold": 0.99,
+            "n_before": int(np.asarray(first_time).size),
+            "n_removed": int(np.count_nonzero(~feature_keep)),
+            "n_after": int(final_time.size),
+            "removed_time_ps": np.asarray(first_time, dtype=np.float64)[~feature_keep].tolist(),
+            "feature_keep_mask_file": f"{family}_feature_keep_mask.npy",
+            "dominant_fraction_file": f"{family}_dead_dominant_fraction.npy",
+        }
+    }
 
     bias_voltage = np.concatenate([np.asarray(dataset.bias_voltage_V, dtype=np.float64) for dataset in datasets])
     original_event_index = np.concatenate([np.asarray(dataset.event_index, dtype=np.int64) for dataset in datasets])
@@ -236,7 +290,7 @@ def concatenate_prepared_datasets(
         "time_reference": first.manifest.get("time_reference"),
         "interpolation": first.manifest.get("interpolation"),
         "crossing_sample_policy": first.manifest.get("crossing_sample_policy"),
-        "dead_region_mask": first.manifest.get("dead_region_mask"),
+        "dead_region_mask": dead_region_mask,
     }
     atomic_json(output / "manifest.json", manifest)
     if logger is not None:
