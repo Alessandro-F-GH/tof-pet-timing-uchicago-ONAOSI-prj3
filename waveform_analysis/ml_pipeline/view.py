@@ -80,22 +80,12 @@ def calibrated_led(dataset: PreparedDataset, mode: str) -> np.ndarray:
     return standard_delta(dataset, mode, "led") - calibration_bias_ps(dataset, mode) - true_tof
 
 
-def anchor_shift_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    family = mode_family(mode)
-    values = dataset.energy_anchor_offset_ps if family == "energy" else dataset.timing_anchor_offset_ps
-    if values is None:
-        raise ValueError(f"{family} LED-to-anchor offsets are unavailable")
-    values = np.asarray(values, dtype=np.float64)
-    if values.ndim != 2 or values.shape[1] != 2:
-        raise ValueError(f"Expected {family} anchor offsets shaped [event, detector]")
-    return values[:, 0] - values[:, 1]
-
 
 def model_target(dataset: PreparedDataset, mode: str) -> np.ndarray:
     family = mode_family(mode)
     values = dataset.energy_target_ps if family == "energy" else dataset.timing_target_ps
     if values is None:
-        raise ValueError(f"{family} slide-corrected ML target is unavailable")
+        raise ValueError(f"{family} calibrated-LED ML target is unavailable")
     return np.asarray(values, dtype=np.float64)
 
 
