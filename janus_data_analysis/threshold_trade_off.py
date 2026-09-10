@@ -10,7 +10,7 @@ import pandas as pd
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot direct-FWHM CTR and event efficiency versus timing threshold at fixed bias voltage.")
+    parser = argparse.ArgumentParser(description="Plot robust CTR and event efficiency versus timing threshold at fixed bias voltage.")
     parser.add_argument("--summary", type=Path, required=True, help="Path to summary.csv")
     parser.add_argument("--runs-root", type=Path, required=True, help="Root directory containing RunXXXX folders")
     parser.add_argument("--voltage", type=float, default=46.0)
@@ -68,9 +68,9 @@ def main() -> None:
     if missing:
         raise RuntimeError("Missing required columns in summary.csv: " + ", ".join(sorted(missing)))
     if "fit_metric" in summary.columns:
-        invalid = summary[summary["fit_metric"].astype(str) != "fixed_bin_histogram_fwhm"]
+        invalid = summary[summary["fit_metric"].astype(str) != "gaussian_equivalent_shortest_coverage_interval"]
         if not invalid.empty:
-            raise RuntimeError("summary.csv contains rows not produced with fixed-bin histogram FWHM")
+            raise RuntimeError("summary.csv contains rows not produced with the robust shortest-coverage CTR")
 
     numeric = ["Voltage", "E_th", "T_th", "CTR_ps", "CTR_error_ps"]
     if "average_delay_corrected_alignments" in summary.columns:
@@ -142,9 +142,9 @@ def main() -> None:
     efficiency = 100.0 * result["efficiency"].to_numpy(float)
 
     fig, ax_ctr = plt.subplots(figsize=(10.5, 6.5))
-    ax_ctr.errorbar(threshold, ctr, yerr=ctr_error, fmt="s-", markersize=9, linewidth=2.4, capsize=5, label="CTR FWHM")
+    ax_ctr.errorbar(threshold, ctr, yerr=ctr_error, fmt="s-", markersize=9, linewidth=2.4, capsize=5, label="Robust CTR")
     ax_ctr.set_xlabel(r"Timing threshold $T_{\mathrm{th}}$ [mV]")
-    ax_ctr.set_ylabel("CTR FWHM [ps]")
+    ax_ctr.set_ylabel("Robust CTR [ps]")
     ax_ctr.grid(True, linestyle="--", alpha=0.5)
     ax_ctr.set_xticks(threshold)
     ax_eff = ax_ctr.twinx()
@@ -158,7 +158,7 @@ def main() -> None:
     fig_ctr, ax = plt.subplots(figsize=(9.5, 6.0))
     ax.errorbar(threshold, ctr, yerr=ctr_error, fmt="s-", markersize=9, linewidth=2.4, capsize=5)
     ax.set_xlabel(r"Timing threshold $T_{\mathrm{th}}$ [mV]")
-    ax.set_ylabel("CTR FWHM [ps]")
+    ax.set_ylabel("Robust CTR [ps]")
     ax.set_xticks(threshold); ax.grid(True, linestyle="--", alpha=0.5); fig_ctr.tight_layout()
     ctr_only_pdf = args.output.parent / f"ctr_vs_time_threshold_{args.voltage:g}V.pdf"
     fig_ctr.savefig(ctr_only_pdf, bbox_inches="tight"); fig_ctr.savefig(ctr_only_pdf.with_suffix(".png"), dpi=300, bbox_inches="tight"); plt.close(fig_ctr)
