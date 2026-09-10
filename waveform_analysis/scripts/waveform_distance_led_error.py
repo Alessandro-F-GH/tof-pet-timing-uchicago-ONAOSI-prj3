@@ -15,19 +15,17 @@ from scipy.stats import linregress, pearsonr, spearmanr
 from waveform_analysis.ml_pipeline.dataset import PreparedDataset, load_prepared_dataset
 from waveform_analysis.ml_pipeline.view import calibrated_led, inverse_pair, waveform_view
 
-GAUSSIAN_FWHM_FACTOR = 2.35
+WIDTH_FACTOR = 2.35
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Measure the event-wise distance between the two aligned waveform channels and test "
-            "its relation to the absolute calibrated LED timing error. For this diagnostic only, "
-            "timing resolution is defined as 2.35 * sample standard deviation instead of the "
-            "histogram FWHM used by the main study pipeline."
+            "Relate event-wise waveform-channel distance to absolute calibrated LED timing error. "
+            "For this diagnostic only, timing width is defined directly as 2.35 * sample sigma."
         )
     )
-    parser.add_argument("--run-dir", type=Path, required=True, help="Completed study directory.")
+    parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--dataset", action="append", default=None)
     parser.add_argument(
         "--stage",
@@ -41,13 +39,13 @@ def parse_args() -> argparse.Namespace:
         "--efficiency-step-percent",
         type=float,
         default=1.0,
-        help="Accepted-event efficiency step for the low-distance resolution scan. Default: 1%%.",
+        help="Accepted-event efficiency step. Default: 1%%.",
     )
     parser.add_argument(
         "--bootstrap-samples",
         type=int,
         default=None,
-        help="Bootstrap repeats for uncertainty on 2.35*sigma. Default: fit.bootstrap_samples from the study.",
+        help="Bootstrap repeats for the uncertainty of 2.35*sigma. Default: study fit.bootstrap_samples.",
     )
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -55,8 +53,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as stream:
-        value = json.load(stream)
+    value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"Expected JSON object in {path}")
     return value
@@ -83,14 +80,11 @@ def _time_mask(time_ps: np.ndarray, window_ns: tuple[float, float] | None) -> np
         raise ValueError("--window-ns must satisfy START < STOP")
     mask = (time_ns >= start) & (time_ns <= stop)
     if np.count_nonzero(mask) < 2:
-        raise ValueError(
-            f"Requested distance window [{start:g}, {stop:g}] ns contains fewer than two prepared samples"
-        )
+        raise ValueError(f"Window [{start:g}, {stop:g}] ns contains fewer than two prepared samples")
     return mask
 
 
-def _distance_from_difference(difference: np.ndarray, metric: str) -> np.ndarray:
-    difference = np.asarray(difference, dtype=np.float64)
+def _distance(difference: np.ndarray, metric: str) -> np.ndarray:
     if metric == "rms":
         return np.sqrt(np.mean(difference**2, axis=1))
     if metric == "mean_abs":
@@ -120,10 +114,8 @@ def _waveform_distance(
         physical = inverse_pair(dataset, mode, view.materialize())
         difference = np.asarray(physical[:, 0, mask] - physical[:, 1, mask], dtype=np.float64)
         finite = np.all(np.isfinite(difference), axis=1)
-        batch_values = np.full(difference.shape[0], np.nan, dtype=np.float64)
         if np.any(finite):
-            batch_values[finite] = _distance_from_difference(difference[finite], metric)
-        values[start:stop] = batch_values
+            values[start:stop][finite] = _distance(difference[finite], metric)
     return values, time_ps[mask]
 
 
@@ -142,11 +134,11 @@ def _source_metadata(dataset: PreparedDataset, indices: np.ndarray) -> tuple[np.
     return source_dataset, source_event
 
 
-def _correlation(distance: np.ndarray, absolute_error: np.ndarray) -> dict[str, float | int]:
+def _correlation(distance: np.ndarray, absolute_error: np.ndarray) -> dict[str, Any]:
     finite = np.isfinite(distance) & np.isfinite(absolute_error)
     x = np.asarray(distance[finite], dtype=np.float64)
     y = np.asarray(absolute_error[finite], dtype=np.float64)
-    result: dict[str, float | int] = {
+    result = {
         "n": int(x.size),
         "distance_mean_mV": float(np.mean(x)),
         "distance_std_mV": float(np.std(x)),
@@ -160,7 +152,7 @@ def _correlation(distance: np.ndarray, absolute_error: np.ndarray) -> dict[str, 
         "linear_intercept_ps": float("nan"),
         "linear_r_squared": float("nan"),
     }
-    if x.size >= 3 and np.std(x) > 0 and np.std(y) > 0:
+    if x.size >= 3 and np.std(x) > 0.0 and np.std(y) > 0.0:
         p = pearsonr(x, y)
         s = spearmanr(x, y)
         r = linregress(x, y)
@@ -212,51 +204,29 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _plot_relation(
-    path: Path,
-    dataset_name: str,
-    stage: str,
-    metric: str,
-    distance: np.ndarray,
-    absolute_error: np.ndarray,
-    trend: list[dict[str, Any]],
-    statistics: dict[str, Any],
-) -> None:
+def _plot_relation(path: Path, dataset_name: str, stage: str, metric: str, distance: np.ndarray,
+                   absolute_error: np.ndarray, trend: list[dict[str, Any]], stats: dict[str, Any]) -> None:
     finite = np.isfinite(distance) & np.isfinite(absolute_error)
     x, y = distance[finite], absolute_error[finite]
     fig, ax = plt.subplots(figsize=(8.4, 5.6))
     ax.scatter(x, y, s=8, alpha=0.12, label="events")
     if trend:
-        tx = np.asarray([r["distance_median_mV"] for r in trend], dtype=float)
-        ty = np.asarray([r["abs_led_error_median_ps"] for r in trend], dtype=float)
-        low = ty - np.asarray([r["abs_led_error_q16_ps"] for r in trend], dtype=float)
-        high = np.asarray([r["abs_led_error_q84_ps"] for r in trend], dtype=float) - ty
-        ax.errorbar(
-            tx,
-            ty,
-            yerr=np.vstack([low, high]),
-            marker="o",
-            capsize=3,
-            lw=1.4,
-            label="distance-bin median ± 16–84%",
-        )
+        tx = np.asarray([r["distance_median_mV"] for r in trend])
+        ty = np.asarray([r["abs_led_error_median_ps"] for r in trend])
+        low = ty - np.asarray([r["abs_led_error_q16_ps"] for r in trend])
+        high = np.asarray([r["abs_led_error_q84_ps"] for r in trend]) - ty
+        ax.errorbar(tx, ty, yerr=np.vstack([low, high]), marker="o", capsize=3,
+                    label="distance-bin median ± 16–84%")
     ax.set_xlabel(f"Waveform-channel {metric} distance [mV]")
     ax.set_ylabel("Absolute calibrated LED error [ps]")
     ax.set_title(f"{dataset_name} · {stage} · waveform distance vs |LED error|")
     ax.grid(alpha=0.2)
     ax.legend(loc="best")
     ax.text(
-        0.02,
-        0.98,
-        (
-            f"n={statistics['n']}\n"
-            f"Pearson r={statistics['pearson_r']:+.3f}\n"
-            f"Spearman ρ={statistics['spearman_rho']:+.3f}\n"
-            f"linear R²={statistics['linear_r_squared']:.3f}"
-        ),
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
+        0.02, 0.98,
+        f"n={stats['n']}\nPearson r={stats['pearson_r']:+.3f}\n"
+        f"Spearman ρ={stats['spearman_rho']:+.3f}\nlinear R²={stats['linear_r_squared']:.3f}",
+        transform=ax.transAxes, ha="left", va="top",
         bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.9},
     )
     fig.tight_layout()
@@ -264,48 +234,28 @@ def _plot_relation(
     plt.close(fig)
 
 
-def _resolution_values(values: np.ndarray, fit_config: dict[str, Any]) -> np.ndarray:
-    x = np.asarray(values, dtype=np.float64).reshape(-1)
+def _width(values: np.ndarray) -> float:
+    x = np.asarray(values, dtype=np.float64)
     x = x[np.isfinite(x)]
-    limit = fit_config.get("max_abs_ps")
-    if limit is not None:
-        limit = float(limit)
-        x = x[np.abs(x) <= limit]
-    return x
+    if x.size < 2:
+        raise ValueError("At least two finite values are required")
+    return float(WIDTH_FACTOR * np.std(x, ddof=1))
 
 
-def _resolution_2p35sigma(values: np.ndarray, fit_config: dict[str, Any]) -> float:
-    x = _resolution_values(values, fit_config)
-    minimum = int(fit_config.get("min_events", 100))
-    if x.size < minimum:
-        raise ValueError(f"Only {x.size} events remain; minimum is {minimum}")
-    return float(GAUSSIAN_FWHM_FACTOR * np.std(x, ddof=1))
-
-
-def _resolution_with_bootstrap(
-    values: np.ndarray,
-    fit_config: dict[str, Any],
-    *,
-    bootstrap_samples: int,
-    seed: int,
-) -> tuple[float, float, int]:
-    x = _resolution_values(values, fit_config)
-    minimum = int(fit_config.get("min_events", 100))
-    if x.size < minimum:
-        raise ValueError(f"Only {x.size} events remain; minimum is {minimum}")
-    central = float(GAUSSIAN_FWHM_FACTOR * np.std(x, ddof=1))
-    if int(bootstrap_samples) < 2:
+def _width_with_bootstrap(values: np.ndarray, *, samples: int, seed: int) -> tuple[float, float, int]:
+    x = np.asarray(values, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    central = _width(x)
+    if samples < 2:
         return central, float("nan"), 0
-
-    rng = np.random.default_rng(int(seed))
-    estimates = []
-    for _ in range(int(bootstrap_samples)):
-        sample = x[rng.integers(0, x.size, size=x.size)]
-        estimate = GAUSSIAN_FWHM_FACTOR * np.std(sample, ddof=1)
-        if np.isfinite(estimate):
-            estimates.append(float(estimate))
-    uncertainty = float(np.std(estimates, ddof=1)) if len(estimates) > 1 else float("nan")
-    return central, uncertainty, len(estimates)
+    rng = np.random.default_rng(seed)
+    estimates = np.asarray(
+        [_width(x[rng.integers(0, x.size, size=x.size)]) for _ in range(samples)],
+        dtype=np.float64,
+    )
+    estimates = estimates[np.isfinite(estimates)]
+    uncertainty = float(np.std(estimates, ddof=1)) if estimates.size > 1 else float("nan")
+    return central, uncertainty, int(estimates.size)
 
 
 def _efficiency_grid(step_percent: float) -> np.ndarray:
@@ -315,36 +265,21 @@ def _efficiency_grid(step_percent: float) -> np.ndarray:
     return np.append(np.arange(step, 100.0, step, dtype=np.float64), 100.0)
 
 
-def _selection_scan(
-    distance: np.ndarray,
-    signed_led_error: np.ndarray,
-    fit_config: dict[str, Any],
-    *,
-    efficiency_step_percent: float,
-    bootstrap_samples: int,
-    seed: int,
-) -> list[dict[str, Any]]:
-    finite = np.isfinite(distance) & np.isfinite(signed_led_error)
+def _selection_scan(distance: np.ndarray, signed_error: np.ndarray, *, minimum: int,
+                    efficiency_step_percent: float, bootstrap_samples: int, seed: int) -> list[dict[str, Any]]:
+    finite = np.isfinite(distance) & np.isfinite(signed_error)
     x = np.asarray(distance[finite], dtype=np.float64)
-    error = np.asarray(signed_led_error[finite], dtype=np.float64)
-    minimum = int(fit_config.get("min_events", 100))
+    error = np.asarray(signed_error[finite], dtype=np.float64)
     rows = []
-
     for i, requested_percent in enumerate(_efficiency_grid(efficiency_step_percent)):
         threshold = float(np.quantile(x, requested_percent / 100.0))
         accepted = x <= threshold
         n = int(np.count_nonzero(accepted))
         if n < minimum:
             continue
-        try:
-            resolution, uncertainty, bootstrap_successful = _resolution_with_bootstrap(
-                error[accepted],
-                fit_config,
-                bootstrap_samples=bootstrap_samples,
-                seed=int(seed + i),
-            )
-        except ValueError:
-            continue
+        width, uncertainty, successful = _width_with_bootstrap(
+            error[accepted], samples=bootstrap_samples, seed=seed + i
+        )
         rows.append(
             {
                 "requested_efficiency_percent": float(requested_percent),
@@ -352,10 +287,9 @@ def _selection_scan(
                 "distance_threshold_mV": threshold,
                 "n_accepted": n,
                 "n_total": int(x.size),
-                "resolution_ps": resolution,
-                "resolution_uncertainty_ps": uncertainty,
-                "bootstrap_successful": int(bootstrap_successful),
-                "estimator": "2.35*sample_std",
+                "width_2p35sigma_ps": width,
+                "width_uncertainty_ps": uncertainty,
+                "bootstrap_successful": successful,
                 "mean_abs_led_error_ps": float(np.mean(np.abs(error[accepted]))),
                 "median_abs_led_error_ps": float(np.median(np.abs(error[accepted]))),
             }
@@ -363,22 +297,17 @@ def _selection_scan(
     return rows
 
 
-def _plot_selection_scan(
-    path: Path,
-    dataset_name: str,
-    stage: str,
-    metric: str,
-    rows: list[dict[str, Any]],
-) -> None:
+def _plot_selection_scan(path: Path, dataset_name: str, stage: str, metric: str,
+                         rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
-    efficiency = np.asarray([r["efficiency_percent"] for r in rows], dtype=float)
-    resolution = np.asarray([r["resolution_ps"] for r in rows], dtype=float)
-    uncertainty = np.asarray([r["resolution_uncertainty_ps"] for r in rows], dtype=float)
+    efficiency = np.asarray([r["efficiency_percent"] for r in rows])
+    width = np.asarray([r["width_2p35sigma_ps"] for r in rows])
+    uncertainty = np.asarray([r["width_uncertainty_ps"] for r in rows])
     fig, ax = plt.subplots(figsize=(8.2, 5.0))
-    ax.errorbar(efficiency, resolution, yerr=uncertainty, marker=".", ms=4, capsize=2, lw=1.0)
+    ax.errorbar(efficiency, width, yerr=uncertainty, marker=".", ms=4, capsize=2, lw=1.0)
     ax.set_xlabel("Accepted events with lowest waveform distance [%]")
-    ax.set_ylabel(r"Gaussian-equivalent timing width $2.35\sigma$ [ps]")
+    ax.set_ylabel(r"Timing width $2.35\sigma$ [ps]")
     ax.set_title(f"{dataset_name} · {stage} · low-{metric}-distance selection")
     ax.grid(alpha=0.2)
     fig.tight_layout()
@@ -386,70 +315,49 @@ def _plot_selection_scan(
     plt.close(fig)
 
 
-def _selected_values(distance: np.ndarray, signed_led_error: np.ndarray, threshold_mV: float) -> np.ndarray:
-    finite = np.isfinite(distance) & np.isfinite(signed_led_error)
-    return np.asarray(signed_led_error[finite & (distance <= float(threshold_mV))], dtype=np.float64)
+def _selected_values(distance: np.ndarray, signed_error: np.ndarray, threshold: float) -> np.ndarray:
+    finite = np.isfinite(distance) & np.isfinite(signed_error)
+    return np.asarray(signed_error[finite & (distance <= threshold)], dtype=np.float64)
 
 
-def _display_edges(values: np.ndarray, bins: int = 30) -> np.ndarray:
-    x = np.asarray(values, dtype=np.float64)
-    x = x[np.isfinite(x)]
-    low, high = np.quantile(x, [0.005, 0.995])
-    if high <= low:
-        low, high = float(np.min(x)), float(np.max(x))
-    if high <= low:
-        low, high = float(low - 1.0), float(high + 1.0)
-    margin = 0.06 * float(high - low)
-    return np.linspace(float(low - margin), float(high + margin), int(bins) + 1)
-
-
-def _plot_best_distribution(
-    path: Path,
-    dataset_name: str,
-    stage: str,
-    metric: str,
-    selected_error: np.ndarray,
-    best: dict[str, Any],
-    fit_config: dict[str, Any],
-    *,
-    bootstrap_samples: int,
-    seed: int,
-) -> dict[str, Any]:
-    values = _resolution_values(selected_error, fit_config)
-    resolution, uncertainty, bootstrap_successful = _resolution_with_bootstrap(
-        values,
-        fit_config,
-        bootstrap_samples=bootstrap_samples,
-        seed=seed,
-    )
-    sigma = float(np.std(values, ddof=1))
+def _plot_best_distribution(path: Path, dataset_name: str, stage: str, metric: str,
+                            values: np.ndarray, best: dict[str, Any], *, bootstrap_samples: int,
+                            seed: int) -> dict[str, Any]:
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    width, uncertainty, successful = _width_with_bootstrap(values, samples=bootstrap_samples, seed=seed)
     mean = float(np.mean(values))
-    left = mean - 0.5 * resolution
-    right = mean + 0.5 * resolution
+    sigma = float(np.std(values, ddof=1))
+
+    # The histogram is visualization only. The metric is computed directly from the samples.
+    low, high = np.quantile(values, [0.005, 0.995])
+    if high <= low:
+        low, high = float(np.min(values)), float(np.max(values))
+    margin = 0.06 * max(float(high - low), 1.0)
+    edges = np.linspace(float(low - margin), float(high + margin), 31)
+    counts, edges = np.histogram(values, bins=edges)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    bin_width = float(edges[1] - edges[0])
+    gaussian = (
+        values.size * bin_width / (sigma * np.sqrt(2.0 * np.pi))
+        * np.exp(-0.5 * ((centers - mean) / sigma) ** 2)
+    ) if sigma > 0.0 else np.zeros_like(centers)
 
     fig, ax = plt.subplots(figsize=(8.4, 5.1))
-    ax.hist(values, bins=_display_edges(values), histtype="stepfilled", alpha=0.42, edgecolor="black")
-    ax.axvline(mean, lw=1.2, label="mean")
-    ax.axvline(left, ls="--", lw=1.4, label="mean ± (2.35σ)/2")
-    ax.axvline(right, ls="--", lw=1.4)
+    ax.hist(values, bins=edges, histtype="stepfilled", alpha=0.42, edgecolor="black", label="selected events")
+    ax.plot(centers, gaussian, lw=1.8, label="Gaussian with sample mean and σ")
     ax.set_xlabel("Calibrated LED timing residual [ps]")
     ax.set_ylabel("Events / display bin")
     ax.set_title(f"{dataset_name} · best low-{metric}-distance selection ({stage})")
     ax.grid(axis="y", alpha=0.2)
     ax.legend(loc="best")
     ax.text(
-        0.02,
-        0.97,
-        (
-            f"efficiency = {float(best['efficiency_percent']):.1f}%\n"
-            f"distance ≤ {float(best['distance_threshold_mV']):.4g} mV\n"
-            f"n = {int(best['n_accepted'])}\n"
-            f"σ = {sigma:.2f} ps\n"
-            f"2.35σ = {resolution:.2f} ± {uncertainty:.2f} ps"
-        ),
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
+        0.02, 0.97,
+        f"efficiency = {float(best['efficiency_percent']):.1f}%\n"
+        f"distance ≤ {float(best['distance_threshold_mV']):.4g} mV\n"
+        f"n = {int(best['n_accepted'])}\nσ = {sigma:.2f} ps\n"
+        f"2.35σ = {width:.2f} ± {uncertainty:.2f} ps",
+        transform=ax.transAxes, ha="left", va="top",
         bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.9},
     )
     fig.tight_layout()
@@ -459,15 +367,26 @@ def _plot_best_distribution(
     return {
         **best,
         "sigma_ps": sigma,
-        "recomputed_resolution_ps": resolution,
-        "recomputed_resolution_uncertainty_ps": uncertainty,
-        "gaussian_equivalent_left_ps": left,
-        "gaussian_equivalent_right_ps": right,
-        "bootstrap_successful": int(bootstrap_successful),
+        "recomputed_width_2p35sigma_ps": width,
+        "recomputed_width_uncertainty_ps": uncertainty,
+        "bootstrap_successful": successful,
     }
 
 
-def _per_voltage_summary(distance: np.ndarray, absolute_error: np.ndarray, voltage: np.ndarray) -> list[dict[str, Any]]:
+def _remove_stale_outputs(directory: Path) -> None:
+    # Earlier revisions wrote histogram-FWHM diagnostics under these names. Remove them so an
+    # old PDF cannot be mistaken for output from the current sigma-only analysis.
+    for name in (
+        "led_ctr_vs_low_distance_efficiency.pdf",
+        "best_low_distance_ctr_distribution.pdf",
+    ):
+        path = directory / name
+        if path.is_file():
+            path.unlink()
+
+
+def _per_voltage_summary(distance: np.ndarray, absolute_error: np.ndarray,
+                         voltage: np.ndarray) -> list[dict[str, Any]]:
     rows = []
     voltage = np.asarray(voltage, dtype=np.float64)
     for value in np.unique(voltage[np.isfinite(voltage)]):
@@ -476,15 +395,9 @@ def _per_voltage_summary(distance: np.ndarray, absolute_error: np.ndarray, volta
     return rows
 
 
-def analyse_dataset(
-    run: Path,
-    manifest: dict[str, Any],
-    dataset_name: str,
-    args: argparse.Namespace,
-    output_root: Path,
-) -> None:
-    dataset_info = manifest["datasets"][dataset_name]
-    prepared_dir = Path(dataset_info["prepared_dir"])
+def analyse_dataset(run: Path, manifest: dict[str, Any], dataset_name: str,
+                    args: argparse.Namespace, output_root: Path) -> None:
+    prepared_dir = Path(manifest["datasets"][dataset_name]["prepared_dir"])
     dataset = load_prepared_dataset(prepared_dir)
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
     indices = _stage_indices(dataset, args.stage)
@@ -493,36 +406,31 @@ def analyse_dataset(
 
     window_ns = None if args.window_ns is None else tuple(map(float, args.window_ns))
     distance, distance_time_ps = _waveform_distance(
-        dataset,
-        mode,
-        indices,
-        metric=args.distance,
-        window_ns=window_ns,
-        batch_size=int(args.batch_size),
+        dataset, mode, indices,
+        metric=args.distance, window_ns=window_ns, batch_size=int(args.batch_size),
     )
     signed_error = np.asarray(calibrated_led(dataset, mode)[indices], dtype=np.float64)
     absolute_error = np.abs(signed_error)
     finite = np.isfinite(distance) & np.isfinite(signed_error)
     if np.count_nonzero(finite) < 3:
-        raise RuntimeError(f"{dataset_name}: fewer than three finite distance/LED-error pairs")
+        raise RuntimeError(f"{dataset_name}: fewer than three finite distance/error pairs")
 
     source_dataset, source_event = _source_metadata(dataset, indices)
     voltage = np.asarray(dataset.bias_voltage_V[indices], dtype=np.float64)
-    statistics = _correlation(distance, absolute_error)
+    stats = _correlation(distance, absolute_error)
     trend = _binned_trend(distance, absolute_error, int(args.trend_bins))
 
     config = manifest.get("config") or {}
     fit_config = dict(config.get("fit") or {})
+    minimum = int(fit_config.get("min_events", 100))
     bootstrap_samples = int(
-        args.bootstrap_samples
-        if args.bootstrap_samples is not None
+        args.bootstrap_samples if args.bootstrap_samples is not None
         else fit_config.get("bootstrap_samples", 100)
     )
     seed = int((config.get("validation") or {}).get("seed", 0))
     scan = _selection_scan(
-        distance,
-        signed_error,
-        fit_config,
+        distance, signed_error,
+        minimum=minimum,
         efficiency_step_percent=float(args.efficiency_step_percent),
         bootstrap_samples=bootstrap_samples,
         seed=seed,
@@ -530,43 +438,29 @@ def analyse_dataset(
 
     dataset_dir = output_root / dataset_name
     dataset_dir.mkdir(parents=True, exist_ok=True)
+    _remove_stale_outputs(dataset_dir)
     _plot_relation(
         dataset_dir / "waveform_distance_vs_abs_led_error.pdf",
-        dataset_name,
-        args.stage,
-        args.distance,
-        distance,
-        absolute_error,
-        trend,
-        statistics,
+        dataset_name, args.stage, args.distance, distance, absolute_error, trend, stats,
     )
     _plot_selection_scan(
         dataset_dir / "led_2p35sigma_vs_low_distance_efficiency.pdf",
-        dataset_name,
-        args.stage,
-        args.distance,
-        scan,
+        dataset_name, args.stage, args.distance, scan,
     )
 
     best = None
-    eligible = [row for row in scan if float(row["efficiency_percent"]) > 10.0]
+    eligible = [r for r in scan if float(r["efficiency_percent"]) > 10.0]
     if eligible:
-        best_scan = min(eligible, key=lambda row: float(row["resolution_ps"]))
-        selected_error = _selected_values(distance, signed_error, float(best_scan["distance_threshold_mV"]))
+        best_scan = min(eligible, key=lambda r: float(r["width_2p35sigma_ps"]))
+        selected = _selected_values(distance, signed_error, float(best_scan["distance_threshold_mV"]))
         best = _plot_best_distribution(
             dataset_dir / "best_low_distance_2p35sigma_distribution.pdf",
-            dataset_name,
-            args.stage,
-            args.distance,
-            selected_error,
-            best_scan,
-            fit_config,
-            bootstrap_samples=bootstrap_samples,
-            seed=seed + 100000,
+            dataset_name, args.stage, args.distance, selected, best_scan,
+            bootstrap_samples=bootstrap_samples, seed=seed + 100000,
         )
-        with (dataset_dir / "best_low_distance_selection.json").open("w", encoding="utf-8") as stream:
-            json.dump(best, stream, indent=2, allow_nan=True)
-            stream.write("\n")
+        (dataset_dir / "best_low_distance_selection.json").write_text(
+            json.dumps(best, indent=2, allow_nan=True) + "\n", encoding="utf-8"
+        )
 
     event_rows = [
         {
@@ -584,14 +478,12 @@ def analyse_dataset(
     _write_csv(dataset_dir / "events.csv", event_rows)
     _write_csv(dataset_dir / "distance_binned_error.csv", trend)
     _write_csv(dataset_dir / "low_distance_selection_scan.csv", scan)
-
     per_voltage = _per_voltage_summary(distance, absolute_error, voltage)
     _write_csv(dataset_dir / "correlation_by_voltage.csv", per_voltage)
 
     actual_window = (
         [float(distance_time_ps[0] / 1000.0), float(distance_time_ps[-1] / 1000.0)]
-        if distance_time_ps.size
-        else [float("nan"), float("nan")]
+        if distance_time_ps.size else [float("nan"), float("nan")]
     )
     summary = {
         "dataset": dataset_name,
@@ -605,35 +497,34 @@ def analyse_dataset(
             "max_abs": "max_t(abs(s1-s2))",
         }[args.distance],
         "signal_units": "physical mV after inverse prepared-input normalization",
-        "waveforms_are_aligned": "each detector waveform is on the prepared LED/native-anchor-relative ML time grid",
         "requested_window_ns": None if window_ns is None else list(window_ns),
         "actual_sample_window_ns": actual_window,
         "led_error_definition": "abs(calibrated_led_pair_residual_ps)",
-        "resolution_estimator": "2.35 * sample standard deviation (ddof=1); diagnostic only",
-        "main_pipeline_ctr_estimator_unchanged": True,
+        "resolution_estimator": "2.35 * sample standard deviation (ddof=1), using all finite selected residuals",
+        "histogram_used_for_resolution": False,
+        "efficiency_step_percent": float(args.efficiency_step_percent),
         "n_requested": int(indices.size),
         "n_finite_pairs": int(np.count_nonzero(finite)),
-        "correlation": statistics,
+        "correlation": stats,
         "per_voltage": per_voltage,
-        "efficiency_step_percent": float(args.efficiency_step_percent),
         "best_selection_above_10_percent": best,
         "selection_scan_note": (
-            "Descriptive 2.35*sigma-versus-efficiency scan on the selected stage. Use development to choose a cut, "
-            "then freeze it before evaluating test/blind data. The normal study CTR remains direct histogram FWHM."
+            "This standalone diagnostic uses 2.35*sigma only. The histogram in the best-selection "
+            "figure is display-only. Choose any cut on development and freeze it before blind evaluation."
         ),
     }
-    with (dataset_dir / "summary.json").open("w", encoding="utf-8") as stream:
-        json.dump(summary, stream, indent=2, allow_nan=True)
-        stream.write("\n")
+    (dataset_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, allow_nan=True) + "\n", encoding="utf-8"
+    )
 
     print(
-        f"{dataset_name} | stage={args.stage} | n={statistics['n']} | "
-        f"Pearson r={statistics['pearson_r']:+.4f} | Spearman rho={statistics['spearman_rho']:+.4f}"
+        f"{dataset_name} | stage={args.stage} | n={stats['n']} | "
+        f"Pearson r={stats['pearson_r']:+.4f} | Spearman rho={stats['spearman_rho']:+.4f}"
     )
     if best is not None:
         print(
-            f"  best selection >10%: 2.35*sigma={best['recomputed_resolution_ps']:.2f} ± "
-            f"{best['recomputed_resolution_uncertainty_ps']:.2f} ps | "
+            f"  best selection >10%: 2.35*sigma={best['recomputed_width_2p35sigma_ps']:.2f} ± "
+            f"{best['recomputed_width_uncertainty_ps']:.2f} ps | "
             f"efficiency={best['efficiency_percent']:.1f}% | "
             f"distance <= {best['distance_threshold_mV']:.4g} mV"
         )
@@ -648,6 +539,8 @@ def main() -> None:
         raise ValueError("--trend-bins must be >= 2")
     if not 0.0 < float(args.efficiency_step_percent) <= 100.0:
         raise ValueError("--efficiency-step-percent must satisfy 0 < STEP <= 100")
+    if args.bootstrap_samples is not None and int(args.bootstrap_samples) < 0:
+        raise ValueError("--bootstrap-samples must be non-negative")
 
     run = args.run_dir.resolve()
     manifest = _read_json(run / "manifest.json")
