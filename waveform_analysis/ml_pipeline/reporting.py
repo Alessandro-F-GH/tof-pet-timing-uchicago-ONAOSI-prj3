@@ -289,16 +289,16 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
     for index, (method, residual, row) in enumerate(series):
         color = colors[index % len(colors)] if colors else None
         outside = _outside_count(residual, xlim)
-        label = f"{LABELS.get(method, method)} · CTR {_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
+        label = f"{LABELS.get(method, method)} · robust CTR {_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
         visible = residual[(residual >= xlim[0]) & (residual <= xlim[1])]
         bins = _median_centered_display_edges(visible, xlim, 20)
         ax.hist(visible, bins=bins, histtype="stepfilled", alpha=.4, color=color, edgecolor=color, linewidth=1.35, label=label)
-        left = _float(row.get("fwhm_left_ps"))
-        right = _float(row.get("fwhm_right_ps"))
-        if np.isfinite(left):
-            ax.axvline(left, color=color, ls="--", lw=1.45, alpha=.9)
-        if np.isfinite(right):
-            ax.axvline(right, color=color, ls="--", lw=1.45, alpha=.9)
+        low = _float(row.get("interval_low_ps"))
+        high = _float(row.get("interval_high_ps"))
+        if np.isfinite(low):
+            ax.axvline(low, color=color, ls="--", lw=1.45, alpha=.9)
+        if np.isfinite(high):
+            ax.axvline(high, color=color, ls="--", lw=1.45, alpha=.9)
     ax.set_xlim(*xlim)
     ax.set_xlabel(f"{stage.capitalize()} residual [ps]")
     ax.set_ylabel("Events / bin")
@@ -381,7 +381,7 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     ax.set_xticks(x)
     ax.set_xticklabels([f"{v:g} V" for v in voltages])
     ax.set_xlabel("Bias voltage")
-    ax.set_ylabel("CTR FWHM [ps]")
+    ax.set_ylabel("Robust CTR [ps]")
     ax.set_ylim(bottom=0.0)
     ax.set_title(mode.replace("_", " "))
     ax.grid(axis="y", alpha=.22)
@@ -489,8 +489,8 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
     ax.set_xticks(x)
     ax.set_xticklabels([f"{v:g} V" for v in voltages])
     ax.set_xlabel("Bias voltage")
-    ax.set_ylabel("CTR improvement over LED [%]")
-    ax.set_title(f"{mode.replace('_', ' ')} · paired-bootstrap relative improvement")
+    ax.set_ylabel("Robust CTR improvement over LED [%]")
+    ax.set_title(f"{mode.replace('_', ' ')} · paired-bootstrap robust CTR improvement")
     ax.grid(axis="y", alpha=.22)
     ax.legend()
     fig.tight_layout()
