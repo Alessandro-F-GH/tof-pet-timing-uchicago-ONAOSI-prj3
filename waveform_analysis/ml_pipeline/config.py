@@ -96,6 +96,19 @@ def validate_config(config):
     if not isinstance(config["cfd"], bool):
         raise ConfigError("cfd must be true or false")
 
+    experiment = config["experiment"]
+    concatenate = bool(experiment.get("concatenate_datasets", False))
+    if concatenate:
+        if "fixed_led_threshold_mV" not in experiment:
+            raise ConfigError("experiment.fixed_led_threshold_mV is required when concatenate_datasets=true")
+        fixed_led = float(experiment["fixed_led_threshold_mV"])
+        if not np_isfinite_positive(fixed_led):
+            raise ConfigError("experiment.fixed_led_threshold_mV must be finite and positive")
+        name = str(experiment.get("concatenated_dataset_name", "concatenated")).strip()
+        if not name:
+            raise ConfigError("experiment.concatenated_dataset_name must not be empty")
+        experiment["concatenated_dataset_name"] = name
+
     validation = config["validation"]
     extra = sorted(set(validation) - {"seed", "test_fraction", "validation_fraction"})
     if extra:
@@ -187,6 +200,11 @@ def validate_config(config):
         training = model.get("training", {}) or {}
         if "selection_metric" in training or "selection_metric" in model:
             raise ConfigError(f"{name}: selection_metric is fixed to validation RMSE and must not be configured")
+
+
+def np_isfinite_positive(value: float) -> bool:
+    import math
+    return math.isfinite(float(value)) and float(value) > 0.0
 
 
 def load_config(path: str | Path, project_root: str | Path | None = None):
