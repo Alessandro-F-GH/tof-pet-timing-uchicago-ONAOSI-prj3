@@ -576,10 +576,12 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         model_output_dir.mkdir(parents=True, exist_ok=True)
         for dataset in datasets:
             _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
+        xai_model_dir = categories["xai"] / model
+        xai_model_dir.mkdir(parents=True, exist_ok=True)
         for artifact in sorted((run / "artifacts").glob(f"*/{model}_xai.npz"), key=lambda p: voltage_from_name(p.parent.name)):
-            _xai_plot(categories["xai"], artifact, mode, model, paths)
+            _xai_plot(xai_model_dir, artifact, mode, model, paths)
         if model == "difference_shapelet":
-            shapelet_dir = categories["xai"] / "shapelets"
+            shapelet_dir = xai_model_dir / "shapelets"
             shapelet_dir.mkdir(parents=True, exist_ok=True)
             for dataset in datasets:
                 path = plot_fixed_shapelets(run, dataset, shapelet_dir)
