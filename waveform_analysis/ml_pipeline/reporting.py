@@ -15,13 +15,13 @@ from .shapelet_reporting import plot_fixed_shapelets
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
 
-MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "difference_cnn", "difference_shapelet", "difference_knn")
+MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "cnn_2d", "difference_shapelet", "difference_knn")
 LABELS = {
     "led": "LED",
     "cfd": "CFD",
     "linear_svr": "Linear SVR",
     "cnn": "CNN",
-    "difference_cnn": "Difference CNN",
+    "cnn_2d": "2-D CNN",
     "difference_shapelet": "Fixed-shapelet regressor",
     "difference_knn": "Difference k-NN",
 }
@@ -153,7 +153,18 @@ def _xai_plot(output, artifact, mode, model, paths):
     stripes = _stripe_importance(time, importance, 1.0)
     cmap = LinearSegmentedColormap.from_list("xai", ["white", "orange", "red"])
     norm = Normalize(0, 1)
-    fig, (top, bottom) = plt.subplots(2, 1, figsize=(8.6, 5.8), sharex=True, height_ratios=(2, 1))
+    fig = plt.figure(figsize=(8.8, 5.8))
+    grid = fig.add_gridspec(
+        2,
+        2,
+        width_ratios=(1.0, 0.045),
+        height_ratios=(2.0, 1.0),
+        hspace=0.12,
+        wspace=0.08,
+    )
+    top = fig.add_subplot(grid[0, 0])
+    bottom = fig.add_subplot(grid[1, 0], sharex=top)
+    colorbar_ax = fig.add_subplot(grid[:, 1])
     for a, b, value in stripes:
         top.axvspan(a, b, color=cmap(norm(value)), alpha=.7, lw=0)
     top.plot(time, pair[0], label="detector 1")
@@ -168,12 +179,12 @@ def _xai_plot(output, artifact, mode, model, paths):
     bottom.set_xlabel("Time relative to interpolated LED crossing [ns]")
     bottom.set_ylabel("1 ns mean importance")
     bottom.grid(True, alpha=.2)
-    cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=top, pad=.015, fraction=.04)
+    cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=colorbar_ax)
     cbar.set_label("Normalized importance")
     voltage = voltage_from_name(dataset)
     label = f"{voltage:g} V" if np.isfinite(voltage) else dataset
     fig.suptitle(f"{LABELS.get(model, model)} · {mode.replace('_', ' ')} · {label}")
-    fig.tight_layout()
+    fig.subplots_adjust(top=0.90, bottom=0.10, left=0.10, right=0.94)
     target = output / f"xai_{dataset}_{model}.pdf"
     fig.savefig(target)
     plt.close(fig)
