@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Compare Pico-TDC timing-channel CTR with oscilloscope adaptive LED. "
-            "CTR is direct fixed-bin histogram FWHM; final uncertainties are event-bootstrap standard deviations."
+            "CTR is the Gaussian-equivalent shortest configured-coverage interval; final uncertainties are event-bootstrap standard deviations."
         )
     )
     parser.add_argument("--pico-summary", required=True, type=Path)
@@ -119,7 +119,7 @@ def _bootstrap_ctr(
     seed: int,
     min_success_fraction: float,
 ) -> dict[str, Any]:
-    """Bootstrap an already-selected cohort using direct histogram FWHM."""
+    """Bootstrap an already-selected cohort using the canonical robust CTR."""
     values = np.asarray(delta_fs, dtype=np.int64).reshape(-1)
     if values.size < int(fit_config.get("min_events", 10)):
         raise RuntimeError(f"Too few selected events for bootstrap: {values.size}")
@@ -261,7 +261,7 @@ def _scope_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
             "nominal_ctr_ps": float(final_result.ctr_ps),
             **bootstrap,
             **rejection_meta,
-            "fit_metric": "fixed_bin_histogram_fwhm",
+            "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
         })
         print(
             f"[scope][{root_file.name}] V={voltage:g} V | best LED threshold={chosen.parameter:g} mV | "
@@ -281,10 +281,10 @@ def _choose_best_pico_rows(args: argparse.Namespace) -> list[dict[str, str]]:
     if not rows:
         raise RuntimeError(f"No rows in {args.pico_summary}")
     if not args.allow_legacy_pico_summary:
-        valid_metric = "fixed_bin_histogram_fwhm"
+        valid_metric = "gaussian_equivalent_shortest_coverage_interval"
         for row in rows:
             if str(row.get("fit_metric", "")) != valid_metric:
-                raise RuntimeError("Pico summary contains rows not generated with fixed-bin histogram FWHM.")
+                raise RuntimeError("Pico summary contains rows not generated with the robust shortest-coverage CTR.")
     candidates: dict[float, list[dict[str, str]]] = {}
     for row in rows:
         if args.pico_acquisition_mode is not None and row.get("AcquisitionMode") != args.pico_acquisition_mode:
@@ -399,7 +399,7 @@ def _pico_rows(args: argparse.Namespace, fit_config: dict[str, Any]) -> list[dic
             "nominal_ctr_ps": float(row["CTR_ps"]),
             **bootstrap,
             **rejection_meta,
-            "fit_metric": "fixed_bin_histogram_fwhm",
+            "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
         })
     return output
 
@@ -452,7 +452,7 @@ def _plot_comparison(paired, path: Path, *, pico_threshold_mV: float, threshold_
     fig, (ax, residual_ax) = plt.subplots(2, 1, figsize=(11.0, 8.5), sharex=True, gridspec_kw={"height_ratios": [3.0, 1.0]})
     ax.plot(voltage, pico_mean, marker="o", alpha=0.7, linestyle="none", markersize=15, label=f"Pico-TDC · T_th={pico_threshold_mV:g} mV")
     ax.plot(voltage, scope_mean, marker="s", alpha=0.7, linestyle="none", markersize=15, label="Oscilloscope adaptive LED")
-    ax.set_ylabel("CTR FWHM [ps]", fontsize=18); ax.grid(alpha=0.3); ax.legend(loc="lower left", fontsize=15)
+    ax.set_ylabel("Robust CTR [ps]", fontsize=18); ax.grid(alpha=0.3); ax.legend(loc="lower left", fontsize=15)
     residual_ax.axhline(0.0, linewidth=1.2); residual_ax.axhline(1.0, linewidth=1.2, linestyle="--"); residual_ax.axhline(-1.0, linewidth=1.2, linestyle="--")
     residual_ax.plot(voltage, z, marker="+", linestyle="none", markersize=14, markeredgewidth=2.0)
     residual_ax.set_xlabel("Bias voltage [V]", fontsize=18); residual_ax.set_ylabel("Difference in sigma", fontsize=17); residual_ax.grid(alpha=0.3)
@@ -475,10 +475,11 @@ def main() -> None:
     _write_csv(args.output / "paired_comparison.csv", paired)
     _plot_comparison(paired, args.output / "ctr_vs_voltage_bootstrap.png", pico_threshold_mV=args.pico_timing_threshold_mv, threshold_selection_stage=args.threshold_selection_stage)
     metadata = {
-        "ctr_metric": "fixed_bin_histogram_fwhm",
-        "bin_width_ps": float(scope_cfg["fit"].get("bin_width_ps", 5.0)),
+        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "coverage_fraction": float(scope_cfg["fit"].get("coverage_fraction", 0.90)),
+        "core_bin_width_ps": float(scope_cfg["fit"].get("bin_width_ps", 5.0)),
         "bootstrap_samples": args.bootstrap_samples,
-        "bootstrap_error_definition": "sample standard deviation (ddof=1) of successful bootstrap FWHM estimates",
+        "bootstrap_error_definition": "sample standard deviation (ddof=1) of successful bootstrap robust-CTR estimates",
         "seed": args.seed,
     }
     with (args.output / "comparison_metadata.json").open("w", encoding="utf-8") as stream:
