@@ -398,12 +398,12 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         led_pair = pair_delta(led_times[family][keep])
         mean_led = float(np.mean(led_pair[training_new]))
         c_hat = mean_led - true_tof
-        slide_target = led_pair - true_tof - c_hat
+        target_values = led_pair - true_tof - c_hat
         led_training_mean[family] = mean_led
         calibration_bias[family] = c_hat
         np.save(base / f"{family}_led_time_ps.npy", led_times[family][keep])
         np.save(base / f"{family}_anchor_time_ps.npy", anchor_times[family][keep])
-        np.save(base / f"{family}_target_ps.npy", slide_target)
+        np.save(base / f"{family}_target_ps.npy", target_values)
         if family in cfd_times:
             np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[family][keep])
 
