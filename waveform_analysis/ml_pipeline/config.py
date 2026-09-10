@@ -220,7 +220,7 @@ def validate_config(config):
     for name, model in config["models"].items():
         training = model.get("training", {}) or {}
         if "selection_metric" in training or "selection_metric" in model:
-            raise ConfigError(f"{name}: selection_metric is fixed to validation RMSE and must not be configured")
+            raise ConfigError(f"{name}: selection_metric is fixed to validation CTR and must not be configured")
 
 
 def np_isfinite_positive(value: float) -> bool:
