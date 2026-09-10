@@ -32,6 +32,27 @@ The canonical supervised target is
 
 The ML window is materialized with `t_anchor = 0` and `ml_input.subsampling` is applied. Waveforms are scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`. The transform is fixed by configuration: it is not fitted per event, per sample, or from the training population, and its inverse is persisted for physical-mV reporting.
 
+### Concatenated-dataset experiments
+
+Set `experiment.concatenate_datasets: true` to train one model on all configured bias-voltage datasets instead of fitting one model per ROOT dataset. Each ROOT file still goes through the normal selection and native preprocessing independently, preserving its own frozen development/blind-test split. A single LED threshold must be fixed in the experiment with `experiment.fixed_led_threshold_mV`; the source prepared datasets therefore use that same LED threshold before concatenation.
+
+The source training partitions are concatenated into one training set, source validation partitions into one validation set, and source blind-test partitions into one blind-test set. The fixed channel calibration and ML target are then recomputed globally on the concatenated training population. Source prepared caches are stored separately from ordinary per-voltage prepared caches.
+
+Example:
+
+```json
+"experiment": {
+  "concatenate_datasets": true,
+  "concatenated_dataset_name": "timing_all_bias",
+  "fixed_led_threshold_mV": 15.0
+},
+"standard_methods": {
+  "led_thresholds_mV": [15.0]
+}
+```
+
+A ready timing configuration is available at `config/experiments/timing_concatenated.json`.
+
 ## 4. ML and final test
 
 Models are constrained to paired antisymmetric corrections of the form
@@ -58,7 +79,21 @@ Before a rebuild or result overwrite, the CLI preflights every ROOT file and eve
 
 ## Results
 
-Each study stores `ctr_vs_voltage.pdf` directly in the study directory. Detailed reporting is grouped under:
+For ordinary per-voltage studies, the study root contains:
+
+- `ctr_vs_voltage.pdf`: grouped test CTR bars with bootstrap error bars;
+- `relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
+- `relative_improvement.csv`: numerical values used in that paired-improvement plot.
+
+The paired relative improvement is computed as
+
+`100 * (CTR_LED - CTR_model) / CTR_LED`
+
+for every common bootstrap resample. This accounts for covariance between LED and ML CTR estimates from the same event population.
+
+Concatenated-dataset studies intentionally do **not** produce voltage-comparison plots because only one pooled dataset/model is evaluated.
+
+Detailed reporting is grouped under:
 
 - `plots/corrections/`
 - `plots/train_distribution/`
@@ -71,10 +106,16 @@ The reporting histograms are presentation views and use a compact robust display
 ## CLI
 
 ```bash
-python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/complete_energy.json
-python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/complete_energy.json
-python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/complete_energy.json --overwrite
-python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete_energy
+python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/timing.json
+python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/timing.json
+python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/timing.json --overwrite
+python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete_timing
 ```
 
-Use `complete_energy.json` and `complete_timing.json` as independent studies.
+For the concatenated timing study:
+
+```bash
+python -m waveform_analysis.cli run \
+  --config waveform_analysis/config/experiments/timing_concatenated.json \
+  --overwrite
+```
