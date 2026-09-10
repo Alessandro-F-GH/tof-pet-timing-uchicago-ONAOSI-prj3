@@ -12,7 +12,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from utils_fit import fit_delta_times_ps
+from utils_fit import CTR_METRIC_NAME, fit_delta_times_ps
 from utils_fit.outliers import robust_mad_filter
 from utils_fit.io import load_fit_csv, write_fit_csv
 from utils_fit.plotting import plot_ctr_histogram
@@ -149,7 +149,7 @@ def _summary_row(run, run_info, fit, toa_lsb_ps: float | None, average_delay_cor
         "AcquisitionMode": run_info.acquisition_mode,
         "E_th": run_info.energy_threshold_mv,
         "T_th": run_info.timing_threshold_mv,
-        "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "fit_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": _number(fit.coverage_fraction),
         "ctr_interval_center_ps": _number(fit.center_ps),
         "ctr_interval_low_ps": _number(fit.interval_low_ps),
