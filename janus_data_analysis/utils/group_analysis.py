@@ -680,7 +680,7 @@ def _build_summary_row(
         "AcquisitionMode": first.acquisition_mode,
         "E_th": first.energy_threshold_mv,
         "T_th": first.timing_threshold_mv,
-        "fit_metric": "fixed_bin_histogram_fwhm",
+        "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
         "measurement_mode": first.measurement_mode,
         "toa_lsb_ps": first.toa_lsb_ps,
         "tot_lsb_ps": first.tot_lsb_ps,
@@ -1034,7 +1034,7 @@ def run_compatible_group_analysis(
             bootstrap=True,
         )
         if not fit.success:
-            raise RuntimeError(f"Histogram FWHM CTR estimation failed: {fit.message}")
+            raise RuntimeError(f"Robust CTR estimation failed: {fit.message}")
         write_fit_csv(fit_path, fit, cfg["analysis_output"]["diagnostic_mode"])
         mark_stage(state, "fit", fit_signature, [fit_path])
         save_state(state_path, state)
