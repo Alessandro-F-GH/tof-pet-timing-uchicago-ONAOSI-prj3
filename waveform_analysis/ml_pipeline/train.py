@@ -50,7 +50,7 @@ def _fit_once(
     )
     metadata = dict(getattr(artifact, "metadata", {}) or {})
     metadata["output_max_abs_ps"] = None if output_max_abs_ps is None else float(output_max_abs_ps)
-    metadata["target_definition"] = "delta_t_led - delta_anchor_shift - true_tof - calibration_bias"
+    metadata["target_definition"] = "delta_t_led - true_tof - calibration_bias"
     return FittedModel(artifact, metadata, None if output_max_abs_ps is None else float(output_max_abs_ps))
 
 
