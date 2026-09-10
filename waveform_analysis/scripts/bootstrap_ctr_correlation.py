@@ -400,7 +400,7 @@ def analyse_dataset(
     statistics = _correlation_summary(bootstrap_rows)
     if int(statistics["bootstrap_successful"]) < max(10, repeats // 2):
         raise RuntimeError(
-            f"{dataset}: only {statistics['bootstrap_successful']}/{repeats} paired bootstrap resamples produced valid FWHM"
+            f"{dataset}: only {statistics['bootstrap_successful']}/{repeats} paired bootstrap resamples produced valid robust CTR"
         )
 
     dataset_dir = output_root / dataset
@@ -432,7 +432,9 @@ def analyse_dataset(
         "method": method_name,
         "bootstrap_requested": repeats,
         **counts,
-        "fit_bin_width_ps": float(fit_config.get("bin_width_ps", np.nan)),
+        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_coverage_fraction": float(fit_config.get("coverage_fraction", 0.90)),
+        "core_fwhm_bin_width_ps": float(fit_config.get("bin_width_ps", np.nan)),
         "full_reference_ctr_ps": float(full_reference),
         "full_method_ctr_ps": float(full_method),
         "full_delta_ctr_ps": float(full_method - full_reference),
