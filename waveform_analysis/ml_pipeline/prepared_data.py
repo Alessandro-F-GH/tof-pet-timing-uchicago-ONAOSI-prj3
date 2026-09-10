@@ -59,7 +59,7 @@ def _best_column(
     if total <= 0:
         raise RuntimeError(f"No development events available for {label} selection")
 
-    # Candidate selection uses the same fixed-bin FWHM estimator as final CTR,
+    # Candidate selection uses the same robust CTR estimator as final reporting,
     # but skips bootstrap because uncertainty is not part of threshold ranking.
     for i, candidate in enumerate(candidates):
         residual = pair_delta(np.asarray(grid[:, :, i], dtype=np.float64)) - float(true_tof)
@@ -86,7 +86,7 @@ def _best_column(
         except ValueError as exc:
             if logger is not None:
                 logger.warning(
-                    "%s candidate %.6g histogram FWHM unavailable | coincidence efficiency %.2f%% (%d/%d) | reason=%s | %s",
+                    "%s candidate %.6g robust CTR unavailable | coincidence efficiency %.2f%% (%d/%d) | reason=%s | %s",
                     label,
                     float(candidate),
                     100.0 * efficiency,
@@ -103,7 +103,7 @@ def _best_column(
     if best is None:
         raise RuntimeError(
             f"No {label} candidate satisfies the minimum coincidence efficiency "
-            f"{100.0 * float(minimum_efficiency):.1f}% and provides a valid histogram FWHM; "
+            f"{100.0 * float(minimum_efficiency):.1f}% and provides a valid robust CTR; "
             f"best observed efficiency={100.0 * best_observed_efficiency:.2f}%"
         )
     return best[1], best[2], best[3], best[4]
@@ -255,7 +255,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             label=f"{family} LED",
         )
         logger.info(
-            "Selected %s LED | threshold %.6g mV | development histogram FWHM %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
+            "Selected %s LED | threshold %.6g mV | development robust CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
             family,
             led_choice[family],
             led_score[family],
@@ -396,17 +396,14 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     calibration_bias = {}
     for family in families:
         led_pair = pair_delta(led_times[family][keep])
-        offsets = (led_times[family] - anchor_times[family])[keep]
-        delta_delta = pair_delta(offsets)
         mean_led = float(np.mean(led_pair[training_new]))
         c_hat = mean_led - true_tof
-        slide_target = led_pair - delta_delta - true_tof - c_hat
+        slide_target = led_pair - true_tof - c_hat
         led_training_mean[family] = mean_led
         calibration_bias[family] = c_hat
         np.save(base / f"{family}_led_time_ps.npy", led_times[family][keep])
         np.save(base / f"{family}_anchor_time_ps.npy", anchor_times[family][keep])
         np.save(base / f"{family}_target_ps.npy", slide_target)
-        np.save(base / f"{family}_anchor_offset_ps.npy", offsets)
         if family in cfd_times:
             np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[family][keep])
 
@@ -440,14 +437,14 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         "calibration_bias_ps": calibration_bias,
         "cfd_fraction": cfd_choice,
         "cfd_development_ctr_ps": cfd_score,
-        "ctr_selection_metric": "fixed_bin_histogram_fwhm",
-        "ctr_bin_width_ps": float(config["fit"]["bin_width_ps"]),
+        "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
+        "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
         "normalization": transforms,
         "diagnostic_examples": diagnostic_examples,
-        "target_definition": "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
+        "target_definition": "delta_t_led - true_tof - calibration_bias",
         "anchor_definition": "native sample nearest in time to interpolated selected LED crossing",
-        "anchor_offset_definition": "delta_i = t_led_i - t_anchor_i",
         "corrected_definition": "target - paired_model_prediction",
         "time_reference": "native_grid_anchor_nearest_interpolated_led",
     }
