@@ -165,7 +165,7 @@ def _xai_plot(output, artifact, mode, model, paths):
     values = np.asarray([v for _, _, v in stripes])
     bottom.plot(centers, values, marker="o")
     bottom.set_ylim(0, 1.05)
-    bottom.set_xlabel("Time relative to LED anchor [ns]")
+    bottom.set_xlabel("Time relative to interpolated LED crossing [ns]")
     bottom.set_ylabel("1 ns mean importance")
     bottom.grid(True, alpha=.2)
     cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=top, pad=.015, fraction=.04)
