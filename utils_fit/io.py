@@ -10,6 +10,10 @@ import numpy as np
 from .histogram import FitResult
 
 FIT_FIELDS = [
+    "fit_metric",
+    "ctr_definition",
+    "ctr_uncertainty_definition",
+    "core_metric",
     "method",
     "parameter",
     "success",
