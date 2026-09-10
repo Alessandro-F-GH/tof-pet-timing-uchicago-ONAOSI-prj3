@@ -179,7 +179,7 @@ def run_study(
         "model_selection_metric": "validation_robust_ctr",
         "selected_model_policy": "use_validation_selected_trained_model_without_refit",
         "model_architecture_constraint": "model-specific; see per-model metadata",
-        "ml_target": "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
+        "ml_target": "delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
         "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
@@ -350,7 +350,7 @@ def run_study(
             "subsampling": int(dataset.manifest["ml_input"]["subsampling"]),
             "target_definition": dataset.manifest.get(
                 "target_definition",
-                "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
+                "delta_t_led - true_tof - calibration_bias",
             ),
             "corrected_definition": "target - paired_model_prediction",
             "concatenated": bool(dataset.manifest.get("concatenated", False)),
