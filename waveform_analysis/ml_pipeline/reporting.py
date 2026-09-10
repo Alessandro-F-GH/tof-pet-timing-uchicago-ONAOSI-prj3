@@ -565,8 +565,12 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         _relative_improvement_plot(run, test_rows, manifest, mode, paths)
 
     for dataset in datasets:
-        _distribution_plot(categories["test_distribution"], run, all_rows, mode, dataset, "test", paths)
-        _distribution_plot(categories["train_distribution"], run, all_rows, mode, dataset, "train", paths)
+        test_distribution_dir = categories["test_distribution"] / dataset
+        train_distribution_dir = categories["train_distribution"] / dataset
+        test_distribution_dir.mkdir(parents=True, exist_ok=True)
+        train_distribution_dir.mkdir(parents=True, exist_ok=True)
+        _distribution_plot(test_distribution_dir, run, all_rows, mode, dataset, "test", paths)
+        _distribution_plot(train_distribution_dir, run, all_rows, mode, dataset, "train", paths)
 
     available_methods = {r["method"] for r in test_rows}
     ordered_methods = [m for m in MODEL_ORDER if m in available_methods] + sorted(available_methods - set(MODEL_ORDER))
