@@ -13,8 +13,10 @@ from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
 from .event_selection import select_events
+from .model_output_reporting import make_model_output_reports
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
+from .reporting import LABELS
 from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
@@ -343,6 +345,10 @@ def run_study(
         manifest["datasets"][name] = dataset_manifest
         store.write_results(rows)
         store.write_manifest(manifest)
+
+    diagnostics_dir = store.root / "model_output_diagnostics"
+    generated = make_model_output_reports(store.root, diagnostics_dir, labels=LABELS)
+    logger.info("Model-output diagnostics generated | files=%d | %s", len(generated), diagnostics_dir)
 
     logger.info("Study complete | %s", store.root)
     return store.root
