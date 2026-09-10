@@ -156,7 +156,7 @@ def _write_matrix_csv(path: Path, names: list[str], matrix: np.ndarray) -> None:
         writer = csv.writer(stream)
         writer.writerow(["model", *names])
         for name, row in zip(names, matrix):
-            writer.writerow([name, *[float(value) for value in row]])
+            writer.writerow([name, *row.tolist()])
 
 
 def plot_model_output_correlations(
@@ -180,6 +180,7 @@ def plot_model_output_correlations(
         return
 
     fig, axes = plt.subplots(1, len(stages), figsize=(6.3 * len(stages), 5.7), squeeze=False)
+    image = None
     for ax, (stage, names, matrix, counts) in zip(axes[0], stages):
         image = ax.imshow(matrix, vmin=-1.0, vmax=1.0, cmap="coolwarm")
         display_names = [labels.get(name, name) for name in names]
@@ -197,13 +198,75 @@ def plot_model_output_correlations(
         _write_matrix_csv(csv_path, names, matrix)
         paths.append(csv_path)
         count_path = output / f"model_output_correlation_counts_{stage}_{dataset}.csv"
-        _write_matrix_csv(count_path, names, counts.astype(np.float64))
+        _write_matrix_csv(count_path, names, counts)
         paths.append(count_path)
-    cbar = fig.colorbar(image, ax=axes.ravel().tolist(), fraction=0.035, pad=0.04)
-    cbar.set_label("Pearson correlation")
+    if image is not None:
+        cbar = fig.colorbar(image, ax=axes.ravel().tolist(), fraction=0.035, pad=0.04)
+        cbar.set_label("Pearson correlation")
     fig.suptitle(f"Model-output correlation · {mode.replace('_', ' ')} · {dataset}")
     fig.subplots_adjust(bottom=0.22, top=0.88, wspace=0.35)
     target_path = output / f"model_output_correlation_{dataset}.pdf"
     fig.savefig(target_path, bbox_inches="tight")
     plt.close(fig)
     paths.append(target_path)
+
+
+def make_model_output_reports(
+    run_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    labels: dict[str, str] | None = None,
+) -> list[Path]:
+    """Create prediction-target scatters and multi-model output correlations."""
+    run = Path(run_dir).resolve()
+    output_root = Path(output_dir).resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    mode = str(manifest.get("mode") or manifest["config"]["mode"])
+    labels = dict(labels or {})
+    paths: list[Path] = []
+
+    datasets = list((manifest.get("datasets") or {}).keys())
+    for dataset in datasets:
+        artifact_dir = run / "artifacts" / dataset
+        models = sorted(
+            {
+                path.name[: -len("_test_model_output_ps.npy")]
+                for path in artifact_dir.glob("*_test_model_output_ps.npy")
+                if path.name.endswith("_test_model_output_ps.npy")
+            }
+        )
+        if not models:
+            models = sorted(
+                {
+                    path.name[: -len("_train_model_output_ps.npy")]
+                    for path in artifact_dir.glob("*_train_model_output_ps.npy")
+                    if path.name.endswith("_train_model_output_ps.npy")
+                }
+            )
+        for model in models:
+            model_dir = output_root / model
+            model_dir.mkdir(parents=True, exist_ok=True)
+            plot_prediction_vs_target(
+                model_dir,
+                run,
+                manifest,
+                mode,
+                dataset,
+                model,
+                labels.get(model, model),
+                paths,
+            )
+        if len(models) > 1:
+            correlation_dir = output_root / "correlations"
+            correlation_dir.mkdir(parents=True, exist_ok=True)
+            plot_model_output_correlations(
+                correlation_dir,
+                run,
+                mode,
+                dataset,
+                models,
+                labels,
+                paths,
+            )
+    return paths
