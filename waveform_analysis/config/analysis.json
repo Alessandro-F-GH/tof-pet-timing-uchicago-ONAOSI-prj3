@@ -47,9 +47,9 @@
   },
   "fit": {
     "min_events": 100,
-    "max_abs_ps": 2000.0,
+    "coverage_fraction": 0.90,
     "bin_width_ps": 5.0,
-    "bootstrap_samples": 100
+    "bootstrap_samples": 500
   },
   "plot": {
     "dpi": 180,
