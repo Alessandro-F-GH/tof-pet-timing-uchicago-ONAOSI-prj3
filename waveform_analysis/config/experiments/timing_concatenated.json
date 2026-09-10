@@ -9,6 +9,9 @@
     "concatenated_dataset_name": "timing_all_bias",
     "fixed_led_threshold_mV": 15.0
   },
+  "standard_methods": {
+    "led_thresholds_mV": [15.0]
+  },
   "models": ["linear_svr", "cnn"],
   "mode": "timing_to_timing",
   "cfd": false
