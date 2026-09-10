@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-DATASET_FORMAT_VERSION = 15
+DATASET_FORMAT_VERSION = 16
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,6 @@ class PreparedDataset:
     timing_led_time_ps: np.ndarray | None
     energy_cfd_time_ps: np.ndarray | None
     timing_cfd_time_ps: np.ndarray | None
-    energy_anchor_offset_ps: np.ndarray | None
-    timing_anchor_offset_ps: np.ndarray | None
 
     @property
     def n_events(self) -> int:
@@ -106,6 +104,4 @@ def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
         _optional(directory, "timing_led_time_ps"),
         _optional(directory, "energy_cfd_time_ps"),
         _optional(directory, "timing_cfd_time_ps"),
-        _optional(directory, "energy_anchor_offset_ps"),
-        _optional(directory, "timing_anchor_offset_ps"),
     )
