@@ -590,6 +590,8 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         for dataset in datasets:
             top, worst = _correction_rankings(run, model, dataset)
             if top or worst:
-                paths.append(_write_rankings(categories["corrections"], dataset, model, top, worst))
-                _correction_examples(categories["corrections"], run, mode, model, dataset, top, worst, paths)
+                correction_dir = categories["corrections"] / dataset
+                correction_dir.mkdir(parents=True, exist_ok=True)
+                paths.append(_write_rankings(correction_dir, dataset, model, top, worst))
+                _correction_examples(correction_dir, run, mode, model, dataset, top, worst, paths)
     return paths
