@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Relate event-wise waveform-channel distance to absolute calibrated LED timing error. "
             "The selection scan accepts events closest to the mean waveform distance, using "
-            "abs(distance - mean_distance). CTR uses the canonical repository histogram-FWHM estimator."
+            "abs(distance - mean_distance). CTR uses the canonical repository robust shortest-coverage estimator."
         )
     )
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -343,7 +343,7 @@ def _plot_selection_scan(
     fig, ax = plt.subplots(figsize=(8.2, 5.0))
     ax.errorbar(efficiency, ctr, yerr=uncertainty, marker=".", ms=4, capsize=2, lw=1.0)
     ax.set_xlabel("Accepted events closest to mean waveform distance [%]")
-    ax.set_ylabel("CTR FWHM [ps]")
+    ax.set_ylabel("Robust CTR [ps]")
     ax.set_title(f"{dataset_name} · {stage} · |{metric} distance − mean| selection")
     ax.grid(alpha=0.2)
     fig.tight_layout()
@@ -615,7 +615,10 @@ def analyse_dataset(
         "requested_window_ns": None if window_ns is None else list(window_ns),
         "actual_sample_window_ns": actual_window,
         "led_error_definition": "abs(calibrated_led_pair_residual_ps)",
-        "ctr_estimator": "canonical repository fit_ctr_ps: direct fixed-bin histogram FWHM with configured bootstrap",
+        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_estimator": "canonical repository fit_ctr_ps: Gaussian-equivalent shortest configured-coverage interval",
+        "ctr_coverage_fraction": float(fit_config.get("coverage_fraction", 0.90)),
+        "core_fwhm_bin_width_ps": float(fit_config.get("bin_width_ps", np.nan)),
         "fit_config": fit_config,
         "efficiency_step_percent": float(args.efficiency_step_percent),
         "n_requested": int(indices.size),
