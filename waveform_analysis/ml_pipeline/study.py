@@ -19,6 +19,8 @@ from .prepared_data import prepare_ml_dataset
 from .reporting import LABELS
 from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
+from utils_fit import CORE_FWHM_METRIC_NAME, CTR_DEFINITION, CTR_METRIC_NAME, CTR_UNCERTAINTY_DEFINITION
+
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
 from .train import predict_indices, save_model, search_model, selected_model
@@ -171,7 +173,7 @@ def run_study(
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 10,
+        "schema_version": 11,
         "protocol": "single_mode_validation_robust_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
@@ -182,13 +184,13 @@ def run_study(
         "ml_target": "delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": coverage,
-        "ctr_definition": "scale(p) * shortest empirical interval containing ceil(p*N) finite residuals",
+        "ctr_definition": CTR_DEFINITION,
         "ctr_uses_all_finite_residuals": True,
-        "ctr_core_diagnostic": "dominant_peak_fixed_bin_histogram_fwhm",
+        "ctr_core_diagnostic": CORE_FWHM_METRIC_NAME,
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
-        "ctr_uncertainty": "event_bootstrap_robust_ctr_std",
+        "ctr_uncertainty": CTR_UNCERTAINTY_DEFINITION,
         "ctr_bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
         "config": public_config(config),
         "datasets": {},
