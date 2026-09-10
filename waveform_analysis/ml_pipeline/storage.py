@@ -10,15 +10,17 @@ class RunStore:
         if overwrite and self.root.exists(): shutil.rmtree(self.root)
         if self.root.exists() and any(self.root.iterdir()): raise FileExistsError(f"Run directory is not empty: {self.root}. Use --overwrite for a new run.")
         self.root.mkdir(parents=True,exist_ok=True)
-        for name in ("models","artifacts","search","splits"): (self.root/name).mkdir(exist_ok=True)
+        for name in ("models","artifacts","search","splits","csv","plots"): (self.root/name).mkdir(exist_ok=True)
+        self.csv_dir=self.root/"csv"
+        self.plots_dir=self.root/"plots"
     def write_manifest(self,value): atomic_json(self.root/"manifest.json",value)
     def write_results(self,rows):
-        fields=list(dict.fromkeys(key for row in rows for key in row)); fd,tmp=tempfile.mkstemp(prefix=".results.",suffix=".csv",dir=self.root)
+        fields=list(dict.fromkeys(key for row in rows for key in row)); fd,tmp=tempfile.mkstemp(prefix=".results.",suffix=".csv",dir=self.csv_dir)
         try:
             with os.fdopen(fd,"w",encoding="utf-8",newline="") as stream:
                 if fields:
                     writer=csv.DictWriter(stream,fieldnames=fields); writer.writeheader(); writer.writerows(rows)
-            os.replace(tmp,self.root/"results.csv")
+            os.replace(tmp,self.csv_dir/"results.csv")
         finally:
             if os.path.exists(tmp): os.unlink(tmp)
     def save_split(self,dataset,prepared):
