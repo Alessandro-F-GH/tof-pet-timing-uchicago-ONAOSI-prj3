@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+from utils_fit import fit_ctr_ps
+
 from .models.spec import ModelSpec
 from .search import SearchResult, select_candidate
 from .storage import atomic_json
@@ -59,11 +61,6 @@ def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.
     return values
 
 
-def _rmse(values):
-    residual = np.asarray(values, dtype=np.float64)
-    return float(np.sqrt(np.mean(residual**2)))
-
-
 def search_model(
     spec,
     model_config,
@@ -85,6 +82,7 @@ def search_model(
     train_target = target[training]
     validation_target = target[validation]
     output_limit = float(config["ml_output"]["max_abs_ps"])
+    fit_config = dict(config.get("fit") or {})
     dataset_label = str(dataset_name or dataset.directory.name)
 
     def fit_candidate(parameters, candidate_seed):
@@ -104,6 +102,9 @@ def search_model(
     def predict_candidate(_parameters, fitted):
         return validation_target - predict_model(spec, fitted, validation_x)
 
+    def score_candidate(residual):
+        return float(fit_ctr_ps(residual, fit_config, seed=seed, bootstrap=False).ctr_ps)
+
     def on_start(number, total, candidate):
         if logger is not None:
             logger.info(
@@ -121,13 +122,14 @@ def search_model(
             return
         if result.error is None:
             logger.info(
-                "Validation dataset=%s | %s/%s | candidate %d/%d | slide-target RMSE %.6g ps | output clipped to ±%.0f ps | %s",
+                "Validation dataset=%s | %s/%s | candidate %d/%d | robust CTR %.6g ps | coverage %.1f%% | output clipped to ±%.0f ps | %s",
                 dataset_label,
                 mode,
                 spec.name,
                 number,
                 total,
                 result.score,
+                100.0 * float(fit_config.get("coverage_fraction", 0.90)),
                 output_limit,
                 result.candidate,
             )
@@ -147,7 +149,7 @@ def search_model(
         spec.candidates(model_config),
         fit_candidate=fit_candidate,
         predict_candidate=predict_candidate,
-        score_candidate=_rmse,
+        score_candidate=score_candidate,
         seed=seed,
         on_candidate_start=on_start,
         on_candidate_result=on_result,
@@ -181,7 +183,7 @@ def save_model(spec, fitted, directory: Path, parameters):
             "model": spec.name,
             "parameters": parameters,
             "training": fitted.metadata,
-            "selection_protocol": "validation_selected_model_used_directly_without_refit",
+            "selection_protocol": "validation_robust_ctr_selected_model_used_directly_without_refit",
             "prediction_definition": prediction_definition,
         },
     )
