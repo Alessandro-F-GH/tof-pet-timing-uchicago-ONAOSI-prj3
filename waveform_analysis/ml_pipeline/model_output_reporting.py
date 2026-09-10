@@ -160,7 +160,8 @@ def _write_matrix_csv(path: Path, names: list[str], matrix: np.ndarray) -> None:
 
 
 def plot_model_output_correlations(
-    output: Path,
+    plot_output: Path,
+    csv_output: Path,
     run: Path,
     mode: str,
     dataset: str,
@@ -194,10 +195,10 @@ def plot_model_output_correlations(
                 text = "nan" if not np.isfinite(value) else f"{value:.3f}"
                 ax.text(j, i, text, ha="center", va="center", fontsize=9)
         ax.set_title(f"{stage.capitalize()} model outputs")
-        csv_path = output / f"model_output_correlation_{stage}_{dataset}.csv"
+        csv_path = csv_output / f"model_output_correlation_{stage}_{dataset}.csv"
         _write_matrix_csv(csv_path, names, matrix)
         paths.append(csv_path)
-        count_path = output / f"model_output_correlation_counts_{stage}_{dataset}.csv"
+        count_path = csv_output / f"model_output_correlation_counts_{stage}_{dataset}.csv"
         _write_matrix_csv(count_path, names, counts)
         paths.append(count_path)
     if image is not None:
@@ -205,7 +206,7 @@ def plot_model_output_correlations(
         cbar.set_label("Pearson correlation")
     fig.suptitle(f"Model-output correlation · {mode.replace('_', ' ')} · {dataset}")
     fig.subplots_adjust(bottom=0.22, top=0.88, wspace=0.35)
-    target_path = output / f"model_output_correlation_{dataset}.pdf"
+    target_path = plot_output / f"model_output_correlation_{dataset}.pdf"
     fig.savefig(target_path, bbox_inches="tight")
     plt.close(fig)
     paths.append(target_path)
@@ -213,14 +214,17 @@ def plot_model_output_correlations(
 
 def make_model_output_reports(
     run_dir: str | Path,
-    output_dir: str | Path,
+    plot_output_dir: str | Path,
+    csv_output_dir: str | Path,
     *,
     labels: dict[str, str] | None = None,
 ) -> list[Path]:
     """Create prediction-target scatters and multi-model output correlations."""
     run = Path(run_dir).resolve()
-    output_root = Path(output_dir).resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
+    plot_root = Path(plot_output_dir).resolve()
+    csv_root = Path(csv_output_dir).resolve()
+    plot_root.mkdir(parents=True, exist_ok=True)
+    csv_root.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
     labels = dict(labels or {})
@@ -245,7 +249,7 @@ def make_model_output_reports(
                 }
             )
         for model in models:
-            model_dir = output_root / model
+            model_dir = plot_root / model
             model_dir.mkdir(parents=True, exist_ok=True)
             plot_prediction_vs_target(
                 model_dir,
@@ -258,10 +262,13 @@ def make_model_output_reports(
                 paths,
             )
         if len(models) > 1:
-            correlation_dir = output_root / "correlations"
-            correlation_dir.mkdir(parents=True, exist_ok=True)
+            correlation_plot_dir = plot_root / "correlations"
+            correlation_csv_dir = csv_root / "correlations"
+            correlation_plot_dir.mkdir(parents=True, exist_ok=True)
+            correlation_csv_dir.mkdir(parents=True, exist_ok=True)
             plot_model_output_correlations(
-                correlation_dir,
+                correlation_plot_dir,
+                correlation_csv_dir,
                 run,
                 mode,
                 dataset,
