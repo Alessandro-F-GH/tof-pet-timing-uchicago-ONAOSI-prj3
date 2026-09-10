@@ -21,10 +21,17 @@ def _difference(pair: np.ndarray) -> np.ndarray:
 
 def candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
     parameters = config.get("parameters", {})
-    return [
-        {"n_neighbors": int(k)}
-        for k in parameters.get("n_neighbors", [5, 10, 20, 50, 100])
-    ]
+    neighbors = parameters.get("n_neighbors", [5, 10, 20, 50, 100])
+    weights = parameters.get("weights", ["uniform"])
+    allowed = {"uniform", "distance"}
+    result = []
+    for k in neighbors:
+        for weight in weights:
+            weight = str(weight)
+            if weight not in allowed:
+                raise ValueError(f"Unsupported difference_knn weights={weight!r}; expected one of {sorted(allowed)}")
+            result.append({"n_neighbors": int(k), "weights": weight})
+    return result
 
 
 @dataclass
@@ -50,27 +57,35 @@ def fit(
         raise ValueError(f"Training inputs/targets differ in length: {x.shape[0]} != {y.size}")
 
     n_neighbors = int(params["n_neighbors"])
+    weights = str(params.get("weights", "uniform"))
     if n_neighbors < 1:
         raise ValueError("n_neighbors must be >= 1")
     if n_neighbors > x.shape[0]:
         raise ValueError(f"n_neighbors={n_neighbors} exceeds training events={x.shape[0]}")
+    if weights not in {"uniform", "distance"}:
+        raise ValueError(f"Unsupported weights={weights!r}")
 
     model = KNeighborsRegressor(
         n_neighbors=n_neighbors,
-        weights="uniform",
+        weights=weights,
         algorithm="brute",
         metric="euclidean",
         n_jobs=int(config.get("n_jobs", -1)),
     )
     model.fit(x, y)
+    prediction_definition = (
+        "inverse-distance-weighted timing-correction target of the k nearest training waveform differences [ps]"
+        if weights == "distance"
+        else "mean timing-correction target of the k nearest training waveform differences [ps]"
+    )
     metadata = {
         "input_definition": "normalized prepared waveform difference d(t)=s1(t)-s2(t)",
         "input_equivalence": "exact feature representation used by linear_svr",
         "metric": "euclidean",
         "algorithm": "brute",
-        "weights": "uniform",
+        "weights": weights,
         "n_neighbors": n_neighbors,
-        "prediction_definition": "mean timing-correction target of the k nearest training waveform differences [ps]",
+        "prediction_definition": prediction_definition,
         "training_events": int(x.shape[0]),
         "features": int(x.shape[1]),
     }
