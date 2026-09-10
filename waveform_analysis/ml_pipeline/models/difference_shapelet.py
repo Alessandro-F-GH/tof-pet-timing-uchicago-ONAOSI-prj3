@@ -91,9 +91,6 @@ class LearnableShapeletTransform(nn.Module):
         signal = difference[:, None, :]
         features = []
         for shapelets, length in zip(self.shapelets, self.lengths):
-            # Mean squared Euclidean distance from every learned shapelet to every
-            # sliding subsequence. The convolution identity avoids materializing
-            # [batch, position, length] windows.
             cross = F.conv1d(signal, shapelets, stride=self.match_stride)
             signal_sq = F.avg_pool1d(signal.square(), kernel_size=length, stride=self.match_stride)
             shapelet_sq = shapelets.square().mean(dim=2).view(1, -1, 1)
@@ -107,7 +104,7 @@ class DifferenceShapeletRegressor(nn.Module):
         super().__init__()
         self.transform = LearnableShapeletTransform(initial_shapelets, match_stride=match_stride)
         incoming = self.transform.n_features
-        head = [nn.BatchNorm1d(incoming)]
+        head = [nn.LayerNorm(incoming)]
         for width in dense_units:
             head.extend([nn.Linear(incoming, int(width)), nn.SiLU()])
             if dropout > 0:
