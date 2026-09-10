@@ -56,6 +56,13 @@ def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
                     raise ValueError("fingerprint changed")
             except Exception as exc:
                 problems.append(f"{root.name}: stale prepared ML cache ({exc})")
+
+    if rebuild and bool(config["experiment"].get("concatenate_datasets", False)):
+        name = str(config["experiment"].get("concatenated_dataset_name", "concatenated"))
+        concatenated = Path(config["preprocessing"]["prepared_dir"]).resolve() / name
+        if concatenated.exists():
+            overwrite.append(concatenated)
+
     if problems:
         details = "\n  - ".join(problems)
         raise RuntimeError(f"Preflight found stale caches. Re-run with --rebuild-preprocessing after reviewing them:\n  - {details}")
