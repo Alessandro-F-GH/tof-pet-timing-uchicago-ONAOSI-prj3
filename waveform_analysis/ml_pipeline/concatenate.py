@@ -173,8 +173,6 @@ def concatenate_prepared_datasets(
     led_pair = np.asarray(led[:, 0] - led[:, 1], dtype=np.float64)
     mean_led = float(np.mean(led_pair[training]))
     calibration_bias = mean_led - true_tof
-    target = led_pair - true_tof - calibration_bias
-    np.save(output / f"{family}_target_ps.npy", target)
 
     development_ctr = fit_ctr_ps(
         led_pair[development] - true_tof,
