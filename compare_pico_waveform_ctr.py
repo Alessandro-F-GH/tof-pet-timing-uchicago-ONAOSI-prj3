@@ -23,7 +23,7 @@ if str(WAVEFORM_ROOT) not in sys.path:
 
 from utils.config import config_copy, load_config
 from utils.pipeline import build_selection, extract_features, load_features, save_features
-from utils_fit import choose_best, fit_delta_times_integer_fs
+from utils_fit import CTR_METRIC_NAME, choose_best, fit_delta_times_integer_fs
 from utils_fit.outliers import robust_mad_filter
 from utils_fit.plotting import plot_ctr_histogram
 
@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-min-success-fraction",
         type=float,
         default=0.9,
-        help="Require at least this fraction of bootstrap FWHM estimates to succeed.",
+        help="Require at least this fraction of bootstrap robust-CTR estimates to succeed.",
     )
     return parser.parse_args()
 
@@ -142,11 +142,11 @@ def _bootstrap_ctr(
     minimum_success = math.ceil(float(min_success_fraction) * int(n_bootstrap))
     if len(ctrs) < minimum_success:
         raise RuntimeError(
-            f"Only {len(ctrs)}/{n_bootstrap} bootstrap FWHM estimates succeeded for {method}; need at least {minimum_success}."
+            f"Only {len(ctrs)}/{n_bootstrap} bootstrap robust-CTR estimates succeeded for {method}; need at least {minimum_success}."
         )
     ctr_array = np.asarray(ctrs, dtype=np.float64)
     return {
-        "ctr_mean_ps": float(np.mean(ctr_array)),
+        "ctr_bootstrap_mean_ps": float(np.mean(ctr_array)),
         "ctr_bootstrap_std_ps": float(np.std(ctr_array, ddof=1)),
         "bootstrap_samples_requested": int(n_bootstrap),
         "bootstrap_samples_successful": int(ctr_array.size),
@@ -228,7 +228,7 @@ def _scope_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
             score_results.append(result)
         chosen = choose_best(score_results)
         if chosen is None:
-            raise RuntimeError(f"No successful LED threshold FWHM estimate for {root_file.name}")
+            raise RuntimeError(f"No successful LED threshold robust-CTR estimate for {root_file.name}")
         chosen_local = int(np.argmin(np.abs(thresholds - chosen.parameter)))
         chosen_original_index = int(threshold_indices[chosen_local])
         final_result, final_delta_fs, rejection_meta = _fit_scope_threshold(
@@ -236,7 +236,7 @@ def _scope_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
             method="Oscilloscope LED blind", outlier_z=args.scope_led_outlier_z,
         )
         if not final_result.success:
-            raise RuntimeError(f"Final scope LED FWHM failed for {root_file.name}: {final_result.message}")
+            raise RuntimeError(f"Final scope LED robust CTR failed for {root_file.name}: {final_result.message}")
         bootstrap = _bootstrap_ctr(
             final_delta_fs,
             fit_config=cfg["fit"],
@@ -261,12 +261,12 @@ def _scope_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
             "nominal_ctr_ps": float(final_result.ctr_ps),
             **bootstrap,
             **rejection_meta,
-            "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
+            "fit_metric": CTR_METRIC_NAME,
         })
         print(
             f"[scope][{root_file.name}] V={voltage:g} V | best LED threshold={chosen.parameter:g} mV | "
             f"retained={rejection_meta['n_after_outlier']}/{rejection_meta['n_before_outlier']} | "
-            f"bootstrap CTR={bootstrap['ctr_mean_ps']:.2f} ± {bootstrap['ctr_bootstrap_std_ps']:.2f} ps"
+            f"CTR={final_result.ctr_ps:.2f} ± {bootstrap['ctr_bootstrap_std_ps']:.2f} ps"
         )
     return rows
 
@@ -399,7 +399,7 @@ def _pico_rows(args: argparse.Namespace, fit_config: dict[str, Any]) -> list[dic
             "nominal_ctr_ps": float(row["CTR_ps"]),
             **bootstrap,
             **rejection_meta,
-            "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
+            "fit_metric": CTR_METRIC_NAME,
         })
     return output
 
@@ -420,20 +420,22 @@ def _paired_rows(pico, scope):
     for p in pico:
         voltage = float(p["voltage_V"]); s = scope_by_voltage.get(voltage)
         if s is None: continue
-        pico_mean = float(p["ctr_mean_ps"]); scope_mean = float(s["ctr_mean_ps"])
+        pico_ctr = float(p["nominal_ctr_ps"]); scope_ctr = float(s["nominal_ctr_ps"])
         pico_err = float(p["ctr_bootstrap_std_ps"]); scope_err = float(s["ctr_bootstrap_std_ps"])
         combined_error = math.sqrt(pico_err**2 + scope_err**2)
-        z = (pico_mean - scope_mean) / combined_error if combined_error > 0 else float("nan")
+        z = (pico_ctr - scope_ctr) / combined_error if combined_error > 0 else float("nan")
         rows.append({
             "voltage_V": voltage,
             "pico_run_id": p["run_id"],
             "pico_threshold_mV": p["timing_threshold_mV"],
             "scope_threshold_mV": s["threshold_mV"],
-            "pico_ctr_mean_ps": pico_mean,
+            "pico_ctr_ps": pico_ctr,
+            "pico_bootstrap_mean_ps": float(p["ctr_bootstrap_mean_ps"]),
             "pico_bootstrap_std_ps": pico_err,
-            "scope_ctr_mean_ps": scope_mean,
+            "scope_ctr_ps": scope_ctr,
+            "scope_bootstrap_mean_ps": float(s["ctr_bootstrap_mean_ps"]),
             "scope_bootstrap_std_ps": scope_err,
-            "difference_mean_ps": pico_mean - scope_mean,
+            "difference_ps": pico_ctr - scope_ctr,
             "combined_bootstrap_error_ps": combined_error,
             "difference_over_combined_error": z,
         })
@@ -446,8 +448,8 @@ def _plot_comparison(paired, path: Path, *, pico_threshold_mV: float, threshold_
         raise RuntimeError("No voltages are shared by Pico and oscilloscope results")
     ordered = sorted(paired, key=lambda row: float(row["voltage_V"]))
     voltage = np.asarray([float(row["voltage_V"]) for row in ordered])
-    pico_mean = np.asarray([float(row["pico_ctr_mean_ps"]) for row in ordered])
-    scope_mean = np.asarray([float(row["scope_ctr_mean_ps"]) for row in ordered])
+    pico_mean = np.asarray([float(row["pico_ctr_ps"]) for row in ordered])
+    scope_mean = np.asarray([float(row["scope_ctr_ps"]) for row in ordered])
     z = np.asarray([float(row["difference_over_combined_error"]) for row in ordered])
     fig, (ax, residual_ax) = plt.subplots(2, 1, figsize=(11.0, 8.5), sharex=True, gridspec_kw={"height_ratios": [3.0, 1.0]})
     ax.plot(voltage, pico_mean, marker="o", alpha=0.7, linestyle="none", markersize=15, label=f"Pico-TDC · T_th={pico_threshold_mV:g} mV")
@@ -475,7 +477,7 @@ def main() -> None:
     _write_csv(args.output / "paired_comparison.csv", paired)
     _plot_comparison(paired, args.output / "ctr_vs_voltage_bootstrap.png", pico_threshold_mV=args.pico_timing_threshold_mv, threshold_selection_stage=args.threshold_selection_stage)
     metadata = {
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_metric": CTR_METRIC_NAME,
         "coverage_fraction": float(scope_cfg["fit"].get("coverage_fraction", 0.90)),
         "core_bin_width_ps": float(scope_cfg["fit"].get("bin_width_ps", 5.0)),
         "bootstrap_samples": args.bootstrap_samples,
