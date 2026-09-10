@@ -68,7 +68,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
             if stale>=patience: break
     if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
     model.load_state_dict(best_state)
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"selection_metric":"validation_rmse","batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit)})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"early_stopping_metric":"validation_rmse","batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit)})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
