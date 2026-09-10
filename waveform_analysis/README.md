@@ -16,7 +16,7 @@ There is **no denoising** and no event-wise baseline subtraction.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and ranked by the common robust CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is still the native sample nearest in time to the interpolated selected LED crossing for window materialization only.
+LED thresholds are scanned on development and ranked by the common robust CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Each ML waveform is then resampled by linear interpolation on a common continuous time grid relative to that crossing, so `t=0` is exactly the selected LED threshold for every event and detector.
 
 The fixed channel calibration is estimated from training only as
 
@@ -26,9 +26,9 @@ The canonical supervised target is the calibrated LED residual itself:
 
 `y_target = Delta t_LED - TOF - C_hat_12`.
 
-No anchor-shift term is subtracted from the target.
+There is no anchor correction and no separate stored target array: the model target is computed directly from calibrated LED.
 
-The ML window is materialized with `t_anchor = 0` and `ml_input.subsampling` is applied. Waveforms are scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`. The transform is fixed by configuration: it is not fitted per event, per sample, or from the training population, and its inverse is persisted for physical-mV reporting.
+The continuous ML grid uses the native sampling interval multiplied by `ml_input.subsampling`, but every coordinate is evaluated by interpolation relative to the exact LED crossing. The fixed crossing coordinate at `t=0` is removed. A second development-only feature mask removes time coordinates that are constant in at least 99% of development events on both detectors; this removes cropped/clipped dead regions without looking at the blind test set. The learned mask is frozen and applied unchanged to validation and test. Waveforms are then scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`.
 
 ### Concatenated-dataset experiments
 
