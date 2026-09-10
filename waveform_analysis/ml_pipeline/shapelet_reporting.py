@@ -37,7 +37,7 @@ def plot_fixed_shapelets(run: Path, output: Path, dataset: str, paths: list[Path
         xlabel = "Prepared input sample"
         time_scale = 1.0
     else:
-        xlabel = "Time relative to LED anchor [ns]"
+        xlabel = "Time relative to interpolated LED crossing [ns]"
         time_scale = 1.0 / 1000.0
 
     fig, axes = plt.subplots(len(groups), 1, figsize=(9.0, 2.8 * len(groups)), sharex=True, squeeze=False)
