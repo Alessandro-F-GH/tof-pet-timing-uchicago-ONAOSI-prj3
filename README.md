@@ -10,7 +10,7 @@ The waveform path has one scientific order:
 
 `ROOT -> raw development/test split -> development-fitted event selection -> native-time preprocessing -> LED/CFD + ML dataset preparation -> training/validation model selection -> final test evaluation`
 
-The permanent test population never determines the photopeak, pulse-duration cuts, baseline-noise cuts, LED threshold, CFD fraction, input normalization, ML hyperparameters or early stopping.
+The permanent test population never determines the photopeak, pulse-duration cuts, baseline-noise cuts, LED threshold, CFD fraction, input normalization, training target range, ML hyperparameters or early stopping.
 
 Waveform ML includes linear and nonlinear paired/difference models. The supervised target is the calibrated LED residual, `Delta t_LED - TOF - C_hat_12`. CTR throughout the repository is the Gaussian-equivalent shortest empirical coverage interval implemented in `utils_fit`; the default coverage is 90% and the default final uncertainty uses 500 event-bootstrap resamples. Fixed-bin FWHM is retained only as a secondary core-peak diagnostic.
 
