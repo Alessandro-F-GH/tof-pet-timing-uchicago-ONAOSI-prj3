@@ -20,12 +20,22 @@ FIT_FIELDS = [
     "ctr_ps",
     "ctr_error_ps",
     "center_ps",
+    "coverage_fraction",
+    "interval_events",
+    "interval_low_ps",
+    "interval_high_ps",
+    "interval_width_ps",
+    "gaussian_equivalent_scale",
+    "core_fwhm_ps",
+    "core_fwhm_error_ps",
+    "core_fraction",
     "left_half_ps",
     "right_half_ps",
     "half_max_events",
     "bin_width_ps",
     "bootstrap_samples",
     "bootstrap_successful",
+    "core_bootstrap_successful",
     "message",
     "edges_ps",
     "counts",
@@ -64,6 +74,10 @@ def load_fit_csv(path: str | Path) -> FitResult:
         value = row.get(name, "")
         return float(value) if value not in ("", None) else float("nan")
 
+    def i(name: str) -> int:
+        value = row.get(name, "")
+        return int(value) if value not in ("", None) else 0
+
     return FitResult(
         method=str(row["method"]),
         parameter=f("parameter"),
@@ -75,12 +89,22 @@ def load_fit_csv(path: str | Path) -> FitResult:
         ctr_ps=f("ctr_ps"),
         ctr_error_ps=f("ctr_error_ps"),
         center_ps=f("center_ps"),
+        coverage_fraction=f("coverage_fraction"),
+        interval_events=i("interval_events"),
+        interval_low_ps=f("interval_low_ps"),
+        interval_high_ps=f("interval_high_ps"),
+        interval_width_ps=f("interval_width_ps"),
+        gaussian_equivalent_scale=f("gaussian_equivalent_scale"),
+        core_fwhm_ps=f("core_fwhm_ps"),
+        core_fwhm_error_ps=f("core_fwhm_error_ps"),
+        core_fraction=f("core_fraction"),
         left_half_ps=f("left_half_ps"),
         right_half_ps=f("right_half_ps"),
         half_max_events=f("half_max_events"),
         bin_width_ps=f("bin_width_ps"),
-        bootstrap_samples=int(row.get("bootstrap_samples") or 0),
-        bootstrap_successful=int(row.get("bootstrap_successful") or 0),
+        bootstrap_samples=i("bootstrap_samples"),
+        bootstrap_successful=i("bootstrap_successful"),
+        core_bootstrap_successful=i("core_bootstrap_successful"),
         message=str(row.get("message", "")),
         edges_ps=np.asarray(json.loads(row.get("edges_ps") or "[]"), dtype=np.float64),
         counts=np.asarray(json.loads(row.get("counts") or "[]"), dtype=np.int64),
