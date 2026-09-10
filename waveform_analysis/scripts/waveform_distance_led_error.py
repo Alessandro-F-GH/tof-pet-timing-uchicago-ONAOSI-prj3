@@ -319,8 +319,9 @@ def _selection_scan(
                 "ctr_ps": float(result.ctr_ps),
                 "ctr_uncertainty_ps": float(result.ctr_error_ps),
                 "bootstrap_successful": int(result.bootstrap_successful),
-                "fwhm_left_ps": float(result.left_half_ps),
-                "fwhm_right_ps": float(result.right_half_ps),
+                "interval_low_ps": float(result.interval_low_ps),
+                "interval_high_ps": float(result.interval_high_ps),
+                "core_fwhm_ps": float(result.core_fwhm_ps),
                 "mean_abs_led_error_ps": float(np.mean(np.abs(error[accepted]))),
                 "median_abs_led_error_ps": float(np.median(np.abs(error[accepted]))),
             }
@@ -389,9 +390,8 @@ def _plot_best_distribution(
         ax.stairs(result.counts, result.edges_ps, fill=True, alpha=0.42, label="selected events")
     else:
         ax.hist(values, bins=30, histtype="stepfilled", alpha=0.42, label="selected events")
-    ax.axhline(float(result.half_max_events), ls=":", lw=1.2, label="half maximum")
-    ax.axvline(float(result.left_half_ps), ls="--", lw=1.4, label="FWHM crossings")
-    ax.axvline(float(result.right_half_ps), ls="--", lw=1.4)
+    ax.axvline(float(result.interval_low_ps), ls="--", lw=1.4, label=f"shortest {100.0 * result.coverage_fraction:.0f}% interval")
+    ax.axvline(float(result.interval_high_ps), ls="--", lw=1.4)
     ax.set_xlabel("Calibrated LED timing residual [ps]")
     ax.set_ylabel(f"Events / {float(result.bin_width_ps):g} ps bin")
     ax.set_title(f"{dataset_name} · best |{metric} distance − mean| selection ({stage})")
@@ -418,10 +418,13 @@ def _plot_best_distribution(
         **best,
         "recomputed_ctr_ps": float(result.ctr_ps),
         "recomputed_ctr_uncertainty_ps": float(result.ctr_error_ps),
-        "fwhm_left_ps": float(result.left_half_ps),
-        "fwhm_right_ps": float(result.right_half_ps),
-        "half_max_events": float(result.half_max_events),
-        "bin_width_ps": float(result.bin_width_ps),
+        "coverage_fraction": float(result.coverage_fraction),
+        "interval_low_ps": float(result.interval_low_ps),
+        "interval_high_ps": float(result.interval_high_ps),
+        "interval_width_ps": float(result.interval_width_ps),
+        "core_fwhm_ps": float(result.core_fwhm_ps),
+        "core_fwhm_error_ps": float(result.core_fwhm_error_ps),
+        "core_bin_width_ps": float(result.bin_width_ps),
         "bootstrap_successful": int(result.bootstrap_successful),
     }
 
