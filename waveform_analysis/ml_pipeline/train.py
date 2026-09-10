@@ -165,6 +165,10 @@ def predict_indices(spec, fitted, dataset, mode, indices):
 def save_model(spec, fitted, directory: Path, parameters):
     directory.mkdir(parents=True, exist_ok=True)
     spec.save(fitted.artifact, directory)
+    prediction_definition = fitted.metadata.get(
+        "prediction_definition",
+        "paired waveform-dependent timing correction y_theta = g(s1)-g(s2) [ps]",
+    )
     atomic_json(
         directory / "metadata.json",
         {
@@ -172,6 +176,6 @@ def save_model(spec, fitted, directory: Path, parameters):
             "parameters": parameters,
             "training": fitted.metadata,
             "selection_protocol": "validation_selected_model_used_directly_without_refit",
-            "prediction_definition": "paired waveform-dependent timing correction y_theta = g(s1)-g(s2) [ps]",
+            "prediction_definition": prediction_definition,
         },
     )
