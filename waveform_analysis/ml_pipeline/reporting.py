@@ -146,10 +146,20 @@ def _xai_plot(output, artifact, mode, model, paths):
     dataset = artifact.parent.name
     with np.load(artifact) as data:
         time = np.asarray(data["time_ps"], dtype=float) / 1000.0
-        importance = np.asarray(data["importance"], dtype=float)
+        importance = np.asarray(data["importance"], dtype=float).reshape(-1)
         pair = np.asarray(data["example_pair_mV"], dtype=float)
     if not time.size or not importance.size:
         return
+    if importance.size != time.size:
+        raise ValueError(
+            f"{dataset}/{model}: XAI importance has {importance.size} time samples, "
+            f"but waveform axis has {time.size}"
+        )
+    if pair.ndim != 2 or pair.shape[0] != 2 or pair.shape[1] != time.size:
+        raise ValueError(
+            f"{dataset}/{model}: XAI waveform pair shape {pair.shape} is incompatible "
+            f"with time axis length {time.size}"
+        )
     stripes = _stripe_importance(time, importance, 1.0)
     cmap = LinearSegmentedColormap.from_list("xai", ["white", "orange", "red"])
     norm = Normalize(0, 1)
