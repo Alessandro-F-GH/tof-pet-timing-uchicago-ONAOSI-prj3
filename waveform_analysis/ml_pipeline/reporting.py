@@ -7,8 +7,11 @@ from typing import Any
 
 import numpy as np
 
+from utils_fit import fit_ctr_ps
+
 from .common import voltage_from_name
 from .dataset import load_prepared_dataset
+from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
 
 MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn")
@@ -90,7 +93,6 @@ def _distribution_methods(rows, dataset, stage):
 
 
 def _median_centered_display_edges(values, xlim, n_bins=20):
-    """Return about n_bins equal-width display bins with a bin centered on the sample median."""
     values = np.asarray(values, dtype=float).reshape(-1)
     values = values[np.isfinite(values)]
     low, high = float(xlim[0]), float(xlim[1])
@@ -208,28 +210,15 @@ def _correction_rankings(run, model, dataset):
 def _write_rankings(output, dataset, model, top, worst):
     target = output / f"correction_top_worst_{dataset}_{model}.csv"
     fields = [
-        "rank_group",
-        "rank",
-        "dataset",
-        "voltage_V",
-        "event_index",
-        "led_residual_ps",
-        "corrected_residual_ps",
-        "led_bias_ps",
-        "improvement_ps",
+        "rank_group", "rank", "dataset", "voltage_V", "event_index",
+        "led_residual_ps", "corrected_residual_ps", "led_bias_ps", "improvement_ps",
     ]
     with target.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         for group, items in (("top", top), ("worst", list(reversed(worst)))):
             for rank, row in enumerate(items, 1):
-                writer.writerow(
-                    {
-                        "rank_group": group,
-                        "rank": rank,
-                        **{k: row[k] for k in fields if k not in {"rank_group", "rank"}},
-                    }
-                )
+                writer.writerow({"rank_group": group, "rank": rank, **{k: row[k] for k in fields if k not in {"rank_group", "rank"}}})
     return target
 
 
@@ -279,10 +268,7 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
         residual = residual[np.isfinite(residual)]
         if not residual.size:
             continue
-        row = next(
-            (r for r in rows if r["dataset"] == dataset and r["method"] == method and r.get("stage") == stage),
-            None,
-        )
+        row = next((r for r in rows if r["dataset"] == dataset and r["method"] == method and r.get("stage") == stage), None)
         if row is not None:
             series.append((method, residual, row))
     if not series:
@@ -294,22 +280,10 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
     for index, (method, residual, row) in enumerate(series):
         color = colors[index % len(colors)] if colors else None
         outside = _outside_count(residual, xlim)
-        label = (
-            f"{LABELS.get(method, method)} · CTR "
-            f"{_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
-        )
+        label = f"{LABELS.get(method, method)} · CTR {_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps · outside {outside}"
         visible = residual[(residual >= xlim[0]) & (residual <= xlim[1])]
         bins = _median_centered_display_edges(visible, xlim, 20)
-        ax.hist(
-            visible,
-            bins=bins,
-            histtype="stepfilled",
-            alpha=.4,
-            color=color,
-            edgecolor=color,
-            linewidth=1.35,
-            label=label,
-        )
+        ax.hist(visible, bins=bins, histtype="stepfilled", alpha=.4, color=color, edgecolor=color, linewidth=1.35, label=label)
         left = _float(row.get("fwhm_left_ps"))
         right = _float(row.get("fwhm_right_ps"))
         if np.isfinite(left):
@@ -366,7 +340,6 @@ def _model_output_plot(output, run, mode, dataset, model, paths):
 
 
 def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: str, paths: list[Path]) -> None:
-    """Grouped CTR bars by discrete bias voltage, with the y-axis anchored at zero."""
     import matplotlib.pyplot as plt
 
     available_methods = {r["method"] for r in test_rows}
@@ -374,7 +347,6 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     methods.extend(sorted(available_methods - set(methods)))
     if not methods:
         return
-
     voltages = sorted({_voltage(row) for row in test_rows if np.isfinite(_voltage(row))})
     if not voltages:
         return
@@ -383,44 +355,22 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     group_width = 0.82
     bar_width = group_width / len(methods)
     offsets = (np.arange(len(methods), dtype=float) - 0.5 * (len(methods) - 1)) * bar_width
-
     fig, ax = plt.subplots(figsize=(8.6, 5.0))
     for method_index, method in enumerate(methods):
-        ctr = []
-        error = []
+        ctr, error = [], []
         for voltage in voltages:
-            row = next(
-                (
-                    r
-                    for r in test_rows
-                    if r["method"] == method
-                    and np.isfinite(_voltage(r))
-                    and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)
-                ),
-                None,
-            )
+            row = next((r for r in test_rows if r["method"] == method and np.isfinite(_voltage(r)) and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)), None)
             ctr.append(_float(row.get("ctr_ps")) if row is not None else np.nan)
             error.append(_float(row.get("ctr_uncertainty_ps")) if row is not None else np.nan)
-
         ctr = np.asarray(ctr, dtype=float)
         error = np.asarray(error, dtype=float)
         finite = np.isfinite(ctr)
         if not np.any(finite):
             continue
         safe_error = np.where(np.isfinite(error), error, 0.0)
-        ax.bar(
-            x[finite] + offsets[method_index],
-            ctr[finite],
-            width=bar_width * 0.92,
-            yerr=safe_error[finite],
-            capsize=3,
-            alpha=0.85,
-            label=LABELS.get(method, method),
-        )
-
-    labels = [f"{v:g} V" for v in voltages]
+        ax.bar(x[finite] + offsets[method_index], ctr[finite], width=bar_width * 0.92, yerr=safe_error[finite], capsize=3, alpha=0.85, label=LABELS.get(method, method))
     ax.set_xticks(x)
-    ax.set_xticklabels(labels)
+    ax.set_xticklabels([f"{v:g} V" for v in voltages])
     ax.set_xlabel("Bias voltage")
     ax.set_ylabel("CTR FWHM [ps]")
     ax.set_ylim(bottom=0.0)
@@ -434,24 +384,131 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     paths.append(target)
 
 
+def _paired_relative_improvement(reference, method, fit_config, *, samples, seed):
+    reference = np.asarray(reference, dtype=np.float64).reshape(-1)
+    method = np.asarray(method, dtype=np.float64).reshape(-1)
+    if reference.shape != method.shape:
+        raise ValueError("Paired bootstrap requires aligned residual arrays")
+    finite = np.isfinite(reference) & np.isfinite(method)
+    reference = reference[finite]
+    method = method[finite]
+    minimum = int(fit_config.get("min_events", 100))
+    if reference.size < minimum:
+        raise ValueError(f"Only {reference.size} common finite residuals")
+    full_ref = fit_ctr_ps(reference, fit_config, bootstrap=False).ctr_ps
+    full_method = fit_ctr_ps(method, fit_config, bootstrap=False).ctr_ps
+    central = 100.0 * (full_ref - full_method) / full_ref
+    rng = np.random.default_rng(int(seed))
+    bootstrap = []
+    for _ in range(int(samples)):
+        idx = rng.integers(0, reference.size, size=reference.size)
+        try:
+            ref_ctr = fit_ctr_ps(reference[idx], fit_config, bootstrap=False).ctr_ps
+            method_ctr = fit_ctr_ps(method[idx], fit_config, bootstrap=False).ctr_ps
+        except ValueError:
+            continue
+        if np.isfinite(ref_ctr) and ref_ctr > 0 and np.isfinite(method_ctr):
+            bootstrap.append(100.0 * (ref_ctr - method_ctr) / ref_ctr)
+    uncertainty = float(np.std(bootstrap, ddof=1)) if len(bootstrap) > 1 else float("nan")
+    return central, uncertainty, len(bootstrap)
+
+
+def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
+    import matplotlib.pyplot as plt
+
+    fit_config = dict((manifest.get("config") or {}).get("fit") or {})
+    samples = int(fit_config.get("bootstrap_samples", 100))
+    base_seed = int(((manifest.get("config") or {}).get("validation") or {}).get("seed", 0))
+    models = [m for m in MODEL_ORDER if m not in {"led", "cfd"} and any(r["method"] == m for r in test_rows)]
+    models.extend(sorted({r["method"] for r in test_rows} - set(MODEL_ORDER) - {"led", "cfd"}))
+    voltages = sorted({_voltage(row) for row in test_rows if np.isfinite(_voltage(row))})
+    if not models or not voltages:
+        return
+
+    records = []
+    for voltage in voltages:
+        dataset_rows = [r for r in test_rows if np.isfinite(_voltage(r)) and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)]
+        dataset = next((r["dataset"] for r in dataset_rows if r["method"] == "led"), None)
+        if dataset is None:
+            continue
+        reference = _residual(run, dataset, "led", "test")
+        if reference is None:
+            continue
+        for model in models:
+            residual = _residual(run, dataset, model, "test")
+            if residual is None:
+                continue
+            central, uncertainty, successful = _paired_relative_improvement(
+                reference,
+                residual,
+                fit_config,
+                samples=samples,
+                seed=semantic_seed(base_seed, dataset, model, "paired_relative_ctr_bootstrap"),
+            )
+            records.append({
+                "dataset": dataset,
+                "voltage_V": voltage,
+                "method": model,
+                "relative_improvement_percent": central,
+                "paired_bootstrap_uncertainty_percent": uncertainty,
+                "bootstrap_successful": successful,
+            })
+    if not records:
+        return
+
+    with (run / "relative_improvement.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(records[0]))
+        writer.writeheader()
+        writer.writerows(records)
+
+    x = np.arange(len(voltages), dtype=float)
+    group_width = 0.76
+    bar_width = group_width / max(1, len(models))
+    offsets = (np.arange(len(models), dtype=float) - 0.5 * (len(models) - 1)) * bar_width
+    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    for model_index, model in enumerate(models):
+        values, errors = [], []
+        for voltage in voltages:
+            row = next((r for r in records if r["method"] == model and np.isclose(r["voltage_V"], voltage, rtol=0.0, atol=1e-9)), None)
+            values.append(float(row["relative_improvement_percent"]) if row else np.nan)
+            errors.append(float(row["paired_bootstrap_uncertainty_percent"]) if row else np.nan)
+        values = np.asarray(values, dtype=float)
+        errors = np.asarray(errors, dtype=float)
+        finite = np.isfinite(values)
+        ax.bar(x[finite] + offsets[model_index], values[finite], width=bar_width * 0.92, yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0), capsize=3, alpha=.85, label=LABELS.get(model, model))
+    ax.axhline(0.0, color="black", ls="--", lw=1.0)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{v:g} V" for v in voltages])
+    ax.set_xlabel("Bias voltage")
+    ax.set_ylabel("CTR improvement over LED [%]")
+    ax.set_title(f"{mode.replace('_', ' ')} · paired-bootstrap relative improvement")
+    ax.grid(axis="y", alpha=.22)
+    ax.legend()
+    fig.tight_layout()
+    target = run / "relative_improvement_vs_voltage.pdf"
+    fig.savefig(target)
+    plt.close(fig)
+    paths.append(target)
+
+
 def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> list[Path]:
     run = Path(run_dir).resolve()
     plot_root = Path(output_dir).resolve() if output_dir else run / "plots"
-    categories = {
-        name: plot_root / name
-        for name in ("corrections", "train_distribution", "test_distribution", "xai", "model_output")
-    }
+    categories = {name: plot_root / name for name in ("corrections", "train_distribution", "test_distribution", "xai", "model_output")}
     for directory in categories.values():
         directory.mkdir(parents=True, exist_ok=True)
 
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
+    concatenated = bool(manifest.get("concatenate_datasets", False))
     all_rows = read_results(run)
     test_rows = [r for r in all_rows if r.get("stage") == "test"]
     datasets = sorted({r["dataset"] for r in test_rows}, key=voltage_from_name)
     paths: list[Path] = []
 
-    _ctr_vs_voltage_bar_plot(run, test_rows, mode, paths)
+    if not concatenated:
+        _ctr_vs_voltage_bar_plot(run, test_rows, mode, paths)
+        _relative_improvement_plot(run, test_rows, manifest, mode, paths)
 
     for dataset in datasets:
         _distribution_plot(categories["test_distribution"], run, all_rows, mode, dataset, "test", paths)
@@ -465,10 +522,7 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         model_output_dir.mkdir(parents=True, exist_ok=True)
         for dataset in datasets:
             _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
-        for artifact in sorted(
-            (run / "artifacts").glob(f"*/{model}_xai.npz"),
-            key=lambda p: voltage_from_name(p.parent.name),
-        ):
+        for artifact in sorted((run / "artifacts").glob(f"*/{model}_xai.npz"), key=lambda p: voltage_from_name(p.parent.name)):
             _xai_plot(categories["xai"], artifact, mode, model, paths)
         for dataset in datasets:
             top, worst = _correction_rankings(run, model, dataset)
