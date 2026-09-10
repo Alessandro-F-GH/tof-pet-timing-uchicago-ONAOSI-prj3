@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import linregress, pearsonr, spearmanr
 
-from utils_fit import fit_ctr_ps
+from utils_fit import CTR_METRIC_NAME, fit_ctr_ps
 from waveform_analysis.ml_pipeline.common import voltage_from_name
 
 
@@ -432,7 +432,7 @@ def analyse_dataset(
         "method": method_name,
         "bootstrap_requested": repeats,
         **counts,
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": float(fit_config.get("coverage_fraction", 0.90)),
         "core_fwhm_bin_width_ps": float(fit_config.get("bin_width_ps", np.nan)),
         "full_reference_ctr_ps": float(full_reference),
