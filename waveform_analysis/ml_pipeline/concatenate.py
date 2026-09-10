@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 from numpy.lib.format import open_memmap
 
-from utils_fit import fit_ctr_ps
+from utils_fit import CTR_METRIC_NAME, fit_ctr_ps
 
 from .common import atomic_json, canonical_hash, voltage_from_name
 from .config import mode_family
@@ -230,7 +230,7 @@ def concatenate_prepared_datasets(
         "calibration_bias_ps": {family: calibration_bias},
         "cfd_fraction": {},
         "cfd_development_ctr_ps": {},
-        "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_selection_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
