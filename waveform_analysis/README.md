@@ -16,19 +16,17 @@ There is **no denoising** and no event-wise baseline subtraction.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and ranked by direct histogram CTR FWHM from the common `utils_fit` estimator; CFD is treated the same way when `cfd: true`. Candidate ranking uses the configured fixed histogram bin width but skips bootstrap because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is the native sample nearest in time to the interpolated selected LED crossing.
+LED thresholds are scanned on development and ranked by the common robust CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is still the native sample nearest in time to the interpolated selected LED crossing for window materialization only.
 
-For each detector the native-grid offset is
-
-`delta_i = t_LED,i - t_a,i`,
-
-and the paired anchor correction is `Delta delta = delta_1 - delta_2`. The fixed channel calibration is estimated from training only as
+The fixed channel calibration is estimated from training only as
 
 `C_hat_12 = mean_training(Delta t_LED) - TOF`.
 
-The canonical supervised target is
+The canonical supervised target is the calibrated LED residual itself:
 
-`y_target = Delta t_LED - Delta delta - TOF - C_hat_12`.
+`y_target = Delta t_LED - TOF - C_hat_12`.
+
+No anchor-shift term is subtracted from the target.
 
 The ML window is materialized with `t_anchor = 0` and `ml_input.subsampling` is applied. Waveforms are scaled globally to `[0, 1]` using the detector-specific physical limits from `preprocessing.<family>.vertical_scale_limit_mV`. The transform is fixed by configuration: it is not fitted per event, per sample, or from the training population, and its inverse is persisted for physical-mV reporting.
 
@@ -55,13 +53,7 @@ A ready timing configuration is available at `config/experiments/timing_concaten
 
 ## 4. ML and final test
 
-Models are constrained to paired antisymmetric corrections of the form
-
-`y_theta(s1, s2) = g_theta(s1) - g_theta(s2)`.
-
-The CNN implements the shared scorer explicitly. Linear SVR is the linear equivalent, `w^T(s1-s2) = w^T s1 - w^T s2`, with no intercept.
-
-Linear SVR and CNN candidates are trained on the training split and ranked **only by validation RMSE** of `y_target - y_theta`. CNN early stopping uses the same validation RMSE. **There is no final refit:** the validation-selected trained model, including the best early-stopping CNN checkpoint, is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+Models may use paired or waveform-difference representations; their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the training split and ranked **only by validation robust CTR** of `y_target - y_theta`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
 
 The permanent test population is evaluated once after model selection. The LED reference residual is
 
@@ -71,9 +63,9 @@ while the ML residual used for CTR is
 
 `y_target - y_theta`.
 
-CTR is the **direct full width at half maximum of a fixed-bin timing histogram**. The default measurement bin width is `5 ps` and is configurable with `fit.bin_width_ps`. The left and right half-maximum crossings are linearly interpolated between adjacent histogram-bin centers. CTR uncertainty is the event-bootstrap standard deviation of the direct FWHM estimate; the default is `100` resamples configured with `fit.bootstrap_samples`. No parametric timing-shape fit is used for CTR.
+CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this robust estimator; the default is `500` resamples configured with `fit.bootstrap_samples`.
 
-`fit.max_abs_ps` remains the symmetric physical timing range admitted to CTR estimation; the default is `±2000 ps`.
+All finite residuals are included in the canonical CTR calculation. There is no internal `fit.max_abs_ps` rejection. The fixed-bin histogram FWHM is retained only as a secondary `core_fwhm_ps` diagnostic, together with `core_fraction`; `fit.bin_width_ps` controls only that diagnostic histogram.
 
 Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
 
@@ -101,7 +93,7 @@ Detailed reporting is grouped under:
 - `plots/model_output/<model>/`
 - `plots/xai/`
 
-The reporting histograms are presentation views and use a compact robust display interval with about 20 bins. They are independent of the fixed `fit.bin_width_ps` used to measure CTR.
+The reporting histograms are presentation views and use a compact display interval with about 20 bins. The canonical robust CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
 
 ## CLI
 
