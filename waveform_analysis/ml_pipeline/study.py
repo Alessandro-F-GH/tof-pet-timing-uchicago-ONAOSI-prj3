@@ -91,7 +91,7 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
         "stage": "development_selection" if method in {"led", "cfd"} else "validation",
         "selection_score": float(score),
         "selection_metric": metric,
-        "ctr_ps": float(score) if metric in {"development_robust_ctr", "validation_robust_ctr"} else float("nan"),
+        "ctr_ps": float(score) if metric in {"development_robust_ctr", "validation_robust_ctr", "development_ctr", "validation_ctr"} else float("nan"),
         "ctr_uncertainty_ps": float("nan"),
         "center_ps": float("nan"),
         "n": 0,
@@ -172,11 +172,11 @@ def run_study(
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
         "schema_version": 10,
-        "protocol": "single_mode_validation_rmse_selected_model_holdout",
+        "protocol": "single_mode_validation_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
         "test_used_for_selection": False,
-        "model_selection_metric": "validation_rmse",
+        "model_selection_metric": "validation_ctr",
         "selected_model_policy": "select_model_hyperparameters_and_training_target_range_on_full_validation_then_use_trained_model_without_refit",
         "training_target_range_search": {
             "definition": "abs(model_target) <= target_abs_max_ps",
@@ -270,9 +270,9 @@ def run_study(
             save_model(spec, fitted, store.model_dir(name, model_name), search.best.candidate)
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
-            rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_rmse"))
+            rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_ctr"))
             logger.info(
-                "Selected dataset=%s | %s/%s | validation RMSE %.6g ps | selected train filter |target| <= %.6g ps | train used=%d/%d (%.1f%%) | validation/test unfiltered | output clipped to ±%.0f ps | %s",
+                "Selected dataset=%s | %s/%s | validation CTR %.6g ps | selected train filter |target| <= %.6g ps | train used=%d/%d (%.1f%%) | validation/test unfiltered | output clipped to ±%.0f ps | %s",
                 name,
                 mode,
                 model_name,
