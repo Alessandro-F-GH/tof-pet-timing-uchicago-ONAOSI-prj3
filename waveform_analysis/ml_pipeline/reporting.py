@@ -28,7 +28,7 @@ LABELS = {
 
 
 def read_results(run_dir: str | Path) -> list[dict[str, Any]]:
-    with (Path(run_dir) / "results.csv").open(encoding="utf-8", newline="") as stream:
+    with (Path(run_dir) / "csv" / "results.csv").open(encoding="utf-8", newline="") as stream:
         return list(csv.DictReader(stream))
 
 
@@ -450,7 +450,7 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     ax.grid(axis="y", alpha=.22)
     ax.legend()
     fig.tight_layout()
-    target = run / "ctr_vs_voltage.pdf"
+    target = run / "plots" / "ctr_vs_voltage.pdf"
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -528,7 +528,7 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
     if not records:
         return
 
-    with (run / "relative_improvement.csv").open("w", encoding="utf-8", newline="") as stream:
+    with (run / "csv" / "relative_improvement.csv").open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(records[0]))
         writer.writeheader()
         writer.writerows(records)
@@ -557,7 +557,7 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
     ax.grid(axis="y", alpha=.22)
     ax.legend()
     fig.tight_layout()
-    target = run / "relative_improvement_vs_voltage.pdf"
+    target = run / "plots" / "relative_improvement_vs_voltage.pdf"
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -566,8 +566,17 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
 def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> list[Path]:
     run = Path(run_dir).resolve()
     plot_root = Path(output_dir).resolve() if output_dir else run / "plots"
-    categories = {name: plot_root / name for name in ("corrections", "train_distribution", "test_distribution", "xai", "model_output")}
-    for directory in categories.values():
+    csv_root = run / "csv"
+
+    plot_categories = {
+        name: plot_root / name
+        for name in ("corrections", "train_distribution", "test_distribution", "xai", "model_output")
+    }
+    csv_categories = {
+        "corrections": csv_root / "corrections",
+        "xai": csv_root / "xai",
+    }
+    for directory in (*plot_categories.values(), *csv_categories.values()):
         directory.mkdir(parents=True, exist_ok=True)
 
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
@@ -583,8 +592,8 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         _relative_improvement_plot(run, test_rows, manifest, mode, paths)
 
     for dataset in datasets:
-        test_distribution_dir = categories["test_distribution"] / dataset
-        train_distribution_dir = categories["train_distribution"] / dataset
+        test_distribution_dir = plot_categories["test_distribution"] / dataset
+        train_distribution_dir = plot_categories["train_distribution"] / dataset
         test_distribution_dir.mkdir(parents=True, exist_ok=True)
         train_distribution_dir.mkdir(parents=True, exist_ok=True)
         _distribution_plot(test_distribution_dir, run, all_rows, mode, dataset, "test", paths)
@@ -593,27 +602,52 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
     available_methods = {r["method"] for r in test_rows}
     ordered_methods = [m for m in MODEL_ORDER if m in available_methods] + sorted(available_methods - set(MODEL_ORDER))
     models = [m for m in ordered_methods if m not in {"led", "cfd"}]
+
     for model in models:
-        model_output_dir = categories["model_output"] / model
+        model_output_dir = plot_categories["model_output"] / model
         model_output_dir.mkdir(parents=True, exist_ok=True)
         for dataset in datasets:
             _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
-        xai_model_dir = categories["xai"] / model
-        xai_model_dir.mkdir(parents=True, exist_ok=True)
-        for artifact in sorted((run / "artifacts").glob(f"*/{model}_xai.npz"), key=lambda p: voltage_from_name(p.parent.name)):
-            _xai_plot(xai_model_dir, artifact, mode, model, paths)
+
+        xai_plot_dir = plot_categories["xai"] / model
+        xai_plot_dir.mkdir(parents=True, exist_ok=True)
+        for artifact in sorted(
+            (run / "artifacts").glob(f"*/{model}_xai.npz"),
+            key=lambda p: voltage_from_name(p.parent.name),
+        ):
+            _xai_plot(xai_plot_dir, artifact, mode, model, paths)
+
         if model == "difference_shapelet":
-            shapelet_dir = xai_model_dir / "shapelets"
-            shapelet_dir.mkdir(parents=True, exist_ok=True)
+            shapelet_plot_dir = xai_plot_dir / "shapelets"
+            shapelet_csv_dir = csv_categories["xai"] / model / "shapelets"
+            shapelet_plot_dir.mkdir(parents=True, exist_ok=True)
+            shapelet_csv_dir.mkdir(parents=True, exist_ok=True)
             for dataset in datasets:
-                path = plot_fixed_shapelets(run, dataset, shapelet_dir)
-                if path is not None:
-                    paths.append(path)
+                plot_fixed_shapelets(
+                    run,
+                    shapelet_plot_dir,
+                    shapelet_csv_dir,
+                    dataset,
+                    paths,
+                )
+
         for dataset in datasets:
             top, worst = _correction_rankings(run, model, dataset)
             if top or worst:
-                correction_dir = categories["corrections"] / dataset
-                correction_dir.mkdir(parents=True, exist_ok=True)
-                paths.append(_write_rankings(correction_dir, dataset, model, top, worst))
-                _correction_examples(correction_dir, run, mode, model, dataset, top, worst, paths)
+                correction_plot_dir = plot_categories["corrections"] / dataset
+                correction_csv_dir = csv_categories["corrections"] / dataset
+                correction_plot_dir.mkdir(parents=True, exist_ok=True)
+                correction_csv_dir.mkdir(parents=True, exist_ok=True)
+                paths.append(_write_rankings(correction_csv_dir, dataset, model, top, worst))
+                _correction_examples(
+                    correction_plot_dir,
+                    run,
+                    mode,
+                    model,
+                    dataset,
+                    top,
+                    worst,
+                    paths,
+                )
     return paths
+
