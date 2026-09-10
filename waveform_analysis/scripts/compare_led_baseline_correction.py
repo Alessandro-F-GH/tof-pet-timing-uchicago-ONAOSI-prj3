@@ -12,7 +12,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-from utils_fit import fit_ctr_ps
+from utils_fit import CTR_METRIC_NAME, fit_ctr_ps
 from waveform_analysis.ml_pipeline.common import voltage_from_name
 from waveform_analysis.ml_pipeline.config import discover_root_files, load_config, mode_family
 
@@ -437,7 +437,7 @@ def analyse_dataset(root: Path, config: dict[str, Any], args: argparse.Namespace
         "original_calibration_bias_ps": original_bias_ps,
         "corrected_calibration_bias_ps": corrected_bias_ps,
         "calibration_shift_ps": corrected_bias_ps - original_bias_ps,
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": float(original_fit.coverage_fraction),
         "original_ctr_ps": float(original_fit.ctr_ps),
         "original_ctr_uncertainty_ps": float(original_fit.ctr_error_ps),
