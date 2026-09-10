@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .timing import anchor_grid, family_arrays, led_grid
+from .timing import family_arrays, led_grid
 
 
 def _output_path(directory: Path, prefix: str, source: str | Path, family: str) -> Path:
@@ -68,7 +68,12 @@ def plot_ml_window_exceeds_example(
     import matplotlib.pyplot as plt
 
     waves, _starts, intervals, _rising_start, _rising_stop = family_arrays(data, family)
-    anchor_index, _anchor_time = anchor_grid(data, family, float(threshold_mV))
+    crossings = led_grid(
+        data,
+        family,
+        np.asarray([event_row], dtype=np.int64),
+        np.asarray([threshold_mV], dtype=np.float64),
+    )[0, :, 0]
     event_index = int(np.asarray(data.event_index)[event_row])
     requested_start = float(window_ns["start"])
     requested_end = float(window_ns["end"])
@@ -76,11 +81,12 @@ def plot_ml_window_exceeds_example(
     for detector in range(2):
         ax = axes[detector, 0]
         signal = np.asarray(waves[event_row, detector], dtype=np.float64)
-        anchor = int(anchor_index[event_row, detector])
         dt_ns = float(intervals[event_row, detector]) * 1e9
-        time_ns = (np.arange(signal.size, dtype=np.float64) - anchor) * dt_ns
+        crossing_s = float(crossings[detector]) * 1e-12
+        start_s = float(data.energy_window_start_time_s[event_row, detector] if family == "energy" else data.timing_window_start_time_s[event_row, detector])
+        time_ns = (start_s + np.arange(signal.size, dtype=np.float64) * float(intervals[event_row, detector]) - crossing_s) * 1e9
         ax.plot(time_ns, signal, label="materialized waveform")
-        ax.axvline(0.0, linestyle="--", label="LED anchor")
+        ax.axvline(0.0, linestyle="--", label="interpolated LED crossing")
         ax.axvspan(requested_start, requested_end, alpha=0.12, label="requested ML window")
         available_start = float(time_ns[0])
         available_end = float(time_ns[-1])
@@ -88,7 +94,7 @@ def plot_ml_window_exceeds_example(
         ax.set_title(
             f"Detector {detector + 1}: available [{available_start:.2f}, {available_end:.2f}] ns"
         )
-        ax.set_xlabel("Time relative to LED anchor [ns]")
+        ax.set_xlabel("Time relative to interpolated LED crossing [ns]")
         ax.set_ylabel("Signal [mV]")
         ax.grid(True, alpha=0.2)
         ax.legend()
