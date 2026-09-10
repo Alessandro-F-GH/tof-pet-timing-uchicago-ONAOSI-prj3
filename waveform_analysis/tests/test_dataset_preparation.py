@@ -79,14 +79,16 @@ class DatasetPreparationTests(unittest.TestCase):
         np.testing.assert_allclose(raw[:, 1, plus_two_ns], threshold + 4.0, atol=1e-6)
 
     def test_dead_region_mask_is_learned_from_development_and_removes_crossing(self):
-        time_ps = np.asarray([-1000.0, 0.0, 1000.0, 2000.0])
-        raw = np.zeros((100, 2, 4), dtype=np.float32)
+        time_ps = np.asarray([-1000.0, 0.0, 1000.0, 2000.0, 3000.0])
+        raw = np.zeros((100, 2, 5), dtype=np.float32)
         raw[:, :, 0] = -5.0
         raw[:, :, 1] = 10.5
         raw[:, 0, 2] = np.arange(100, dtype=np.float32)
         raw[:, 1, 2] = np.arange(100, dtype=np.float32) * 2.0
         raw[:99, :, 3] = 40.0
         raw[99, :, 3] = 39.0
+        raw[:, 0, 4] = np.arange(100, dtype=np.float32) + 0.5
+        raw[:, 1, 4] = np.arange(100, dtype=np.float32) * 3.0 + 0.5
 
         keep, fractions = _learn_dead_time_mask(
             raw,
@@ -94,7 +96,7 @@ class DatasetPreparationTests(unittest.TestCase):
             time_ps,
             threshold=0.99,
         )
-        np.testing.assert_array_equal(keep, [False, False, True, False])
+        np.testing.assert_array_equal(keep, [False, False, True, False, True])
         np.testing.assert_allclose(fractions[:, 3], 0.99)
 
     def test_normalization_uses_fixed_detector_limits_after_interpolation(self):
