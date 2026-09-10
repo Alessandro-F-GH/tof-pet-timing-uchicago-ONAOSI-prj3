@@ -52,6 +52,7 @@ def _prepare(config, rebuild: bool) -> int:
             Path(config["preprocessing"]["prepared_dir"]) / name,
             config,
             name=name,
+            rebuild=rebuild,
             logger=logger,
         )
     return len(roots)
