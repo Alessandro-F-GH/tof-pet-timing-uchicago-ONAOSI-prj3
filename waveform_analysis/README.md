@@ -53,9 +53,9 @@ A ready timing configuration is available at `config/experiments/timing_concaten
 
 ## 4. ML and final test
 
-Models may use paired or waveform-difference representations; their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the training split and ranked **only by validation robust CTR** of `y_target - y_theta`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+Models may use paired or waveform-difference representations; their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the training split and ranked **only by full-validation RMSE** of `y_target - y_theta`. The configured training target ranges are part of that same hyperparameter search: for a candidate range `R`, fitting uses only training events satisfying `|y_target| <= R`, while validation is never filtered. Model-internal early stopping also uses the full validation set where applicable. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
 
-The permanent test population is evaluated once after model selection. The LED reference residual is
+The permanent test population is evaluated once after model and training-target-range selection. The selected model predicts every blind/test event; the target-range filter is never applied to validation or test. The LED reference residual is
 
 `Delta t_LED - TOF - C_hat_12`,
 
