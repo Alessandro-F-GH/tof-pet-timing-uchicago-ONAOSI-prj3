@@ -11,11 +11,19 @@ from utils_fit import fit_ctr_ps
 
 from .common import voltage_from_name
 from .dataset import load_prepared_dataset
+from .shapelet_reporting import plot_fixed_shapelets
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
 
-MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn")
-LABELS = {"led": "LED", "cfd": "CFD", "linear_svr": "Linear SVR", "cnn": "CNN"}
+MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "difference_cnn", "difference_shapelet")
+LABELS = {
+    "led": "LED",
+    "cfd": "CFD",
+    "linear_svr": "Linear SVR",
+    "cnn": "CNN",
+    "difference_cnn": "Difference CNN",
+    "difference_shapelet": "Fixed-shapelet regressor",
+}
 
 
 def read_results(run_dir: str | Path) -> list[dict[str, Any]]:
@@ -524,6 +532,9 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
             _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
         for artifact in sorted((run / "artifacts").glob(f"*/{model}_xai.npz"), key=lambda p: voltage_from_name(p.parent.name)):
             _xai_plot(categories["xai"], artifact, mode, model, paths)
+        if model == "difference_shapelet":
+            for dataset in datasets:
+                plot_fixed_shapelets(run, categories["xai"], dataset, paths)
         for dataset in datasets:
             top, worst = _correction_rankings(run, model, dataset)
             if top or worst:
