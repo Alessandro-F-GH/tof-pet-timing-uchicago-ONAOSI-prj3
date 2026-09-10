@@ -31,9 +31,12 @@ def _fit_once(
     validation_x=None,
     validation_target=None,
     output_max_abs_ps=None,
+    input_time_ps=None,
 ):
     runtime_config = copy.deepcopy(model_config)
     runtime_config["_prediction_max_abs_ps"] = None if output_max_abs_ps is None else float(output_max_abs_ps)
+    if input_time_ps is not None:
+        runtime_config["_input_time_ps"] = np.asarray(input_time_ps, dtype=np.float64)
     artifact = spec.fit(
         parameters,
         np.asarray(train_x, dtype=np.float32),
@@ -74,8 +77,10 @@ def search_model(
 ) -> SearchResult:
     training = np.asarray(dataset.training, dtype=np.int64)
     validation = np.asarray(dataset.validation, dtype=np.int64)
-    train_x = waveform_view(dataset, mode, training).materialize()
-    validation_x = waveform_view(dataset, mode, validation).materialize()
+    train_view = waveform_view(dataset, mode, training)
+    validation_view = waveform_view(dataset, mode, validation)
+    train_x = train_view.materialize()
+    validation_x = validation_view.materialize()
     target = model_target(dataset, mode)
     train_target = target[training]
     validation_target = target[validation]
@@ -93,6 +98,7 @@ def search_model(
             validation_x=validation_x,
             validation_target=validation_target,
             output_max_abs_ps=output_limit,
+            input_time_ps=train_view.time_ps,
         )
 
     def predict_candidate(_parameters, fitted):
