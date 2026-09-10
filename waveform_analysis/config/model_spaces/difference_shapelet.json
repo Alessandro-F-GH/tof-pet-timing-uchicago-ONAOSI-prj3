@@ -1,0 +1,23 @@
+{
+  "model": "difference_shapelet",
+  "architecture": {
+    "shapelet_lengths": [17, 33, 65],
+    "shapelets_per_length": [8, 8, 8],
+    "match_stride": 4,
+    "dense_units": [32, 16],
+    "dropout": 0.05
+  },
+  "parameters": {
+    "learning_rate": [0.001],
+    "batch_size": [128],
+    "weight_decay": [1e-5]
+  },
+  "training": {
+    "device": "auto",
+    "epochs": 200,
+    "batch_size": 64,
+    "patience": 15,
+    "min_delta": 0.01,
+    "gradient_clip_norm": 10.0
+  }
+}
