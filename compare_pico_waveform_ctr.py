@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-samples",
         type=int,
         default=100,
-        help="Number of event bootstrap resamples for each final Pico/scope FWHM point.",
+        help="Number of event bootstrap resamples used to estimate uncertainty for each final Pico/scope robust-CTR point.",
     )
     parser.add_argument(
         "--bootstrap-min-success-fraction",
