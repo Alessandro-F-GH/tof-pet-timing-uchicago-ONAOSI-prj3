@@ -46,8 +46,18 @@ def voltage_from_name(value: str | Path) -> float:
 
 
 def dataset_cache_dir(config: dict[str, Any], key: str, source: str | Path) -> Path:
-    """Return the cache directory for one source ROOT file."""
-    return Path(config["preprocessing"][key]).resolve() / Path(source).stem
+    """Return the cache directory for one source ROOT file.
+
+    Concatenated experiments use a fixed LED threshold, so their per-source
+    prepared caches are isolated from ordinary per-voltage prepared datasets.
+    Selection and native preprocessing caches remain shared because they do not
+    depend on the LED threshold used later during ML preparation.
+    """
+    root = Path(config["preprocessing"][key]).resolve()
+    if key == "prepared_dir" and bool((config.get("experiment") or {}).get("concatenate_datasets", False)):
+        name = str((config.get("experiment") or {}).get("concatenated_dataset_name", "concatenated"))
+        root = root / f"_sources_for_{name}"
+    return root / Path(source).stem
 
 
 def channel_limits(value: Any) -> np.ndarray:
