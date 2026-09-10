@@ -11,6 +11,8 @@ from .common import atomic_json, canonical_hash, channel_limits, dataset_cache_d
 from .dataset import DATASET_FORMAT_VERSION, load_prepared_dataset
 from .diagnostics import plot_missing_led_example, plot_ml_window_exceeds_example
 from .splits import semantic_seed, split_training_validation
+from utils_fit import CTR_METRIC_NAME
+
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .timing import anchor_grid, cfd_grid, led_grid, pair_delta
 from .view import source_family, target_family
@@ -437,7 +439,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         "calibration_bias_ps": calibration_bias,
         "cfd_fraction": cfd_choice,
         "cfd_development_ctr_ps": cfd_score,
-        "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_selection_metric": CTR_METRIC_NAME,
         "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
