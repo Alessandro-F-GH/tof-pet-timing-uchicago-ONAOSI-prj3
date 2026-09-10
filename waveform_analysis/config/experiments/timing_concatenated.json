@@ -12,7 +12,7 @@
   "standard_methods": {
     "led_thresholds_mV": [15.0]
   },
-  "models": ["linear_svr", "cnn"],
+  "models": ["linear_svr", "cnn", "cnn_2d"],
   "mode": "timing_to_timing",
   "cfd": false
 }
