@@ -34,7 +34,7 @@ The continuous ML grid uses the native sampling interval multiplied by `ml_input
 
 Set `experiment.concatenate_datasets: true` to train one model on all configured bias-voltage datasets instead of fitting one model per ROOT dataset. Each ROOT file still goes through the normal selection and native preprocessing independently, preserving its own frozen development/blind-test split. A single LED threshold must be fixed in the experiment with `experiment.fixed_led_threshold_mV`; the source prepared datasets therefore use that same LED threshold before concatenation.
 
-The source training partitions are concatenated into one training set, source validation partitions into one validation set, and source blind-test partitions into one blind-test set. The fixed channel calibration and ML target are then recomputed globally on the concatenated training population. Source prepared caches are stored separately from ordinary per-voltage prepared caches.
+The source training partitions are concatenated into one training set, source validation partitions into one validation set, and source blind-test partitions into one blind-test set. The fixed channel calibration and ML target are then recomputed globally on the concatenated training population. For concatenated studies, source preparation removes only the fixed t=0 crossing coordinate; the 99% dead-region mask is learned once from the pooled development population after concatenation and is then frozen for the pooled test set. Source prepared caches are stored separately from ordinary per-voltage prepared caches.
 
 Example:
 
