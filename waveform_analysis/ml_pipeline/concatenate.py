@@ -77,8 +77,8 @@ def concatenate_prepared_datasets(
 
     Each source keeps its already frozen development/test assignment. Training,
     validation and blind-test indices are concatenated separately, while the LED
-    calibration and slide target are recomputed globally on the concatenated
-    training population. The configured fixed LED threshold is therefore common
+    calibration and calibrated-LED target are recomputed globally on the
+    concatenated training population. The configured fixed LED threshold is therefore common
     to every source voltage and one model is trained/evaluated for the full pool.
     """
     if len(datasets) < 2:
@@ -167,18 +167,15 @@ def concatenate_prepared_datasets(
 
     led = _concat_optional(datasets, f"{family}_led_time_ps")
     anchor = _concat_optional(datasets, f"{family}_anchor_time_ps")
-    anchor_offset = _concat_optional(datasets, f"{family}_anchor_offset_ps")
-    if led is None or anchor is None or anchor_offset is None:
+    if led is None or anchor is None:
         raise ValueError(f"Cannot concatenate: {family} LED/anchor arrays are incomplete")
     np.save(output / f"{family}_led_time_ps.npy", np.asarray(led, dtype=np.float64))
     np.save(output / f"{family}_anchor_time_ps.npy", np.asarray(anchor, dtype=np.float64))
-    np.save(output / f"{family}_anchor_offset_ps.npy", np.asarray(anchor_offset, dtype=np.float64))
 
     led_pair = np.asarray(led[:, 0] - led[:, 1], dtype=np.float64)
-    delta_delta = np.asarray(anchor_offset[:, 0] - anchor_offset[:, 1], dtype=np.float64)
     mean_led = float(np.mean(led_pair[training]))
     calibration_bias = mean_led - true_tof
-    target = led_pair - delta_delta - true_tof - calibration_bias
+    target = led_pair - true_tof - calibration_bias
     np.save(output / f"{family}_target_ps.npy", target)
 
     development_ctr = fit_ctr_ps(
@@ -233,13 +230,13 @@ def concatenate_prepared_datasets(
         "calibration_bias_ps": {family: calibration_bias},
         "cfd_fraction": {},
         "cfd_development_ctr_ps": {},
-        "ctr_selection_metric": "fixed_bin_histogram_fwhm",
-        "ctr_bin_width_ps": float(config["fit"]["bin_width_ps"]),
+        "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
+        "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
         "normalization": first.manifest["normalization"],
-        "target_definition": "delta_t_led - delta_delta_anchor - true_tof - global_concatenated_calibration_bias",
+        "target_definition": "delta_t_led - true_tof - global_concatenated_calibration_bias",
         "anchor_definition": first.manifest.get("anchor_definition"),
-        "anchor_offset_definition": first.manifest.get("anchor_offset_definition"),
         "corrected_definition": "target - paired_model_prediction",
         "time_reference": first.manifest.get("time_reference"),
     }
