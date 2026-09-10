@@ -226,9 +226,9 @@ def _plot_dataset(
     color_corrected = colors[1] if len(colors) > 1 else None
 
     ax.hist(original, bins=edges, histtype="stepfilled", alpha=0.14, color=color_original, edgecolor=color_original,
-            label=f"Original LED · FWHM {original_fit.ctr_ps:.1f} ± {original_fit.ctr_error_ps:.1f} ps")
+            label=f"Original LED · robust CTR {original_fit.ctr_ps:.1f} ± {original_fit.ctr_error_ps:.1f} ps")
     ax.hist(corrected, bins=edges, histtype="stepfilled", alpha=0.14, color=color_corrected, edgecolor=color_corrected,
-            label=f"Baseline corrected · FWHM {corrected_fit.ctr_ps:.1f} ± {corrected_fit.ctr_error_ps:.1f} ps")
+            label=f"Baseline corrected · robust CTR {corrected_fit.ctr_ps:.1f} ± {corrected_fit.ctr_error_ps:.1f} ps")
 
     for value in (original_fit.left_half_ps, original_fit.right_half_ps):
         ax.axvline(float(value), color=color_original, ls="--", lw=1.4, alpha=0.9)
@@ -451,7 +451,9 @@ def analyse_dataset(root: Path, config: dict[str, Any], args: argparse.Namespace
         "corrected_mean_ps": corrected_summary["mean_ps"],
         "corrected_std_ps": corrected_summary["std_ps"],
         "corrected_rmse_ps": corrected_summary["rmse_ps"],
-        "fit_bin_width_ps": float(config["fit"]["bin_width_ps"]),
+        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
+        "core_fwhm_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
     }
     with (dataset_dir / "summary.json").open("w", encoding="utf-8") as stream:
@@ -484,7 +486,7 @@ def _plot_voltage_summary(path: Path, rows: list[dict[str, Any]]) -> None:
     ax.errorbar(voltage, original, yerr=original_error, marker="o", capsize=3, label="Original LED")
     ax.errorbar(voltage, corrected, yerr=corrected_error, marker="o", capsize=3, label="Baseline-corrected LED")
     ax.set_xlabel("Bias voltage [V]")
-    ax.set_ylabel("CTR FWHM [ps]")
+    ax.set_ylabel("Robust CTR [ps]")
     ax.set_title("LED timing: original vs event-wise baseline subtraction")
     ax.grid(alpha=0.2)
     ax.legend()
