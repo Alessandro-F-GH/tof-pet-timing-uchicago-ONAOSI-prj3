@@ -111,50 +111,32 @@ def cfd_grid(
     return output
 
 
-def anchor_grid(
-    data: PreprocessedData,
-    family: str,
-    threshold_mV: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return native-grid anchors nearest in time to the interpolated LED crossing.
 
-    The waveform stays on the native sampling grid. For each detector the LED
-    crossing is first linearly interpolated, then the closest native sample is
-    used as the window anchor t_a. This implements delta = t_LED - t_a.
-    """
-    waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
-    indices = np.full((data.n_events, 2), -1, dtype=np.int32)
-    times_ps = np.full((data.n_events, 2), np.nan, dtype=np.float64)
-    for event in range(data.n_events):
-        for detector in range(2):
-            start = float(starts[event, detector])
-            interval = float(intervals[event, detector])
-            a, b = int(rising_start[event, detector]), int(rising_stop[event, detector])
-            led_ps = _crossing_ps(
-                waves[event, detector],
-                start,
-                interval,
-                a,
-                b,
-                float(threshold_mV),
-            )
-            if not np.isfinite(led_ps) or interval <= 0.0 or b <= a:
-                continue
-            fractional = (led_ps * 1.0e-12 - start) / interval
-            lower = int(np.floor(fractional))
-            upper = lower + 1
-            candidates = [sample for sample in (lower, upper) if a <= sample <= b]
-            if not candidates:
-                continue
-            sample = min(
-                candidates,
-                key=lambda index: abs(
-                    (start + float(index) * interval) * 1.0e12 - led_ps
-                ),
-            )
-            indices[event, detector] = sample
-            times_ps[event, detector] = (start + sample * interval) * 1.0e12
-    return indices, times_ps
+def interpolate_relative(
+    signal: np.ndarray,
+    start_time_s: float,
+    interval_s: float,
+    reference_time_ps: float,
+    relative_time_ps: np.ndarray,
+) -> np.ndarray:
+    """Linearly sample a waveform on a continuous grid relative to a reference time."""
+    y = np.asarray(signal, dtype=np.float64).reshape(-1)
+    relative = np.asarray(relative_time_ps, dtype=np.float64).reshape(-1)
+    interval = float(interval_s)
+    reference_s = float(reference_time_ps) * 1.0e-12
+    start = float(start_time_s)
+    if y.size < 2 or interval <= 0.0 or not np.isfinite(reference_s):
+        raise ValueError("Cannot interpolate waveform with invalid sampling metadata/reference time")
+    source_time = start + np.arange(y.size, dtype=np.float64) * interval
+    target_time = reference_s + relative * 1.0e-12
+    tolerance = max(abs(interval) * 1.0e-9, 1.0e-18)
+    if (
+        np.any(~np.isfinite(target_time))
+        or float(np.min(target_time)) < float(source_time[0]) - tolerance
+        or float(np.max(target_time)) > float(source_time[-1]) + tolerance
+    ):
+        raise ValueError("Requested relative interpolation grid exceeds materialized waveform")
+    return np.interp(target_time, source_time, y).astype(np.float64, copy=False)
 
 
 def pair_delta(times_ps: np.ndarray) -> np.ndarray:
