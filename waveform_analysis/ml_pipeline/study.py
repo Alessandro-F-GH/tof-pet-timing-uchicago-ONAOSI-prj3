@@ -50,8 +50,8 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
         result = ctr_estimate(finite, config.get("fit"), seed=int(seed), bootstrap=True)
     except ValueError as exc:
         detail = format_residual_summary(summary)
-        logger.error("Histogram FWHM CTR unavailable | %s | reason=%s | %s", context, exc, detail)
-        raise RuntimeError(f"{context}: histogram FWHM CTR unavailable: {exc}; {detail}") from exc
+        logger.error("Robust CTR unavailable | %s | reason=%s | %s", context, exc, detail)
+        raise RuntimeError(f"{context}: robust CTR unavailable: {exc}; {detail}") from exc
     return {
         "dataset": name,
         "voltage_V": voltage,
@@ -61,11 +61,21 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
         "ctr_ps": float(result.ctr_ps),
         "ctr_uncertainty_ps": float(result.ctr_error_ps),
         "center_ps": float(result.center_ps),
+        "coverage_fraction": float(result.coverage_fraction),
+        "interval_events": int(result.interval_events),
+        "interval_low_ps": float(result.interval_low_ps),
+        "interval_high_ps": float(result.interval_high_ps),
+        "interval_width_ps": float(result.interval_width_ps),
+        "gaussian_equivalent_scale": float(result.gaussian_equivalent_scale),
+        "core_fwhm_ps": float(result.core_fwhm_ps),
+        "core_fwhm_uncertainty_ps": float(result.core_fwhm_error_ps),
+        "core_fraction": float(result.core_fraction),
         "fwhm_left_ps": float(result.left_half_ps),
         "fwhm_right_ps": float(result.right_half_ps),
         "bin_width_ps": float(result.bin_width_ps),
         "bootstrap_samples": int(result.bootstrap_samples),
         "bootstrap_successful": int(result.bootstrap_successful),
+        "core_bootstrap_successful": int(result.core_bootstrap_successful),
         "n": int(result.n_valid),
         "population_n": int(population_n),
         "crossing_efficiency": float(result.n_valid / max(1, int(population_n))),
@@ -81,7 +91,7 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
         "stage": "development_selection" if method in {"led", "cfd"} else "validation",
         "selection_score": float(score),
         "selection_metric": metric,
-        "ctr_ps": float(score) if metric == "development_histogram_fwhm" else float("nan"),
+        "ctr_ps": float(score) if metric in {"development_robust_ctr", "validation_robust_ctr"} else float("nan"),
         "ctr_uncertainty_ps": float("nan"),
         "center_ps": float("nan"),
         "n": 0,
@@ -159,21 +169,26 @@ def run_study(
     seed = int(config["validation"]["seed"])
     mode = str(config["mode"])
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
+    coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 8,
-        "protocol": "single_mode_validation_selected_model_holdout",
+        "schema_version": 9,
+        "protocol": "single_mode_validation_robust_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
         "test_used_for_selection": False,
-        "model_selection_metric": "validation_rmse",
+        "model_selection_metric": "validation_robust_ctr",
         "selected_model_policy": "use_validation_selected_trained_model_without_refit",
-        "model_architecture_constraint": "y_theta(s1,s2)=g_theta(s1)-g_theta(s2)",
+        "model_architecture_constraint": "model-specific; see per-model metadata",
         "ml_target": "delta_t_led - delta_delta_anchor - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
-        "ctr_metric": "fixed_bin_histogram_fwhm",
-        "ctr_bin_width_ps": float(config["fit"]["bin_width_ps"]),
-        "ctr_uncertainty": "event_bootstrap_fwhm_std",
+        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_coverage_fraction": coverage,
+        "ctr_definition": "scale(p) * shortest empirical interval containing ceil(p*N) finite residuals",
+        "ctr_uses_all_finite_residuals": True,
+        "ctr_core_diagnostic": "dominant_peak_fixed_bin_histogram_fwhm",
+        "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
+        "ctr_uncertainty": "event_bootstrap_robust_ctr_std",
         "ctr_bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
         "config": public_config(config),
         "datasets": {},
@@ -200,7 +215,7 @@ def run_study(
                 "led",
                 dataset.manifest["led_development_ctr_ps"][family],
                 {"threshold_mV": threshold},
-                "development_histogram_fwhm",
+                "development_robust_ctr",
             )
         )
         if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
@@ -213,7 +228,7 @@ def run_study(
                     "cfd",
                     dataset.manifest["cfd_development_ctr_ps"][family],
                     {"fraction": fraction},
-                    "development_histogram_fwhm",
+                    "development_robust_ctr",
                 )
             )
 
@@ -242,13 +257,14 @@ def run_study(
             save_model(spec, fitted, store.model_dir(name, model_name), search.best.candidate)
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
-            rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_rmse"))
+            rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_robust_ctr"))
             logger.info(
-                "Selected dataset=%s | %s/%s | validation RMSE %.6g ps | using selected trained model without refit | output clipped to ±%.0f ps | %s",
+                "Selected dataset=%s | %s/%s | validation robust CTR %.6g ps | coverage %.1f%% | using selected trained model without refit | output clipped to ±%.0f ps | %s",
                 name,
                 mode,
                 model_name,
                 search.best.score,
+                100.0 * coverage,
                 float(config["ml_output"]["max_abs_ps"]),
                 search.best.candidate,
             )
