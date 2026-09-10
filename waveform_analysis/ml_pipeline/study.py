@@ -174,13 +174,20 @@ def run_study(
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 12,
+        "schema_version": 13,
         "protocol": "single_mode_validation_robust_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
         "test_used_for_selection": False,
         "model_selection_metric": "validation_robust_ctr",
-        "selected_model_policy": "use_validation_selected_trained_model_without_refit",
+        "selected_model_policy": "select_model_hyperparameters_and_training_target_range_on_full_validation_then_use_trained_model_without_refit",
+        "training_target_range_search": {
+            "definition": "abs(calibrated_led) <= target_abs_max_ps",
+            "candidates_ps": list(map(float, config["ml_training"]["target_abs_max_ps"])),
+            "filter_applies_to": "training_only",
+            "validation_filter": None,
+            "blind_test_filter": None,
+        },
         "model_architecture_constraint": "model-specific; see per-model metadata",
         "ml_target": "calibrated_led = delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "calibrated_led - paired_model_prediction",
@@ -262,12 +269,14 @@ def run_study(
             fitted_models[model_name] = fitted
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_robust_ctr"))
             logger.info(
-                "Selected dataset=%s | %s/%s | validation robust CTR %.6g ps | coverage %.1f%% | using selected trained model without refit | output clipped to ±%.0f ps | %s",
+                "Selected dataset=%s | %s/%s | validation robust CTR %.6g ps | train target range ±%.6g ps | train used=%d/%d | using selected trained model without refit | output clipped to ±%.0f ps | %s",
                 name,
                 mode,
                 model_name,
                 search.best.score,
-                100.0 * coverage,
+                float(search.best.metadata["training_target_abs_max_ps"]),
+                int(search.best.metadata["training_events_used"]),
+                int(search.best.metadata["training_events_available"]),
                 float(config["ml_output"]["max_abs_ps"]),
                 search.best.candidate,
             )
