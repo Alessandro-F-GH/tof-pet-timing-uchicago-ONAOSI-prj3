@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from utils_fit import CTR_METRIC_NAME
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot robust CTR and event efficiency versus timing threshold at fixed bias voltage.")
@@ -68,7 +70,7 @@ def main() -> None:
     if missing:
         raise RuntimeError("Missing required columns in summary.csv: " + ", ".join(sorted(missing)))
     if "fit_metric" in summary.columns:
-        invalid = summary[summary["fit_metric"].astype(str) != "gaussian_equivalent_shortest_coverage_interval"]
+        invalid = summary[summary["fit_metric"].astype(str) != CTR_METRIC_NAME]
         if not invalid.empty:
             raise RuntimeError("summary.csv contains rows not produced with the robust shortest-coverage CTR")
 
