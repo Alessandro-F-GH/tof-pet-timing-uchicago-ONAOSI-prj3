@@ -281,9 +281,8 @@ def _choose_best_pico_rows(args: argparse.Namespace) -> list[dict[str, str]]:
     if not rows:
         raise RuntimeError(f"No rows in {args.pico_summary}")
     if not args.allow_legacy_pico_summary:
-        valid_metric = "gaussian_equivalent_shortest_coverage_interval"
         for row in rows:
-            if str(row.get("fit_metric", "")) != valid_metric:
+            if str(row.get("fit_metric", "")) != CTR_METRIC_NAME:
                 raise RuntimeError("Pico summary contains rows not generated with the robust shortest-coverage CTR.")
     candidates: dict[float, list[dict[str, str]]] = {}
     for row in rows:
