@@ -7,8 +7,6 @@ from typing import Any
 
 import numpy as np
 
-from utils_fit import fit_ctr_ps
-
 from .models.spec import ModelSpec
 from .search import SearchResult, select_candidate
 from .storage import atomic_json
@@ -146,7 +144,11 @@ def search_model(
         return validation_target - predict_model(spec, fitted, validation_x)
 
     def score_candidate(residual):
-        return float(fit_ctr_ps(residual, fit_config, seed=seed, bootstrap=False).ctr_ps)
+        values = np.asarray(residual, dtype=np.float64)
+        finite = values[np.isfinite(values)]
+        if finite.size != values.size or finite.size == 0:
+            raise ValueError("Validation RMSE requires finite residuals for every validation event")
+        return float(np.sqrt(np.mean(finite**2)))
 
     def on_start(number, total, candidate):
         if logger is not None:
@@ -165,7 +167,7 @@ def search_model(
             return
         if result.error is None:
             logger.info(
-                "Validation dataset=%s | %s/%s | candidate %d/%d | robust CTR %.6g ps | train range ±%.6g ps | train used=%d/%d (%.1f%%) | full validation=%d | output clipped to ±%.0f ps | %s",
+                "Validation dataset=%s | %s/%s | candidate %d/%d | RMSE %.6g ps | train range ±%.6g ps | train used=%d/%d (%.1f%%) | full validation=%d | output clipped to ±%.0f ps | %s",
                 dataset_label,
                 mode,
                 spec.name,
