@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Time region used for mean removal and Euclidean K-means distance, relative to the prepared "
-            "LED/native anchor. Default: the full prepared ML window."
+            "interpolated LED crossing. Default: the full prepared ML window."
         ),
     )
     parser.add_argument(
@@ -268,7 +268,7 @@ def _plot_centroids(path, time_ps, centroids, corrections, window_ns):
         ax.plot(time_ns, centroid, label=f"cluster {cluster} · correction {corrections[cluster]:+.1f} ps")
     if time_ns[0] <= 0.0 <= time_ns[-1]:
         ax.axvline(0.0, ls="--", lw=1.0, alpha=0.7)
-    ax.set_xlabel("Time relative to LED/native anchor [ns]")
+    ax.set_xlabel("Time relative to interpolated LED crossing [ns]")
     ax.set_ylabel(r"Mean-removed normalized difference $(s_1-s_2)-\langle s_1-s_2\rangle_t$")
     title = "Training K-means centroids"
     if window_ns is not None:
@@ -520,7 +520,6 @@ def analyse_dataset(run: Path, manifest: dict[str, Any], dataset_name: str, args
             "cluster_correction_ps": corrections.tolist(),
             "test_application": "assign blind event to nearest frozen centroid, then LED_corrected = LED_residual - correction_cluster",
             "test_used_to_fit_corrections": False,
-            "anchor_correction_used": False,
         },
         "population": {
             "training_total": int(training.size),
