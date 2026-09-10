@@ -22,8 +22,8 @@ def parse_args() -> argparse.Namespace:
             "Continuously align the two detector waveforms to their interpolated LED crossings, "
             "so each waveform has its LED crossing exactly at t=0, then measure event-wise channel "
             "distance and correlate it with the absolute calibrated LED timing error. Waveforms are "
-            "read directly from the selected-event preprocessing cache; no native-grid anchor or "
-            "anchor correction is used."
+            "read directly from the selected-event preprocessing cache and referenced to the "
+            "interpolated LED crossing."
         )
     )
     parser.add_argument("--run-dir", type=Path, required=True, help="Completed study directory.")
@@ -409,7 +409,7 @@ def _plot_relation(
             label="distance-bin median ± 16–84%",
         )
     ax.set_xlabel(f"Continuously LED-aligned channel {metric} distance [mV]")
-    ax.set_ylabel("Absolute LED error, no anchor correction [ps]")
+    ax.set_ylabel("Absolute calibrated LED error [ps]")
     ax.set_title(f"{dataset_name} · {stage} · continuous LED alignment")
     ax.grid(alpha=0.2)
     ax.legend(loc="best")
@@ -521,7 +521,7 @@ def main() -> None:
     delta_led = np.asarray([row["delta_led_ps"] for row in records], dtype=np.float64)
     distance = np.asarray([row["distance_mV"] for row in records], dtype=np.float64)
 
-    # Calibration is allowed; anchor correction is not. Prefer the frozen training calibration used
+    # Prefer the frozen training calibration used
     # by the prepared dataset. If unavailable, estimate one offset from preprocessing development
     # events only, never from the blind/test population.
     calibration_source = "prepared_training_calibration_bias"
@@ -543,8 +543,8 @@ def main() -> None:
     for row, error in zip(records, led_error):
         row["true_tof_ps"] = true_tof_ps
         row["calibration_bias_ps"] = calibration_bias_ps
-        row["led_error_no_anchor_ps"] = float(error)
-        row["abs_led_error_no_anchor_ps"] = float(abs(error))
+        row["calibrated_led_error_ps"] = float(error)
+        row["abs_calibrated_led_error_ps"] = float(abs(error))
 
     finite = np.isfinite(distance) & np.isfinite(absolute_error)
     if np.count_nonzero(finite) < 3:
@@ -600,7 +600,7 @@ def main() -> None:
         "mode": mode,
         "family": family,
         "sources": [{"dataset": name, "preprocessed_dir": str(data.directory), "n_events": data.n_events} for name, data in sources],
-        "population": "events from preprocessing cache after event selection; no prepared native-anchor materialization is used",
+        "population": "events from preprocessing cache after event selection",
         "led_threshold_mV": threshold_mV,
         "alignment": "linear interpolation to an exact per-detector LED-relative grid; t_LED(detector)=0 exactly",
         "relative_window_ns": [float(window_ns[0]), float(window_ns[1])],
@@ -614,11 +614,10 @@ def main() -> None:
             "mean_abs": "mean_t(abs(s1_continuous_LED_aligned - s2_continuous_LED_aligned))",
             "max_abs": "max_t(abs(s1_continuous_LED_aligned - s2_continuous_LED_aligned))",
         }[args.distance],
-        "led_error_definition": "(t_LED1 - t_LED2) - true_tof - calibration_bias; NO anchor correction",
+        "led_error_definition": "(t_LED1 - t_LED2) - true_tof - calibration_bias",
         "true_tof_ps": true_tof_ps,
         "calibration_bias_ps": calibration_bias_ps,
         "calibration_source": calibration_source,
-        "anchor_correction_used": False,
         "n_preprocessed_stage_events": len(records),
         "n_finite_led_pairs": valid_led,
         "n_valid_continuous_windows": valid_continuous,
@@ -635,7 +634,7 @@ def main() -> None:
         f"grid={step_ps:.6g} ps | events={len(records)} | finite LED={valid_led} | valid windows={valid_continuous}"
     )
     print(
-        f"  no-anchor LED error | C={calibration_bias_ps:.6g} ps ({calibration_source}) | "
+        f"  calibrated LED error | C={calibration_bias_ps:.6g} ps ({calibration_source}) | "
         f"Pearson r={stats['pearson_r']:+.5f} | Spearman rho={stats['spearman_rho']:+.5f} | "
         f"R^2={stats['linear_r_squared']:.6g}"
     )
