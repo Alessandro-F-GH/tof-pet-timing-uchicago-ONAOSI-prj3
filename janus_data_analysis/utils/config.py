@@ -28,9 +28,9 @@ def _positive_number(value: Any, name: str, minimum: float = 0.0) -> float:
 def _apply_defaults(cfg: dict[str, Any]) -> None:
     fit = cfg.setdefault("fit", {})
     fit.setdefault("min_events", 100)
-    fit.setdefault("max_abs_ps", 2000.0)
+    fit.setdefault("coverage_fraction", 0.90)
     fit.setdefault("bin_width_ps", 5.0)
-    fit.setdefault("bootstrap_samples", 100)
+    fit.setdefault("bootstrap_samples", 500)
     led_rejection = fit.setdefault("led_outlier_rejection", {})
     led_rejection.setdefault("enabled", True)
     led_rejection.setdefault("zscore_limit", 4.0)
@@ -179,15 +179,16 @@ def validate_config(cfg: dict[str, Any]) -> None:
     _positive_int(alignment.get("minimum_events"), "alignment_filter.minimum_events", 2)
 
     fit = cfg["fit"]
-    allowed_fit = {"min_events", "max_abs_ps", "bin_width_ps", "bootstrap_samples", "led_outlier_rejection"}
+    allowed_fit = {"min_events", "coverage_fraction", "bin_width_ps", "bootstrap_samples", "led_outlier_rejection"}
     extra = sorted(set(fit) - allowed_fit)
     if extra:
-        raise ConfigError(f"Unknown/obsolete fit option(s): {extra}. CTR uses fixed-bin histogram FWHM.")
+        raise ConfigError(f"Unknown/obsolete fit option(s): {extra}. CTR uses the Gaussian-equivalent shortest coverage interval.")
     _positive_int(fit.get("min_events"), "fit.min_events", 3)
+    coverage = _positive_number(fit.get("coverage_fraction"), "fit.coverage_fraction", 1e-12)
+    if not 0.5 < coverage < 1.0:
+        raise ConfigError("fit.coverage_fraction must be in (0.5, 1.0)")
     _positive_number(fit.get("bin_width_ps"), "fit.bin_width_ps", 1e-12)
     _positive_int(fit.get("bootstrap_samples"), "fit.bootstrap_samples", 2)
-    if fit.get("max_abs_ps") is not None:
-        _positive_number(fit.get("max_abs_ps"), "fit.max_abs_ps", 1e-12)
     led_rejection = fit.get("led_outlier_rejection", {})
     if not isinstance(led_rejection, dict):
         raise ConfigError("fit.led_outlier_rejection must be an object")
