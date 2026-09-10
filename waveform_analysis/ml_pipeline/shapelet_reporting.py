@@ -6,7 +6,13 @@ from pathlib import Path
 import numpy as np
 
 
-def plot_fixed_shapelets(run: Path, output: Path, dataset: str, paths: list[Path]) -> None:
+def plot_fixed_shapelets(
+    run: Path,
+    plot_output: Path,
+    csv_output: Path,
+    dataset: str,
+    paths: list[Path],
+) -> None:
     """Plot learned fixed-position shapelets on the synchronized input time axis."""
     import matplotlib.pyplot as plt
 
@@ -61,7 +67,7 @@ def plot_fixed_shapelets(run: Path, output: Path, dataset: str, paths: list[Path
         "Each template is compared only with its own synchronized-time support"
     )
     fig.tight_layout()
-    target = output / f"shapelets_{dataset}_difference_shapelet.pdf"
+    target = plot_output / f"shapelets_{dataset}_difference_shapelet.pdf"
     fig.savefig(target, bbox_inches="tight")
     plt.close(fig)
     paths.append(target)
@@ -91,7 +97,7 @@ def plot_fixed_shapelets(run: Path, output: Path, dataset: str, paths: list[Path
     if rows:
         import csv
 
-        csv_target = output / f"shapelets_{dataset}_difference_shapelet.csv"
+        csv_target = csv_output / f"shapelets_{dataset}_difference_shapelet.csv"
         with csv_target.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()
