@@ -10,6 +10,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+from scipy import sparse
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
@@ -73,6 +74,29 @@ def _load_borf():
             "or run `pip install aeon`."
         ) from exc
     return BORF
+
+
+def _sklearn_sparse(features):
+    """Convert BORF sparse output to a CSR matrix with 32-bit indices.
+
+    Some BORF/scipy combinations emit sparse matrices with int64 ``indices`` and
+    ``indptr``. Several scikit-learn linear estimators deliberately reject those
+    large-index sparse matrices. BORF feature matrices here are far below the
+    int32 addressable limit, so normalize the sparse index dtype explicitly while
+    leaving feature values and sparsity unchanged.
+    """
+    if not sparse.issparse(features):
+        return features
+    matrix = sparse.csr_matrix(features, copy=False)
+    limit = np.iinfo(np.int32).max
+    if matrix.shape[0] > limit or matrix.shape[1] > limit or matrix.nnz > limit:
+        raise ValueError(
+            "BORF feature matrix is too large for scikit-learn's 32-bit sparse-index path: "
+            f"shape={matrix.shape}, nnz={matrix.nnz}"
+        )
+    matrix.indices = np.asarray(matrix.indices, dtype=np.int32)
+    matrix.indptr = np.asarray(matrix.indptr, dtype=np.int32)
+    return matrix
 
 
 def _residual_path(run: Path, dataset: str, method: str, stage: str) -> Path:
@@ -234,8 +258,13 @@ def analyse_dataset(
         f"{dataset_name}: fitting BORF on training paired waveforms "
         f"{train_waveforms.shape} with center interval [{center_interval[0]:g}, {center_interval[1]:g}] ps"
     )
-    train_features = borf.fit_transform(train_waveforms, train_labels)
-    test_features = borf.transform(test_waveforms)
+    train_features = _sklearn_sparse(borf.fit_transform(train_waveforms, train_labels))
+    test_features = _sklearn_sparse(borf.transform(test_waveforms))
+    if sparse.issparse(train_features):
+        print(
+            f"{dataset_name}: BORF sparse features shape={train_features.shape}, nnz={train_features.nnz}, "
+            f"indices={train_features.indices.dtype}, indptr={train_features.indptr.dtype}"
+        )
 
     classifier_config = dict(config.get("classifier") or {})
     classifier = LogisticRegression(
@@ -244,7 +273,6 @@ def analyse_dataset(
         solver=str(classifier_config.get("solver", "saga")),
         max_iter=int(classifier_config.get("max_iter", 2000)),
         tol=float(classifier_config.get("tol", 1e-4)),
-        multi_class="auto",
         random_state=int(((manifest.get("config") or {}).get("validation") or {}).get("seed", 0)),
         n_jobs=-1,
     )
@@ -313,6 +341,12 @@ def analyse_dataset(
             "n": int(train_labels.size),
             "class_counts": _class_counts(train_labels),
             "borf_features": [int(v) for v in train_features.shape],
+            "borf_sparse_indices_dtype": (
+                str(train_features.indices.dtype) if sparse.issparse(train_features) else None
+            ),
+            "borf_sparse_indptr_dtype": (
+                str(train_features.indptr.dtype) if sparse.issparse(train_features) else None
+            ),
         },
         "test": {
             "n": int(test_labels.size),
