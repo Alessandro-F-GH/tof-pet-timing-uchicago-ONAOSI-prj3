@@ -149,7 +149,7 @@ def _summary_row(run, run_info, fit, toa_lsb_ps: float | None, average_delay_cor
         "AcquisitionMode": run_info.acquisition_mode,
         "E_th": run_info.energy_threshold_mv,
         "T_th": run_info.timing_threshold_mv,
-        "fit_metric": "fixed_bin_histogram_fwhm",
+        "fit_metric": "gaussian_equivalent_shortest_coverage_interval",
         "ctr_bin_width_ps": _number(fit.bin_width_ps),
         "fwhm_center_ps": _number(fit.center_ps),
         "fwhm_left_ps": _number(fit.left_half_ps),
@@ -535,7 +535,7 @@ def run_pipeline(cfg: dict) -> None:
                     bootstrap=True,
                 )
                 if not fit.success:
-                    raise RuntimeError(f"Histogram FWHM CTR estimation failed: {fit.message}")
+                    raise RuntimeError(f"Robust CTR estimation failed: {fit.message}")
                 write_fit_csv(fit_path, fit, cfg["analysis_output"]["diagnostic_mode"])
                 mark_stage(state, "fit", fit_signature, fit_outputs)
                 save_state(state_path, state)
