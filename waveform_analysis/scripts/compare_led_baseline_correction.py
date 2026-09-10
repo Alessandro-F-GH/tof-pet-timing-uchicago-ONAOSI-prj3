@@ -230,9 +230,9 @@ def _plot_dataset(
     ax.hist(corrected, bins=edges, histtype="stepfilled", alpha=0.14, color=color_corrected, edgecolor=color_corrected,
             label=f"Baseline corrected · robust CTR {corrected_fit.ctr_ps:.1f} ± {corrected_fit.ctr_error_ps:.1f} ps")
 
-    for value in (original_fit.left_half_ps, original_fit.right_half_ps):
+    for value in (original_fit.interval_low_ps, original_fit.interval_high_ps):
         ax.axvline(float(value), color=color_original, ls="--", lw=1.4, alpha=0.9)
-    for value in (corrected_fit.left_half_ps, corrected_fit.right_half_ps):
+    for value in (corrected_fit.interval_low_ps, corrected_fit.interval_high_ps):
         ax.axvline(float(value), color=color_corrected, ls="--", lw=1.4, alpha=0.9)
 
     delta = float(corrected_fit.ctr_ps - original_fit.ctr_ps)
@@ -437,6 +437,8 @@ def analyse_dataset(root: Path, config: dict[str, Any], args: argparse.Namespace
         "original_calibration_bias_ps": original_bias_ps,
         "corrected_calibration_bias_ps": corrected_bias_ps,
         "calibration_shift_ps": corrected_bias_ps - original_bias_ps,
+        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
+        "ctr_coverage_fraction": float(original_fit.coverage_fraction),
         "original_ctr_ps": float(original_fit.ctr_ps),
         "original_ctr_uncertainty_ps": float(original_fit.ctr_error_ps),
         "corrected_ctr_ps": float(corrected_fit.ctr_ps),
@@ -451,8 +453,12 @@ def analyse_dataset(root: Path, config: dict[str, Any], args: argparse.Namespace
         "corrected_mean_ps": corrected_summary["mean_ps"],
         "corrected_std_ps": corrected_summary["std_ps"],
         "corrected_rmse_ps": corrected_summary["rmse_ps"],
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
-        "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
+        "original_interval_low_ps": float(original_fit.interval_low_ps),
+        "original_interval_high_ps": float(original_fit.interval_high_ps),
+        "corrected_interval_low_ps": float(corrected_fit.interval_low_ps),
+        "corrected_interval_high_ps": float(corrected_fit.interval_high_ps),
+        "original_core_fwhm_ps": float(original_fit.core_fwhm_ps),
+        "corrected_core_fwhm_ps": float(corrected_fit.core_fwhm_ps),
         "core_fwhm_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
     }
