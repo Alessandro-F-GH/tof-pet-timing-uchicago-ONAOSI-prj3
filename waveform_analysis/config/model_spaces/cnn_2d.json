@@ -2,9 +2,9 @@
   "model": "cnn_2d",
   "architecture": {
     "channels": [16, 32, 64],
-    "kernels": [9, 7, 5],
-    "strides": [2, 2, 2],
-    "dilations": [1, 1, 1],
+    "kernels": [33, 15, 13],
+    "strides": [2, 4, 4],
+    "dilations": [1, 1, 2],
     "adaptive_pool_length": 128,
     "pooling": "avg_max",
     "dense_units": [32]
