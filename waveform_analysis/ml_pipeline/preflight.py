@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .common import dataset_cache_dir
 from .config import discover_root_files
 from .data import load_preprocessed
 from .dataset import load_prepared_dataset
@@ -17,7 +18,7 @@ class Preflight:
 
 
 def _cache_path(config, key: str, root: Path) -> Path:
-    return Path(config["preprocessing"][key]).resolve() / root.stem
+    return dataset_cache_dir(config, key, root)
 
 
 def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
