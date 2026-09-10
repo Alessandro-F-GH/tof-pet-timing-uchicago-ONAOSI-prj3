@@ -133,6 +133,7 @@ def _prepare_study_datasets(roots, config, rebuild_preprocessing, logger):
             directory,
             config,
             name=name,
+            rebuild=rebuild_preprocessing,
             logger=logger,
         )
     ]
