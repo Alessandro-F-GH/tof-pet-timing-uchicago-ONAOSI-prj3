@@ -73,9 +73,17 @@ Before a rebuild or result overwrite, the CLI preflights every ROOT file and eve
 
 For ordinary per-voltage studies, the study root contains:
 
-- `ctr_vs_voltage.pdf`: grouped test CTR bars with bootstrap error bars;
-- `relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
-- `relative_improvement.csv`: numerical values used in that paired-improvement plot.
+Study outputs are type-separated from creation time:
+
+- `csv/results.csv`: canonical study results table;
+- `csv/relative_improvement.csv`: numerical values used in the paired-improvement plot;
+- `plots/ctr_vs_voltage.pdf`: grouped test CTR bars with bootstrap error bars;
+- `plots/relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
+- `plots/corrections/<dataset>/`: top/worst correction figures;
+- `csv/corrections/<dataset>/`: corresponding correction ranking tables;
+- `plots/xai/<model>/`: model-grouped XAI plots;
+- `csv/xai/<model>/`: tabular XAI/shapelet exports when present;
+- `plots/model_output_diagnostics/` and `csv/model_output_diagnostics/`: prediction/correlation diagnostics separated by file type.
 
 The paired relative improvement is computed as
 
