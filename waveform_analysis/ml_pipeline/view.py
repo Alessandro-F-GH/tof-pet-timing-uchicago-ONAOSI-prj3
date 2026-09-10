@@ -97,15 +97,6 @@ def corrected_timing_residual(target_ps: np.ndarray, paired_prediction_ps: np.nd
     return target - prediction
 
 
-def anchor_delta(dataset: PreparedDataset, mode: str) -> np.ndarray:
-    family = mode_family(mode)
-    values = dataset.energy_anchor_time_ps if family == "energy" else dataset.timing_anchor_time_ps
-    if values is None:
-        raise ValueError(f"{family} anchor timing is unavailable")
-    values = np.asarray(values, dtype=np.float64)
-    return values[:, 0] - values[:, 1]
-
-
 def inverse_pair(dataset: PreparedDataset, mode: str, normalized_pair: np.ndarray) -> np.ndarray:
     family = mode_family(mode)
     transform = dataset.energy_transform if family == "energy" else dataset.timing_transform
