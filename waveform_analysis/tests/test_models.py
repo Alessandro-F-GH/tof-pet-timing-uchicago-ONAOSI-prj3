@@ -2,6 +2,12 @@ import unittest
 import numpy as np
 
 from waveform_analysis.ml_pipeline.models.cnn import CNNArtifact, SharedScorerCNN, predict as predict_cnn
+from waveform_analysis.ml_pipeline.models.cnn_2d import (
+    CNN2DArtifact,
+    JointPairCNN2D,
+    explain as explain_cnn_2d,
+    predict as predict_cnn_2d,
+)
 from waveform_analysis.ml_pipeline.models.linear_svr import fit as fit_svr, predict as predict_svr
 from waveform_analysis.ml_pipeline.view import corrected_timing_residual
 
@@ -26,6 +32,28 @@ class AntisymmetryTests(unittest.TestCase):
         forward = predict_cnn(artifact, pair)
         reverse = predict_cnn(artifact, pair[:, ::-1, :])
         np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
+
+
+    def test_cnn_2d_joint_pair_forward_and_xai_shape(self):
+        rng = np.random.default_rng(14)
+        pair = rng.normal(size=(6, 2, 64)).astype(np.float32)
+        model = JointPairCNN2D(
+            {
+                "channels": [4],
+                "kernels": [5],
+                "strides": [1],
+                "dilations": [1],
+                "adaptive_pool_length": 8,
+                "dense_units": [4],
+            }
+        )
+        artifact = CNN2DArtifact(model, "cpu", {})
+        prediction = predict_cnn_2d(artifact, pair)
+        importance = explain_cnn_2d(artifact, pair)
+        self.assertEqual(prediction.shape, (6,))
+        self.assertEqual(importance.shape, (64,))
+        self.assertTrue(np.all(np.isfinite(prediction)))
+        self.assertTrue(np.all(np.isfinite(importance)))
 
     def test_corrected_timing_is_slide_target_minus_prediction(self):
         target = np.asarray([35.0, -20.0, 5.0])
