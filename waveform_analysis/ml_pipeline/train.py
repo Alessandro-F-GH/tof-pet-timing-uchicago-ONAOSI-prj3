@@ -112,9 +112,11 @@ def search_model(
         target_abs_max_ps = float(model_parameters.pop("target_abs_max_ps"))
         selected = _target_range_mask(train_target, target_abs_max_ps)
         n_used = int(np.count_nonzero(selected))
-        if n_used < 2:
+        minimum_training = int(fit_config.get("min_events", 100))
+        if n_used < minimum_training:
             raise ValueError(
-                f"Training target range ±{target_abs_max_ps:g} ps retains only {n_used}/{train_target.size} events"
+                f"Training target range ±{target_abs_max_ps:g} ps retains only "
+                f"{n_used}/{train_target.size} events; need at least {minimum_training}"
             )
         fitted = _fit_once(
             spec,
