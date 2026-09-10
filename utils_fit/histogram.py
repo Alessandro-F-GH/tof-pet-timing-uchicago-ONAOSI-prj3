@@ -10,6 +10,12 @@ import numpy as np
 FS_PER_PS = 1000.0
 DEFAULT_INVALID_TIME_FS = np.iinfo(np.int64).min
 FWHM_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
+
+CTR_METRIC_NAME = "gaussian_equivalent_shortest_coverage_interval"
+CTR_DEFINITION = "scale(p) * shortest empirical interval containing ceil(p*N) finite residuals"
+CTR_UNCERTAINTY_DEFINITION = "event_bootstrap_robust_ctr_std"
+CORE_FWHM_METRIC_NAME = "dominant_peak_fixed_bin_histogram_fwhm"
+
 DEFAULT_FIT_CONFIG: dict[str, Any] = {
     "min_events": 100,
     "coverage_fraction": 0.90,
@@ -117,6 +123,10 @@ class CTRResult:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "fit_metric": CTR_METRIC_NAME,
+            "ctr_definition": CTR_DEFINITION,
+            "ctr_uncertainty_definition": CTR_UNCERTAINTY_DEFINITION,
+            "core_metric": CORE_FWHM_METRIC_NAME,
             "method": self.method,
             "parameter": self.parameter,
             "success": self.success,
