@@ -487,7 +487,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         led_training_mean[family] = mean_led
         calibration_bias[family] = c_hat
         np.save(base / f"{family}_led_time_ps.npy", led_times[family][keep])
-        np.save(base / f"{family}_target_ps.npy", target_values)
         if family in cfd_times:
             np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[family][keep])
 
