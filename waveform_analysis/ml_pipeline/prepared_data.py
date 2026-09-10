@@ -40,6 +40,7 @@ def dataset_fingerprint(preprocessed, config):
             "mode": mode,
             "cfd": config["cfd"],
             "normalization_limits": config["preprocessing"][source_family(mode)]["vertical_scale_limit_mV"],
+            "defer_dead_region_mask": bool(config.get("_defer_dead_region_mask", False)),
         }
     )
 
@@ -434,12 +435,18 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             config,
             led_choice[family],
         )
-        feature_keep, dominant_fraction = _learn_dead_time_mask(
-            raw,
-            development_new,
-            full_time_ps,
-            threshold=0.99,
-        )
+        if bool(config.get("_defer_dead_region_mask", False)):
+            feature_keep = ~np.isclose(full_time_ps, 0.0, rtol=0.0, atol=1e-9)
+            dominant_fraction = np.full((2, full_time_ps.size), np.nan, dtype=np.float64)
+            criterion = "crossing_only; 99_percent_dead_region_mask_deferred_to_concatenated_development"
+        else:
+            feature_keep, dominant_fraction = _learn_dead_time_mask(
+                raw,
+                development_new,
+                full_time_ps,
+                threshold=0.99,
+            )
+            criterion = "same_exact_value_in_each_detector_for_at_least_99_percent_of_development_events"
         time_ps = np.asarray(full_time_ps[feature_keep], dtype=np.float64)
         raw = raw[:, :, feature_keep]
         normalized, minimum, maximum = _normalize_family(raw, family, config)
@@ -459,7 +466,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             "maximum_mV": maximum[:, 0].tolist(),
         }
         dead_regions[family] = {
-            "criterion": "same_exact_value_in_each_detector_for_at_least_99_percent_of_development_events",
+            "criterion": criterion,
             "threshold": 0.99,
             "n_before": int(full_time_ps.size),
             "n_removed": int(np.count_nonzero(~feature_keep)),
