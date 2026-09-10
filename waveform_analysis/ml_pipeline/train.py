@@ -232,7 +232,7 @@ def save_model(spec, fitted, directory: Path, parameters):
             "model": spec.name,
             "parameters": parameters,
             "training": fitted.metadata,
-            "selection_protocol": "validation_robust_ctr_selected_model_used_directly_without_refit",
+            "selection_protocol": "full_validation_rmse_selected_model_and_training_target_range_used_directly_without_refit",
             "prediction_definition": prediction_definition,
         },
     )
