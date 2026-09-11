@@ -1,6 +1,7 @@
 import unittest
 import numpy as np
 from waveform_analysis.ml_pipeline.event_selection import Hit, _choose_main_hits, pulse_hits, robust_center_scale
+from waveform_analysis.ml_pipeline.selection_outputs import _outside_counts
 from waveform_analysis.utils.peak import fit_histogram_peak
 
 class SelectionTests(unittest.TestCase):
@@ -23,3 +24,8 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(fit.success); self.assertAlmostEqual(fit.mean,6.40,places=2); self.assertLess(fit.selection_high,6.6)
     def test_mad_scale_is_robust_to_outlier(self):
         center, scale = robust_center_scale(np.array([10,10,11,9,10,1000], dtype=float)); self.assertAlmostEqual(center, 10.0); self.assertLess(scale, 2.0)
+
+    def test_plot_outside_counts_distinguish_low_and_high(self):
+        low, high = _outside_counts(np.array([0.5, 1.0, 1.5, 2.0, 3.0, np.nan]), (0.8, 2.5))
+        self.assertEqual(low, 1)
+        self.assertEqual(high, 1)
