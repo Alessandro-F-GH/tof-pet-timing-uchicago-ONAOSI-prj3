@@ -10,6 +10,7 @@ import numpy as np
 from utils_fit import fit_ctr_ps
 
 from .models.spec import ModelSpec
+from .sample_mask import apply_sample_mask, apply_sample_mask_to_time, training_sample_mask
 from .search import SearchResult, select_candidate
 from .storage import atomic_json
 from .view import model_target, waveform_view
@@ -20,6 +21,7 @@ class FittedModel:
     artifact: Any
     metadata: dict[str, Any]
     output_max_abs_ps: float | None = None
+    sample_mask: np.ndarray | None = None
 
 
 def _fit_once(
@@ -34,6 +36,7 @@ def _fit_once(
     validation_target=None,
     output_max_abs_ps=None,
     input_time_ps=None,
+    sample_mask=None,
 ):
     runtime_config = copy.deepcopy(model_config)
     runtime_config["_prediction_max_abs_ps"] = None if output_max_abs_ps is None else float(output_max_abs_ps)
@@ -51,7 +54,12 @@ def _fit_once(
     metadata = dict(getattr(artifact, "metadata", {}) or {})
     metadata["output_max_abs_ps"] = None if output_max_abs_ps is None else float(output_max_abs_ps)
     metadata["target_definition"] = "delta_t_led - true_tof - calibration_bias"
-    return FittedModel(artifact, metadata, None if output_max_abs_ps is None else float(output_max_abs_ps))
+    return FittedModel(
+        artifact,
+        metadata,
+        None if output_max_abs_ps is None else float(output_max_abs_ps),
+        None if sample_mask is None else np.asarray(sample_mask, dtype=bool).copy(),
+    )
 
 
 def _target_range_candidates(spec: ModelSpec, model_config: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -95,7 +103,8 @@ def _candidate_log_parts(candidate: dict[str, Any]) -> tuple[float, str]:
 
 
 def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.ndarray:
-    values = np.asarray(spec.predict(fitted.artifact, np.asarray(pair, dtype=np.float32)), dtype=np.float64)
+    model_input = apply_sample_mask(pair, fitted.sample_mask)
+    values = np.asarray(spec.predict(fitted.artifact, model_input), dtype=np.float64)
     if fitted.output_max_abs_ps is not None:
         values = np.clip(values, -float(fitted.output_max_abs_ps), float(fitted.output_max_abs_ps))
     return values
@@ -110,14 +119,27 @@ def search_model(
     *,
     seed: int,
     dataset_name: str | None = None,
+    sample_mask: np.ndarray | None = None,
     logger=None,
 ) -> SearchResult:
     training = np.asarray(dataset.training, dtype=np.int64)
     validation = np.asarray(dataset.validation, dtype=np.int64)
     train_view = waveform_view(dataset, mode, training)
     validation_view = waveform_view(dataset, mode, validation)
-    train_x = train_view.materialize()
-    validation_x = validation_view.materialize()
+    train_x_full = train_view.materialize()
+    validation_x_full = validation_view.materialize()
+    if sample_mask is None:
+        sample_mask = training_sample_mask(train_x_full)
+    sample_mask = np.asarray(sample_mask, dtype=bool).reshape(-1)
+    if sample_mask.size != train_x_full.shape[-1]:
+        raise ValueError(
+            f"Sample mask has {sample_mask.size} entries but waveform has {train_x_full.shape[-1]} samples"
+        )
+    if not np.any(sample_mask):
+        raise ValueError("Sample mask removes every waveform sample")
+    train_x = apply_sample_mask(train_x_full, sample_mask)
+    validation_x = apply_sample_mask(validation_x_full, sample_mask)
+    masked_time_ps = apply_sample_mask_to_time(train_view.time_ps, sample_mask)
     target = model_target(dataset, mode)
     train_target = target[training]
     validation_target = target[validation]
@@ -146,10 +168,21 @@ def search_model(
             validation_x=validation_x,
             validation_target=validation_target,
             output_max_abs_ps=output_limit,
-            input_time_ps=train_view.time_ps,
+            input_time_ps=masked_time_ps,
+            sample_mask=sample_mask,
         )
         fitted.metadata.update(
             {
+                "sample_mask_definition": (
+                    "shared temporal mask derived from the full training split; discard a sample "
+                    "when both detector channels independently have one exact normalized float32 "
+                    "value in at least 99% of training events"
+                ),
+                "sample_mask_constant_fraction": 0.99,
+                "sample_mask_training_events": int(train_x_full.shape[0]),
+                "input_samples_before_mask": int(sample_mask.size),
+                "input_samples_after_mask": int(np.count_nonzero(sample_mask)),
+                "input_samples_removed": int(sample_mask.size - np.count_nonzero(sample_mask)),
                 "training_target_abs_max_ps": target_abs_max_ps,
                 "training_target_range_ps": [-target_abs_max_ps, target_abs_max_ps],
                 "training_events_available": int(train_target.size),
@@ -236,13 +269,18 @@ def selected_model(search: SearchResult) -> FittedModel:
 
 def predict_indices(spec, fitted, dataset, mode, indices):
     view = waveform_view(dataset, mode, np.asarray(indices, dtype=np.int64))
-    pair = view.materialize()
-    return predict_model(spec, fitted, pair), view.time_ps, pair
+    pair = apply_sample_mask(view.materialize(), fitted.sample_mask)
+    time_ps = apply_sample_mask_to_time(view.time_ps, fitted.sample_mask)
+    return predict_model(spec, fitted, pair), time_ps, pair
 
 
 def save_model(spec, fitted, directory: Path, parameters):
     directory.mkdir(parents=True, exist_ok=True)
     spec.save(fitted.artifact, directory)
+    sample_mask_file = None
+    if fitted.sample_mask is not None:
+        sample_mask_file = "sample_mask.npy"
+        np.save(directory / sample_mask_file, np.asarray(fitted.sample_mask, dtype=bool))
     prediction_definition = fitted.metadata.get(
         "prediction_definition",
         "paired waveform-dependent timing correction y_theta = g(s1)-g(s2) [ps]",
@@ -253,6 +291,7 @@ def save_model(spec, fitted, directory: Path, parameters):
             "model": spec.name,
             "parameters": parameters,
             "training": fitted.metadata,
+            "sample_mask_file": sample_mask_file,
             "selection_protocol": "full_validation_ctr_selected_model_and_training_target_range_used_directly_without_refit",
             "prediction_definition": prediction_definition,
         },
