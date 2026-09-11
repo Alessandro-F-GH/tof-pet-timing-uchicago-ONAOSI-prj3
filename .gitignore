@@ -16,3 +16,23 @@ waveform_analysis/results/
 
 # Uncomment if compiled presentations should not be committed
 # presentation/*.pdf
+
+# Report LaTeX build artifacts
+report/main.aux
+report/main.bbl
+report/main.bcf
+report/main.blg
+report/main.fdb_latexmk
+report/main.fls
+report/main.lof
+report/main.log
+report/main.lot
+report/main.nav
+report/main.out
+report/main.pdf
+report/main.run.xml
+report/main.snm
+report/main.synctex.gz
+report/main.toc
+report/main.vrb
+!report/main.tex
