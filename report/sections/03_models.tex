@@ -17,10 +17,10 @@ and predicts the timing correction from a linear combination of temporal samples
     {Optional magnitude of the Linear-SVR temporal coefficients.}
     {fig:svr-importance}
 
-\subsection{Detector-shared 1-D CNN: physically constrained model}
+\subsection{Detector-shared 1-D CNN: physically constrained model}\label{sec:shared-model}
 
 The proposed shared CNN applies the same detector-level function \(g_\theta\) to both input waveforms:
-\begin{equation}
+\begin{equation}\label{eq:shared-correction}
     y_\theta = g_\theta(s_1)-g_\theta(s_2).
 \end{equation}
 
@@ -40,10 +40,10 @@ This factorized form is the primary physics-motivated model studied in the paper
     {Detector-shared CNN: the same temporal scorer is applied to each detector waveform before subtraction of the two scalar outputs.}
     {fig:cnn-architecture}
 
-\subsection{Joint CNN: general pair-model comparator}
+\subsection{Joint CNN: general pair-model comparator}\label{sec:joint-model}
 
 The joint model receives the two detector waveforms together as a stacked \([2,\mathrm{time}]\) input and directly predicts one correction:
-\begin{equation}
+\begin{equation}\label{eq:joint-correction}
     y_\theta=f_\theta(s_1,s_2).
 \end{equation}
 
