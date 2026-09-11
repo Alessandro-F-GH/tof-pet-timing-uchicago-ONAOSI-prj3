@@ -7,7 +7,7 @@
         \toprule
         Model & Input representation & Prediction structure & Scientific role \\
         \midrule
-        Linear SVR & \(s_1-s_2\) & Linear temporal correction & Linear control \\
+        Linear support vector regressor (SVR) & \(s_1-s_2\) & Linear temporal correction & Linear control \\
         Shared 1-D CNN & \(s_1,s_2\) & \(g_\theta(s_1)-g_\theta(s_2)\) & Physics-constrained proposal \\
         Joint CNN & stacked \([2,\mathrm{time}]\) & \(f_\theta(s_1,s_2)\) & General pair-model comparator \\
         \bottomrule
