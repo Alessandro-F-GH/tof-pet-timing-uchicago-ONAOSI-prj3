@@ -17,6 +17,7 @@ from .model_output_reporting import make_model_output_reports
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .reporting import LABELS
+from .sample_mask import SAMPLE_CONSTANT_FRACTION, dataset_training_sample_mask
 from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
@@ -178,6 +179,17 @@ def run_study(
         "test_used_for_selection": False,
         "model_selection_metric": "validation_ctr",
         "selected_model_policy": "select_model_hyperparameters_and_training_target_range_on_full_validation_then_use_trained_model_without_refit",
+        "sample_mask_policy": {
+            "derived_from": "training_split_only",
+            "constant_fraction": SAMPLE_CONSTANT_FRACTION,
+            "discard_rule": (
+                "discard temporal sample when both input channels independently have one exact "
+                "normalized float32 value in at least 99% of training events"
+            ),
+            "shared_across_input_channels": True,
+            "shared_across_models_within_dataset": True,
+            "validation_and_test_do_not_define_mask": True,
+        },
         "training_target_range_search": {
             "definition": "abs(model_target) <= target_abs_max_ps",
             "candidates_ps": list(map(float, config["ml_training"]["target_abs_max_ps"])),
@@ -252,6 +264,18 @@ def run_study(
             dataset.validation.size,
             dataset.test.size,
         )
+        sample_mask = dataset_training_sample_mask(dataset, mode)
+        sample_count = int(sample_mask.size)
+        retained_samples = int(np.count_nonzero(sample_mask))
+        removed_samples = sample_count - retained_samples
+        logger.info(
+            "Sample mask | train-only | constant threshold=%.1f%% | retained=%d/%d | removed=%d | shared across both channels/models",
+            100.0 * SAMPLE_CONSTANT_FRACTION,
+            retained_samples,
+            sample_count,
+            removed_samples,
+        )
+
         training_target = model_target(dataset, mode)[np.asarray(dataset.training, dtype=np.int64)]
         filter_summary = " | ".join(
             f"±{limit:g} ps: {used}/{total} ({100.0 * fraction:.1f}%)"
@@ -272,6 +296,7 @@ def run_study(
                 mode,
                 seed=semantic_seed(seed, name, mode, model_name, "search"),
                 dataset_name=name,
+                sample_mask=sample_mask,
                 logger=logger,
             )
             fitted = selected_model(search)
@@ -374,6 +399,14 @@ def run_study(
             "led_training_mean_ps": dataset.manifest["led_training_mean_ps"],
             "cfd_fraction": dataset.manifest["cfd_fraction"],
             "subsampling": int(dataset.manifest["ml_input"]["subsampling"]),
+            "sample_mask": {
+                "derived_from": "training_split_only",
+                "constant_fraction": SAMPLE_CONSTANT_FRACTION,
+                "shared_across_input_channels": True,
+                "input_samples_before": sample_count,
+                "input_samples_after": retained_samples,
+                "input_samples_removed": removed_samples,
+            },
             "target_definition": dataset.manifest.get(
                 "target_definition",
                 "delta_t_led - true_tof - calibration_bias",
