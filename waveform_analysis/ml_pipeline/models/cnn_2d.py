@@ -14,7 +14,7 @@ from .spec import ModelSpec
 
 
 class JointPairCNN2D(nn.Module):
-    """One joint 2-D CNN over the stacked detector pair [2, time]."""
+    """Joint CNN with delayed fusion of the stacked detector pair [2, time]."""
 
     def __init__(self, architecture: dict[str, Any]):
         super().__init__()
@@ -27,6 +27,14 @@ class JointPairCNN2D(nn.Module):
         if any(kernel < 1 for kernel in kernels) or any(stride < 1 for stride in strides) or any(dilation < 1 for dilation in dilations):
             raise ValueError("cnn_2d kernels/strides/dilations must be positive")
 
+        default_fusion_layer = 1 if len(channels) > 1 else 0
+        detector_fusion_layer = int(architecture.get("detector_fusion_layer", default_fusion_layer))
+        if detector_fusion_layer < 0 or detector_fusion_layer >= len(channels):
+            raise ValueError(
+                f"cnn_2d detector_fusion_layer must lie in [0, {len(channels) - 1}]"
+            )
+        self.detector_fusion_layer = detector_fusion_layer
+
         pool_length = int(architecture.get("adaptive_pool_length", 128))
         pooling = str(architecture.get("pooling", "avg_max")).lower()
         if pool_length < 1:
@@ -35,11 +43,16 @@ class JointPairCNN2D(nn.Module):
             raise ValueError("cnn_2d pooling must be avg, max, or avg_max")
 
         layers: list[nn.Module] = []
+        detector_kernel_heights: list[int] = []
         incoming = 1
         for layer_index, (outgoing, kernel, stride, dilation) in enumerate(
             zip(channels, kernels, strides, dilations)
         ):
-            detector_height = 2 if layer_index == 0 else 1
+            # Before fusion, height-1 kernels preserve the two detector rows and
+            # apply the same temporal filters to each row. The configured fusion
+            # layer then spans both rows once, reducing detector height 2 -> 1.
+            detector_height = 2 if layer_index == detector_fusion_layer else 1
+            detector_kernel_heights.append(detector_height)
             temporal_padding = dilation * (kernel - 1) // 2
             layers.extend(
                 [
@@ -57,6 +70,7 @@ class JointPairCNN2D(nn.Module):
             )
             incoming = outgoing
 
+        self.detector_kernel_heights = tuple(detector_kernel_heights)
         self.features = nn.Sequential(*layers)
         self.avg_pool = (
             nn.AdaptiveAvgPool2d((1, pool_length))
@@ -177,8 +191,10 @@ def fit(
             "batch_size": batch,
             "output_max_abs_ps": None if output_limit is None else float(output_limit),
             "input_definition": "normalized detector pair stacked as one [2,time] input",
-            "prediction_definition": "single joint 2-D CNN f_theta([s1;s2]) [ps]",
-            "first_kernel_detector_height": 2,
+            "prediction_definition": "single joint CNN f_theta([s1;s2]) [ps] with delayed detector fusion",
+            "detector_fusion_layer": int(model.detector_fusion_layer),
+            "detector_kernel_heights": list(model.detector_kernel_heights),
+            "detector_axis_policy": "preserve height 2 before fusion, fuse once with a height-2 kernel, then continue at height 1",
             "detector_swap_antisymmetry_enforced": False,
             "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
         },

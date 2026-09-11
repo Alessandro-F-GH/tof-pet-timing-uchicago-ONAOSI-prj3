@@ -40,7 +40,7 @@ This architecture therefore enforces detector-swap antisymmetry by construction.
 
 \subsection{Joint 2-D CNN}
 
-The model named \texttt{cnn\_2d} receives the detector pair as one stacked \([2,\mathrm{time}]\) input. Its first convolution spans both detector rows and the network predicts one timing correction directly. Detector-swap antisymmetry is not enforced by the architecture.
+The model named \texttt{cnn\_2d} receives the detector pair as one stacked \([2,\mathrm{time}]\) input. The initial temporal block preserves the two detector rows, applying shared height-1 temporal filters independently to each row. A configurable later convolution then spans both detector rows once, fusing the detector axis from height 2 to height 1 before the remaining temporal blocks. The network predicts one timing correction directly, and detector-swap antisymmetry is not enforced by the architecture.
 
 \paragraph{Motivation to discuss.}
 \todo{Explain that this model provides a structural comparison with the shared 1-D CNN. State which architectural hyperparameters are intentionally matched in the final comparison.}

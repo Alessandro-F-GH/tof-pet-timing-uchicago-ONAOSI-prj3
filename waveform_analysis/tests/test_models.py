@@ -34,6 +34,22 @@ class AntisymmetryTests(unittest.TestCase):
         np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
 
 
+    def test_cnn_2d_delays_detector_fusion(self):
+        model = JointPairCNN2D(
+            {
+                "channels": [4, 8, 12],
+                "kernels": [5, 3, 3],
+                "strides": [1, 1, 1],
+                "dilations": [1, 1, 1],
+                "detector_fusion_layer": 1,
+                "adaptive_pool_length": 8,
+                "dense_units": [4],
+            }
+        )
+        conv_layers = [layer for layer in model.features if hasattr(layer, "kernel_size")]
+        self.assertEqual([layer.kernel_size[0] for layer in conv_layers], [1, 2, 1])
+        self.assertEqual(model.detector_fusion_layer, 1)
+
     def test_cnn_2d_joint_pair_forward_and_xai_shape(self):
         rng = np.random.default_rng(14)
         pair = rng.normal(size=(6, 2, 64)).astype(np.float32)
