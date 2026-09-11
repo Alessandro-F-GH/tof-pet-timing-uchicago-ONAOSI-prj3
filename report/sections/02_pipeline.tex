@@ -1,30 +1,23 @@
 \section{Waveform analysis framework}
 
-This section describes the common analysis applied before comparing machine-learning (ML) architectures or waveform families. Implementation details are included only where they affect scientific reproducibility, leakage control, or the definition of the timing residual.
+This section summarizes the main analysis steps applied to the selected waveforms before model comparison and final timing evaluation.
 
-\subsection{Data partitioning and leakage control}
+\subsection{Data partitioning}
 
-The original event population is divided into a permanent development population and a blind-test population before fitted selection criteria are derived. The development population is further separated into training and validation subsets for model development. Fitted event-selection criteria, calibration quantities, model hyperparameters, target-range filtering, and the train-derived sample mask are determined without using the blind-test population.
+The data are divided into development and blind-test populations before model development. The development data are then separated into training and validation subsets used for fitting models and selecting hyperparameters, while the blind-test population is reserved for the final timing evaluation.
 
-\todo{State the exact split fractions used in the final run.}
+\todo{State the exact split fractions used in the final run and briefly motivate the chosen partitioning strategy.}
 
 \reportfigure
     {figures/data_split.pdf}
-    {Dataset partitioning used for development, training, validation, and final blind-test evaluation.}
+    {Dataset partitioning used for model development and final blind-test evaluation.}
     {fig:data-split}
 
 \subsection{Event selection}
 
-The event-selection chain can include:
-\begin{itemize}
-    \item finite energy amplitudes in both detectors;
-    \item a two-detector energy-photopeak requirement;
-    \item a valid pulse / main-hit requirement on the waveform family used for timing;
-    \item a time-over-threshold (ToT) selection when timing-channel waveforms are analyzed;
-    \item an optional baseline root-mean-square (RMS) requirement.
-\end{itemize}
+Event selection is used to define a clean coincidence population before timing analysis. The common energy-channel selection identifies events in the photopeak region for both detectors. For timing-channel studies, an additional time-over-threshold (ToT) selection is used to isolate the main timing-pulse population. An optional baseline root-mean-square (RMS) requirement can be applied to reject events with abnormal pre-pulse noise.
 
-Parameters fitted from event distributions are determined on development data and frozen before application to the blind-test population. Energy information is retained as the common event-selection reference even when timing-channel waveforms are used as the ML input.
+\todo{Add a short scientific motivation for the selected photopeak, ToT, and baseline-noise criteria and state which of them are enabled in the final reported studies.}
 
 \input{tables/event_selection_summary}
 
@@ -35,7 +28,7 @@ Parameters fitted from event distributions are determined on development data an
 
 \reportfigure
     {figures/tot_selection.pdf}
-    {Timing-channel ToT selection when required by the reported timing-channel study.}
+    {Timing-channel ToT selection used in the timing-waveform analysis.}
     {fig:tot-selection}
 
 \reportfigure
@@ -43,25 +36,24 @@ Parameters fitted from event distributions are determined on development data an
     {Baseline-RMS selection when enabled.}
     {fig:baseline-selection}
 
-\subsection{Native-time waveform preprocessing}
+\subsection{Waveform preparation}
 
-For accepted events, the pipeline decodes and orients the waveform samples, applies detector-specific configured vertical limits, crops around the selected main trigger, and preserves the native acquisition time grid. No denoising or event-wise baseline subtraction is applied in the current pipeline.
+Selected waveforms are brought to a common orientation and restricted to the analysis region around the main pulse. The native acquisition sampling is preserved, while fixed detector-specific amplitude limits provide a consistent normalization across events.
 
-\paragraph{Rationale.}
-Preserving native waveform samples avoids introducing a separate filtering model before the timing study. The ML analysis therefore operates on the measured waveform shape after only the deterministic acquisition-domain transformations required for a consistent input representation.
-
-\todo{State the exact crop and waveform family used in each reported experiment.}
+\todo{State the final waveform crop, normalization limits, and temporal subsampling used in each reported experiment.}
 
 \reportfigure
     {figures/native_preprocessing_example.pdf}
-    {Representative native waveform and the region materialized for ML analysis.}
+    {Representative waveform and analysis region used for timing correction.}
     {fig:native-preprocessing}
 
 \subsection{Reference timing, calibration, and learning target}
 
-Leading-edge discriminator (LED) thresholds are evaluated on development data. If a constant-fraction discriminator (CFD) is enabled in a reported study, it is treated as an additional standard timing reference. The selected LED crossing time is linearly interpolated.\footnote{L. Y. Chang et al., \emph{A Time-Walk Correction Method for PET Detectors Based on Leading Edge Discriminators}, \textit{IEEE Transactions on Radiation and Plasma Medical Sciences}, 2017.}
+Leading-edge discrimination (LED) is used as the reference timing estimator for the waveform analysis. For each detector, the arrival time is obtained from the interpolated threshold crossing of the rising edge. LED provides a simple and widely used waveform-based timing reference, while retaining the amplitude-dependent time-walk effects that the machine-learning correction is intended to reduce.\footnote{L. Y. Chang et al., \emph{A Time-Walk Correction Method for PET Detectors Based on Leading Edge Discriminators}, \textit{IEEE Transactions on Radiation and Plasma Medical Sciences}, 2017.}
 
-The fixed inter-channel calibration is estimated from training data:
+\todo{Add a concise reference or motivation for choosing LED as the common baseline for both energy- and timing-channel studies, and state the threshold-selection procedure used in the final analysis.}
+
+A fixed inter-channel timing offset is estimated from the training population:
 \begin{equation}
     \widehat{C}_{12}
     =
@@ -70,7 +62,7 @@ The fixed inter-channel calibration is estimated from training data:
     \mathrm{TOF}.
 \end{equation}
 
-The supervised learning target is
+The supervised target is then defined as
 \begin{equation}
     y_{\mathrm{target}}
     =
@@ -81,37 +73,37 @@ The supervised learning target is
     \widehat{C}_{12}.
 \end{equation}
 
-The ML model therefore learns a correction to a conventional timing estimate rather than reconstructing TOF directly from an unconstrained label.
+The model therefore learns the event-by-event correction to the LED timing difference rather than predicting TOF directly.
 
 \reportfigure
     {figures/led_threshold_selection.pdf}
     {Development-data LED threshold scan and selected operating point.}
     {fig:led-threshold}
 
-\subsection{ML waveform representation}
+\subsection{Machine-learning input}
 
-The ML window is materialized relative to the native sample nearest the selected interpolated LED crossing. The configured temporal subsampling is then applied. Waveforms are normalized with detector-specific physical vertical limits rather than event-wise scaling.
+The machine-learning (ML) input consists of synchronized waveform windows referenced to the selected LED crossing. The same temporal samples are used for the two detectors. A training-derived binary mask removes regions that are effectively constant in both input channels, avoiding consistently clipped or cropped samples that carry no event-dependent information.
 
-A common binary temporal mask is learned from the training split only and applied identically to both detector inputs. A time sample is removed when both channels independently take one identical normalized value in at least 99\% of training events. This removes consistently cropped or clipped regions without allowing validation or blind-test events to define the input representation.
+\todo{State the final input window and number of retained samples for the reported models.}
 
 \reportfigure
     {figures/ml_input_and_sample_mask.pdf}
-    {Example normalized detector pair with retained temporal samples after the train-derived common mask.}
+    {Example detector-pair input and retained temporal region after the training-derived sample mask.}
     {fig:sample-mask}
 
-\subsection{Training and model selection}
+\subsection{Model development}
 
-Candidate models are fitted on the training split. The configured symmetric target-range filter is applied to training events only. Candidate hyperparameters are ranked by validation CTR. Neural models may use validation root-mean-square error (RMSE) internally for early stopping, which is distinct from the validation-CTR criterion used for candidate selection. The selected trained model is then evaluated directly on the permanent blind-test population without a final refit.
+Models are trained on the training population and selected using validation performance. A symmetric target-range requirement may be applied to the training population to reduce the influence of extreme timing residuals during fitting. Neural-network training uses validation root-mean-square error (RMSE) for early stopping, while candidate configurations are ranked using validation CTR.
 
-\todo{Report the target-range candidates, hyperparameter spaces, and selected candidate for each final experiment.}
+\todo{Report the target-range candidates, hyperparameter spaces, and final selected configuration for each model.}
 
 \subsection{CTR estimator}\label{sec:ctr-estimator}
 
-The canonical CTR is the Gaussian-equivalent shortest empirical coverage interval. For coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is found and converted to the Gaussian-equivalent full width at half maximum (FWHM) scale. CTR uncertainty is evaluated by event bootstrap.
+Coincidence timing resolution (CTR) is evaluated from the distribution of the timing residuals.\footnote{S. Surti, \emph{Update on Time-of-Flight PET Imaging}, \textit{Journal of Nuclear Medicine}, 56(1), 98--105, 2015, doi:10.2967/jnumed.114.145029.} The analysis uses the Gaussian-equivalent shortest empirical coverage interval: for a coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is converted to the equivalent Gaussian full width at half maximum (FWHM). The statistical uncertainty is estimated by event bootstrap.
 
-For a model prediction \(y_\theta\), the final corrected residual is
+For a model prediction \(y_\theta\), the corrected residual is
 \begin{equation}
     r_{\mathrm{ML}}=y_{\mathrm{target}}-y_\theta.
 \end{equation}
 
-\todo{State the final coverage fraction and bootstrap count from the frozen study configuration. Distinguish the canonical CTR estimator from any secondary histogram-based core-FWHM diagnostic.}
+\todo{State the final coverage fraction and number of bootstrap resamples used in the reported results.}
