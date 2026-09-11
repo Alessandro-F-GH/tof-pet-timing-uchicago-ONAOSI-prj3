@@ -1,65 +1,79 @@
-\section{Results}
+\section{Evaluation strategy and results}
 
-\subsection{Reporting protocol}
+The results should be organized by the scientific questions of the study rather than by output file type. Validation quantities are reported only to document model selection; the main quantitative comparisons use the permanent blind-test population.
 
-\todo{State which frozen run directory or manifest is the source of every result in this section. Report validation results only for model-selection context; reserve the main quantitative comparison for blind-test CTR.}
+\subsection{Dataset and selection summary}
 
-\subsection{Event-selection yield}
+\todo{State the frozen run directory or manifest used as the source for every numerical result. Summarize final event counts and selection efficiency by board and bias voltage.}
 
 \input{tables/event_selection_summary}
 
-\todo{Replace the placeholder values with counts exported from the exact run. If several bias voltages are reported, either repeat the table per dataset or create one consolidated selection-efficiency table.}
+\subsection{Energy-channel study: constrained versus joint correction}
 
-\subsection{Model-selection outcome}
+The energy-channel waveform is the primary methodological test bed. This section should compare the standard LED reference, Linear SVR, the detector-shared CNN, and the joint CNN on the same blind-test populations.
 
-\todo{Summarize the selected hyperparameters and training target range for each model. If useful, add a dedicated table generated from the search JSON files rather than copying values manually.}
-
-\reportfigure
-    {figures/validation_model_selection.pdf}
-    {Validation CTR used to select the final candidate for each ML model.}
-    {fig:validation-selection}
-
-\subsection{Blind-test CTR}
-
-CTR is the primary endpoint of the final comparison.
+The key question is not only which model gives the lowest CTR, but whether the detector-shared architecture retains the gain obtained by the more flexible joint model.
 
 \input{tables/ctr_results}
 
-\todo{Populate Table~\ref{tab:ctr-results} directly from the final results CSV. Keep the uncertainty definition consistent across all methods.}
+\reportfigure
+    {figures/energy_ctr_vs_voltage.pdf}
+    {Blind-test energy-channel CTR as a function of bias voltage for the reference timing estimator and the reported ML models.}
+    {fig:energy-ctr}
 
 \reportfigure
-    {figures/ctr_vs_voltage.pdf}
-    {Blind-test CTR as a function of bias voltage for the reference timing method(s) and ML models. Use bootstrap uncertainties from the canonical CTR estimator.}
-    {fig:ctr-voltage}
+    {figures/energy_relative_improvement_vs_voltage.pdf}
+    {Relative energy-channel CTR improvement with respect to LED, with paired-bootstrap uncertainty where available.}
+    {fig:energy-relative-improvement}
+
+\subsection{Timing-information localization}
+
+This section should investigate whether predictive timing information is confined to the conventional leading-edge region or remains available elsewhere in the waveform.
+
+The preferred evidence combines a controlled window study with XAI:
+\begin{itemize}
+    \item evaluate CTR as the temporal extent of the ML input window is changed;
+    \item compare the performance trend with the temporal sensitivity highlighted by the trained models;
+    \item assess whether the same regions remain important across operating points and architectures.
+\end{itemize}
 
 \reportfigure
-    {figures/relative_improvement_vs_voltage.pdf}
-    {Relative CTR improvement with respect to LED. Use the paired-bootstrap uncertainty produced by the reporting pipeline when this plot is included.}
-    {fig:relative-improvement}
-
-\subsection{Residual distributions}
-
-\todo{Use residual distributions to support the CTR comparison, not as a substitute for the canonical metric. State whether the displayed histogram range is only a visualization choice.}
+    {figures/ctr_vs_window.pdf}
+    {CTR as a function of the available waveform-window extent or ablation. Define each window relative to the common alignment reference.}
+    {fig:ctr-window}
 
 \reportfigure
-    {figures/test_residual_distributions.pdf}
-    {Representative blind-test timing-residual distributions for LED and the reported ML models.}
-    {fig:test-distributions}
+    {figures/xai_energy_information.pdf}
+    {Energy-channel waveform and temporal model sensitivity for the selected model or models.}
+    {fig:xai-energy}
 
-\subsection{Model-output and interpretability diagnostics}
+\subsection{Timing-channel extension}
 
-\todo{Include only diagnostics that materially support interpretation of the CTR result. Possible repository outputs include model-output correlations, top/worst corrections, and XAI plots.}
+The same event-selection and correction framework is then applied using the dedicated second-stage timing waveform as the ML input. Energy-channel information remains the basis for photopeak selection, while timing-channel waveforms provide the timing features.
 
-\reportfigure
-    {figures/model_output_diagnostics.pdf}
-    {Selected model-output diagnostic relevant to the interpretation of the final timing result.}
-    {fig:model-output}
+This section should report the absolute timing performance and the remaining ML correction gain. A smaller relative improvement than in the energy-channel study would not necessarily indicate a weaker method if the timing channel already provides a substantially better baseline CTR.
 
 \reportfigure
-    {figures/xai_results.pdf}
-    {Selected XAI comparison showing where the trained model is sensitive within the synchronized input waveform.}
-    {fig:xai-results}
+    {figures/timing_ctr_vs_voltage.pdf}
+    {Blind-test CTR obtained from timing-channel waveforms.}
+    {fig:timing-ctr}
 
-\subsection{Result summary}
+\reportfigure
+    {figures/xai_timing_information.pdf}
+    {Timing-channel waveform and temporal model sensitivity.}
+    {fig:xai-timing}
 
-\todo{Write a short evidence-based synthesis after all numerical values are frozen. Suggested order: LED reference CTR, best ML CTR, relative change, consistency across voltage, comparison between shared 1-D and joint 2-D CNN, and any channel- or dataset-specific behavior.}
+\subsection{Board dependence and robustness}
+
+The UC-board and FBK-board datasets provide an opportunity to assess whether the qualitative conclusions depend on the front-end electronics.
+
+\todo{Only include a direct board-to-board robustness claim if acquisition conditions and analysis settings make the comparison meaningful. If cross-board training and testing is not performed, restrict the discussion to independent within-board trends.}
+
+\reportfigure
+    {figures/board_comparison.pdf}
+    {Optional comparison of within-board CTR improvement or temporal-importance patterns.}
+    {fig:board-comparison}
+
+\subsection{Result synthesis}
+
+\todo{After results are frozen, summarize the evidence in the same order as the research questions: shared versus joint architecture; location of useful timing information; and extension to the dedicated timing channel. Report the best CTR as an outcome of the study, not as its sole objective.}
