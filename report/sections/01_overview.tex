@@ -12,6 +12,18 @@ A second experimental axis is provided by the front-end readout itself. In addit
 
 \todo{Add citations to prior waveform-ML timing literature and state precisely which limitations of those approaches are supported by the cited works. Avoid using the word bias without specifying whether it means prediction/calibration bias or SiPM bias voltage.}
 
+\subsection{Project scope}
+
+This project builds on previous work showing that machine-learning methods applied to detector waveforms can improve timing resolution compared with standard timing estimators. The scope of the present study is broader than reproducing or maximizing that improvement. The main objective is to characterize the learned timing correction in a way that is more closely connected to the detector physics, while also investigating which parts of the waveform contain information that is useful for timing.
+
+A central part of the study is the comparison between two different ways of representing the detector pair. The proposed approach uses one shared model for both detectors and constructs the timing correction from the difference of the two model outputs. This imposes detector-exchange antisymmetry by construction and reduces the freedom of the model to learn detector-pair-specific relationships. The shared architecture is compared with a more general joint CNN that receives the two detector waveforms together and can learn arbitrary cross-detector features. The purpose of this comparison is therefore not simply to identify the network with the lowest CTR, but to determine whether the timing improvement can be retained when physically motivated structure is imposed on the model.
+
+A second objective is to investigate where the timing-relevant information is located within the waveform. The analysis therefore considers input windows larger than those used in the previous project baseline and combines timing-performance measurements with XAI methods. Where possible, XAI observations should be supported by controlled window or ablation studies, so that temporal model sensitivity can be compared with the actual change in timing performance when waveform regions are included or removed.
+
+The study is performed on two analog signals available from the detector front end. The energy-channel waveform, taken after the first amplification stage, is used as the main methodological test case for the architecture comparison and for the study of temporal information. The same framework is then applied to the second-stage timing-channel waveform, which is specifically designed for timing measurements. Energy information continues to provide the event-selection reference, while the timing waveform is used as the ML input for the timing-channel study. This separation makes it possible to distinguish the methodological question of how the correction should be represented from the question of the best absolute timing performance obtainable with the available detector signals.
+
+CTR remains the primary quantitative metric used to compare standard and ML-corrected timing, but it is not treated as the only outcome of the project. The report is intended to characterize performance together with model structure, temporal information content, and the behavior of the method across the available waveform channels and dataset sources.
+
 \subsection{Research questions}
 
 The study is organized around three primary questions:
