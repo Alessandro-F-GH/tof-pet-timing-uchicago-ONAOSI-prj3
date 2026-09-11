@@ -1,74 +1,50 @@
-\section{General overview}
+\section{Introduction and scientific scope}
 
-\subsection{Scope and objective}
+\subsection{Motivation}
 
-\todo{Define exactly which study configuration(s) are reported. State the mode (for example, timing-to-timing), datasets or bias-voltage range, and whether results are per-dataset or concatenated. Assume the reader already knows PET and TOF theory.}
+Previous waveform-based machine-learning studies have shown that learned corrections can improve coincidence timing resolution with respect to standard timing estimators. The objective of this work is not only to seek a lower CTR, but to characterize \emph{how} the correction is represented and \emph{where} useful timing information is located in the detector waveform.
 
-The software pipeline is organized into four high-level stages:
-\begin{enumerate}[label=\arabic*.]
-    \item event selection with cuts derived from development data;
-    \item native-time waveform preprocessing and ML dataset construction;
-    \item training and validation-based model selection;
-    \item one final evaluation on the permanent blind-test population.
+A fully general pair model can learn arbitrary relationships between the two detector signals. Such flexibility is useful as a performance reference, but it does not impose the detector-exchange structure expected for a relative timing correction and it is less naturally reusable across detector pairs. This work therefore studies a detector-shared formulation in which the same function is applied to both detector waveforms and the final correction is formed from their difference.
+
+At the same time, the study uses waveform windows larger than those typically considered in the earlier project baseline and combines performance measurements with model-interpretability tools. The goal is to investigate whether timing-relevant information is concentrated around the conventional leading edge or whether additional waveform regions contribute to the learned correction.
+
+A second experimental axis is provided by the front-end readout itself. In addition to the energy-channel waveform, the detector board provides a second-stage timing-channel signal specifically designed for timing. The energy channel is used as the main methodological test bed for comparing model structures and studying information localization; the same framework is then applied to the dedicated timing channel, where the best absolute timing performance is expected to be obtained.
+
+\todo{Add citations to prior waveform-ML timing literature and state precisely which limitations of those approaches are supported by the cited works. Avoid using the word bias without specifying whether it means prediction/calibration bias or SiPM bias voltage.}
+
+\subsection{Research questions}
+
+The study is organized around three primary questions:
+
+\begin{enumerate}[label=\textbf{Q\arabic*.}]
+    \item \textbf{Physical structure:} can a detector-shared correction
+    \begin{equation}
+        \hat y = g_\theta(s_1)-g_\theta(s_2)
+    \end{equation}
+    retain the timing performance of a more general joint model
+    \begin{equation}
+        \hat y = f_\theta(s_1,s_2),
+    \end{equation}
+    while enforcing detector-swap antisymmetry by construction?
+
+    \item \textbf{Information localization:} which temporal regions of the waveform contain information useful for correcting the timing estimate, and are the regions highlighted by XAI consistent with performance changes obtained by varying or ablating the input window?
+
+    \item \textbf{Dedicated timing signal:} does the same waveform-correction framework remain effective when applied to the second-stage timing-channel waveform rather than the energy-channel waveform?
 \end{enumerate}
 
-\reportfigure
-    {figures/pipeline_overview.pdf}
-    {Schematic overview of the analysis pipeline from ROOT events to final CTR evaluation. Replace this placeholder with a diagram that mirrors the exact configuration used in the reported study.}
-    {fig:pipeline-overview}
+\subsection{Contributions to be demonstrated}
 
-\subsection{Experimental setup}
-
-The waveform measurements were performed with two opposing detector modules and a $^{22}$Na positron-emitting source centered between them. Each detector module is based on a SiPM coupled to a LYSO scintillation crystal with dimensions $2\times2\times3\,\mathrm{mm}^3$. The experimental layout is therefore a symmetric two-detector coincidence setup, with the source positioned between the two modules.
-
-Each detector front end provides two analog waveform outputs:
+The intended contribution is broader than a single best-CTR result:
 \begin{itemize}
-    \item an \textbf{energy channel}, taken after the first amplification stage and used for energy-based event selection as well as, when required, timing analysis;
-    \item a \textbf{timing channel}, taken after a second amplification stage specifically intended to preserve timing information.
+    \item a controlled comparison between a physically constrained detector-shared model and a general joint detector-pair CNN;
+    \item a timing-information study combining extended waveform windows, performance ablations, and XAI;
+    \item application of the same correction framework to both the energy-channel and dedicated timing-channel waveforms;
+    \item CTR evaluation on a permanent blind-test population, with bootstrap uncertainty and explicit separation between model selection and final evaluation.
 \end{itemize}
 
-The full analog waveforms are digitized with an oscilloscope. The presentation dataset documents \SI{100}{ns} acquisition windows sampled at \SI{80}{GS/s}, with waveform measurements spanning the \SIrange{45}{49}{V} bias-voltage region.
-
-Two waveform dataset sources are considered in this report:
-\begin{itemize}
-    \item the \textbf{UC-board dataset}, acquired with the front-end board developed by the University of Chicago group;
-    \item the \textbf{FBK-board dataset}, acquired with the FBK front-end board.
-\end{itemize}
-
-The purpose of keeping the two sources separate in the report is to make the acquisition hardware explicit when comparing event statistics and timing performance. The analysis pipeline described in the following sections is applied to full waveform data only.
+\todo{Retain only contributions directly demonstrated by the final experiments. In particular, describe scalability as a structural motivation unless cross-detector or cross-board transfer is explicitly tested.}
 
 \reportfigure
-    {../presentation/figures/Board-img.png}
-    {Detector modules and front-end boards used in the waveform measurements.}
-    {fig:experimental-setup}
-
-\subsection{Waveform dataset summary}
-
-For each board, the final report should list the acquired bias points together with the event population at three successive stages: total collected events, events inside the energy photopeak selection, and events remaining after the complete event-selection chain. These values should be filled directly from the frozen source-specific selection outputs or run manifests.
-
-\input{tables/uc_board_dataset}
-
-\input{tables/fbk_board_dataset}
-
-\subsection{Reported quantities}
-
-\todo{List the quantities that will be emphasized in the report. CTR should be the primary endpoint; add secondary diagnostics only if they are actually used in the final analysis.}
-
-Suggested structure:
-\begin{itemize}
-    \item event counts and efficiencies after selection;
-    \item selected LED threshold and, if enabled, CFD settings;
-    \item validation criterion used for model selection;
-    \item blind-test CTR and bootstrap uncertainty;
-    \item relative CTR change with respect to LED;
-    \item XAI or model-output diagnostics only where they support interpretation.
-\end{itemize}
-
-\subsection{Data and experiment configuration}
-
-\todo{Summarize the exact experiment configuration used for the final analysis: reported waveform mode, input window, subsampling, train/validation/test fractions, enabled standard timing references, and the set of ML models. Prefer values exported from the frozen configuration or run manifest rather than duplicating them manually in prose.}
-
-\reportfigure
-    {figures/acquisition_or_dataset_overview.pdf}
-    {Optional overview of the waveform datasets or operating points included in the final report.}
-    {fig:dataset-overview}
+    {figures/paper_scope.pdf}
+    {Scientific scope of the study: constrained-versus-joint waveform correction, timing-information localization, and extension from the energy waveform to the dedicated timing waveform.}
+    {fig:paper-scope}
