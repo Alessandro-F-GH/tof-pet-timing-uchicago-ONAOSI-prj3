@@ -107,9 +107,9 @@ Candidate models are fitted on the training split. The configured symmetric targ
 
 \subsection{CTR estimator}
 
-The canonical CTR is the Gaussian-equivalent shortest empirical coverage interval. For coverage fraction (p), the narrowest interval containing (\lceil pN\rceil) finite residuals is found and converted to the Gaussian-equivalent FWHM scale. CTR uncertainty is evaluated by event bootstrap.
+The canonical CTR is the Gaussian-equivalent shortest empirical coverage interval. For coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is found and converted to the Gaussian-equivalent FWHM scale. CTR uncertainty is evaluated by event bootstrap.
 
-For a model prediction (y_\theta), the final corrected residual is
+For a model prediction \(y_\theta\), the final corrected residual is
 \begin{equation}
     r_{\mathrm{ML}}=y_{\mathrm{target}}-y_\theta.
 \end{equation}
