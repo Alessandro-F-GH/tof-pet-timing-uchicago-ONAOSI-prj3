@@ -101,7 +101,7 @@ A common binary temporal mask is learned from the training split only and applie
 
 \subsection{Training and model selection}
 
-Candidate models are fitted on the training split. The configured symmetric target-range filter is applied to training events only. Candidate hyperparameters are ranked by validation CTR. Neural models may use validation RMSE internally for early stopping, which is distinct from the validation-CTR criterion used for candidate selection. The selected trained model is then evaluated directly on the permanent blind-test population without a final refit.
+Candidate models are fitted on the training split. The configured symmetric target-range filter is applied to training events only. Candidate hyperparameters are ranked by validation CTR. Neural models may use validation root-mean-square error (RMSE) internally for early stopping, which is distinct from the validation-CTR criterion used for candidate selection. The selected trained model is then evaluated directly on the permanent blind-test population without a final refit.
 
 \todo{Report the target-range candidates, hyperparameter spaces, and selected candidate for each final experiment.}
 
