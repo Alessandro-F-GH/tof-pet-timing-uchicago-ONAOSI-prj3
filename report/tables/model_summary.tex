@@ -1,17 +1,15 @@
 \begin{table}[H]
     \centering
-    \caption{Models available in the current waveform-analysis model registry. The final report should retain only models actually discussed or evaluated.}
+    \caption{Core models used to test the representation of the waveform timing correction. Exploratory models in the software registry are intentionally omitted from the main paper comparison.}
     \label{tab:model-summary}
     \small
     \begin{tabular}{llll}
         \toprule
-        Model & Input representation & Prediction structure & Report role \\
+        Model & Input representation & Prediction structure & Scientific role \\
         \midrule
-        Linear SVR & \(s_1-s_2\) & Linear regression & Core comparison \\
-        Shared 1-D CNN & \(s_1,s_2\) & \(g(s_1)-g(s_2)\) & Core comparison \\
-        Joint 2-D CNN & stacked \([2,\mathrm{time}]\) & \(f([s_1;s_2])\) & Core comparison \\
-        Difference k-NN & \(s_1-s_2\) & k-NN regression & Optional exploratory \\
-        Difference shapelet & \(s_1-s_2\) & fixed-position shapelet regression & Optional exploratory \\
+        Linear SVR & (s_1-s_2) & Linear temporal correction & Linear control \\
+        Shared 1-D CNN & (s_1,s_2) & (g_\theta(s_1)-g_\theta(s_2)) & Physics-constrained proposal \\
+        Joint CNN & stacked ([2,\mathrm{time}]) & (f_\theta(s_1,s_2)) & General pair-model comparator \\
         \bottomrule
     \end{tabular}
 \end{table}
