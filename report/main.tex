@@ -1,0 +1,58 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{siunitx}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+\sisetup{separate-uncertainty=true}
+
+\newcommand{\todo}[1]{\textcolor{red!70!black}{\textbf{TODO:} #1}}
+\newcommand{\reportfigure}[3]{%
+  \begin{figure}[H]
+    \centering
+    \IfFileExists{#1}{%
+      \includegraphics[width=0.92\linewidth]{#1}%
+    }{%
+      \fbox{%
+        \begin{minipage}[c][5cm][c]{0.88\linewidth}
+          \centering
+          \textbf{Figure placeholder}\\[0.6em]
+          \texttt{\detokenize{#1}}\\[0.6em]
+          #2
+        \end{minipage}%
+      }%
+    }
+    \caption{#2}
+    \label{#3}
+  \end{figure}
+}
+
+\title{Waveform-Based Timing Analysis and Machine-Learning Pipeline}
+\author{\todo{Author, affiliation}}
+\date{\todo{Date / project period}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\todo{State the scope of the report in 4--6 sentences: dataset(s), waveform family or mode, objective of the ML timing correction, reference methods, and the primary CTR comparison. Do not report numerical results here until the final study outputs are frozen.}
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\input{sections/01_overview}
+\input{sections/02_pipeline}
+\input{sections/03_models}
+\input{sections/04_results}
+\input{sections/05_limitations}
+
+\end{document}

@@ -1,0 +1,129 @@
+\section{Analysis pipeline}
+
+This section should describe each processing step in the same order in which it is executed in the repository. For every step, keep the presentation focused on: (i) what is done, (ii) why that operation is scientifically needed, and (iii) one diagnostic plot demonstrating its effect.
+
+\subsection{Data partitioning and leakage control}
+
+The current pipeline creates a permanent development/test split before fitted event-selection criteria are derived. Subsequent ML training and validation subsets are contained in the development workflow, while the permanent test population is reserved for final evaluation.
+
+\todo{Explain the scientific motivation for freezing all fitted cuts and model choices before evaluating the blind-test population. State the exact split fractions used in the reported run.}
+
+\reportfigure
+    {figures/data_split.pdf}
+    {Dataset partitioning used for development, training, validation, and final blind-test evaluation.}
+    {fig:data-split}
+
+\subsection{Event selection}
+
+The current event-selection stage can include:
+\begin{itemize}
+    \item a two-detector energy-photopeak requirement;
+    \item threshold-hit detection on the waveform family required by the selected mode;
+    \item a timing ToT selection when timing waveforms are used;
+    \item an optional baseline-RMS requirement.
+\end{itemize}
+Selection parameters fitted on development events are then applied unchanged to the test population.
+
+\paragraph{Scientific motivation.}
+\todo{Explain why each enabled cut is required for the final study. Do not describe disabled cuts as if they were active.}
+
+\input{tables/event_selection_summary}
+
+\reportfigure
+    {figures/photopeak_selection.pdf}
+    {Development-sample energy-photopeak selection. Insert the plot produced by the selection diagnostics for the reported dataset or a representative operating point.}
+    {fig:photopeak-selection}
+
+\reportfigure
+    {figures/tot_selection.pdf}
+    {Timing ToT selection, when enabled by the selected waveform mode. Remove this figure if it is not part of the reported study.}
+    {fig:tot-selection}
+
+\reportfigure
+    {figures/baseline_noise_selection.pdf}
+    {Optional baseline-RMS selection. Remove this figure if the baseline-noise cut is disabled.}
+    {fig:baseline-selection}
+
+\subsection{Native-time waveform preprocessing}
+
+For accepted events, the pipeline decodes and orients the waveform samples, applies detector-specific configured vertical limits, crops around the selected main trigger, and preserves the native acquisition time grid. The current pipeline does not apply denoising or event-wise baseline subtraction.
+
+\paragraph{Scientific motivation.}
+\todo{Explain why preserving the native sampling and using the chosen crop is appropriate for the timing-information study. State the actual crop/window used in the reported configuration.}
+
+\reportfigure
+    {figures/native_preprocessing_example.pdf}
+    {Representative detector waveforms before and after the native-time crop and configured amplitude handling.}
+    {fig:native-preprocessing}
+
+\subsection{Reference timing, calibration, and ML target}
+
+LED thresholds are evaluated on development data. If CFD is enabled, it is treated as an additional standard timing reference. The selected LED crossing time is linearly interpolated.
+
+The channel calibration used by the ML target is estimated from training data:
+\begin{equation}
+    \widehat{C}_{12}
+    =
+    \operatorname{mean}_{\mathrm{train}}\!\left(\Delta t_{\mathrm{LED}}\right)
+    -
+    \mathrm{TOF}.
+\end{equation}
+
+The supervised target stored by the current pipeline is
+\begin{equation}
+    y_{\mathrm{target}}
+    =
+    \Delta t_{\mathrm{LED}}
+    -
+    \mathrm{TOF}
+    -
+    \widehat{C}_{12}.
+\end{equation}
+
+\todo{State the LED-threshold scan used in the reported configuration and explain why the chosen reference timing definition is appropriate for the ML correction problem.}
+
+\reportfigure
+    {figures/led_threshold_selection.pdf}
+    {Development-data LED threshold scan and selected operating point.}
+    {fig:led-threshold}
+
+\subsection{ML waveform construction and normalization}
+
+The ML window is materialized relative to the native sample nearest the interpolated selected LED crossing. The configured temporal subsampling is then applied. Waveforms are transformed with detector-specific physical vertical limits rather than event-wise scaling.
+
+The current training pipeline also applies one shared temporal binary mask to both detector channels. The mask is derived from training events only; a time sample is discarded when both channels independently take one identical normalized value in at least 99\% of the training events.
+
+\paragraph{Scientific motivation.}
+\todo{Explain the role of the fixed physical normalization, synchronized input window, and train-only sample mask. State the final number of retained samples from the run metadata.}
+
+\reportfigure
+    {figures/ml_input_and_sample_mask.pdf}
+    {Example normalized detector pair with the retained temporal samples after the train-derived shared sample mask.}
+    {fig:sample-mask}
+
+\subsection{Training, hyperparameter search, and model selection}
+
+Candidate models are fitted on the training split. The configured symmetric target-range filter is applied to training events only. Candidate models are ranked using validation CTR. Neural models may use validation RMSE internally for early stopping; this is distinct from the final candidate-ranking metric. The validation-selected trained model is used directly, without a final refit.
+
+\todo{Report the actual target-range candidates and hyperparameter spaces used for the final study. Explain the rationale for the selected validation protocol.}
+
+\reportfigure
+    {figures/model_selection_flow.pdf}
+    {Training and model-selection flow, including training-only filters, internal early stopping where applicable, validation CTR ranking, and final blind-test evaluation.}
+    {fig:model-selection}
+
+\subsection{CTR definition and uncertainty}
+
+The current study uses the Gaussian-equivalent shortest empirical coverage interval as the canonical CTR estimator. For coverage fraction \(p\), the narrowest empirical interval containing \(\lceil pN\rceil\) finite residuals is found and converted to the equivalent Gaussian FWHM scale. The configured default coverage is \(p=0.90\). CTR uncertainty is evaluated by event bootstrap.
+
+For an ML model with prediction \(y_\theta\), the final timing residual is
+\begin{equation}
+    r_{\mathrm{ML}} = y_{\mathrm{target}} - y_\theta.
+\end{equation}
+
+\todo{State the final coverage fraction and number of bootstrap resamples from the frozen run configuration. If the secondary fixed-bin core FWHM diagnostic is shown, clearly distinguish it from the canonical CTR metric.}
+
+\reportfigure
+    {figures/ctr_metric_example.pdf}
+    {Illustration of the residual distribution and the interval used by the canonical CTR estimator.}
+    {fig:ctr-definition}

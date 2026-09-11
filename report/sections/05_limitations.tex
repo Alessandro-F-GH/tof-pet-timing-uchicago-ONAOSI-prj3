@@ -1,0 +1,33 @@
+\section{Limitations and possible improvements}
+
+This section should separate demonstrated limitations from proposed future work. Do not list a point as a limitation unless it is supported by the study design, diagnostics, or observed results.
+
+\subsection{Points to assess in the final report}
+
+For each item below, either provide evidence and discuss it, or remove it.
+
+\begin{itemize}
+    \item \textbf{Dataset scope and generalization:} \todo{Assess whether conclusions are limited to the measured datasets, bias voltages, detectors, or acquisition conditions.}
+    \item \textbf{Holdout validation:} \todo{Discuss the consequences of using the current single holdout validation protocol rather than repeated splits or cross-validation.}
+    \item \textbf{Validation reuse inside neural training:} \todo{Assess the fact that neural early stopping uses validation RMSE while candidate ranking uses validation CTR on the same validation population.}
+    \item \textbf{Training-target filtering:} \todo{Report how many training events are retained by the selected target range and assess sensitivity to this choice.}
+    \item \textbf{Train-derived sample mask:} \todo{Report the fraction of temporal samples removed by the 99\% constant-value rule and check whether the conclusion is sensitive to the masking threshold.}
+    \item \textbf{No final refit:} \todo{Discuss the deliberate choice to evaluate the validation-selected trained model directly rather than refitting on training plus validation.}
+    \item \textbf{Architecture comparison:} \todo{Assess whether the shared 1-D and joint 2-D CNN comparison isolates the intended architectural difference in the final configuration.}
+    \item \textbf{CTR statistics:} \todo{Discuss sample size, bootstrap stability, and any non-Gaussian or multimodal residual behavior relevant to the robust CTR estimator.}
+    \item \textbf{Interpretability:} \todo{State the limits of gradient- or coefficient-based importance and avoid treating importance as a causal measurement.}
+\end{itemize}
+
+\subsection{Possible improvements}
+
+\todo{Prioritize only improvements motivated by the limitations actually retained above. For each proposal, state what scientific question it would resolve and what change to the current pipeline would be required.}
+
+\begin{enumerate}
+    \item \todo{Improvement 1}
+    \item \todo{Improvement 2}
+    \item \todo{Improvement 3}
+\end{enumerate}
+
+\subsection{Concluding perspective}
+
+\todo{End with a concise statement of what the current pipeline demonstrates, what remains uncertain, and which next experiment or analysis would most directly reduce that uncertainty.}

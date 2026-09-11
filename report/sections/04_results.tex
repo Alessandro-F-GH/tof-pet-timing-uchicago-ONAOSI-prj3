@@ -1,0 +1,65 @@
+\section{Results}
+
+\subsection{Reporting protocol}
+
+\todo{State which frozen run directory or manifest is the source of every result in this section. Report validation results only for model-selection context; reserve the main quantitative comparison for blind-test CTR.}
+
+\subsection{Event-selection yield}
+
+\input{tables/event_selection_summary}
+
+\todo{Replace the placeholder values with counts exported from the exact run. If several bias voltages are reported, either repeat the table per dataset or create one consolidated selection-efficiency table.}
+
+\subsection{Model-selection outcome}
+
+\todo{Summarize the selected hyperparameters and training target range for each model. If useful, add a dedicated table generated from the search JSON files rather than copying values manually.}
+
+\reportfigure
+    {figures/validation_model_selection.pdf}
+    {Validation CTR used to select the final candidate for each ML model.}
+    {fig:validation-selection}
+
+\subsection{Blind-test CTR}
+
+CTR is the primary endpoint of the final comparison.
+
+\input{tables/ctr_results}
+
+\todo{Populate Table~\ref{tab:ctr-results} directly from the final results CSV. Keep the uncertainty definition consistent across all methods.}
+
+\reportfigure
+    {figures/ctr_vs_voltage.pdf}
+    {Blind-test CTR as a function of bias voltage for the reference timing method(s) and ML models. Use bootstrap uncertainties from the canonical CTR estimator.}
+    {fig:ctr-voltage}
+
+\reportfigure
+    {figures/relative_improvement_vs_voltage.pdf}
+    {Relative CTR improvement with respect to LED. Use the paired-bootstrap uncertainty produced by the reporting pipeline when this plot is included.}
+    {fig:relative-improvement}
+
+\subsection{Residual distributions}
+
+\todo{Use residual distributions to support the CTR comparison, not as a substitute for the canonical metric. State whether the displayed histogram range is only a visualization choice.}
+
+\reportfigure
+    {figures/test_residual_distributions.pdf}
+    {Representative blind-test timing-residual distributions for LED and the reported ML models.}
+    {fig:test-distributions}
+
+\subsection{Model-output and interpretability diagnostics}
+
+\todo{Include only diagnostics that materially support interpretation of the CTR result. Possible repository outputs include model-output correlations, top/worst corrections, and XAI plots.}
+
+\reportfigure
+    {figures/model_output_diagnostics.pdf}
+    {Selected model-output diagnostic relevant to the interpretation of the final timing result.}
+    {fig:model-output}
+
+\reportfigure
+    {figures/xai_results.pdf}
+    {Selected XAI comparison showing where the trained model is sensitive within the synchronized input waveform.}
+    {fig:xai-results}
+
+\subsection{Result summary}
+
+\todo{Write a short evidence-based synthesis after all numerical values are frozen. Suggested order: LED reference CTR, best ML CTR, relative change, consistency across voltage, comparison between shared 1-D and joint 2-D CNN, and any channel- or dataset-specific behavior.}

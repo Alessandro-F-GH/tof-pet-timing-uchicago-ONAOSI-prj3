@@ -1,0 +1,17 @@
+\begin{table}[H]
+    \centering
+    \caption{Models available in the current waveform-analysis model registry. The final report should retain only models actually discussed or evaluated.}
+    \label{tab:model-summary}
+    \small
+    \begin{tabular}{llll}
+        \toprule
+        Model & Input representation & Prediction structure & Report role \\
+        \midrule
+        Linear SVR & \(s_1-s_2\) & Linear regression & Core comparison \\
+        Shared 1-D CNN & \(s_1,s_2\) & \(g(s_1)-g(s_2)\) & Core comparison \\
+        Joint 2-D CNN & stacked \([2,\mathrm{time}]\) & \(f([s_1;s_2])\) & Core comparison \\
+        Difference k-NN & \(s_1-s_2\) & k-NN regression & Optional exploratory \\
+        Difference shapelet & \(s_1-s_2\) & fixed-position shapelet regression & Optional exploratory \\
+        \bottomrule
+    \end{tabular}
+\end{table}

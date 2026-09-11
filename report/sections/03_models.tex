@@ -1,0 +1,72 @@
+\section{Machine-learning models}
+
+\subsection{Model set}
+
+The active model registry contains the models summarized in Table~\ref{tab:model-summary}. The principal comparison in the standard timing experiment currently uses Linear SVR, the shared 1-D CNN, and the joint 2-D CNN. Difference k-NN and the fixed-position difference-shapelet regressor are available in separate exploratory experiment configurations.
+
+\input{tables/model_summary}
+
+\subsection{Linear SVR}
+
+The Linear SVR receives the synchronized waveform difference
+\begin{equation}
+    d(t)=s_1(t)-s_2(t)
+\end{equation}
+and predicts the timing correction directly from this vector.
+
+\paragraph{Motivation to discuss.}
+\todo{Explain why a linear difference-based model is a useful reference for the reported study and what aspect of the waveform-timing relationship it can test.}
+
+\reportfigure
+    {figures/linear_svr_importance.pdf}
+    {Optional Linear-SVR coefficient-magnitude profile on the retained waveform samples.}
+    {fig:svr-importance}
+
+\subsection{Shared 1-D CNN}
+
+The model named \texttt{cnn} applies the same 1-D scorer \(g_\theta\) independently to the two detector waveforms and forms
+\begin{equation}
+    y_\theta = g_\theta(s_1)-g_\theta(s_2).
+\end{equation}
+This architecture therefore enforces detector-swap antisymmetry by construction.
+
+\paragraph{Motivation to discuss.}
+\todo{Explain why the shared scorer and antisymmetric output are scientifically useful inductive biases for the detector-pair timing problem.}
+
+\reportfigure
+    {figures/cnn_architecture.pdf}
+    {Architecture schematic for the shared 1-D CNN used in the final experiment.}
+    {fig:cnn-architecture}
+
+\subsection{Joint 2-D CNN}
+
+The model named \texttt{cnn\_2d} receives the detector pair as one stacked \([2,\mathrm{time}]\) input. Its first convolution spans both detector rows and the network predicts one timing correction directly. Detector-swap antisymmetry is not enforced by the architecture.
+
+\paragraph{Motivation to discuss.}
+\todo{Explain that this model provides a structural comparison with the shared 1-D CNN. State which architectural hyperparameters are intentionally matched in the final comparison.}
+
+\reportfigure
+    {figures/cnn_2d_architecture.pdf}
+    {Architecture schematic for the joint 2-D CNN used in the final experiment.}
+    {fig:cnn2d-architecture}
+
+\subsection{Optional exploratory models}
+
+\paragraph{Difference k-NN.}
+The optional \texttt{difference\_knn} model uses the same waveform-difference representation \(s_1-s_2\) and Euclidean nearest-neighbour regression.
+
+\paragraph{Fixed-position difference shapelets.}
+The optional \texttt{difference\_shapelet} model uses learnable templates evaluated at fixed synchronized time supports of the waveform difference.
+
+\todo{Keep these subsections only if the corresponding exploratory results are included. Otherwise remove them from the final report rather than presenting unused models.}
+
+\subsection{Model interpretability and diagnostics}
+
+The current CNN XAI output is based on mean absolute input gradients aggregated over events and detector rows onto the retained waveform time axis. Linear SVR exposes the magnitude of its learned coefficients.
+
+\todo{Define precisely which interpretability plots are included and what question each plot is intended to address. Avoid causal interpretations unless separately justified.}
+
+\reportfigure
+    {figures/xai_summary.pdf}
+    {Representative waveform-plus-importance visualization for the selected model(s).}
+    {fig:xai-summary}

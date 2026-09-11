@@ -1,0 +1,41 @@
+\section{General overview}
+
+\subsection{Scope and objective}
+
+\todo{Define exactly which study configuration(s) are reported. State the mode (for example, timing-to-timing), datasets or bias-voltage range, and whether results are per-dataset or concatenated. Assume the reader already knows PET and TOF theory.}
+
+The software pipeline is organized into four high-level stages:
+\begin{enumerate}[label=\arabic*.]
+    \item event selection with cuts derived from development data;
+    \item native-time waveform preprocessing and ML dataset construction;
+    \item training and validation-based model selection;
+    \item one final evaluation on the permanent blind-test population.
+\end{enumerate}
+
+\reportfigure
+    {figures/pipeline_overview.pdf}
+    {Schematic overview of the analysis pipeline from ROOT events to final CTR evaluation. Replace this placeholder with a diagram that mirrors the exact configuration used in the reported study.}
+    {fig:pipeline-overview}
+
+\subsection{Reported quantities}
+
+\todo{List the quantities that will be emphasized in the report. CTR should be the primary endpoint; add secondary diagnostics only if they are actually used in the final analysis.}
+
+Suggested structure:
+\begin{itemize}
+    \item event counts and efficiencies after selection;
+    \item selected LED threshold and, if enabled, CFD settings;
+    \item validation criterion used for model selection;
+    \item blind-test CTR and bootstrap uncertainty;
+    \item relative CTR change with respect to LED;
+    \item XAI or model-output diagnostics only where they support interpretation.
+\end{itemize}
+
+\subsection{Data and experiment configuration}
+
+\todo{Summarize the acquisition datasets and the exact experiment configuration. Prefer a compact table generated from the frozen configuration or run manifest rather than duplicating values manually in prose.}
+
+\reportfigure
+    {figures/acquisition_or_dataset_overview.pdf}
+    {Optional overview of the datasets or operating points included in the report.}
+    {fig:dataset-overview}
