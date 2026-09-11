@@ -6,7 +6,7 @@ The model comparison is designed as a controlled test of representation and phys
 
 \subsection{Linear difference baseline}
 
-The Linear SVR receives the synchronized waveform difference
+The linear support vector regressor (SVR) receives the synchronized waveform difference
 \begin{equation}
     d(t)=s_1(t)-s_2(t)
 \end{equation}
@@ -69,7 +69,7 @@ f_\theta(s_1,s_2).
 
 \subsection{Information-localization tools}
 
-Model interpretation is used to support, not replace, performance-based evidence. The CNN XAI output is based on mean absolute input gradients projected onto the retained waveform time axis; the Linear SVR exposes the magnitude of its learned temporal coefficients.
+Model interpretation is used to support, not replace, performance-based evidence. The CNN XAI output is based on mean absolute input gradients projected onto the retained waveform time axis;\footnote{K. Simonyan, A. Vedaldi, and A. Zisserman, \emph{Deep Inside Convolutional Networks: Visualising Image Classification Models and Saliency Maps}, ICLR Workshop, 2014.} the Linear SVR exposes the magnitude of its learned temporal coefficients.
 
 The stronger information-localization test should combine:
 \begin{enumerate}
