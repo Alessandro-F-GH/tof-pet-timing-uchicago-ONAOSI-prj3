@@ -1,72 +1,84 @@
-\section{Machine-learning models}
+\section{Machine-learning timing correction}
 
-\subsection{Model set}
-
-The active model registry contains the models summarized in Table~\ref{tab:model-summary}. The principal comparison in the standard timing experiment currently uses Linear SVR, the shared 1-D CNN, and the joint 2-D CNN. Difference k-NN and the fixed-position difference-shapelet regressor are available in separate exploratory experiment configurations.
+The model comparison is designed as a controlled test of representation and physical structure rather than a broad model benchmark. The main paper therefore focuses on three models: a linear difference baseline, the proposed detector-shared CNN, and a more general joint CNN.
 
 \input{tables/model_summary}
 
-\subsection{Linear SVR}
+\subsection{Linear difference baseline}
 
 The Linear SVR receives the synchronized waveform difference
 \begin{equation}
     d(t)=s_1(t)-s_2(t)
 \end{equation}
-and predicts the timing correction directly from this vector.
-
-\paragraph{Motivation to discuss.}
-\todo{Explain why a linear difference-based model is a useful reference for the reported study and what aspect of the waveform-timing relationship it can test.}
+and predicts the timing correction from a linear combination of temporal samples. It provides a compact control for determining how much of the correction can be represented without nonlinear feature extraction.
 
 \reportfigure
     {figures/linear_svr_importance.pdf}
-    {Optional Linear-SVR coefficient-magnitude profile on the retained waveform samples.}
+    {Optional magnitude of the Linear-SVR temporal coefficients.}
     {fig:svr-importance}
 
-\subsection{Shared 1-D CNN}
+\subsection{Detector-shared 1-D CNN: physically constrained model}
 
-The model named \texttt{cnn} applies the same 1-D scorer \(g_\theta\) independently to the two detector waveforms and forms
+The proposed shared CNN applies the same detector-level function (g_\theta) to both input waveforms:
 \begin{equation}
     y_\theta = g_\theta(s_1)-g_\theta(s_2).
 \end{equation}
-This architecture therefore enforces detector-swap antisymmetry by construction.
 
-\paragraph{Motivation to discuss.}
-\todo{Explain why the shared scorer and antisymmetric output are scientifically useful inductive biases for the detector-pair timing problem.}
+Using one shared scorer imposes two structural constraints:
+\begin{enumerate}
+    \item the same learned detector response model is used for both signals;
+    \item exchanging the two detector inputs changes only the sign of the prediction,
+    \begin{equation}
+        y_\theta(s_2,s_1)=-y_\theta(s_1,s_2).
+    \end{equation}
+\end{enumerate}
+
+This factorized form is the primary physics-motivated model studied in the paper. It also provides a representation that is naturally compatible with reuse across detector pairs, although system-level scalability should only be claimed if separately demonstrated.
 
 \reportfigure
     {figures/cnn_architecture.pdf}
-    {Architecture schematic for the shared 1-D CNN used in the final experiment.}
+    {Detector-shared CNN: the same temporal scorer is applied to each detector waveform before subtraction of the two scalar outputs.}
     {fig:cnn-architecture}
 
-\subsection{Joint 2-D CNN}
+\subsection{Joint CNN: general pair-model comparator}
 
-The model named \texttt{cnn\_2d} receives the detector pair as one stacked \([2,\mathrm{time}]\) input. The initial temporal block preserves the two detector rows, applying shared height-1 temporal filters independently to each row. A configurable later convolution then spans both detector rows once, fusing the detector axis from height 2 to height 1 before the remaining temporal blocks. The network predicts one timing correction directly, and detector-swap antisymmetry is not enforced by the architecture.
+The joint model receives the two detector waveforms together as a stacked ([2,\mathrm{time}]) input and directly predicts one correction:
+\begin{equation}
+    y_\theta=f_\theta(s_1,s_2).
+\end{equation}
 
-\paragraph{Motivation to discuss.}
-\todo{Explain that this model provides a structural comparison with the shared 1-D CNN. State which architectural hyperparameters are intentionally matched in the final comparison.}
+In the current implementation, the first temporal block preserves the two detector rows. A configurable later convolution spans both rows once, fusing the detector axis before the remaining temporal blocks. Unlike the shared model, detector-swap antisymmetry is not enforced.
+
+The joint CNN is used as the flexible comparator: if the shared model reaches comparable CTR, the result supports the hypothesis that arbitrary pair-specific interactions are not required to obtain the timing correction.
 
 \reportfigure
     {figures/cnn_2d_architecture.pdf}
-    {Architecture schematic for the joint 2-D CNN used in the final experiment.}
+    {Joint detector-pair CNN with delayed detector fusion.}
     {fig:cnn2d-architecture}
 
-\subsection{Optional exploratory models}
+\subsection{Controlled architecture comparison}
 
-\paragraph{Difference k-NN.}
-The optional \texttt{difference\_knn} model uses the same waveform-difference representation \(s_1-s_2\) and Euclidean nearest-neighbour regression.
+Where possible, the shared and joint CNNs should be compared with matched temporal channels, kernels, strides, dilations, pooling, dense head, optimizer, waveform window, training population, and validation criterion. The intended experimental variable is the pair representation:
+\[
+g_\theta(s_1)-g_\theta(s_2)
+\quad\text{versus}\quad
+f_\theta(s_1,s_2).
+\]
 
-\paragraph{Fixed-position difference shapelets.}
-The optional \texttt{difference\_shapelet} model uses learnable templates evaluated at fixed synchronized time supports of the waveform difference.
+\todo{Verify and tabulate every matched architectural and training setting used in the frozen comparison. If one model differs for numerical or architectural reasons, state the difference explicitly rather than describing the comparison as fully matched.}
 
-\todo{Keep these subsections only if the corresponding exploratory results are included. Otherwise remove them from the final report rather than presenting unused models.}
+\subsection{Information-localization tools}
 
-\subsection{Model interpretability and diagnostics}
+Model interpretation is used to support, not replace, performance-based evidence. The CNN XAI output is based on mean absolute input gradients projected onto the retained waveform time axis; the Linear SVR exposes the magnitude of its learned temporal coefficients.
 
-The current CNN XAI output is based on mean absolute input gradients aggregated over events and detector rows onto the retained waveform time axis. Linear SVR exposes the magnitude of its learned coefficients.
-
-\todo{Define precisely which interpretability plots are included and what question each plot is intended to address. Avoid causal interpretations unless separately justified.}
+The stronger information-localization test should combine:
+\begin{enumerate}
+    \item performance as the available waveform window is varied or ablated;
+    \item XAI sensitivity as a function of time;
+    \item consistency of the highlighted regions across bias voltage, board source, architecture, and waveform family where data permit.
+\end{enumerate}
 
 \reportfigure
     {figures/xai_summary.pdf}
-    {Representative waveform-plus-importance visualization for the selected model(s).}
+    {Representative waveform-plus-importance visualization. XAI should be interpreted as model sensitivity, not by itself as proof of causal timing information.}
     {fig:xai-summary}
