@@ -34,7 +34,7 @@
   \end{figure}
 }
 
-\title{Physics-Constrained and Interpretable Waveform-Based Timing Correction for TOF-PET Detectors}
+\title{Physics-Constrained and Interpretable Waveform-Based Timing Correction for Time-of-Flight Positron Emission Tomography Detectors}
 \author{\todo{Author, affiliation}}
 \date{\todo{Date / project period}}
 
@@ -43,7 +43,7 @@
 \maketitle
 
 \begin{abstract}
-Previous studies have shown that machine-learning methods applied to detector waveforms can improve timing resolution with respect to standard timing estimators. This report extends that approach with the broader goal of characterizing the learned timing correction, rather than treating the reduction of coincidence timing resolution (CTR) as the only objective. A detector-shared model is investigated in which the same function is applied to both detector signals and the final correction is obtained from the difference of the two outputs, enforcing detector-swap antisymmetry by construction. Its performance is compared with a more general joint CNN that processes the two waveforms together without this constraint. The report also investigates where timing-relevant information is located in the waveform by using extended input windows together with model-interpretability and window-based analyses. The framework is first studied using the energy-channel waveform, which provides the main test case for the proposed model structure and information-localization analysis, and is then applied to the dedicated second-stage timing-channel waveform, designed specifically for timing measurements. The complete workflow includes event selection, waveform preprocessing, model development on training and validation data, and final evaluation on a blind-test population, with CTR used as the primary quantitative performance metric.
+Previous studies have shown that machine-learning methods applied to detector waveforms can improve timing resolution with respect to standard timing estimators. This report extends that approach with the broader goal of characterizing the learned timing correction, rather than treating the reduction of coincidence timing resolution (CTR) as the only objective. A detector-shared model is investigated in which the same function is applied to both detector signals and the final correction is obtained from the difference of the two outputs, enforcing detector-swap antisymmetry by construction. Its performance is compared with a more general joint convolutional neural network that processes the two waveforms together without this constraint. The report also investigates where timing-relevant information is located in the waveform by using extended input windows together with model-interpretability and window-based analyses. The framework is first studied using the energy-channel waveform, which provides the main test case for the proposed model structure and information-localization analysis, and is then applied to the dedicated second-stage timing-channel waveform, designed specifically for timing measurements. The complete workflow includes event selection, waveform preprocessing, model development on training and validation data, and final evaluation on a blind-test population, with coincidence timing resolution used as the primary quantitative performance metric.
 \end{abstract}
 
 \tableofcontents
