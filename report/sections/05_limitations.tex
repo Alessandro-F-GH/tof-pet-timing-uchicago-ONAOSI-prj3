@@ -1,33 +1,44 @@
-\section{Limitations and possible improvements}
+\section{Discussion, limitations, and future work}
 
-This section should separate demonstrated limitations from proposed future work. Do not list a point as a limitation unless it is supported by the study design, diagnostics, or observed results.
+\subsection{Interpretation of the constrained model}
 
-\subsection{Points to assess in the final report}
+\todo{Discuss the observed CTR difference between the detector-shared and joint CNN. If their performance is statistically compatible, explain what this suggests about the need for arbitrary pair-specific interactions. If the joint model is better, quantify the performance cost of the physical constraint. If the shared model is better, discuss the possibility of regularization from the imposed symmetry.}
 
-For each item below, either provide evidence and discuss it, or remove it.
+\subsection{Energy versus timing waveform}
 
+\todo{Compare absolute CTR and relative ML gain between the energy and timing channels. Distinguish room for correction from absolute timing quality: a dedicated timing signal may show a smaller relative ML gain while still giving the best final CTR.}
+
+\subsection{What does XAI establish?}
+
+Gradient- or coefficient-based importance identifies regions to which the trained model is sensitive; it does not by itself prove that a waveform region carries causal timing information. Claims about information localization should therefore be supported by performance ablations or window studies in addition to XAI.
+
+\todo{Discuss agreement or disagreement between window-performance studies and temporal XAI profiles.}
+
+\subsection{Limitations to assess}
+
+Retain only limitations supported by the final study:
 \begin{itemize}
-    \item \textbf{Dataset scope and generalization:} \todo{Assess whether conclusions are limited to the measured datasets, bias voltages, detectors, or acquisition conditions.}
-    \item \textbf{Holdout validation:} \todo{Discuss the consequences of using the current single holdout validation protocol rather than repeated splits or cross-validation.}
-    \item \textbf{Validation reuse inside neural training:} \todo{Assess the fact that neural early stopping uses validation RMSE while candidate ranking uses validation CTR on the same validation population.}
-    \item \textbf{Training-target filtering:} \todo{Report how many training events are retained by the selected target range and assess sensitivity to this choice.}
-    \item \textbf{Train-derived sample mask:} \todo{Report the fraction of temporal samples removed by the 99\% constant-value rule and check whether the conclusion is sensitive to the masking threshold.}
-    \item \textbf{No final refit:} \todo{Discuss the deliberate choice to evaluate the validation-selected trained model directly rather than refitting on training plus validation.}
-    \item \textbf{Architecture comparison:} \todo{Assess whether the shared 1-D and joint 2-D CNN comparison isolates the intended architectural difference in the final configuration.}
-    \item \textbf{CTR statistics:} \todo{Discuss sample size, bootstrap stability, and any non-Gaussian or multimodal residual behavior relevant to the robust CTR estimator.}
-    \item \textbf{Interpretability:} \todo{State the limits of gradient- or coefficient-based importance and avoid treating importance as a causal measurement.}
+    \item \textbf{Dataset and detector scope:} whether conclusions generalize beyond the measured detectors, board sources, bias voltages, and acquisition conditions.
+    \item \textbf{Single holdout protocol:} sensitivity of model selection to the chosen train and validation split.
+    \item \textbf{Validation reuse inside neural training:} neural early stopping uses validation RMSE while candidate ranking uses validation CTR on the same validation population.
+    \item \textbf{Training-target filtering:} sensitivity to the selected target-range candidate and the fraction of training events retained.
+    \item \textbf{Train-derived sample mask:} sensitivity to the 99\% constant-value threshold.
+    \item \textbf{No final refit:} the validation-selected trained model is evaluated directly instead of being refitted on training plus validation.
+    \item \textbf{Architecture matching:} any residual parameter-count or receptive-field differences between the shared and joint CNNs.
+    \item \textbf{CTR statistics:} bootstrap stability and non-Gaussian or multimodal residual structure.
+    \item \textbf{Interpretability:} temporal importance is model-dependent and should not be interpreted causally without ablation evidence.
 \end{itemize}
 
-\subsection{Possible improvements}
-
-\todo{Prioritize only improvements motivated by the limitations actually retained above. For each proposal, state what scientific question it would resolve and what change to the current pipeline would be required.}
+\subsection{Possible next experiments}
 
 \begin{enumerate}
-    \item \todo{Improvement 1}
-    \item \todo{Improvement 2}
-    \item \todo{Improvement 3}
+    \item \textbf{Window ablation as primary information test:} systematically truncate or mask temporal regions and measure held-out timing performance.
+    \item \textbf{Repeated-split robustness:} repeat model development across several development splits while preserving a final untouched test population.
+    \item \textbf{Cross-board transfer, if compatible:} train on one front-end source and evaluate on the other to directly test domain robustness.
+    \item \textbf{Detector-network scalability:} evaluate whether one shared detector scorer can be reused across more than one detector pair.
+    \item \textbf{XAI stability:} quantify importance-profile variability across seeds, bias voltages, boards, and architectures.
 \end{enumerate}
 
 \subsection{Concluding perspective}
 
-\todo{End with a concise statement of what the current pipeline demonstrates, what remains uncertain, and which next experiment or analysis would most directly reduce that uncertainty.}
+\todo{Conclude with what is demonstrated about physical structure, timing-information localization, and dedicated timing-channel performance, followed by the most important remaining uncertainty.}
