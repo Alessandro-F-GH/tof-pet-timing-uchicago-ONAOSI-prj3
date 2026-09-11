@@ -1,6 +1,6 @@
 \section{Waveform analysis framework}
 
-This section describes the common analysis applied before comparing ML architectures or waveform families. Implementation details are included only where they affect scientific reproducibility, leakage control, or the definition of the timing residual.
+This section describes the common analysis applied before comparing machine-learning (ML) architectures or waveform families. Implementation details are included only where they affect scientific reproducibility, leakage control, or the definition of the timing residual.
 
 \subsection{Data partitioning and leakage control}
 
@@ -20,8 +20,8 @@ The event-selection chain can include:
     \item finite energy amplitudes in both detectors;
     \item a two-detector energy-photopeak requirement;
     \item a valid pulse / main-hit requirement on the waveform family used for timing;
-    \item a timing ToT selection when timing-channel waveforms are analyzed;
-    \item an optional baseline-RMS requirement.
+    \item a time-over-threshold (ToT) selection when timing-channel waveforms are analyzed;
+    \item an optional baseline root-mean-square (RMS) requirement.
 \end{itemize}
 
 Parameters fitted from event distributions are determined on development data and frozen before application to the blind-test population. Energy information is retained as the common event-selection reference even when timing-channel waveforms are used as the ML input.
@@ -59,7 +59,7 @@ Preserving native waveform samples avoids introducing a separate filtering model
 
 \subsection{Reference timing, calibration, and learning target}
 
-LED thresholds are evaluated on development data. If CFD is enabled in a reported study, it is treated as an additional standard timing reference. The selected LED crossing time is linearly interpolated.
+Leading-edge discriminator (LED) thresholds are evaluated on development data. If a constant-fraction discriminator (CFD) is enabled in a reported study, it is treated as an additional standard timing reference. The selected LED crossing time is linearly interpolated.\footnote{L. Y. Chang et al., \emph{A Time-Walk Correction Method for PET Detectors Based on Leading Edge Discriminators}, \textit{IEEE Transactions on Radiation and Plasma Medical Sciences}, 2017.}
 
 The fixed inter-channel calibration is estimated from training data:
 \begin{equation}
@@ -105,9 +105,9 @@ Candidate models are fitted on the training split. The configured symmetric targ
 
 \todo{Report the target-range candidates, hyperparameter spaces, and selected candidate for each final experiment.}
 
-\subsection{CTR estimator}
+\subsection{CTR estimator}\label{sec:ctr-estimator}
 
-The canonical CTR is the Gaussian-equivalent shortest empirical coverage interval. For coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is found and converted to the Gaussian-equivalent FWHM scale. CTR uncertainty is evaluated by event bootstrap.
+The canonical CTR is the Gaussian-equivalent shortest empirical coverage interval. For coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is found and converted to the Gaussian-equivalent full width at half maximum (FWHM) scale. CTR uncertainty is evaluated by event bootstrap.
 
 For a model prediction \(y_\theta\), the final corrected residual is
 \begin{equation}
