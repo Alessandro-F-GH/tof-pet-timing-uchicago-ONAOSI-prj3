@@ -36,7 +36,7 @@ Using one shared scorer imposes two structural constraints:
 This factorized form is the primary physics-motivated model studied in the paper. It also provides a representation that is naturally compatible with reuse across detector pairs, although system-level scalability should only be claimed if separately demonstrated.
 
 \reportfigure
-    {figures/cnn_architecture.pdf}
+    {figures/1D-cnn-architecture.png}
     {Detector-shared CNN: the same temporal scorer is applied to each detector waveform before subtraction of the two scalar outputs.}
     {fig:cnn-architecture}
 
@@ -52,7 +52,7 @@ In the current implementation, the first temporal block preserves the two detect
 The joint CNN is used as the flexible comparator: if the shared model reaches comparable CTR, the result supports the hypothesis that arbitrary pair-specific interactions are not required to obtain the timing correction.
 
 \reportfigure
-    {figures/cnn_2d_architecture.pdf}
+    {figures/2D-cnn-architecture.png}
     {Joint detector-pair CNN with delayed detector fusion.}
     {fig:cnn2d-architecture}
 
