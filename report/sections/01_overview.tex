@@ -2,59 +2,50 @@
 
 \subsection{Motivation}
 
-Previous waveform-based machine-learning studies have shown that learned corrections can improve coincidence timing resolution with respect to standard timing estimators. The objective of this work is not only to seek a lower CTR, but to characterize \emph{how} the correction is represented and \emph{where} useful timing information is located in the detector waveform.
+Previous waveform-based machine-learning studies have shown that learned corrections can improve coincidence timing resolution over standard timing estimators. This project builds on that result by asking what structure and what waveform information are responsible for the improvement.
 
-A fully general pair model can learn arbitrary relationships between the two detector signals. Such flexibility is useful as a performance reference, but it does not impose the detector-exchange structure expected for a relative timing correction and it is less naturally reusable across detector pairs. This work therefore studies a detector-shared formulation in which the same function is applied to both detector waveforms and the final correction is formed from their difference.
+Rather than just focusing on maximizing CTR, the study combines performance with physical constraints and interpretability. A detector-shared model is compared with a more general joint CNN, larger waveform windows are used to study where timing information is concentrated, and the same framework is tested on both the energy and dedicated timing signals.
 
-At the same time, the study uses waveform windows larger than those typically considered in the earlier project baseline and combines performance measurements with model-interpretability tools. The goal is to investigate whether timing-relevant information is concentrated around the conventional leading edge or whether additional waveform regions contribute to the learned correction.
-
-A second experimental axis is provided by the front-end readout itself. In addition to the energy-channel waveform, the detector board provides a second-stage timing-channel signal specifically designed for timing. The energy channel is used as the main methodological test bed for comparing model structures and studying information localization; the same framework is then applied to the dedicated timing channel, where the best absolute timing performance is expected to be obtained.
-
-\todo{Add citations to prior waveform-ML timing literature and state precisely which limitations of those approaches are supported by the cited works. Avoid using the word bias without specifying whether it means prediction/calibration bias or SiPM bias voltage.}
+\todo{Add citations to prior waveform-ML timing studies and support any discussion of their limitations with the corresponding references.}
 
 \subsection{Project scope}
 
-This project builds on previous work showing that machine-learning methods applied to detector waveforms can improve timing resolution compared with standard timing estimators. The scope of the present study is broader than reproducing or maximizing that improvement. The main objective is to characterize the learned timing correction in a way that is more closely connected to the detector physics, while also investigating which parts of the waveform contain information that is useful for timing.
+The first objective is to test a physically constrained representation of the detector pair. The proposed model applies the same function to both detector waveforms and forms the correction from the difference of the two outputs. This enforces detector-exchange antisymmetry and provides a natural detector-level representation. Its performance is compared with a joint CNN that processes the two waveforms together without this constraint.
 
-A central part of the study is the comparison between two different ways of representing the detector pair. The proposed approach uses one shared model for both detectors and constructs the timing correction from the difference of the two model outputs. This imposes detector-exchange antisymmetry by construction and reduces the freedom of the model to learn detector-pair-specific relationships. The shared architecture is compared with a more general joint CNN that receives the two detector waveforms together and can learn arbitrary cross-detector features. The purpose of this comparison is therefore not simply to identify the network with the lowest CTR, but to determine whether the timing improvement can be retained when physically motivated structure is imposed on the model.
+The second objective is to investigate where useful timing information is located in the waveform. The analysis therefore considers larger input windows than the previous project baseline and combines timing performance with XAI and, where possible, controlled window or ablation studies.
 
-A second objective is to investigate where the timing-relevant information is located within the waveform. The analysis therefore considers input windows larger than those used in the previous project baseline and combines timing-performance measurements with XAI methods. Where possible, XAI observations should be supported by controlled window or ablation studies, so that temporal model sensitivity can be compared with the actual change in timing performance when waveform regions are included or removed.
+Finally, the method is evaluated on the two available analog signals. The energy channel is used as the main test bed for the architecture comparison and information-localization study. The same approach is then applied to the second-stage timing channel, which is specifically designed for timing and is expected to provide the best absolute CTR.
 
-The study is performed on two analog signals available from the detector front end. The energy-channel waveform, taken after the first amplification stage, is used as the main methodological test case for the architecture comparison and for the study of temporal information. The same framework is then applied to the second-stage timing-channel waveform, which is specifically designed for timing measurements. Energy information continues to provide the event-selection reference, while the timing waveform is used as the ML input for the timing-channel study. This separation makes it possible to distinguish the methodological question of how the correction should be represented from the question of the best absolute timing performance obtainable with the available detector signals.
-
-CTR remains the primary quantitative metric used to compare standard and ML-corrected timing, but it is not treated as the only outcome of the project. The report is intended to characterize performance together with model structure, temporal information content, and the behavior of the method across the available waveform channels and dataset sources.
+CTR remains the primary quantitative metric, considered together with model structure, temporal sensitivity, and consistency across the available datasets.
 
 \subsection{Research questions}
 
-The study is organized around three primary questions:
+The study is organized around three questions:
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}]
-    \item \textbf{Physical structure:} can a detector-shared correction
-    \begin{equation}
+    \item \textbf{Physical structure:} can the shared correction
+    \[
         \hat y = g_\theta(s_1)-g_\theta(s_2)
-    \end{equation}
-    retain the timing performance of a more general joint model
-    \begin{equation}
-        \hat y = f_\theta(s_1,s_2),
-    \end{equation}
-    while enforcing detector-swap antisymmetry by construction?
+    \]
+    retain the timing performance of the more general joint model
+    \[
+        \hat y = f_\theta(s_1,s_2)?
+    \]
 
-    \item \textbf{Information localization:} which temporal regions of the waveform contain information useful for correcting the timing estimate, and are the regions highlighted by XAI consistent with performance changes obtained by varying or ablating the input window?
+    \item \textbf{Information localization:} which temporal regions of the waveform contribute to timing correction, and are XAI sensitivities consistent with window or ablation studies?
 
-    \item \textbf{Dedicated timing signal:} does the same waveform-correction framework remain effective when applied to the second-stage timing-channel waveform rather than the energy-channel waveform?
+    \item \textbf{Timing channel:} how does the same correction framework perform when applied to the dedicated timing waveform instead of the energy waveform?
 \end{enumerate}
 
-\subsection{Contributions to be demonstrated}
+\subsection{Report focus}
 
-The intended contribution is broader than a single best-CTR result:
+The report therefore emphasizes:
 \begin{itemize}
-    \item a controlled comparison between a physically constrained detector-shared model and a general joint detector-pair CNN;
-    \item a timing-information study combining extended waveform windows, performance ablations, and XAI;
-    \item application of the same correction framework to both the energy-channel and dedicated timing-channel waveforms;
-    \item CTR evaluation on a permanent blind-test population, with bootstrap uncertainty and explicit separation between model selection and final evaluation.
+    \item the comparison between the shared and joint model representations;
+    \item the localization of timing-relevant waveform regions;
+    \item the transition from energy-channel characterization to timing-channel performance;
+    \item blind-test CTR with bootstrap uncertainty as the main quantitative comparison.
 \end{itemize}
-
-\todo{Retain only contributions directly demonstrated by the final experiments. In particular, describe scalability as a structural motivation unless cross-detector or cross-board transfer is explicitly tested.}
 
 \reportfigure
     {figures/paper_scope.pdf}
