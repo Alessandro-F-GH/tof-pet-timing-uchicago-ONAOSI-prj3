@@ -65,10 +65,20 @@ def _shared_display_range(samples, *, references=(), quantiles=(0.02, 0.98), mar
     return low - margin, high + margin
 
 
-def _outside_count(values, xlim):
+def _outside_counts(values, xlim):
+    """Return finite values hidden below and above the plotting range."""
     values = np.asarray(values, dtype=np.float64)
     finite = values[np.isfinite(values)]
-    return int(np.count_nonzero((finite < float(xlim[0])) | (finite > float(xlim[1]))))
+    return (
+        int(np.count_nonzero(finite < float(xlim[0]))),
+        int(np.count_nonzero(finite > float(xlim[1]))),
+    )
+
+
+def _outside_count(values, xlim):
+    """Total number of finite values outside the plotting range."""
+    low, high = _outside_counts(values, xlim)
+    return low + high
 
 
 def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits, noise, noise_limits, config) -> None:
@@ -125,9 +135,11 @@ def _plots(directory, amplitudes, split, fits, photopeak, hits, duration_limits,
         noise_bins=np.linspace(noise_xlim[0],noise_xlim[1],101)
         panels=len(noise_samples); fig,axes=plt.subplots(panels,1,figsize=(8,2.8*panels),squeeze=False,sharex=True)
         for panel,(family,detector,sample) in enumerate(noise_samples):
-            ax=axes[panel,0]; limit=float(noise_limits[family][detector]); selected=int(np.count_nonzero(sample<=limit)); rejected=int(sample.size-selected); outside=_outside_count(sample,noise_xlim)
+            ax=axes[panel,0]; limit=float(noise_limits[family][detector]); selected=int(np.count_nonzero(sample<=limit)); rejected=int(sample.size-selected); hidden_low,hidden_high=_outside_counts(sample,noise_xlim)
             if sample.size: ax.hist(sample,bins=noise_bins,histtype='step',label=f"Candidates (n={sample.size})")
-            ax.axvline(limit,label=f"Selected {selected} | rejected {rejected} | outside display {outside}")
+            ax.axvline(limit,label=f"RMS cut={limit:.3g} mV | pass {selected} | fail {rejected}")
+            if hidden_low or hidden_high:
+                ax.plot([],[],alpha=0,label=f"Outside display: low {hidden_low} | high {hidden_high}")
             ax.set_xlim(*noise_xlim); ax.set_title(f"{family} detector {detector+1} baseline RMS"); ax.set_xlabel("RMS [mV]"); ax.set_ylabel("Events / bin"); ax.legend()
         fig.tight_layout(); fig.savefig(directory/"baseline_noise_selection.png",dpi=180); plt.close(fig)
 
