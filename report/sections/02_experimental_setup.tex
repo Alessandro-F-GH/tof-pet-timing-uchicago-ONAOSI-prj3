@@ -1,0 +1,38 @@
+\section{Experimental setup and waveform datasets}
+
+\subsection{Detector system}
+
+The waveform measurements were performed with two opposing detector modules and a $^{22}$Na positron-emitting source centered between them. Each detector module is based on a SiPM coupled to a LYSO scintillation crystal with dimensions $2\times2\times3\,\mathrm{mm}^3$.
+
+Each detector front end provides two analog waveform outputs:
+\begin{itemize}
+    \item an \textbf{energy channel}, taken after the first amplification stage and used for energy-based event selection and, in the energy-waveform study, timing correction;
+    \item a \textbf{timing channel}, taken after a second amplification stage specifically designed for timing.
+\end{itemize}
+
+The full analog waveforms are digitized with an oscilloscope. The presentation dataset documents \SI{100}{ns} acquisition windows sampled at \SI{80}{GS/s}, with measurements spanning the \SIrange{45}{49}{V} bias-voltage region.
+
+\reportfigure
+    {../presentation/figures/Board-img.png}
+    {Detector modules and front-end boards used in the waveform measurements.}
+    {fig:experimental-setup}
+
+\subsection{Dataset sources}
+
+Two waveform dataset sources are considered:
+\begin{itemize}
+    \item the \textbf{UC-board dataset}, acquired with the front-end board developed by the University of Chicago group;
+    \item the \textbf{FBK-board dataset}, acquired with the FBK front-end board.
+\end{itemize}
+
+The board source is kept explicit throughout the report so that acquisition hardware is not conflated with waveform family, bias voltage, or model choice.
+
+\subsection{Dataset statistics}
+
+For each source, report the acquired bias voltage, total number of collected events, events satisfying the two-detector photopeak requirement, and events remaining after the complete event-selection chain.
+
+\input{tables/uc_board_dataset}
+
+\input{tables/fbk_board_dataset}
+
+\todo{Populate both tables directly from frozen selection outputs. If the two sources do not cover the same bias points or acquisition statistics, do not force a one-to-one comparison.}
