@@ -2,9 +2,9 @@
 
 \subsection{Motivation}
 
-Previous waveform-based machine-learning studies have shown that learned models can improve positron emission tomography (PET) timing from detector waveforms, including convolutional neural network (CNN)-based time-of-flight (TOF) estimation, hybrid Transformer--CNN approaches, and explicit machine-learning timing-correction methods.\footnote{E. Berg and S. R. Cherry, \emph{Using convolutional neural networks to estimate time-of-flight from PET detector waveforms}, \textit{Physics in Medicine \& Biology}, 2018; X. Feng, A. Muhashi, Y. Onishi, R. Ota, and H. Liu, \emph{Transformer-CNN hybrid network for improving PET time of flight prediction}, \textit{Physics in Medicine \& Biology}, 2024; S. Naunheim et al., \emph{Explicit machine-learning corrections and spatial generalization for PET detector timing}, \textit{Frontiers in Physics}, 2025.} This project builds on that result by asking what structure and what waveform information are responsible for the improvement.
+Previous waveform-based machine-learning studies have shown that learned models can improve timing in time-of-flight positron emission tomography (TOF-PET), including convolutional neural network (CNN)-based TOF estimation, hybrid Transformer--CNN approaches, and explicit machine-learning timing-correction methods.\footnote{E. Berg and S. R. Cherry, \emph{Using convolutional neural networks to estimate time-of-flight from PET detector waveforms}, \textit{Physics in Medicine \& Biology}, 2018; X. Feng, A. Muhashi, Y. Onishi, R. Ota, and H. Liu, \emph{Transformer-CNN hybrid network for improving PET time of flight prediction}, \textit{Physics in Medicine \& Biology}, 2024; S. Naunheim et al., \emph{Explicit machine-learning corrections and spatial generalization for PET detector timing}, \textit{Frontiers in Physics}, 2025.} This project builds on that result by asking what structure and what waveform information are responsible for the improvement.
 
-Rather than just focusing on maximizing coincidence timing resolution (CTR), the study combines performance with physical constraints and interpretability. CTR is conventionally reported from the width of the coincidence timing-difference distribution; the exact robust estimator used in this report is defined in Sec.~\ref{sec:ctr-estimator}.\footnote{S. Surti, \emph{Update on Time-of-Flight PET Imaging}, \textit{Journal of Nuclear Medicine}, 56(1), 98--105, 2015, doi:10.2967/jnumed.114.145029.} A detector-shared model is compared with a more general joint CNN, larger waveform windows are used to study where timing information is concentrated, and the same framework is tested on both the energy and dedicated timing signals.
+Rather than just focusing on maximizing coincidence timing resolution (CTR), defined in Sec.~\ref{sec:ctr-estimator}, the study combines performance with physical constraints and interpretability. A detector-shared model is compared with a more general joint CNN, larger waveform windows are used to study where timing information is concentrated, and the same framework is tested on both the energy and dedicated timing signals.
 
 \subsection{Project scope}
 
@@ -21,29 +21,12 @@ CTR remains the primary quantitative metric, considered together with model stru
 The study is organized around three questions:
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}]
-    \item \textbf{Physical structure:} can the shared correction
-    \[
-        \hat y = g_\theta(s_1)-g_\theta(s_2)
-    \]
-    retain the timing performance of the more general joint model
-    \[
-        \hat y = f_\theta(s_1,s_2)?
-    \]
+    \item \textbf{Physical structure:} can the detector-shared correction introduced in Sec.~\ref{sec:shared-model} retain the timing performance of the more general joint model described in Sec.~\ref{sec:joint-model}?
 
-    \item \textbf{Information localization:} which temporal regions of the waveform contribute to timing correction, and are XAI sensitivities consistent with window or ablation studies?
+    \item \textbf{Information localization:} which temporal regions of the waveform contribute useful information for timing correction?
 
     \item \textbf{Timing channel:} how does the same correction framework perform when applied to the dedicated timing waveform instead of the energy waveform?
 \end{enumerate}
-
-\subsection{Report focus}
-
-The report therefore emphasizes:
-\begin{itemize}
-    \item the comparison between the shared and joint model representations;
-    \item the localization of timing-relevant waveform regions;
-    \item the transition from energy-channel characterization to timing-channel performance;
-    \item blind-test CTR with bootstrap uncertainty as the main quantitative comparison.
-\end{itemize}
 
 \reportfigure
     {figures/paper_scope.pdf}
