@@ -19,7 +19,7 @@ and predicts the timing correction from a linear combination of temporal samples
 
 \subsection{Detector-shared 1-D CNN: physically constrained model}
 
-The proposed shared CNN applies the same detector-level function (g_\theta) to both input waveforms:
+The proposed shared CNN applies the same detector-level function \(g_\theta\) to both input waveforms:
 \begin{equation}
     y_\theta = g_\theta(s_1)-g_\theta(s_2).
 \end{equation}
@@ -42,7 +42,7 @@ This factorized form is the primary physics-motivated model studied in the paper
 
 \subsection{Joint CNN: general pair-model comparator}
 
-The joint model receives the two detector waveforms together as a stacked ([2,\mathrm{time}]) input and directly predicts one correction:
+The joint model receives the two detector waveforms together as a stacked \([2,\mathrm{time}]\) input and directly predicts one correction:
 \begin{equation}
     y_\theta=f_\theta(s_1,s_2).
 \end{equation}
