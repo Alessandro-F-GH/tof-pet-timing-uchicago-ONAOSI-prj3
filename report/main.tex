@@ -34,7 +34,7 @@
   \end{figure}
 }
 
-\title{Waveform-Based Timing Analysis and Machine-Learning Pipeline}
+\title{Physics-Constrained and Interpretable Waveform-Based Timing Correction for TOF-PET Detectors}
 \author{\todo{Author, affiliation}}
 \date{\todo{Date / project period}}
 
@@ -43,13 +43,14 @@
 \maketitle
 
 \begin{abstract}
-\todo{State the scope of the report in 4--6 sentences: dataset(s), waveform family or mode, objective of the ML timing correction, reference methods, and the primary CTR comparison. Do not report numerical results here until the final study outputs are frozen.}
+\todo{Summarize the paper in 5--7 sentences: prior waveform-ML timing gains; motivation for a detector-shared physically constrained correction; comparison with a general joint CNN; waveform-information localization with extended windows and XAI; extension from the energy signal to the dedicated timing signal; blind-test CTR as the main quantitative endpoint. Add numerical results only after the final study outputs are frozen.}
 \end{abstract}
 
 \tableofcontents
 \newpage
 
 \input{sections/01_overview}
+\input{sections/02_experimental_setup}
 \input{sections/02_pipeline}
 \input{sections/03_models}
 \input{sections/04_results}
