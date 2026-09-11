@@ -17,6 +17,39 @@ The software pipeline is organized into four high-level stages:
     {Schematic overview of the analysis pipeline from ROOT events to final CTR evaluation. Replace this placeholder with a diagram that mirrors the exact configuration used in the reported study.}
     {fig:pipeline-overview}
 
+\subsection{Experimental setup}
+
+The waveform measurements were performed with two opposing detector modules and a $^{22}$Na positron-emitting source centered between them. Each detector module is based on a SiPM coupled to a LYSO scintillation crystal with a $2\times2\times3$ geometry. The experimental layout is therefore a symmetric two-detector coincidence setup, with the source positioned between the two modules.
+
+Each detector front end provides two analog waveform outputs:
+\begin{itemize}
+    \item an \textbf{energy channel}, taken after the first amplification stage and used for energy-based event selection as well as, when required, timing analysis;
+    \item a \textbf{timing channel}, taken after a second amplification stage specifically intended to preserve timing information.
+\end{itemize}
+
+The full analog waveforms are digitized with an oscilloscope. The presentation dataset documents \SI{100}{ns} acquisition windows sampled at \SI{80}{GS/s}, with waveform measurements spanning the \SIrange{45}{49}{V} bias-voltage region.
+
+Two waveform dataset sources are considered in this report:
+\begin{itemize}
+    \item the \textbf{UC-board dataset}, acquired with the front-end board developed by the University of Chicago group;
+    \item the \textbf{FBK-board dataset}, acquired with the FBK front-end board.
+\end{itemize}
+
+The purpose of keeping the two sources separate in the report is to make the acquisition hardware explicit when comparing event statistics and timing performance. The analysis pipeline described in the following sections is applied to full waveform data only.
+
+\reportfigure
+    {../presentation/figures/Board-img.png}
+    {Detector modules and front-end boards used in the waveform measurements.}
+    {fig:experimental-setup}
+
+\subsection{Waveform dataset summary}
+
+For each board, the final report should list the acquired bias points together with the event population at three successive stages: total collected events, events inside the energy photopeak selection, and events remaining after the complete event-selection chain. These values should be filled directly from the frozen source-specific selection outputs or run manifests.
+
+\input{tables/uc_board_dataset}
+
+\input{tables/fbk_board_dataset}
+
 \subsection{Reported quantities}
 
 \todo{List the quantities that will be emphasized in the report. CTR should be the primary endpoint; add secondary diagnostics only if they are actually used in the final analysis.}
@@ -33,9 +66,9 @@ Suggested structure:
 
 \subsection{Data and experiment configuration}
 
-\todo{Summarize the acquisition datasets and the exact experiment configuration. Prefer a compact table generated from the frozen configuration or run manifest rather than duplicating values manually in prose.}
+\todo{Summarize the exact experiment configuration used for the final analysis: reported waveform mode, input window, subsampling, train/validation/test fractions, enabled standard timing references, and the set of ML models. Prefer values exported from the frozen configuration or run manifest rather than duplicating them manually in prose.}
 
 \reportfigure
     {figures/acquisition_or_dataset_overview.pdf}
-    {Optional overview of the datasets or operating points included in the report.}
+    {Optional overview of the waveform datasets or operating points included in the final report.}
     {fig:dataset-overview}
