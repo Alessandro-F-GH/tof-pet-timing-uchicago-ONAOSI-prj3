@@ -17,22 +17,14 @@ The full analog waveforms are digitized with an oscilloscope. The presentation d
     {Detector modules and front-end boards used in the waveform measurements.}
     {fig:experimental-setup}
 
-\subsection{Dataset sources}
+\subsection{Dataset}
 
-Two waveform dataset sources are considered:
-\begin{itemize}
-    \item the \textbf{University of Chicago (UC) board dataset}, acquired with the front-end board developed by the University of Chicago group;
-    \item the \textbf{Fondazione Bruno Kessler (FBK) board dataset}, acquired with the FBK front-end board.
-\end{itemize}
+The measurements are organized into two waveform datasets acquired with different front-end boards. The University of Chicago (UC) board dataset uses the front-end developed by the University of Chicago group, while the Fondazione Bruno Kessler (FBK) board dataset uses the FBK front end. Keeping the two sources separate allows the event statistics and timing results to be reported together with the corresponding acquisition hardware.
 
-The board source is kept explicit throughout the report so that acquisition hardware is not conflated with waveform family, bias voltage, or model choice.
-
-\subsection{Dataset statistics}
-
-For each source, report the acquired bias voltage, total number of collected events, events satisfying the two-detector photopeak requirement, and events remaining after the complete event-selection chain.
+For each dataset, the tables below summarize the acquired bias voltages, the total number of collected events, the events satisfying the two-detector photopeak selection, and the events remaining after the complete event-selection procedure.
 
 \input{tables/uc_board_dataset}
 
 \input{tables/fbk_board_dataset}
 
-\todo{Populate both tables directly from frozen selection outputs. If the two sources do not cover the same bias points or acquisition statistics, do not force a one-to-one comparison.}
+\todo{Populate both tables directly from frozen selection outputs and add any acquisition differences between the two datasets that are relevant for interpreting the timing comparison.}
