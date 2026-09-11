@@ -49,7 +49,7 @@ Selected waveforms are brought to a common orientation and restricted to the ana
 
 \subsection{Reference timing, calibration, and learning target}
 
-Leading-edge discrimination (LED) is used as the reference timing estimator for the waveform analysis. For each detector, the arrival time is obtained from the interpolated threshold crossing of the rising edge. LED provides a simple and widely used waveform-based timing reference, while retaining the amplitude-dependent time-walk effects that the machine-learning correction is intended to reduce.\footnote{L. Y. Chang et al., \emph{A Time-Walk Correction Method for PET Detectors Based on Leading Edge Discriminators}, \textit{IEEE Transactions on Radiation and Plasma Medical Sciences}, 2017.}
+Leading-edge discrimination (LED) is used as the reference timing estimator for the waveform analysis. For each detector, the arrival time is obtained from the interpolated threshold crossing of the rising edge. LED provides a simple and widely used waveform-based timing reference, while retaining the amplitude-dependent time-walk effects that the machine-learning correction is intended to reduce~\cite{chang2017}.
 
 \todo{Add a concise reference or motivation for choosing LED as the common baseline for both energy- and timing-channel studies, and state the threshold-selection procedure used in the final analysis.}
 
@@ -99,7 +99,7 @@ Models are trained on the training population and selected using validation perf
 
 \subsection{CTR estimator}\label{sec:ctr-estimator}
 
-Coincidence timing resolution (CTR) is evaluated from the distribution of the timing residuals.\footnote{S. Surti, \emph{Update on Time-of-Flight PET Imaging}, \textit{Journal of Nuclear Medicine}, 56(1), 98--105, 2015, doi:10.2967/jnumed.114.145029.} The analysis uses the Gaussian-equivalent shortest empirical coverage interval: for a coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is converted to the equivalent Gaussian full width at half maximum (FWHM). The statistical uncertainty is estimated by event bootstrap.
+Coincidence timing resolution (CTR) is evaluated from the distribution of the timing residuals~\cite{surti2015}. The analysis uses the Gaussian-equivalent shortest empirical coverage interval: for a coverage fraction \(p\), the narrowest interval containing \(\lceil pN\rceil\) finite residuals is converted to the equivalent Gaussian full width at half maximum (FWHM). The statistical uncertainty is estimated by event bootstrap.
 
 For a model prediction \(y_\theta\), the corrected residual is
 \begin{equation}
