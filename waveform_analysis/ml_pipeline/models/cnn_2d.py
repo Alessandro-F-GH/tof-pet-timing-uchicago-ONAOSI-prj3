@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _device, _loader, _predict_tensor, _rmse, candidates
+from .cnn import _configure_reproducibility, _device, _loader, _predict_tensor, _rmse, candidates
 from .spec import ModelSpec
 
 
@@ -123,10 +126,7 @@ def fit(
     if validation_x is None or validation_target is None:
         raise ValueError("cnn_2d training requires a validation set for early stopping")
 
-    torch.manual_seed(int(seed))
-    np.random.seed(int(seed))
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(int(seed))
+    training_seed = _configure_reproducibility(seed)
 
     training = config.get("training", {})
     device = _device(config)
@@ -141,7 +141,7 @@ def fit(
     max_epochs = int(training.get("epochs", 350))
     patience = int(training.get("patience", 30))
     min_delta = float(training.get("min_delta", 0.05))
-    loader = _loader(train_x, train_target, batch, shuffle=True, seed=seed)
+    loader = _loader(train_x, train_target, batch, shuffle=True, seed=training_seed)
     output_limit = config.get("_prediction_max_abs_ps")
 
     best_score = float("inf")
@@ -190,6 +190,8 @@ def fit(
             "early_stopping_metric": "validation_rmse",
             "batch_size": batch,
             "output_max_abs_ps": None if output_limit is None else float(output_limit),
+            "training_seed": training_seed,
+            "deterministic_algorithms": True,
             "input_definition": "normalized detector pair stacked as one [2,time] input",
             "prediction_definition": "single joint CNN f_theta([s1;s2]) [ps] with delayed detector fusion",
             "detector_fusion_layer": int(model.detector_fusion_layer),
