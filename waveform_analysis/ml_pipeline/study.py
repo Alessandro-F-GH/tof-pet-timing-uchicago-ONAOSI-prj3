@@ -287,8 +287,6 @@ def run_study(
             )
             fitted = selected_model(search)
             selected_parameters = dict(search.best.candidate)
-            if "sigma_max_ps" in fitted.metadata:
-                selected_parameters["sigma_max_ps"] = float(fitted.metadata["sigma_max_ps"])
             save_model(spec, fitted, store.model_dir(name, model_name), selected_parameters)
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
