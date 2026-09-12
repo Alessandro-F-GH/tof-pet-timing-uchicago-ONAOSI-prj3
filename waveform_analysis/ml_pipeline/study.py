@@ -192,9 +192,6 @@ def run_study(
         },
         "training_data_policy": {
             "uses_full_training_split": True,
-            "target_filter": None,
-            "validation_filter": None,
-            "blind_test_filter": None,
         },
         "model_architecture_constraint": "model-specific; see per-model metadata",
         "ml_target": "delta_t_led - true_tof - calibration_bias",
@@ -219,7 +216,7 @@ def run_study(
         }
 
     logger.info(
-        "Study | mode=%s | selection=validation CTR | prediction clip=±%.6g ps | validation/test unfiltered",
+        "Study | mode=%s | selection=validation CTR | prediction clip=±%.6g ps",
         mode,
         float(config["ml_output"]["max_abs_ps"]),
     )
@@ -275,11 +272,6 @@ def run_study(
             removed_samples,
         )
 
-        logger.info(
-            "Training data | full split | events=%d | no target-value filtering",
-            dataset.training.size,
-        )
-
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
             search = search_model(
@@ -301,13 +293,12 @@ def run_study(
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, selected_parameters, "validation_ctr"))
-            logger.info(
-                "Selected %s | CTR=%.6g ps | train=%d events | %s",
-                LABELS.get(model_name, model_name),
-                search.best.score,
-                int(search.best.metadata["training_events"]),
-                "default" if not selected_parameters else selected_parameters,
-            )
+            if len(search.candidates) > 1:
+                logger.info(
+                    "Selected %s | %s",
+                    LABELS.get(model_name, model_name),
+                    "default" if not selected_parameters else selected_parameters,
+                )
 
             xai = config.get("reporting", {}).get("xai", {}) or {}
             if bool(xai.get("enabled", True)) and spec.explain is not None:
