@@ -159,3 +159,33 @@ Outputs are written under `<run-dir>/cross_voltage/`:
 - `cross_voltage_<model>.pdf`: annotated CTR heatmap for the same matrix.
 
 Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models cnn cnn_2d` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
+
+### Regression instance-hardness analysis
+
+A completed per-voltage study can be analyzed without touching its blind/test sets:
+
+```bash
+python -m waveform_analysis.scripts.analyze_instance_hardness \
+  --run-dir waveform_analysis/results/studies/complete_energy
+```
+
+The diagnostic uses the repository's non-CNN difference-signal regressors by default:
+
+- `linear_svr`
+- `difference_knn`
+- `difference_shapelet`
+
+Every model receives only the synchronized normalized signal difference `d(t)=s1(t)-s2(t)`. The script reuses the model hyperparameters already selected by the completed study, removes the old `target_abs_max_ps` restriction, and builds out-of-fold predictions over the training population only. If a model was not part of the study, its first deterministic repository candidate is used instead of launching another search.
+
+Regression instance hardness follows the pool-of-regressors definition of Torquette et al. with an exponential kernel, squared Euclidean target error, and target signal power `gamma = mean(y^2)` as normalization. Larger values mean that multiple regressors disagree with the observed target for that training event.
+
+Default OOF evaluation uses three folds for efficiency. Increase it with `--folds 5` when a more expensive estimate is acceptable. `difference_shapelet` retains a small inner early-stopping split drawn only from each outer training fold.
+
+Outputs under `<run-dir>/instance_hardness/` include:
+
+- per-event CSV files containing target, instance hardness, ensemble prediction, and each model's OOF prediction/error;
+- `model_oof_summary.csv` with OOF RMSE/MAE for every member and the equal-mean ensemble;
+- compressed NumPy arrays for further analysis;
+- hardness-vs-target and hardness-vs-absolute-target plots for every voltage.
+
+The analysis never uses the study blind/test split.
