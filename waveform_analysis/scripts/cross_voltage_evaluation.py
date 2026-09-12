@@ -18,10 +18,6 @@ if __package__ in {None, ""}:
 from waveform_analysis.ml_pipeline.dataset import load_prepared_dataset
 from waveform_analysis.ml_pipeline.models import get_model
 from waveform_analysis.ml_pipeline.models.cnn import CNNArtifact, SharedScorerCNN
-from waveform_analysis.ml_pipeline.models.cnn_heteroscedastic import (
-    HeteroscedasticCNNArtifact,
-    HeteroscedasticSharedScorerCNN,
-)
 from waveform_analysis.ml_pipeline.models.cnn_2d import CNN2DArtifact, JointPairCNN2D
 from waveform_analysis.ml_pipeline.models.difference_knn import DifferenceKNNArtifact
 from waveform_analysis.ml_pipeline.models.difference_shapelet import (
@@ -191,23 +187,6 @@ def _load_model(run: Path, dataset: str, model_name: str, manifest: dict[str, An
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
         artifact = CNNArtifact(model, "cpu", dict(checkpoint.get("metadata") or training_metadata))
-    elif model_name == "cnn_heteroscedastic":
-        checkpoint = _torch_checkpoint(model_dir / "model.pt")
-        model = HeteroscedasticSharedScorerCNN(model_config.get("architecture", {}))
-        model.load_state_dict(checkpoint["state_dict"])
-        model.eval()
-        sigma_max_ps = float(
-            checkpoint.get(
-                "sigma_max_ps",
-                training_metadata.get("sigma_max_ps", 20.0),
-            )
-        )
-        artifact = HeteroscedasticCNNArtifact(
-            model,
-            "cpu",
-            sigma_max_ps,
-            dict(checkpoint.get("metadata") or training_metadata),
-        )
     elif model_name == "cnn_2d":
         checkpoint = _torch_checkpoint(model_dir / "model.pt")
         model = JointPairCNN2D(model_config.get("architecture", {}))
