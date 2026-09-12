@@ -173,12 +173,16 @@ def search_model(
             return
         parameters = "default" if not result.candidate else result.candidate
         if result.error is None:
+            sigma_suffix = ""
+            if "sigma_max_ps" in result.metadata:
+                sigma_suffix = f" | selected sigma_max={float(result.metadata['sigma_max_ps']):g} ps"
             logger.info(
-                "  %d/%d | CTR=%.6g ps | %s",
+                "  %d/%d | CTR=%.6g ps | %s%s",
                 number,
                 total,
                 result.score,
                 parameters,
+                sigma_suffix,
             )
         else:
             logger.warning(
@@ -191,7 +195,19 @@ def search_model(
 
     candidates = list(spec.candidates(model_config))
     if logger is not None:
-        logger.info("%s search | candidates=%d", spec.name, len(candidates))
+        sigma_thresholds = list(
+            (model_config.get("parameters") or {}).get("sigma_max_ps") or []
+        )
+        if spec.name == "cnn_heteroscedastic" and sigma_thresholds:
+            logger.info(
+                "%s search | training_candidates=%d | sigma_thresholds=%d | values=%s",
+                spec.name,
+                len(candidates),
+                len(sigma_thresholds),
+                sigma_thresholds,
+            )
+        else:
+            logger.info("%s search | candidates=%d", spec.name, len(candidates))
 
     return select_candidate(
         candidates,

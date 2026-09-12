@@ -294,16 +294,19 @@ def run_study(
                 logger=logger,
             )
             fitted = selected_model(search)
-            save_model(spec, fitted, store.model_dir(name, model_name), search.best.candidate)
+            selected_parameters = dict(search.best.candidate)
+            if "sigma_max_ps" in fitted.metadata:
+                selected_parameters["sigma_max_ps"] = float(fitted.metadata["sigma_max_ps"])
+            save_model(spec, fitted, store.model_dir(name, model_name), selected_parameters)
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
-            rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_ctr"))
+            rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, selected_parameters, "validation_ctr"))
             logger.info(
                 "Selected %s | CTR=%.6g ps | train=%d events | %s",
                 LABELS.get(model_name, model_name),
                 search.best.score,
                 int(search.best.metadata["training_events"]),
-                "default" if not search.best.candidate else search.best.candidate,
+                "default" if not selected_parameters else selected_parameters,
             )
 
             xai = config.get("reporting", {}).get("xai", {}) or {}
