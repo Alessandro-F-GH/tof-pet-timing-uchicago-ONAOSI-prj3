@@ -218,63 +218,29 @@ def _fit(
     )
 
 
-def _select_parameters(
+def _selected_parameters(
     run: Path,
     dataset_name: str,
     model_name: str,
     model_config: dict[str, Any],
-    train_pair: np.ndarray,
-    train_target: np.ndarray,
-    validation_pair: np.ndarray,
-    validation_target: np.ndarray,
-    *,
-    seed: int,
-    input_time_ps: np.ndarray,
-    output_limit_ps: float | None,
-    shapelet_device: str,
-) -> tuple[dict[str, Any], float]:
-    """Select model-only hyperparameters on the study validation split.
+) -> dict[str, Any]:
+    """Reuse the study-selected model hyperparameters, but never its target-range cut."""
+    search_path = run / "search" / dataset_name / f"{model_name}.json"
+    if search_path.is_file():
+        search = _read_json(search_path)
+        candidate = dict(((search.get("best") or {}).get("candidate") or {}))
+        candidate.pop("target_abs_max_ps", None)
+        if candidate:
+            return candidate
 
-    Target-range candidates are intentionally not used: this analysis trains every
-    regressor on the complete training population.
-    """
-    del run
-    spec = get_model(model_name)
-    candidates = list(spec.candidates(model_config))
+    # If the model was not part of the completed study, fall back to the first
+    # deterministic repository candidate instead of launching another search.
+    candidates = list(get_model(model_name).candidates(model_config))
     if not candidates:
         raise ValueError(f"{model_name}: empty candidate space")
-
-    best: tuple[float, str, dict[str, Any]] | None = None
-    errors = []
-    for index, raw in enumerate(candidates):
-        parameters = dict(raw)
-        parameters.pop("target_abs_max_ps", None)
-        try:
-            artifact = _fit(
-                model_name,
-                parameters,
-                model_config,
-                train_pair,
-                train_target,
-                seed=semantic_seed(seed, dataset_name, model_name, "parameter_selection", index),
-                input_time_ps=input_time_ps,
-                output_limit_ps=output_limit_ps,
-                validation_pair=validation_pair,
-                validation_target=validation_target,
-                shapelet_device=shapelet_device,
-            )
-            prediction = _predict(spec, artifact, validation_pair, output_limit_ps)
-            score = _rmse(validation_target, prediction)
-            key = (score, json.dumps(parameters, sort_keys=True), parameters)
-            if best is None or key[:2] < best[:2]:
-                best = key
-        except Exception as exc:
-            errors.append(f"{parameters}: {type(exc).__name__}: {exc}")
-
-    if best is None:
-        raise RuntimeError(f"{dataset_name}/{model_name}: every parameter candidate failed: {'; '.join(errors)}")
-    return best[2], float(best[0])
-
+    parameters = dict(candidates[0])
+    parameters.pop("target_abs_max_ps", None)
+    return parameters
 
 def _inner_split(indices: np.ndarray, fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
     values = np.asarray(indices, dtype=np.int64)
@@ -427,24 +393,18 @@ def analyze_dataset(
     dataset = load_prepared_dataset(dataset_info["prepared_dir"])
 
     training = np.asarray(dataset.training, dtype=np.int64)
-    validation = np.asarray(dataset.validation, dtype=np.int64)
     if training.size < folds:
         raise ValueError(f"{dataset_name}: only {training.size} training events for {folds} folds")
-    if validation.size < 1:
-        raise ValueError(f"{dataset_name}: validation split is empty")
 
     sample_mask = dataset_training_sample_mask(dataset, mode)
     train_view = waveform_view(dataset, mode, training)
-    validation_view = waveform_view(dataset, mode, validation)
     train_pair = _difference_pair(apply_sample_mask(train_view.materialize(), sample_mask))
-    validation_pair = _difference_pair(apply_sample_mask(validation_view.materialize(), sample_mask))
     input_time_ps = apply_sample_mask_to_time(train_view.time_ps, sample_mask)
 
     all_target = model_target(dataset, mode)
     train_target = np.asarray(all_target[training], dtype=np.float64)
-    validation_target = np.asarray(all_target[validation], dtype=np.float64)
-    if not np.all(np.isfinite(train_target)) or not np.all(np.isfinite(validation_target)):
-        raise ValueError(f"{dataset_name}: target contains non-finite values")
+    if not np.all(np.isfinite(train_target)):
+        raise ValueError(f"{dataset_name}: training target contains non-finite values")
 
     output_limit_raw = ((manifest.get("config") or {}).get("ml_output") or {}).get("max_abs_ps")
     output_limit = None if output_limit_raw is None else float(output_limit_raw)
@@ -454,20 +414,7 @@ def analyze_dataset(
     model_summary: list[dict[str, Any]] = []
     for model_name in models:
         model_config = _model_config(manifest, model_name)
-        parameters, validation_rmse = _select_parameters(
-            run,
-            dataset_name,
-            model_name,
-            model_config,
-            train_pair,
-            train_target,
-            validation_pair,
-            validation_target,
-            seed=base_seed,
-            input_time_ps=input_time_ps,
-            output_limit_ps=output_limit,
-            shapelet_device=shapelet_device,
-        )
+        parameters = _selected_parameters(run, dataset_name, model_name, model_config)
         prediction = _oof_predictions(
             dataset_name,
             model_name,
@@ -489,7 +436,11 @@ def analyze_dataset(
                 "voltage_V": _voltage(dataset),
                 "model": model_name,
                 "parameters_json": json.dumps(parameters, sort_keys=True),
-                "validation_rmse_ps": validation_rmse,
+                "parameter_source": (
+                    "study_selected"
+                    if (run / "search" / dataset_name / f"{model_name}.json").is_file()
+                    else "first_repository_candidate"
+                ),
                 "oof_rmse_ps": _rmse(train_target, prediction),
                 "oof_mae_ps": _mae(train_target, prediction),
                 "folds": int(folds),
@@ -507,7 +458,7 @@ def analyze_dataset(
             "voltage_V": _voltage(dataset),
             "model": "equal_mean_ensemble",
             "parameters_json": json.dumps({"members": models}),
-            "validation_rmse_ps": float("nan"),
+            "parameter_source": "equal_mean_of_oof_members",
             "oof_rmse_ps": _rmse(train_target, ensemble_prediction),
             "oof_mae_ps": _mae(train_target, ensemble_prediction),
             "folds": int(folds),
