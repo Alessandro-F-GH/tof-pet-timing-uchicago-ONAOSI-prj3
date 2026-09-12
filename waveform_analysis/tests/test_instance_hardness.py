@@ -3,12 +3,19 @@ import unittest
 import numpy as np
 
 from waveform_analysis.scripts.analyze_instance_hardness import (
+    MODEL_SETTINGS,
     _difference_pair,
     _instance_hardness,
 )
 
 
 class InstanceHardnessTests(unittest.TestCase):
+    def test_fixed_model_pool_excludes_shapelet_and_cnn(self):
+        self.assertEqual(set(MODEL_SETTINGS), {"linear_svr", "difference_knn"})
+        self.assertNotIn("difference_shapelet", MODEL_SETTINGS)
+        self.assertNotIn("cnn", MODEL_SETTINGS)
+        self.assertNotIn("cnn_2d", MODEL_SETTINGS)
+
     def test_difference_pair_exposes_only_signal_difference(self):
         pair = np.asarray(
             [
