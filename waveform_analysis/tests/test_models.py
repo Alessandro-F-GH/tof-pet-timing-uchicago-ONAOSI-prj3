@@ -1,7 +1,12 @@
 import unittest
 import numpy as np
 
-from waveform_analysis.ml_pipeline.models.cnn import CNNArtifact, SharedScorerCNN, predict as predict_cnn
+from waveform_analysis.ml_pipeline.models.cnn import (
+    CNNArtifact,
+    SharedScorerCNN,
+    fit as fit_cnn,
+    predict as predict_cnn,
+)
 from waveform_analysis.ml_pipeline.models.cnn_2d import (
     CNN2DArtifact,
     JointPairCNN2D,
@@ -32,6 +37,60 @@ class AntisymmetryTests(unittest.TestCase):
         forward = predict_cnn(artifact, pair)
         reverse = predict_cnn(artifact, pair[:, ::-1, :])
         np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
+
+
+    def test_cnn_training_is_repeatable_for_same_seed(self):
+        rng = np.random.default_rng(15)
+        train_x = rng.normal(size=(32, 2, 32)).astype(np.float32)
+        train_y = rng.normal(scale=20.0, size=32)
+        validation_x = rng.normal(size=(12, 2, 32)).astype(np.float32)
+        validation_y = rng.normal(scale=20.0, size=12)
+        params = {"learning_rate": 1e-3, "weight_decay": 0.0, "batch_size": 8}
+        config = {
+            "architecture": {
+                "channels": [4],
+                "kernels": [5],
+                "strides": [1],
+                "dilations": [1],
+                "adaptive_pool_length": 4,
+                "dense_units": [4],
+            },
+            "training": {
+                "device": "cpu",
+                "epochs": 4,
+                "patience": 4,
+                "min_delta": 0.0,
+                "gradient_clip_norm": 10.0,
+            },
+        }
+        first = fit_cnn(
+            params,
+            train_x,
+            train_y,
+            seed=12345,
+            config=config,
+            validation_x=validation_x,
+            validation_target=validation_y,
+        )
+        second = fit_cnn(
+            params,
+            train_x,
+            train_y,
+            seed=12345,
+            config=config,
+            validation_x=validation_x,
+            validation_target=validation_y,
+        )
+        np.testing.assert_array_equal(
+            predict_cnn(first, validation_x),
+            predict_cnn(second, validation_x),
+        )
+        self.assertEqual(first.metadata["training_seed"], 12345)
+        self.assertEqual(first.metadata["best_epoch"], second.metadata["best_epoch"])
+        self.assertEqual(
+            first.metadata["best_validation_rmse_ps"],
+            second.metadata["best_validation_rmse_ps"],
+        )
 
 
     def test_cnn_2d_delays_detector_fusion(self):

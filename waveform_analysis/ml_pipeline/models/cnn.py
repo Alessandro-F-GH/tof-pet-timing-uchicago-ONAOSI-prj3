@@ -1,8 +1,11 @@
 from __future__ import annotations
-import copy,itertools
+import copy,itertools,os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
 import numpy as np, torch
 from torch import nn
 from torch.utils.data import DataLoader,TensorDataset
@@ -36,6 +39,14 @@ class CNNArtifact:
 def candidates(config):
     p=config.get("parameters",{}); training=config.get("training",{})
     return [{"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch)} for lr,wd,batch in itertools.product(p.get("learning_rate",[1e-3]),p.get("weight_decay",[1e-5]),p.get("batch_size",[training.get("batch_size",64)]))]
+def _configure_reproducibility(seed):
+    value=int(seed); np.random.seed(value); torch.manual_seed(value)
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(value)
+    torch.use_deterministic_algorithms(True)
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark=False; torch.backends.cudnn.deterministic=True
+    return value
+
 def _device(config):
     requested=str(config.get("training",{}).get("device","auto")).lower(); return torch.device("cuda" if torch.cuda.is_available() else "cpu") if requested=="auto" else torch.device(requested)
 def _loader(x,y,batch,*,shuffle,seed):
@@ -49,10 +60,9 @@ def _rmse(residual):
     values=np.asarray(residual,dtype=np.float64); return float(np.sqrt(np.mean(values**2)))
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None):
     if validation_x is None or validation_target is None: raise ValueError("CNN training requires a validation set for early stopping")
-    torch.manual_seed(int(seed)); np.random.seed(int(seed))
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(int(seed))
+    training_seed=_configure_reproducibility(seed)
     training=config.get("training",{}); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device)
-    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta",.05)); loader=_loader(train_x,train_target,batch,shuffle=True,seed=seed); best_score=float("inf"); best_epoch=0; best_state=None; stale=0; output_limit=config.get('_prediction_max_abs_ps')
+    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta",.05)); loader=_loader(train_x,train_target,batch,shuffle=True,seed=training_seed); best_score=float("inf"); best_epoch=0; best_state=None; stale=0; output_limit=config.get('_prediction_max_abs_ps')
     for epoch in range(1,max_epochs+1):
         model.train()
         for pair,target in loader:
@@ -68,7 +78,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
             if stale>=patience: break
     if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
     model.load_state_dict(best_state)
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"early_stopping_metric":"validation_rmse","batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit)})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"early_stopping_metric":"validation_rmse","batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
