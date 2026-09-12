@@ -68,6 +68,7 @@ def plot_fixed_shapelets(
     )
     fig.tight_layout()
     target = plot_output / f"shapelets_{dataset}_difference_shapelet.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target, bbox_inches="tight")
     plt.close(fig)
     paths.append(target)
@@ -98,6 +99,7 @@ def plot_fixed_shapelets(
         import csv
 
         csv_target = csv_output / f"shapelets_{dataset}_difference_shapelet.csv"
+        csv_target.parent.mkdir(parents=True, exist_ok=True)
         with csv_target.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()

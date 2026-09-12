@@ -422,18 +422,15 @@ def run_study(
         store.write_manifest(manifest)
 
     diagnostics_plot_dir = store.plots_dir / "model_output_diagnostics"
-    diagnostics_csv_dir = store.csv_dir / "model_output_diagnostics"
     generated = make_model_output_reports(
         store.root,
         diagnostics_plot_dir,
-        diagnostics_csv_dir,
         labels=LABELS,
     )
     logger.info(
-        "Model-output diagnostics generated | files=%d | plots=%s | csv=%s",
+        "Model-output diagnostics generated | files=%d | plots=%s",
         len(generated),
         diagnostics_plot_dir,
-        diagnostics_csv_dir,
     )
 
     logger.info("Study complete | %s", store.root)

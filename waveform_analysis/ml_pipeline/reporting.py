@@ -196,6 +196,7 @@ def _xai_plot(output, artifact, mode, model, paths):
     fig.suptitle(f"{LABELS.get(model, model)} · {mode.replace('_', ' ')} · {label}")
     fig.subplots_adjust(top=0.90, bottom=0.10, left=0.10, right=0.94)
     target = output / f"xai_{dataset}_{model}.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -239,6 +240,7 @@ def _correction_rankings(run, model, dataset):
 
 def _write_rankings(output, dataset, model, top, worst):
     target = output / f"correction_top_worst_{dataset}_{model}.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fields = [
         "rank_group", "rank", "dataset", "voltage_V", "event_index",
         "led_residual_ps", "corrected_residual_ps", "led_bias_ps", "improvement_ps",
@@ -282,6 +284,7 @@ def _correction_example_group(output, run, mode, model, dataset, group, rows, pa
     fig.suptitle(f"{dataset} · {mode.replace('_', ' ')} · {LABELS.get(model, model)} · {group.lower()} corrections")
     fig.tight_layout()
     target = output / f"correction_examples_{group.lower()}_{dataset}_{model}.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -392,6 +395,7 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
         ax.grid(True, alpha=.2)
         fig.tight_layout()
         target = output / f"ctr_distribution_{stage}_{dataset}_{model}.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(target)
         plt.close(fig)
         paths.append(target)
@@ -427,6 +431,7 @@ def _model_output_plot(output, run, mode, dataset, model, paths):
     fig.suptitle(f"{LABELS.get(model, model)} model output · {mode.replace('_', ' ')} · {dataset}")
     fig.tight_layout()
     target = output / f"model_output_{dataset}.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -472,6 +477,7 @@ def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: s
     ax.legend()
     fig.tight_layout()
     target = run / "plots" / "ctr_vs_voltage.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -549,7 +555,9 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
     if not records:
         return
 
-    with (run / "csv" / "relative_improvement.csv").open("w", encoding="utf-8", newline="") as stream:
+    relative_csv = run / "csv" / "relative_improvement.csv"
+    relative_csv.parent.mkdir(parents=True, exist_ok=True)
+    with relative_csv.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(records[0]))
         writer.writeheader()
         writer.writerows(records)
@@ -579,6 +587,7 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
     ax.legend()
     fig.tight_layout()
     target = run / "plots" / "relative_improvement_vs_voltage.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target)
     plt.close(fig)
     paths.append(target)
@@ -597,9 +606,6 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         "corrections": csv_root / "corrections",
         "xai": csv_root / "xai",
     }
-    for directory in (*plot_categories.values(), *csv_categories.values()):
-        directory.mkdir(parents=True, exist_ok=True)
-
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
     concatenated = bool(manifest.get("concatenate_datasets", False))
@@ -615,8 +621,6 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
     for dataset in datasets:
         test_distribution_dir = plot_categories["test_distribution"] / dataset
         train_distribution_dir = plot_categories["train_distribution"] / dataset
-        test_distribution_dir.mkdir(parents=True, exist_ok=True)
-        train_distribution_dir.mkdir(parents=True, exist_ok=True)
         _distribution_plot(test_distribution_dir, run, all_rows, mode, dataset, "test", paths)
         _distribution_plot(train_distribution_dir, run, all_rows, mode, dataset, "train", paths)
 
@@ -626,12 +630,10 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
 
     for model in models:
         model_output_dir = plot_categories["model_output"] / model
-        model_output_dir.mkdir(parents=True, exist_ok=True)
         for dataset in datasets:
             _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
 
         xai_plot_dir = plot_categories["xai"] / model
-        xai_plot_dir.mkdir(parents=True, exist_ok=True)
         for artifact in sorted(
             (run / "artifacts").glob(f"*/{model}_xai.npz"),
             key=lambda p: voltage_from_name(p.parent.name),
@@ -641,8 +643,6 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
         if model == "difference_shapelet":
             shapelet_plot_dir = xai_plot_dir / "shapelets"
             shapelet_csv_dir = csv_categories["xai"] / model / "shapelets"
-            shapelet_plot_dir.mkdir(parents=True, exist_ok=True)
-            shapelet_csv_dir.mkdir(parents=True, exist_ok=True)
             for dataset in datasets:
                 plot_fixed_shapelets(
                     run,
@@ -657,8 +657,6 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
             if top or worst:
                 correction_plot_dir = plot_categories["corrections"] / dataset
                 correction_csv_dir = csv_categories["corrections"] / dataset
-                correction_plot_dir.mkdir(parents=True, exist_ok=True)
-                correction_csv_dir.mkdir(parents=True, exist_ok=True)
                 paths.append(_write_rankings(correction_csv_dir, dataset, model, top, worst))
                 _correction_examples(
                     correction_plot_dir,
