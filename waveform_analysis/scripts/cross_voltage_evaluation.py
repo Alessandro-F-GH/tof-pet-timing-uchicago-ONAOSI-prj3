@@ -273,6 +273,28 @@ def _stored_metric(rows, dataset: str, model: str) -> tuple[float, float]:
     return _float(row.get("ctr_ps")), _float(row.get("ctr_uncertainty_ps"))
 
 
+def _check_prepared_compatibility(prepared: dict[str, Any], mode: str) -> None:
+    family = str(mode).split("_to_", 1)[0]
+    reference_name = next(iter(prepared))
+    reference = prepared[reference_name]
+    reference_time = (
+        np.asarray(reference.energy_time_ps, dtype=np.float64)
+        if family == "energy"
+        else np.asarray(reference.timing_time_ps, dtype=np.float64)
+    )
+    for name, dataset in prepared.items():
+        time = (
+            np.asarray(dataset.energy_time_ps, dtype=np.float64)
+            if family == "energy"
+            else np.asarray(dataset.timing_time_ps, dtype=np.float64)
+        )
+        if time.shape != reference_time.shape or not np.allclose(time, reference_time, rtol=0.0, atol=1e-9):
+            raise ValueError(
+                f"Prepared waveform grids are incompatible between {reference_name} and {name}; "
+                "cross-voltage application requires the same prepared time axis."
+            )
+
+
 def _evaluate(
     run: Path,
     manifest: dict[str, Any],
@@ -288,6 +310,7 @@ def _evaluate(
         name: load_prepared_dataset(manifest["datasets"][name]["prepared_dir"])
         for name in datasets
     }
+    _check_prepared_compatibility(prepared, mode)
     records = []
 
     for model_name in models:
