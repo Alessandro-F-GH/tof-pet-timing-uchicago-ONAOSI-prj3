@@ -111,7 +111,7 @@ def concatenate_prepared_datasets(
     for dataset in datasets:
         if str(dataset.manifest.get("mode")) != mode:
             raise ValueError("Cannot concatenate prepared datasets from different modes")
-        threshold = float(dataset.manifest["led_threshold_mV"])
+        threshold = float(dataset.manifest["led_threshold_mV"][family])
         if not np.isclose(threshold, fixed_led, rtol=0.0, atol=1e-12):
             raise ValueError(
                 f"{Path(dataset.manifest['source']).stem}: prepared LED threshold {threshold:g} mV "
@@ -221,16 +221,15 @@ def concatenate_prepared_datasets(
             "validation": int(validation.size),
             "test": int(test.size),
         },
-        "waveform_family": family,
-        "led_threshold_mV": fixed_led,
+        "led_threshold_mV": {family: fixed_led},
         "led_threshold_policy": "fixed_by_concatenated_experiment",
-        "led_development_ctr_ps": float(development_ctr),
-        "led_development_coverage": int(development.size),
-        "led_development_efficiency": 1.0,
-        "led_training_mean_ps": mean_led,
-        "calibration_bias_ps": calibration_bias,
-        "cfd_fraction": None,
-        "cfd_development_ctr_ps": None,
+        "led_development_ctr_ps": {family: float(development_ctr)},
+        "led_development_coverage": {family: int(development.size)},
+        "led_development_efficiency": {family: 1.0},
+        "led_training_mean_ps": {family: mean_led},
+        "calibration_bias_ps": {family: calibration_bias},
+        "cfd_fraction": {},
+        "cfd_development_ctr_ps": {},
         "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
         "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
