@@ -7,14 +7,6 @@ from waveform_analysis.ml_pipeline.models.cnn import (
     fit as fit_cnn,
     predict as predict_cnn,
 )
-from waveform_analysis.ml_pipeline.models.cnn_heteroscedastic import (
-    HeteroscedasticCNNArtifact,
-    HeteroscedasticSharedScorerCNN,
-    _gate as heteroscedastic_gate,
-    candidates as heteroscedastic_candidates,
-    predict as predict_heteroscedastic,
-    predict_distribution as predict_heteroscedastic_distribution,
-)
 from waveform_analysis.ml_pipeline.models.cnn_2d import (
     CNN2DArtifact,
     JointPairCNN2D,
@@ -46,44 +38,6 @@ class AntisymmetryTests(unittest.TestCase):
         reverse = predict_cnn(artifact, pair[:, ::-1, :])
         np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
 
-
-    def test_heteroscedastic_cnn_is_antisymmetric_and_sigma_is_symmetric(self):
-        rng = np.random.default_rng(16)
-        pair = rng.normal(size=(8, 2, 64)).astype(np.float32)
-        model = HeteroscedasticSharedScorerCNN({
-            "channels": [4],
-            "kernels": [5],
-            "strides": [1],
-            "dilations": [1],
-            "adaptive_pool_length": 4,
-            "dense_units": [4],
-        })
-        artifact = HeteroscedasticCNNArtifact(model, "cpu", 1e9, {})
-        forward_mean, forward_sigma = predict_heteroscedastic_distribution(artifact, pair)
-        reverse_mean, reverse_sigma = predict_heteroscedastic_distribution(artifact, pair[:, ::-1, :])
-        np.testing.assert_allclose(forward_mean, -reverse_mean, rtol=1e-6, atol=1e-6)
-        np.testing.assert_allclose(forward_sigma, reverse_sigma, rtol=1e-6, atol=1e-6)
-
-    def test_heteroscedastic_sigma_thresholds_do_not_multiply_training_candidates(self):
-        config = {
-            "parameters": {
-                "learning_rate": [1e-3, 5e-4],
-                "weight_decay": [1e-5],
-                "batch_size": [64],
-                "sigma_max_ps": [10.0, 20.0, 30.0, 50.0],
-            }
-        }
-        candidates = heteroscedastic_candidates(config)
-        self.assertEqual(len(candidates), 2)
-        self.assertTrue(all("sigma_max_ps" not in row for row in candidates))
-
-    def test_heteroscedastic_sigma_gate_returns_zero_above_limit(self):
-        mean = np.asarray([12.0, -8.0, 3.0])
-        sigma = np.asarray([5.0, 25.0, 20.0])
-        np.testing.assert_allclose(
-            heteroscedastic_gate(mean, sigma, 20.0),
-            [12.0, 0.0, 3.0],
-        )
 
     def test_cnn_training_is_repeatable_for_same_seed(self):
         rng = np.random.default_rng(15)
