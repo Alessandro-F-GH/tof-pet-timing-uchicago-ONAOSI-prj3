@@ -82,8 +82,10 @@ Study outputs are type-separated from creation time:
 - `plots/corrections/<dataset>/`: top/worst correction figures;
 - `csv/corrections/<dataset>/`: corresponding correction ranking tables;
 - `plots/xai/<model>/`: model-grouped XAI plots; CNN and 2-D CNN importance is input-gradient importance aggregated onto the exact waveform time axis;
-- `csv/xai/<model>/`: tabular XAI/shapelet exports when present;
-- `plots/model_output_diagnostics/` and `csv/model_output_diagnostics/`: prediction/correlation diagnostics separated by file type.
+- `csv/xai/<model>/`: tabular XAI/shapelet exports only when present;
+- `plots/model_output_diagnostics/`: prediction-vs-target diagnostics and model-output correlation matrices. Correlation matrices are plot-only diagnostics; redundant matrix/count CSV exports are not written.
+
+Reporting directories are created lazily, so absent diagnostics (for example XAI for a model without an explainer) do not leave empty folders behind.
 
 The paired relative improvement is computed as
 
