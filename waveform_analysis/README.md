@@ -162,30 +162,39 @@ Diagonal cells use the CTR and uncertainty already stored in the original study 
 
 ### Regression instance-hardness analysis
 
-A completed per-voltage study can be analyzed without touching its blind/test sets:
+The instance-hardness diagnostic is independent from completed studies. Run it directly on one or more prepared datasets:
 
 ```bash
 python -m waveform_analysis.scripts.analyze_instance_hardness \
-  --run-dir waveform_analysis/results/studies/complete_energy
+  --prepared-dir waveform_analysis/results/prepared/<dataset>
 ```
 
-The diagnostic uses the repository's non-CNN difference-signal regressors by default:
+Multiple prepared datasets can be supplied in the same command:
 
-- `linear_svr`
-- `difference_knn`
-- `difference_shapelet`
+```bash
+python -m waveform_analysis.scripts.analyze_instance_hardness \
+  --prepared-dir path/to/prepared_42V path/to/prepared_44V path/to/prepared_46V
+```
 
-Every model receives only the synchronized normalized signal difference `d(t)=s1(t)-s2(t)`. The script reuses the model hyperparameters already selected by the completed study, removes the old `target_abs_max_ps` restriction, and builds out-of-fold predictions over the training population only. If a model was not part of the study, its first deterministic repository candidate is used instead of launching another search.
+The analysis uses only the prepared dataset's training split and only the normalized synchronized signal difference `d(t)=s1(t)-s2(t)`.
 
-Regression instance hardness follows the pool-of-regressors definition of Torquette et al. with an exponential kernel, squared Euclidean target error, and target signal power `gamma = mean(y^2)` as normalization. Larger values mean that multiple regressors disagree with the observed target for that training event.
+The fixed model pool is intentionally small and fast:
 
-Default OOF evaluation uses three folds for efficiency. Increase it with `--folds 5` when a more expensive estimate is acceptable. `difference_shapelet` retains a small inner early-stopping split drawn only from each outer training fold.
+- `linear_svr`: `C=0.1`, `epsilon=10 ps`;
+- `difference_knn`: `k=20`, distance weighting.
 
-Outputs under `<run-dir>/instance_hardness/` include:
+No CNN, 2-D CNN, or shapelet model is used. No study search results or selected hyperparameters are read.
 
-- per-event CSV files containing target, instance hardness, ensemble prediction, and each model's OOF prediction/error;
-- `model_oof_summary.csv` with OOF RMSE/MAE for every member and the equal-mean ensemble;
-- compressed NumPy arrays for further analysis;
-- hardness-vs-target and hardness-vs-absolute-target plots for every voltage.
+For every model, deterministic out-of-fold predictions are generated over the prepared dataset's training population. Regression instance hardness follows the pool-of-regressors definition with an exponential kernel, squared target error, and target signal power `gamma = mean(y^2)` as normalization.
 
-The analysis never uses the study blind/test split.
+Default OOF evaluation uses three folds for efficiency; use `--folds 5` for a more expensive estimate.
+
+Outputs are written under `./instance_hardness/<dataset>/` by default:
+
+- `instance_hardness.csv`: per-event target, hardness, ensemble prediction, and each model's OOF prediction/error;
+- `model_oof_summary.csv`: OOF RMSE/MAE for the two members and their equal-mean ensemble;
+- `instance_hardness.npz`: compact numerical arrays;
+- `instance_hardness_vs_target.pdf`;
+- `instance_hardness_vs_abs_target.pdf`.
+
+The validation and blind/test splits are not used.

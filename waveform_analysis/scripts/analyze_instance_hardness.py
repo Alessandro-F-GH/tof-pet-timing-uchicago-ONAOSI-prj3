@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
-import json
 import math
 import sys
 from pathlib import Path
@@ -19,55 +17,60 @@ from waveform_analysis.ml_pipeline.dataset import load_prepared_dataset
 from waveform_analysis.ml_pipeline.models import get_model
 from waveform_analysis.ml_pipeline.sample_mask import (
     apply_sample_mask,
-    apply_sample_mask_to_time,
     dataset_training_sample_mask,
 )
 from waveform_analysis.ml_pipeline.splits import semantic_seed
 from waveform_analysis.ml_pipeline.view import model_target, waveform_view
 
 
-DEFAULT_MODELS = ("linear_svr", "difference_knn", "difference_shapelet")
-EXCLUDED_MODELS = {"cnn", "cnn_2d"}
+MODEL_SETTINGS: dict[str, dict[str, Any]] = {
+    "linear_svr": {
+        "parameters": {"C": 0.1, "epsilon_ps": 10.0},
+        "config": {
+            "loss": "epsilon_insensitive",
+            "tolerance": 0.01,
+            "max_iterations": 10000,
+            "dual": "auto",
+        },
+    },
+    "difference_knn": {
+        "parameters": {"n_neighbors": 20, "weights": "distance"},
+        "config": {"n_jobs": -1},
+    },
+}
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Estimate regression instance hardness on study training events using out-of-fold "
-            "predictions from the repository's non-CNN difference-signal regressors."
+            "Estimate regression instance hardness from prepared waveform datasets using "
+            "fixed Linear-SVR and k-NN regressors on d(t)=s1(t)-s2(t)."
         )
     )
-    parser.add_argument("--run-dir", type=Path, required=True, help="Completed study directory")
+    parser.add_argument(
+        "--prepared-dir",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="One or more prepared dataset directories containing manifest.json and splits.npz",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        help="Destination directory (default: <run-dir>/instance_hardness)",
-    )
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        default=list(DEFAULT_MODELS),
-        help="Model pool (default: linear_svr difference_knn difference_shapelet)",
-    )
-    parser.add_argument(
-        "--datasets",
-        nargs="+",
-        help="Optional dataset names to analyze (default: every non-concatenated dataset in the study)",
+        default=Path("instance_hardness"),
+        help="Output root (default: ./instance_hardness)",
     )
     parser.add_argument(
         "--folds",
         type=int,
         default=3,
-        help="Out-of-fold splits over the training population (default: 3 for efficiency)",
+        help="Training-only out-of-fold splits (default: 3)",
     )
     parser.add_argument(
-        "--inner-validation-fraction",
-        type=float,
-        default=0.15,
-        help=(
-            "Fraction of each outer-fold training population reserved only for early stopping of "
-            "models that require validation, currently difference_shapelet (default: 0.15)"
-        ),
+        "--seed",
+        type=int,
+        default=20260912,
+        help="Deterministic OOF seed (default: 20260912)",
     )
     parser.add_argument(
         "--plot-format",
@@ -75,21 +78,7 @@ def _parser() -> argparse.ArgumentParser:
         default="pdf",
         help="Plot file format (default: pdf)",
     )
-    parser.add_argument(
-        "--shapelet-device",
-        choices=("auto", "cpu", "cuda"),
-        default="auto",
-        help="Device used by difference_shapelet fits (default: auto)",
-    )
     return parser
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as stream:
-        value = json.load(stream)
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected JSON object in {path}")
-    return value
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -103,21 +92,16 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _difference_pair(pair: np.ndarray) -> np.ndarray:
-    """Represent the input only through d(t)=s1(t)-s2(t), while preserving the model API.
-
-    Repository difference models internally evaluate channel_0 - channel_1.
-    Supplying [d(t), 0] therefore guarantees that every model receives exactly
-    the same difference signal and has no access to the individual waveforms.
-    """
+    """Expose only d(t)=s1(t)-s2(t) while preserving the repository model API."""
     values = np.asarray(pair, dtype=np.float32)
     if values.ndim != 3 or values.shape[1] != 2:
-        raise ValueError(f"Expected waveform pair [event, detector=2, sample], got {values.shape}")
+        raise ValueError(f"Expected [event, detector=2, sample], got {values.shape}")
     difference = np.ascontiguousarray(values[:, 0, :] - values[:, 1, :], dtype=np.float32)
     return np.stack([difference, np.zeros_like(difference)], axis=1)
 
 
 def _instance_hardness(target: np.ndarray, predictions: np.ndarray) -> tuple[np.ndarray, float]:
-    """Torquette et al. regression IH using squared error and target signal power.
+    """Regression IH from a pool of regressors.
 
     IH_i = 1 - mean_j exp(-(y_i-yhat_ji)^2 / gamma)
     gamma = mean_i y_i^2
@@ -125,15 +109,16 @@ def _instance_hardness(target: np.ndarray, predictions: np.ndarray) -> tuple[np.
     y = np.asarray(target, dtype=np.float64).reshape(-1)
     pred = np.asarray(predictions, dtype=np.float64)
     if pred.ndim != 2 or pred.shape[1] != y.size:
-        raise ValueError(f"Predictions must be [model, event], got {pred.shape} for {y.size} targets")
+        raise ValueError(f"Predictions must be [model, event], got {pred.shape}")
     if not np.all(np.isfinite(y)) or not np.all(np.isfinite(pred)):
         raise ValueError("Instance hardness requires finite targets and predictions")
+
     gamma = float(np.mean(y**2))
     if not np.isfinite(gamma) or gamma <= np.finfo(np.float64).eps:
-        raise ValueError("Target signal power is zero; regression instance hardness is undefined")
+        raise ValueError("Target signal power is zero; instance hardness is undefined")
+
     normalized_squared_error = (pred - y[None, :]) ** 2 / gamma
-    similarity = np.exp(-normalized_squared_error)
-    return 1.0 - np.mean(similarity, axis=0), gamma
+    return 1.0 - np.mean(np.exp(-normalized_squared_error), axis=0), gamma
 
 
 def _rmse(target: np.ndarray, prediction: np.ndarray) -> float:
@@ -142,186 +127,86 @@ def _rmse(target: np.ndarray, prediction: np.ndarray) -> float:
 
 
 def _mae(target: np.ndarray, prediction: np.ndarray) -> float:
-    return float(np.mean(np.abs(np.asarray(prediction, dtype=np.float64) - np.asarray(target, dtype=np.float64))))
-
-
-def _model_config(manifest: dict[str, Any], model_name: str) -> dict[str, Any]:
-    configured = ((manifest.get("config") or {}).get("models") or {}).get(model_name)
-    if isinstance(configured, dict):
-        return copy.deepcopy(configured)
-
-    model_path = Path(__file__).resolve().parents[1] / "config" / "model_spaces" / f"{model_name}.json"
-    if not model_path.is_file():
-        raise FileNotFoundError(
-            f"{model_name} is not configured in the study and no default model space exists at {model_path}"
+    return float(
+        np.mean(
+            np.abs(
+                np.asarray(prediction, dtype=np.float64)
+                - np.asarray(target, dtype=np.float64)
+            )
         )
-    config = _read_json(model_path)
-    if str(config.get("model", model_name)) != model_name:
-        raise ValueError(f"{model_path} does not declare model={model_name!r}")
-    return config
-
-
-def _runtime_config(
-    model_config: dict[str, Any],
-    *,
-    input_time_ps: np.ndarray,
-    output_limit_ps: float | None,
-    shapelet_device: str,
-) -> dict[str, Any]:
-    runtime = copy.deepcopy(model_config)
-    runtime["_input_time_ps"] = np.asarray(input_time_ps, dtype=np.float64)
-    runtime["_prediction_max_abs_ps"] = output_limit_ps
-    if "training" in runtime and isinstance(runtime["training"], dict):
-        if str(runtime.get("model", "")) == "difference_shapelet":
-            runtime["training"]["device"] = str(shapelet_device)
-    return runtime
-
-
-def _predict(spec, artifact, pair: np.ndarray, output_limit_ps: float | None) -> np.ndarray:
-    values = np.asarray(spec.predict(artifact, pair), dtype=np.float64).reshape(-1)
-    if output_limit_ps is not None:
-        values = np.clip(values, -float(output_limit_ps), float(output_limit_ps))
-    return values
-
-
-def _fit(
-    model_name: str,
-    parameters: dict[str, Any],
-    model_config: dict[str, Any],
-    pair: np.ndarray,
-    target: np.ndarray,
-    *,
-    seed: int,
-    input_time_ps: np.ndarray,
-    output_limit_ps: float | None,
-    validation_pair: np.ndarray | None,
-    validation_target: np.ndarray | None,
-    shapelet_device: str,
-):
-    spec = get_model(model_name)
-    runtime = _runtime_config(
-        model_config,
-        input_time_ps=input_time_ps,
-        output_limit_ps=output_limit_ps,
-        shapelet_device=shapelet_device,
     )
-    return spec.fit(
-        parameters,
-        np.asarray(pair, dtype=np.float32),
-        np.asarray(target, dtype=np.float64),
-        seed=int(seed),
-        config=runtime,
-        validation_x=None if validation_pair is None else np.asarray(validation_pair, dtype=np.float32),
-        validation_target=None
-        if validation_target is None
-        else np.asarray(validation_target, dtype=np.float64),
-    )
-
-
-def _selected_parameters(
-    run: Path,
-    dataset_name: str,
-    model_name: str,
-    model_config: dict[str, Any],
-) -> dict[str, Any]:
-    """Reuse the study-selected model hyperparameters, but never its target-range cut."""
-    search_path = run / "search" / dataset_name / f"{model_name}.json"
-    if search_path.is_file():
-        search = _read_json(search_path)
-        candidate = dict(((search.get("best") or {}).get("candidate") or {}))
-        candidate.pop("target_abs_max_ps", None)
-        if candidate:
-            return candidate
-
-    # If the model was not part of the completed study, fall back to the first
-    # deterministic repository candidate instead of launching another search.
-    candidates = list(get_model(model_name).candidates(model_config))
-    if not candidates:
-        raise ValueError(f"{model_name}: empty candidate space")
-    parameters = dict(candidates[0])
-    parameters.pop("target_abs_max_ps", None)
-    return parameters
-
-def _inner_split(indices: np.ndarray, fraction: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    values = np.asarray(indices, dtype=np.int64)
-    if values.size < 4:
-        raise ValueError("Need at least four outer-training events for an inner early-stopping split")
-    if not 0.0 < float(fraction) < 0.5:
-        raise ValueError("--inner-validation-fraction must lie in (0, 0.5)")
-    shuffled = np.random.default_rng(int(seed)).permutation(values)
-    n_validation = max(1, min(values.size - 1, int(round(values.size * float(fraction)))))
-    return np.sort(shuffled[n_validation:]), np.sort(shuffled[:n_validation])
 
 
 def _oof_predictions(
-    dataset_name: str,
     model_name: str,
-    parameters: dict[str, Any],
-    model_config: dict[str, Any],
     pair: np.ndarray,
     target: np.ndarray,
     *,
     folds: int,
     seed: int,
-    input_time_ps: np.ndarray,
-    output_limit_ps: float | None,
-    inner_validation_fraction: float,
-    shapelet_device: str,
 ) -> np.ndarray:
-    n = int(target.size)
-    if folds < 2 or folds > n:
-        raise ValueError(f"--folds must lie in [2, {n}], got {folds}")
-
+    settings = MODEL_SETTINGS[model_name]
     spec = get_model(model_name)
-    predictions = np.full(n, np.nan, dtype=np.float64)
-    splitter = KFold(n_splits=int(folds), shuffle=True, random_state=int(seed))
+    n_events = int(target.size)
+    if folds < 2 or folds > n_events:
+        raise ValueError(f"--folds must lie in [2, {n_events}], got {folds}")
 
-    for fold, (outer_train, outer_test) in enumerate(splitter.split(np.arange(n)), start=1):
-        fit_positions = np.asarray(outer_train, dtype=np.int64)
-        early_positions: np.ndarray | None = None
+    predictions = np.full(n_events, np.nan, dtype=np.float64)
+    splitter = KFold(n_splits=folds, shuffle=True, random_state=int(seed))
 
-        if model_name == "difference_shapelet":
-            fit_positions, early_positions = _inner_split(
-                fit_positions,
-                inner_validation_fraction,
-                semantic_seed(seed, dataset_name, model_name, "inner_validation", fold),
-            )
-
-        artifact = _fit(
-            model_name,
-            parameters,
-            model_config,
-            pair[fit_positions],
-            target[fit_positions],
-            seed=semantic_seed(seed, dataset_name, model_name, "oof", fold),
-            input_time_ps=input_time_ps,
-            output_limit_ps=output_limit_ps,
-            validation_pair=None if early_positions is None else pair[early_positions],
-            validation_target=None if early_positions is None else target[early_positions],
-            shapelet_device=shapelet_device,
+    for fold, (fit_index, predict_index) in enumerate(
+        splitter.split(np.arange(n_events)),
+        start=1,
+    ):
+        artifact = spec.fit(
+            dict(settings["parameters"]),
+            np.asarray(pair[fit_index], dtype=np.float32),
+            np.asarray(target[fit_index], dtype=np.float64),
+            seed=semantic_seed(seed, model_name, "oof", fold),
+            config=dict(settings["config"]),
+            validation_x=None,
+            validation_target=None,
         )
-        predictions[outer_test] = _predict(spec, artifact, pair[outer_test], output_limit_ps)
+        predictions[predict_index] = np.asarray(
+            spec.predict(artifact, pair[predict_index]),
+            dtype=np.float64,
+        ).reshape(-1)
 
     if not np.all(np.isfinite(predictions)):
-        raise RuntimeError(f"{dataset_name}/{model_name}: OOF prediction did not cover every training event")
+        raise RuntimeError(f"{model_name}: OOF prediction did not cover every training event")
     return predictions
 
 
+def _dataset_label(dataset) -> str:
+    source = str(dataset.manifest.get("source", "")).strip()
+    if source:
+        return Path(source).stem
+    return dataset.directory.name
+
+
 def _voltage(dataset) -> float:
-    values = np.asarray(dataset.bias_voltage_V, dtype=np.float64)
     training = np.asarray(dataset.training, dtype=np.int64)
-    finite = values[training][np.isfinite(values[training])]
+    values = np.asarray(dataset.bias_voltage_V, dtype=np.float64)[training]
+    finite = values[np.isfinite(values)]
     return float(np.median(finite)) if finite.size else float("nan")
 
 
-def _quantile_trend(x: np.ndarray, y: np.ndarray, bins: int = 12) -> tuple[np.ndarray, np.ndarray]:
+def _quantile_trend(
+    x: np.ndarray,
+    y: np.ndarray,
+    bins: int = 12,
+) -> tuple[np.ndarray, np.ndarray]:
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     if x.size < 4:
         return np.asarray([]), np.asarray([])
-    edges = np.unique(np.quantile(x, np.linspace(0.0, 1.0, min(bins, x.size) + 1)))
+
+    edges = np.unique(
+        np.quantile(x, np.linspace(0.0, 1.0, min(int(bins), x.size) + 1))
+    )
     if edges.size < 3:
         return np.asarray([]), np.asarray([])
+
     centers, medians = [], []
     for index, (left, right) in enumerate(zip(edges[:-1], edges[1:])):
         mask = (x >= left) & (x <= right if index == edges.size - 2 else x < right)
@@ -331,14 +216,27 @@ def _quantile_trend(x: np.ndarray, y: np.ndarray, bins: int = 12) -> tuple[np.nd
     return np.asarray(centers), np.asarray(medians)
 
 
-def _hardness_plot(path: Path, x: np.ndarray, hardness: np.ndarray, xlabel: str, title: str) -> None:
+def _hardness_plot(
+    path: Path,
+    x: np.ndarray,
+    hardness: np.ndarray,
+    *,
+    xlabel: str,
+    title: str,
+) -> None:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8.2, 5.2))
     ax.scatter(x, hardness, s=10, alpha=0.28, label="training event")
     trend_x, trend_y = _quantile_trend(x, hardness)
     if trend_x.size:
-        ax.plot(trend_x, trend_y, marker="o", linewidth=2.0, label="quantile-bin median")
+        ax.plot(
+            trend_x,
+            trend_y,
+            marker="o",
+            linewidth=2.0,
+            label="quantile-bin median",
+        )
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Regression instance hardness")
     ax.set_ylim(-0.02, 1.02)
@@ -351,238 +249,185 @@ def _hardness_plot(path: Path, x: np.ndarray, hardness: np.ndarray, xlabel: str,
     plt.close(fig)
 
 
-def _dataset_names(manifest: dict[str, Any], requested: list[str] | None) -> list[str]:
-    if bool(manifest.get("concatenate_datasets", False)):
-        raise ValueError("Instance-hardness analysis currently requires an ordinary per-voltage study")
-    available = list((manifest.get("datasets") or {}).keys())
-    if requested:
-        missing = sorted(set(requested) - set(available))
-        if missing:
-            raise ValueError(f"Unknown dataset(s): {missing}")
-        return list(requested)
-    return available
-
-
-def _validate_models(names: list[str]) -> list[str]:
-    if not names:
-        raise ValueError("At least one model is required")
-    forbidden = sorted(set(names) & EXCLUDED_MODELS)
-    if forbidden:
-        raise ValueError(f"CNN models are intentionally excluded from this analysis: {forbidden}")
-    unsupported = sorted(set(names) - set(DEFAULT_MODELS))
-    if unsupported:
-        raise ValueError(
-            f"This script is intentionally restricted to repository difference-signal regressors "
-            f"{list(DEFAULT_MODELS)}; unsupported: {unsupported}"
-        )
-    return list(dict.fromkeys(names))
-
-
-def analyze_dataset(
-    run: Path,
-    manifest: dict[str, Any],
-    dataset_name: str,
-    models: list[str],
+def analyze_prepared_dataset(
+    prepared_dir: Path,
+    output_dir: Path,
     *,
     folds: int,
-    inner_validation_fraction: float,
-    shapelet_device: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, np.ndarray]]:
-    mode = str(manifest.get("mode") or manifest["config"]["mode"])
-    dataset_info = manifest["datasets"][dataset_name]
-    dataset = load_prepared_dataset(dataset_info["prepared_dir"])
-
+    seed: int,
+    plot_format: str,
+) -> list[Path]:
+    dataset = load_prepared_dataset(prepared_dir)
+    mode = str(dataset.manifest["mode"])
     training = np.asarray(dataset.training, dtype=np.int64)
     if training.size < folds:
-        raise ValueError(f"{dataset_name}: only {training.size} training events for {folds} folds")
+        raise ValueError(
+            f"{prepared_dir}: only {training.size} training events for {folds} folds"
+        )
 
     sample_mask = dataset_training_sample_mask(dataset, mode)
-    train_view = waveform_view(dataset, mode, training)
-    train_pair = _difference_pair(apply_sample_mask(train_view.materialize(), sample_mask))
-    input_time_ps = apply_sample_mask_to_time(train_view.time_ps, sample_mask)
+    view = waveform_view(dataset, mode, training)
+    pair = _difference_pair(apply_sample_mask(view.materialize(), sample_mask))
+    target = np.asarray(model_target(dataset, mode)[training], dtype=np.float64)
+    if not np.all(np.isfinite(target)):
+        raise ValueError(f"{prepared_dir}: training target contains non-finite values")
 
-    all_target = model_target(dataset, mode)
-    train_target = np.asarray(all_target[training], dtype=np.float64)
-    if not np.all(np.isfinite(train_target)):
-        raise ValueError(f"{dataset_name}: training target contains non-finite values")
+    label = _dataset_label(dataset)
+    voltage = _voltage(dataset)
 
-    output_limit_raw = ((manifest.get("config") or {}).get("ml_output") or {}).get("max_abs_ps")
-    output_limit = None if output_limit_raw is None else float(output_limit_raw)
-    base_seed = int(((manifest.get("config") or {}).get("validation") or {}).get("seed", 0))
-
-    model_predictions: dict[str, np.ndarray] = {}
-    model_summary: list[dict[str, Any]] = []
-    for model_name in models:
-        model_config = _model_config(manifest, model_name)
-        parameters = _selected_parameters(run, dataset_name, model_name, model_config)
-        prediction = _oof_predictions(
-            dataset_name,
+    predictions = {}
+    summaries = []
+    for model_name in MODEL_SETTINGS:
+        model_prediction = _oof_predictions(
             model_name,
-            parameters,
-            model_config,
-            train_pair,
-            train_target,
+            pair,
+            target,
             folds=folds,
-            seed=semantic_seed(base_seed, dataset_name, model_name, "hardness_oof"),
-            input_time_ps=input_time_ps,
-            output_limit_ps=output_limit,
-            inner_validation_fraction=inner_validation_fraction,
-            shapelet_device=shapelet_device,
+            seed=semantic_seed(seed, label, model_name),
         )
-        model_predictions[model_name] = prediction
-        model_summary.append(
+        predictions[model_name] = model_prediction
+        summaries.append(
             {
-                "dataset": dataset_name,
-                "voltage_V": _voltage(dataset),
+                "dataset": label,
+                "voltage_V": voltage,
+                "mode": mode,
                 "model": model_name,
-                "parameters_json": json.dumps(parameters, sort_keys=True),
-                "parameter_source": (
-                    "study_selected"
-                    if (run / "search" / dataset_name / f"{model_name}.json").is_file()
-                    else "first_repository_candidate"
-                ),
-                "oof_rmse_ps": _rmse(train_target, prediction),
-                "oof_mae_ps": _mae(train_target, prediction),
+                "parameters_json": str(MODEL_SETTINGS[model_name]["parameters"]),
+                "oof_rmse_ps": _rmse(target, model_prediction),
+                "oof_mae_ps": _mae(target, model_prediction),
                 "folds": int(folds),
                 "training_events": int(training.size),
-                "input_samples": int(train_pair.shape[-1]),
+                "input_samples": int(pair.shape[-1]),
             }
         )
 
-    prediction_matrix = np.stack([model_predictions[name] for name in models], axis=0)
-    hardness, gamma = _instance_hardness(train_target, prediction_matrix)
+    prediction_matrix = np.stack(
+        [predictions[name] for name in MODEL_SETTINGS],
+        axis=0,
+    )
+    hardness, gamma = _instance_hardness(target, prediction_matrix)
     ensemble_prediction = np.mean(prediction_matrix, axis=0)
-    model_summary.append(
+    summaries.append(
         {
-            "dataset": dataset_name,
-            "voltage_V": _voltage(dataset),
+            "dataset": label,
+            "voltage_V": voltage,
+            "mode": mode,
             "model": "equal_mean_ensemble",
-            "parameters_json": json.dumps({"members": models}),
-            "parameter_source": "equal_mean_of_oof_members",
-            "oof_rmse_ps": _rmse(train_target, ensemble_prediction),
-            "oof_mae_ps": _mae(train_target, ensemble_prediction),
+            "parameters_json": str({"members": list(MODEL_SETTINGS)}),
+            "oof_rmse_ps": _rmse(target, ensemble_prediction),
+            "oof_mae_ps": _mae(target, ensemble_prediction),
             "folds": int(folds),
             "training_events": int(training.size),
-            "input_samples": int(train_pair.shape[-1]),
+            "input_samples": int(pair.shape[-1]),
         }
     )
 
     event_index = np.asarray(dataset.event_index, dtype=np.int64)[training]
-    voltage = _voltage(dataset)
-    event_rows = []
+    rows = []
     for position in range(training.size):
         row: dict[str, Any] = {
-            "dataset": dataset_name,
+            "dataset": label,
             "voltage_V": voltage,
+            "mode": mode,
             "training_position": int(position),
             "dataset_row": int(training[position]),
             "event_index": int(event_index[position]),
-            "target_ps": float(train_target[position]),
-            "abs_target_ps": float(abs(train_target[position])),
+            "target_ps": float(target[position]),
+            "abs_target_ps": float(abs(target[position])),
             "instance_hardness": float(hardness[position]),
             "gamma_target_power_ps2": gamma,
             "ensemble_prediction_ps": float(ensemble_prediction[position]),
-            "ensemble_abs_error_ps": float(abs(ensemble_prediction[position] - train_target[position])),
+            "ensemble_abs_error_ps": float(
+                abs(ensemble_prediction[position] - target[position])
+            ),
         }
-        for model_name in models:
-            prediction = float(model_predictions[model_name][position])
-            squared_error = (prediction - float(train_target[position])) ** 2
+        for model_name, model_prediction in predictions.items():
+            prediction = float(model_prediction[position])
+            squared_error = (prediction - float(target[position])) ** 2
             row[f"{model_name}_prediction_ps"] = prediction
             row[f"{model_name}_abs_error_ps"] = math.sqrt(squared_error)
             row[f"{model_name}_ih_similarity"] = math.exp(-squared_error / gamma)
-        event_rows.append(row)
+        rows.append(row)
 
-    arrays = {
-        "target_ps": train_target,
-        "instance_hardness": hardness,
-        "ensemble_prediction_ps": ensemble_prediction,
-        **{f"{name}_prediction_ps": values for name, values in model_predictions.items()},
-    }
-    return event_rows, model_summary, arrays
+    dataset_output = output_dir / label
+    event_csv = dataset_output / "instance_hardness.csv"
+    summary_csv = dataset_output / "model_oof_summary.csv"
+    arrays_path = dataset_output / "instance_hardness.npz"
+    target_plot = dataset_output / f"instance_hardness_vs_target.{plot_format}"
+    abs_target_plot = (
+        dataset_output / f"instance_hardness_vs_abs_target.{plot_format}"
+    )
+
+    _write_csv(event_csv, rows)
+    _write_csv(summary_csv, summaries)
+    arrays_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        arrays_path,
+        target_ps=target,
+        instance_hardness=hardness,
+        ensemble_prediction_ps=ensemble_prediction,
+        **{
+            f"{name}_prediction_ps": values
+            for name, values in predictions.items()
+        },
+    )
+
+    title_suffix = f"{voltage:g} V" if np.isfinite(voltage) else label
+    _hardness_plot(
+        target_plot,
+        target,
+        hardness,
+        xlabel=r"Training target $y_{\mathrm{target}}$ [ps]",
+        title=f"Regression instance hardness · {title_suffix}",
+    )
+    _hardness_plot(
+        abs_target_plot,
+        np.abs(target),
+        hardness,
+        xlabel=r"$|y_{\mathrm{target}}|$ [ps]",
+        title=f"Regression instance hardness vs target magnitude · {title_suffix}",
+    )
+
+    return [
+        event_csv,
+        summary_csv,
+        arrays_path,
+        target_plot,
+        abs_target_plot,
+    ]
 
 
 def run(
-    run_dir: Path,
-    output_dir: Path | None = None,
+    prepared_dirs: list[Path],
+    output_dir: Path,
     *,
-    models: list[str] | None = None,
-    datasets: list[str] | None = None,
     folds: int = 3,
-    inner_validation_fraction: float = 0.15,
+    seed: int = 20260912,
     plot_format: str = "pdf",
-    shapelet_device: str = "auto",
 ) -> list[Path]:
-    run_path = run_dir.resolve()
-    output = (output_dir or (run_path / "instance_hardness")).resolve()
-    manifest = _read_json(run_path / "manifest.json")
-    model_pool = _validate_models(list(models or DEFAULT_MODELS))
-    dataset_pool = _dataset_names(manifest, datasets)
-
-    all_events: list[dict[str, Any]] = []
-    all_summary: list[dict[str, Any]] = []
-    generated: list[Path] = []
-
-    for dataset_name in dataset_pool:
-        event_rows, summary_rows, arrays = analyze_dataset(
-            run_path,
-            manifest,
-            dataset_name,
-            model_pool,
-            folds=folds,
-            inner_validation_fraction=inner_validation_fraction,
-            shapelet_device=shapelet_device,
+    output = output_dir.resolve()
+    generated = []
+    for prepared_dir in prepared_dirs:
+        generated.extend(
+            analyze_prepared_dataset(
+                prepared_dir.resolve(),
+                output,
+                folds=folds,
+                seed=seed,
+                plot_format=plot_format,
+            )
         )
-        all_events.extend(event_rows)
-        all_summary.extend(summary_rows)
-
-        event_csv = output / "csv" / f"instance_hardness_{dataset_name}.csv"
-        _write_csv(event_csv, event_rows)
-        generated.append(event_csv)
-
-        npz_path = output / "arrays" / f"instance_hardness_{dataset_name}.npz"
-        npz_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(npz_path, **arrays)
-        generated.append(npz_path)
-
-        voltage = float(event_rows[0]["voltage_V"]) if event_rows else float("nan")
-        label = f"{voltage:g} V" if np.isfinite(voltage) else dataset_name
-        target_plot = output / "plots" / f"instance_hardness_vs_target_{dataset_name}.{plot_format}"
-        abs_target_plot = output / "plots" / f"instance_hardness_vs_abs_target_{dataset_name}.{plot_format}"
-        _hardness_plot(
-            target_plot,
-            arrays["target_ps"],
-            arrays["instance_hardness"],
-            r"Training target $y_{\mathrm{target}}$ [ps]",
-            f"Regression instance hardness · {label}",
-        )
-        _hardness_plot(
-            abs_target_plot,
-            np.abs(arrays["target_ps"]),
-            arrays["instance_hardness"],
-            r"$|y_{\mathrm{target}}|$ [ps]",
-            f"Regression instance hardness vs target magnitude · {label}",
-        )
-        generated.extend([target_plot, abs_target_plot])
-
-    events_csv = output / "instance_hardness_all_events.csv"
-    summary_csv = output / "model_oof_summary.csv"
-    _write_csv(events_csv, all_events)
-    _write_csv(summary_csv, all_summary)
-    generated.extend([events_csv, summary_csv])
     return generated
 
 
 def main() -> None:
     args = _parser().parse_args()
     for path in run(
-        args.run_dir,
+        args.prepared_dir,
         args.output_dir,
-        models=args.models,
-        datasets=args.datasets,
         folds=args.folds,
-        inner_validation_fraction=args.inner_validation_fraction,
+        seed=args.seed,
         plot_format=args.plot_format,
-        shapelet_device=args.shapelet_device,
     ):
         print(path)
 
