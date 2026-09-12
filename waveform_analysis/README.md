@@ -160,43 +160,46 @@ Outputs are written under `<run-dir>/cross_voltage/`:
 
 Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models cnn cnn_2d` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
 
-### Regression instance-hardness analysis
+### Regression prediction-gain analysis
 
-The instance-hardness diagnostic is independent from completed studies. Run it directly on one or more prepared datasets:
-
-```bash
-python -m waveform_analysis.scripts.analyze_instance_hardness \
-  --prepared-dir waveform_analysis/results/prepared/<dataset>
-```
-
-Multiple prepared datasets can be supplied in the same command:
+The standalone diagnostic compares the waveform regressors with an out-of-fold null model. Run it directly on one or more prepared datasets:
 
 ```bash
 python -m waveform_analysis.scripts.analyze_instance_hardness \
-  --prepared-dir path/to/prepared_42V path/to/prepared_44V path/to/prepared_46V
+  --prepared-dir waveform_analysis/processed_data/ml_prepared/timing_to_timing/49V-490mV
 ```
 
-The analysis uses only the prepared dataset's training split and only the normalized synchronized signal difference `d(t)=s1(t)-s2(t)`.
+The analysis uses only the prepared dataset's training split and the normalized synchronized signal difference `d(t)=s1(t)-s2(t)`.
 
-The fixed model pool is intentionally diverse while remaining efficient:
+The fixed model pool is:
 
 - `linear_svr`: `C=0.1`, `epsilon=10 ps`;
-- `difference_knn_k2`: `k=2`, distance weighting, emphasizing very local waveform similarity;
-- `difference_knn_k50`: `k=50`, distance weighting, providing a much smoother neighborhood estimate;
-- `minirocket`: MiniROCKET + its default RidgeCV regressor, with 10,000 kernels, at most 32 dilations per kernel, and all CPU cores.
+- `difference_knn_k2`: `k=2`, distance weighting;
+- `difference_knn_k50`: `k=50`, distance weighting;
+- `minirocket`: MiniROCKET + default RidgeCV, 10,000 kernels and at most 32 dilations per kernel.
 
-All four members receive exactly the same normalized difference signal `d(t)=s1(t)-s2(t)`. No CNN, 2-D CNN, or shapelet model is used. No study search results or selected hyperparameters are read. The same OOF folds are shared across ensemble members; model-specific seeds affect only the fitted estimator.
+All models share the same deterministic OOF folds. For each held-out fold, the null model predicts the mean target of that fold's training subset, so the held-out event never contributes to its own null prediction.
 
-For every model, deterministic out-of-fold predictions are generated over the prepared dataset's training population. Regression instance hardness follows the pool-of-regressors definition with an exponential kernel, squared target error, and target signal power `gamma = mean(y^2)` as normalization.
+For event `i`, the reported gain is
 
-Default OOF evaluation uses three folds for efficiency; use `--folds 5` for a more expensive estimate.
+```
+gain_i = |y_i - y_null_i| - mean_m |y_i - yhat_m_i|
+```
 
-Outputs are written under `./instance_hardness/<dataset>/` by default:
+where `m` runs over the four waveform regressors. Therefore:
 
-- `instance_hardness.csv`: per-event target, hardness, ensemble prediction, and each model's OOF prediction/error;
-- `model_oof_summary.csv`: OOF RMSE/MAE for the four members and their equal-mean ensemble;
-- `instance_hardness.npz`: compact numerical arrays;
-- `instance_hardness_vs_target.pdf`;
-- `instance_hardness_vs_abs_target.pdf`.
+- positive gain: waveform models improve over the null model;
+- gain near zero: little improvement over guessing the training mean;
+- negative gain: waveform models are worse than the null model for that event.
+
+Default OOF evaluation uses three folds; use `--folds 5` for a more expensive estimate.
+
+Outputs are written under `./prediction_gain/<dataset>/` by default:
+
+- `prediction_gain.csv`: per-event target, null prediction/error, mean model error, gain, ensemble prediction, and per-model gains;
+- `model_oof_summary.csv`: OOF RMSE/MAE plus mean gain versus null for each model and the equal-mean ensemble;
+- `prediction_gain.npz`: compact numerical arrays;
+- `prediction_gain_vs_target.pdf`;
+- `prediction_gain_vs_abs_target.pdf`.
 
 The validation and blind/test splits are not used.
