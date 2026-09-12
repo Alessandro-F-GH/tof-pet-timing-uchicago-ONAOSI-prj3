@@ -160,9 +160,9 @@ Outputs are written under `<run-dir>/cross_voltage/`:
 
 Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models cnn cnn_2d` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
 
-### Regression prediction-gain analysis
+### Regression ensemble-disagreement analysis
 
-The standalone diagnostic compares the waveform regressors with an out-of-fold null model. Run it directly on one or more prepared datasets:
+The standalone diagnostic estimates how strongly different regression models disagree on the same waveform event. Run it directly on one or more prepared datasets:
 
 ```bash
 python -m waveform_analysis.scripts.analyze_instance_hardness \
@@ -178,28 +178,30 @@ The fixed model pool is:
 - `difference_knn_k50`: `k=50`, distance weighting;
 - `minirocket`: MiniROCKET + default RidgeCV, 10,000 kernels and at most 32 dilations per kernel.
 
-All models share the same deterministic OOF folds. For each held-out fold, the null model predicts the mean target of that fold's training subset, so the held-out event never contributes to its own null prediction.
-
-For event `i`, the reported gain is
+All four models share the same deterministic OOF folds. For event `i`, the primary diagnostic is
 
 ```
-gain_i = |y_i - y_null_i| - mean_m |y_i - yhat_m_i|
+D_i = std_m(yhat_mi)
 ```
 
-where `m` runs over the four waveform regressors. Therefore:
+where `m` runs over the four OOF waveform regressors. The population standard deviation is used because these four fixed models are the complete diagnostic ensemble. This score does not use the target value, so target magnitude cannot directly inflate the diagnostic.
 
-- positive gain: waveform models improve over the null model;
-- gain near zero: little improvement over guessing the training mean;
-- negative gain: waveform models are worse than the null model for that event.
+A secondary spread measure,
+
+```
+range_i = max_m(yhat_mi) - min_m(yhat_mi)
+```
+
+is also saved for interpretation.
 
 Default OOF evaluation uses three folds; use `--folds 5` for a more expensive estimate.
 
-Outputs are written under `./prediction_gain/<dataset>/` by default:
+Outputs are written under `./prediction_disagreement/<dataset>/` by default:
 
-- `prediction_gain.csv`: per-event target, null prediction/error, mean model error, gain, ensemble prediction, and per-model gains;
-- `model_oof_summary.csv`: OOF RMSE/MAE plus mean gain versus null for each model and the equal-mean ensemble;
-- `prediction_gain.npz`: compact numerical arrays;
-- `prediction_gain_vs_target.pdf`;
-- `prediction_gain_vs_abs_target.pdf`.
+- `prediction_disagreement.csv`: per-event target, disagreement, prediction range, ensemble prediction, and each model's OOF prediction/error;
+- `model_oof_summary.csv`: OOF RMSE/MAE for each model and for the equal-mean ensemble, plus mean/median disagreement;
+- `prediction_disagreement.npz`: compact numerical arrays;
+- `prediction_disagreement_vs_target.pdf`;
+- `prediction_disagreement_vs_abs_target.pdf`.
 
 The validation and blind/test splits are not used.
