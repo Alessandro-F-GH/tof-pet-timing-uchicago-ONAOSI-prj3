@@ -296,46 +296,36 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
                 np.asarray([cfd_choice[family]]),
             )[:, :, 0]
 
-    invalid_led = np.zeros(preprocessed.n_events, dtype=bool)
-    all_missing = np.zeros(preprocessed.n_events, dtype=bool)
-    all_noncoincidence = np.zeros(preprocessed.n_events, dtype=bool)
-    missing_by_family = {}
-    noncoincidence_by_family = {}
-    for family in families:
-        missing = led_missing_crossing[family]
-        noncoincidence = led_noncoincidence[family]
-        invalid = ~led_coverage[family]
-        invalid_led |= invalid
-        all_missing |= missing
-        all_noncoincidence |= noncoincidence
-        missing_by_family[family] = int(np.count_nonzero(missing))
-        noncoincidence_by_family[family] = int(np.count_nonzero(noncoincidence))
-        if np.any(missing) and "missing_led" not in diagnostic_examples:
-            event_row = int(np.flatnonzero(missing)[0])
-            diagnostic_examples["missing_led"] = {
-                "family": family,
-                "event_row": event_row,
-                "event_index": int(np.asarray(preprocessed.event_index)[event_row]),
-                "threshold_mV": float(led_choice[family]),
-            }
+    # Every experiment has exactly one active waveform family, because the
+    # configured mode is either energy_to_energy or timing_to_timing.
+    family = next(iter(families))
+    missing = led_missing_crossing[family]
+    noncoincidence = led_noncoincidence[family]
+    invalid_led = ~led_coverage[family]
+    if np.any(missing):
+        event_row = int(np.flatnonzero(missing)[0])
+        diagnostic_examples["missing_led"] = {
+            "family": family,
+            "event_row": event_row,
+            "event_index": int(np.asarray(preprocessed.event_index)[event_row]),
+            "threshold_mV": float(led_choice[family]),
+        }
 
     event_index = np.asarray(preprocessed.event_index, dtype=np.int64)
     invalid_led_index = event_index[invalid_led]
-    missing_led_index = event_index[all_missing]
-    noncoincidence_index = event_index[all_noncoincidence]
+    missing_led_index = event_index[missing]
+    noncoincidence_index = event_index[noncoincidence]
     np.save(base / "excluded_led_event_index.npy", invalid_led_index)
     np.save(base / "excluded_missing_led_event_index.npy", missing_led_index)
     np.save(base / "excluded_noncoincidence_event_index.npy", noncoincidence_index)
     if invalid_led_index.size:
         logger.warning(
-            "Discarding events outside selected LED coincidence | discarded=%d/%d | missing_crossing=%d | outside_±%.3fns=%d | missing_by_family=%s | noncoincidence_by_family=%s",
+            "Discarding events outside selected LED coincidence | discarded=%d/%d | missing_crossing=%d | outside_±%.3fns=%d",
             invalid_led_index.size,
             preprocessed.n_events,
             missing_led_index.size,
             coincidence_window_ps / 1000.0,
             noncoincidence_index.size,
-            missing_by_family,
-            noncoincidence_by_family,
         )
 
     ml_window_invalid = np.zeros(preprocessed.n_events, dtype=bool)
