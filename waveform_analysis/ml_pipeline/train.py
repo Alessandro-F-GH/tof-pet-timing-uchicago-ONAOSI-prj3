@@ -173,17 +173,22 @@ def search_model(
             return
         parameters = "default" if not result.candidate else result.candidate
         if result.error is None:
-            sigma_suffix = ""
             if "sigma_max_ps" in result.metadata:
-                sigma_suffix = f" | selected sigma_max={float(result.metadata['sigma_max_ps']):g} ps"
-            logger.info(
-                "  %d/%d | CTR=%.6g ps | %s%s",
-                number,
-                total,
-                result.score,
-                parameters,
-                sigma_suffix,
-            )
+                logger.info(
+                    "  %d/%d | CTR=%.6g ps | selected sigma_max=%g ps",
+                    number,
+                    total,
+                    result.score,
+                    float(result.metadata["sigma_max_ps"]),
+                )
+            else:
+                logger.info(
+                    "  %d/%d | CTR=%.6g ps | %s",
+                    number,
+                    total,
+                    result.score,
+                    parameters,
+                )
         else:
             logger.warning(
                 "  %d/%d | FAILED | %s | %s",
