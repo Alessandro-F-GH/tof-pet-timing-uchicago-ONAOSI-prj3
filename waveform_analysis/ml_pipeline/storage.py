@@ -10,11 +10,11 @@ class RunStore:
         if overwrite and self.root.exists(): shutil.rmtree(self.root)
         if self.root.exists() and any(self.root.iterdir()): raise FileExistsError(f"Run directory is not empty: {self.root}. Use --overwrite for a new run.")
         self.root.mkdir(parents=True,exist_ok=True)
-        for name in ("models","artifacts","search","splits","csv","plots"): (self.root/name).mkdir(exist_ok=True)
         self.csv_dir=self.root/"csv"
         self.plots_dir=self.root/"plots"
     def write_manifest(self,value): atomic_json(self.root/"manifest.json",value)
     def write_results(self,rows):
+        self.csv_dir.mkdir(parents=True,exist_ok=True)
         fields=list(dict.fromkeys(key for row in rows for key in row)); fd,tmp=tempfile.mkstemp(prefix=".results.",suffix=".csv",dir=self.csv_dir)
         try:
             with os.fdopen(fd,"w",encoding="utf-8",newline="") as stream:
@@ -24,9 +24,9 @@ class RunStore:
         finally:
             if os.path.exists(tmp): os.unlink(tmp)
     def save_split(self,dataset,prepared):
-        target=self.root/"splits"/f"{dataset}.npz"; np.savez_compressed(target,development=np.asarray(prepared.development,dtype=np.int64),training=np.asarray(prepared.training,dtype=np.int64),validation=np.asarray(prepared.validation,dtype=np.int64),test=np.asarray(prepared.test,dtype=np.int64)); return target
+        target=self.root/"splits"/f"{dataset}.npz"; target.parent.mkdir(parents=True,exist_ok=True); np.savez_compressed(target,development=np.asarray(prepared.development,dtype=np.int64),training=np.asarray(prepared.training,dtype=np.int64),validation=np.asarray(prepared.validation,dtype=np.int64),test=np.asarray(prepared.test,dtype=np.int64)); return target
     def save_search(self,dataset,name,value):
-        target=self.root/"search"/dataset/f"{name}.json"; atomic_json(target,value); return target
+        target=self.root/"search"/dataset/f"{name}.json"; target.parent.mkdir(parents=True,exist_ok=True); atomic_json(target,value); return target
     def model_dir(self,dataset,model):
         target=self.root/"models"/dataset/model; target.mkdir(parents=True,exist_ok=True); return target
     def save_residuals(self,dataset,method,values,*,stage="test"):
