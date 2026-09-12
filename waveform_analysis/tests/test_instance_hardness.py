@@ -10,8 +10,14 @@ from waveform_analysis.scripts.analyze_instance_hardness import (
 
 
 class InstanceHardnessTests(unittest.TestCase):
-    def test_fixed_model_pool_excludes_shapelet_and_cnn(self):
-        self.assertEqual(set(MODEL_SETTINGS), {"linear_svr", "difference_knn"})
+    def test_fixed_model_pool_has_dual_knn_and_minirocket(self):
+        self.assertEqual(
+            set(MODEL_SETTINGS),
+            {"linear_svr", "difference_knn_k2", "difference_knn_k50", "minirocket"},
+        )
+        self.assertEqual(MODEL_SETTINGS["difference_knn_k2"]["parameters"]["n_neighbors"], 2)
+        self.assertEqual(MODEL_SETTINGS["difference_knn_k50"]["parameters"]["n_neighbors"], 50)
+        self.assertEqual(MODEL_SETTINGS["minirocket"]["parameters"]["n_kernels"], 10000)
         self.assertNotIn("difference_shapelet", MODEL_SETTINGS)
         self.assertNotIn("cnn", MODEL_SETTINGS)
         self.assertNotIn("cnn_2d", MODEL_SETTINGS)
