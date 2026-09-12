@@ -91,6 +91,8 @@ def validate_config(config):
     missing = sorted(required - set(config))
     if missing:
         raise ConfigError(f"Missing configuration section(s): {missing}")
+    if "ml_training" in config:
+        raise ConfigError("ml_training is obsolete; all training events are always used")
     mode = str(config["mode"])
     family = mode_family(mode)
     if not isinstance(config["cfd"], bool):
