@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -62,8 +61,8 @@ MODEL_SETTINGS: dict[str, dict[str, Any]] = {
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Estimate regression instance hardness from prepared waveform datasets using "
-            "fixed Linear-SVR, two k-NN scales, and MiniROCKET regressors on d(t)=s1(t)-s2(t)."
+            "Estimate per-event prediction gain over an out-of-fold mean-target null model "
+            "using fixed regressors on d(t)=s1(t)-s2(t)."
         )
     )
     parser.add_argument(
@@ -76,8 +75,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("instance_hardness"),
-        help="Output root (default: ./instance_hardness)",
+        default=Path("prediction_gain"),
+        help="Output root (default: ./prediction_gain)",
     )
     parser.add_argument(
         "--folds",
@@ -119,26 +118,32 @@ def _difference_pair(pair: np.ndarray) -> np.ndarray:
     return np.stack([difference, np.zeros_like(difference)], axis=1)
 
 
-def _instance_hardness(target: np.ndarray, predictions: np.ndarray) -> tuple[np.ndarray, float]:
-    """Regression IH from a pool of regressors.
+def _prediction_gain(
+    target: np.ndarray,
+    predictions: np.ndarray,
+    null_prediction: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-event gain over a mean-target null model.
 
-    IH_i = 1 - mean_j exp(-(y_i-yhat_ji)^2 / gamma)
-    gamma = mean_i y_i^2
+    G_i = |y_i - yhat_null,i| - mean_j |y_i - yhat_j,i|
+
+    Positive gain means the waveform regressors outperform the null model for
+    that event; negative gain means they perform worse.
     """
     y = np.asarray(target, dtype=np.float64).reshape(-1)
     pred = np.asarray(predictions, dtype=np.float64)
+    null = np.asarray(null_prediction, dtype=np.float64).reshape(-1)
     if pred.ndim != 2 or pred.shape[1] != y.size:
         raise ValueError(f"Predictions must be [model, event], got {pred.shape}")
-    if not np.all(np.isfinite(y)) or not np.all(np.isfinite(pred)):
-        raise ValueError("Instance hardness requires finite targets and predictions")
+    if null.shape != y.shape:
+        raise ValueError(f"Null prediction shape differs from target: {null.shape} != {y.shape}")
+    if not np.all(np.isfinite(y)) or not np.all(np.isfinite(pred)) or not np.all(np.isfinite(null)):
+        raise ValueError("Prediction gain requires finite targets and predictions")
 
-    gamma = float(np.mean(y**2))
-    if not np.isfinite(gamma) or gamma <= np.finfo(np.float64).eps:
-        raise ValueError("Target signal power is zero; instance hardness is undefined")
-
-    normalized_squared_error = (pred - y[None, :]) ** 2 / gamma
-    return 1.0 - np.mean(np.exp(-normalized_squared_error), axis=0), gamma
-
+    null_abs_error = np.abs(y - null)
+    mean_model_abs_error = np.mean(np.abs(pred - y[None, :]), axis=0)
+    gain = null_abs_error - mean_model_abs_error
+    return gain, null_abs_error, mean_model_abs_error
 
 def _rmse(target: np.ndarray, prediction: np.ndarray) -> float:
     error = np.asarray(prediction, dtype=np.float64) - np.asarray(target, dtype=np.float64)
@@ -189,7 +194,7 @@ def _fit_predict_fold(
             from aeon.regression.convolution_based import MiniRocketRegressor
         except ImportError as exc:
             raise ImportError(
-                "MiniROCKET hardness analysis requires aeon; install waveform_analysis/requirements.txt"
+                "MiniROCKET gain analysis requires aeon; install waveform_analysis/requirements.txt"
             ) from exc
 
         difference = np.asarray(pair[:, 0, :], dtype=np.float32)
@@ -207,7 +212,7 @@ def _fit_predict_fold(
         model.fit(difference[fit_index], np.asarray(target[fit_index], dtype=np.float64))
         return np.asarray(model.predict(difference[predict_index]), dtype=np.float64).reshape(-1)
 
-    raise ValueError(f"Unknown hardness model kind: {kind!r}")
+    raise ValueError(f"Unknown gain-analysis model kind: {kind!r}")
 
 
 def _oof_predictions(
@@ -242,6 +247,28 @@ def _oof_predictions(
     if not np.all(np.isfinite(predictions)):
         raise RuntimeError(f"{model_name}: OOF prediction did not cover every training event")
     return predictions
+
+
+def _oof_null_prediction(
+    target: np.ndarray,
+    *,
+    folds: int,
+    split_seed: int,
+) -> np.ndarray:
+    """Predict each event with the mean target of its outer-fold training subset."""
+    y = np.asarray(target, dtype=np.float64).reshape(-1)
+    n_events = int(y.size)
+    if folds < 2 or folds > n_events:
+        raise ValueError(f"--folds must lie in [2, {n_events}], got {folds}")
+
+    prediction = np.full(n_events, np.nan, dtype=np.float64)
+    splitter = KFold(n_splits=folds, shuffle=True, random_state=int(split_seed))
+    for fit_index, predict_index in splitter.split(np.arange(n_events)):
+        prediction[predict_index] = float(np.mean(y[fit_index]))
+
+    if not np.all(np.isfinite(prediction)):
+        raise RuntimeError("Null OOF prediction did not cover every training event")
+    return prediction
 
 
 def _dataset_label(dataset) -> str:
@@ -283,10 +310,10 @@ def _quantile_trend(
     return np.asarray(centers), np.asarray(medians)
 
 
-def _hardness_plot(
+def _gain_plot(
     path: Path,
     x: np.ndarray,
-    hardness: np.ndarray,
+    gain: np.ndarray,
     *,
     xlabel: str,
     title: str,
@@ -294,8 +321,8 @@ def _hardness_plot(
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8.2, 5.2))
-    ax.scatter(x, hardness, s=10, alpha=0.28, label="training event")
-    trend_x, trend_y = _quantile_trend(x, hardness)
+    ax.scatter(x, gain, s=10, alpha=0.28, label="training event")
+    trend_x, trend_y = _quantile_trend(x, gain)
     if trend_x.size:
         ax.plot(
             trend_x,
@@ -305,8 +332,8 @@ def _hardness_plot(
             label="quantile-bin median",
         )
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("Regression instance hardness")
-    ax.set_ylim(-0.02, 1.02)
+    ax.axhline(0.0, linewidth=1.0, linestyle="--", label="null-model parity")
+    ax.set_ylabel("Prediction gain over null [ps]")
     ax.set_title(title)
     ax.grid(True, alpha=0.2)
     ax.legend()
@@ -350,7 +377,7 @@ def analyze_prepared_dataset(
             pair,
             target,
             folds=folds,
-            split_seed=semantic_seed(seed, label, "hardness_folds"),
+            split_seed=semantic_seed(seed, label, "gain_folds"),
             model_seed=semantic_seed(seed, label, model_name),
         )
         predictions[model_name] = model_prediction
@@ -373,8 +400,41 @@ def analyze_prepared_dataset(
         [predictions[name] for name in MODEL_SETTINGS],
         axis=0,
     )
-    hardness, gamma = _instance_hardness(target, prediction_matrix)
+    split_seed = semantic_seed(seed, label, "gain_folds")
+    null_prediction = _oof_null_prediction(
+        target,
+        folds=folds,
+        split_seed=split_seed,
+    )
+    gain, null_abs_error, mean_model_abs_error = _prediction_gain(
+        target,
+        prediction_matrix,
+        null_prediction,
+    )
     ensemble_prediction = np.mean(prediction_matrix, axis=0)
+    null_mae = _mae(target, null_prediction)
+    for row in summaries:
+        model_name = str(row["model"])
+        row["mean_gain_vs_null_ps"] = float(
+            null_mae - _mae(target, predictions[model_name])
+        )
+
+    summaries.append(
+        {
+            "dataset": label,
+            "voltage_V": voltage,
+            "mode": mode,
+            "model": "null_mean",
+            "parameters_json": str({"prediction": "outer-fold training-target mean"}),
+            "oof_rmse_ps": _rmse(target, null_prediction),
+            "oof_mae_ps": _mae(target, null_prediction),
+            "mean_gain_vs_null_ps": 0.0,
+            "folds": int(folds),
+            "training_events": int(training.size),
+            "input_samples": 0,
+        }
+    )
+
     summaries.append(
         {
             "dataset": label,
@@ -384,6 +444,7 @@ def analyze_prepared_dataset(
             "parameters_json": str({"members": list(MODEL_SETTINGS)}),
             "oof_rmse_ps": _rmse(target, ensemble_prediction),
             "oof_mae_ps": _mae(target, ensemble_prediction),
+            "mean_gain_vs_null_ps": float(null_mae - _mae(target, ensemble_prediction)),
             "folds": int(folds),
             "training_events": int(training.size),
             "input_samples": int(pair.shape[-1]),
@@ -402,8 +463,10 @@ def analyze_prepared_dataset(
             "event_index": int(event_index[position]),
             "target_ps": float(target[position]),
             "abs_target_ps": float(abs(target[position])),
-            "instance_hardness": float(hardness[position]),
-            "gamma_target_power_ps2": gamma,
+            "null_prediction_ps": float(null_prediction[position]),
+            "null_abs_error_ps": float(null_abs_error[position]),
+            "mean_model_abs_error_ps": float(mean_model_abs_error[position]),
+            "prediction_gain_ps": float(gain[position]),
             "ensemble_prediction_ps": float(ensemble_prediction[position]),
             "ensemble_abs_error_ps": float(
                 abs(ensemble_prediction[position] - target[position])
@@ -411,19 +474,19 @@ def analyze_prepared_dataset(
         }
         for model_name, model_prediction in predictions.items():
             prediction = float(model_prediction[position])
-            squared_error = (prediction - float(target[position])) ** 2
+            abs_error = abs(prediction - float(target[position]))
             row[f"{model_name}_prediction_ps"] = prediction
-            row[f"{model_name}_abs_error_ps"] = math.sqrt(squared_error)
-            row[f"{model_name}_ih_similarity"] = math.exp(-squared_error / gamma)
+            row[f"{model_name}_abs_error_ps"] = abs_error
+            row[f"{model_name}_gain_vs_null_ps"] = float(null_abs_error[position] - abs_error)
         rows.append(row)
 
     dataset_output = output_dir / label
-    event_csv = dataset_output / "instance_hardness.csv"
+    event_csv = dataset_output / "prediction_gain.csv"
     summary_csv = dataset_output / "model_oof_summary.csv"
-    arrays_path = dataset_output / "instance_hardness.npz"
-    target_plot = dataset_output / f"instance_hardness_vs_target.{plot_format}"
+    arrays_path = dataset_output / "prediction_gain.npz"
+    target_plot = dataset_output / f"prediction_gain_vs_target.{plot_format}"
     abs_target_plot = (
-        dataset_output / f"instance_hardness_vs_abs_target.{plot_format}"
+        dataset_output / f"prediction_gain_vs_abs_target.{plot_format}"
     )
 
     _write_csv(event_csv, rows)
@@ -432,7 +495,10 @@ def analyze_prepared_dataset(
     np.savez_compressed(
         arrays_path,
         target_ps=target,
-        instance_hardness=hardness,
+        null_prediction_ps=null_prediction,
+        null_abs_error_ps=null_abs_error,
+        mean_model_abs_error_ps=mean_model_abs_error,
+        prediction_gain_ps=gain,
         ensemble_prediction_ps=ensemble_prediction,
         **{
             f"{name}_prediction_ps": values
@@ -441,19 +507,19 @@ def analyze_prepared_dataset(
     )
 
     title_suffix = f"{voltage:g} V" if np.isfinite(voltage) else label
-    _hardness_plot(
+    _gain_plot(
         target_plot,
         target,
-        hardness,
+        gain,
         xlabel=r"Training target $y_{\mathrm{target}}$ [ps]",
-        title=f"Regression instance hardness · {title_suffix}",
+        title=f"Prediction gain over null · {title_suffix}",
     )
-    _hardness_plot(
+    _gain_plot(
         abs_target_plot,
         np.abs(target),
-        hardness,
+        gain,
         xlabel=r"$|y_{\mathrm{target}}|$ [ps]",
-        title=f"Regression instance hardness vs target magnitude · {title_suffix}",
+        title=f"Prediction gain over null vs target magnitude · {title_suffix}",
     )
 
     return [
