@@ -11,6 +11,7 @@ from waveform_analysis.ml_pipeline.models.cnn_heteroscedastic import (
     HeteroscedasticCNNArtifact,
     HeteroscedasticSharedScorerCNN,
     _gate as heteroscedastic_gate,
+    candidates as heteroscedastic_candidates,
     predict as predict_heteroscedastic,
     predict_distribution as predict_heteroscedastic_distribution,
 )
@@ -62,6 +63,19 @@ class AntisymmetryTests(unittest.TestCase):
         reverse_mean, reverse_sigma = predict_heteroscedastic_distribution(artifact, pair[:, ::-1, :])
         np.testing.assert_allclose(forward_mean, -reverse_mean, rtol=1e-6, atol=1e-6)
         np.testing.assert_allclose(forward_sigma, reverse_sigma, rtol=1e-6, atol=1e-6)
+
+    def test_heteroscedastic_sigma_thresholds_do_not_multiply_training_candidates(self):
+        config = {
+            "parameters": {
+                "learning_rate": [1e-3, 5e-4],
+                "weight_decay": [1e-5],
+                "batch_size": [64],
+                "sigma_max_ps": [10.0, 20.0, 30.0, 50.0],
+            }
+        }
+        candidates = heteroscedastic_candidates(config)
+        self.assertEqual(len(candidates), 2)
+        self.assertTrue(all("sigma_max_ps" not in row for row in candidates))
 
     def test_heteroscedastic_sigma_gate_returns_zero_above_limit(self):
         mean = np.asarray([12.0, -8.0, 3.0])
