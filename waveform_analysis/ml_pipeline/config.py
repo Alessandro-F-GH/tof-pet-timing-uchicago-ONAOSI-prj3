@@ -87,10 +87,12 @@ def mode_family(mode: str) -> str:
 
 
 def validate_config(config):
-    required = {"data", "preprocessing", "validation", "standard_methods", "models", "mode", "cfd", "ml_input", "ml_training", "ml_output", "fit", "experiment"}
+    required = {"data", "preprocessing", "validation", "standard_methods", "models", "mode", "cfd", "ml_input", "ml_output", "fit", "experiment"}
     missing = sorted(required - set(config))
     if missing:
         raise ConfigError(f"Missing configuration section(s): {missing}")
+    if "ml_training" in config:
+        raise ConfigError("ml_training is obsolete; all training events are always used")
     mode = str(config["mode"])
     family = mode_family(mode)
     if not isinstance(config["cfd"], bool):
@@ -124,24 +126,6 @@ def validate_config(config):
         raise ConfigError("ml_input.window_ns.end must exceed start")
     if int(ml_input.get("subsampling", 1)) <= 0:
         raise ConfigError("ml_input.subsampling must be positive")
-
-    ml_training = config["ml_training"]
-    if set(ml_training) != {"target_abs_max_ps"}:
-        raise ConfigError("ml_training must contain only target_abs_max_ps")
-    ranges = ml_training["target_abs_max_ps"]
-    if not isinstance(ranges, list) or not ranges:
-        raise ConfigError("ml_training.target_abs_max_ps must be a non-empty list")
-    normalized_ranges = []
-    for value in ranges:
-        if isinstance(value, bool):
-            raise ConfigError("ml_training.target_abs_max_ps values must be finite positive numbers")
-        limit = float(value)
-        if not np_isfinite_positive(limit):
-            raise ConfigError("ml_training.target_abs_max_ps values must be finite positive numbers")
-        normalized_ranges.append(limit)
-    if len(set(normalized_ranges)) != len(normalized_ranges):
-        raise ConfigError("ml_training.target_abs_max_ps values must be unique")
-    ml_training["target_abs_max_ps"] = normalized_ranges
 
     ml_output = config["ml_output"]
     if set(ml_output) != {"max_abs_ps"} or float(ml_output["max_abs_ps"]) <= 0:

@@ -55,7 +55,7 @@ A ready timing configuration is available at `config/experiments/timing_concaten
 
 CNN training is reproducible for a fixed candidate seed: NumPy, PyTorch CPU/CUDA RNGs, DataLoader shuffling, deterministic PyTorch algorithms, deterministic cuDNN, and deterministic cuBLAS workspace configuration are fixed before model initialization. The exact training seed is saved in model metadata. This may reduce GPU throughput slightly but prevents run-to-run kernel nondeterminism.
 
-The standard CNN comparison uses two paired-input architectures. `cnn` is the shared 1-D scorer: the same 1-D network scores each detector waveform and the correction is `score(s1)-score(s2)`, enforcing detector-swap antisymmetry. `cnn_2d` is one joint network over the stacked `[2,time]` detector pair. Its first temporal block preserves the two detector rows with a height-1 kernel; a configurable later convolution spans both rows once and fuses the detector axis before the remaining temporal blocks. The network then predicts one correction directly. The two model-space configs use the same temporal channels, kernels, strides, dilations, pooling and dense head so the comparison isolates the shared-1-D versus joint-2-D structure. Their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the training split and ranked **only by validation CTR** of `y_target - y_theta`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+The standard CNN comparison uses two paired-input architectures. `cnn` is the shared 1-D scorer: the same 1-D network scores each detector waveform and the correction is `score(s1)-score(s2)`, enforcing detector-swap antisymmetry. `cnn_2d` is one joint network over the stacked `[2,time]` detector pair. Its first temporal block preserves the two detector rows with a height-1 kernel; a configurable later convolution spans both rows once and fuses the detector axis before the remaining temporal blocks. The network then predicts one correction directly. The two model-space configs use the same temporal channels, kernels, strides, dilations, pooling and dense head so the comparison isolates the shared-1-D versus joint-2-D structure. Their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the **entire training split** and ranked **only by validation CTR** of `y_target - y_theta`. No events are removed according to the magnitude of `y_target`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
 
 The permanent test population is evaluated once after model selection. The LED reference residual is
 
@@ -133,11 +133,10 @@ python -m waveform_analysis.scripts.analyze_study_results \
   --run-dir waveform_analysis/results/studies/complete_energy
 ```
 
-By default this writes three files under `<run-dir>/analysis_summary/`:
+By default this writes two files under `<run-dir>/analysis_summary/`:
 
 - `study_summary.tex`: ready-to-include LaTeX table with selected LED threshold, blind-test LED CTR, and blind-test CTR for every ML model at each voltage;
-- `study_summary_vs_voltage.pdf`: selected LED threshold and blind-test CTR versus bias voltage, including bootstrap CTR error bars;
-- `validation_ctr_vs_target_filter.pdf`: target-filter sensitivity, with one voltage per panel and one curve per model. For each `target_abs_max_ps`, the plotted value is the best validation CTR over that model's remaining hyperparameters; a star marks the globally selected candidate.
+- `study_summary_vs_voltage.pdf`: selected LED threshold and blind-test CTR versus bias voltage, including bootstrap CTR error bars.
 
 Use `--plot-format png` for raster plots or `--output-dir <path>` to redirect the report.
 
@@ -159,49 +158,3 @@ Outputs are written under `<run-dir>/cross_voltage/`:
 - `cross_voltage_<model>.pdf`: annotated CTR heatmap for the same matrix.
 
 Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models cnn cnn_2d` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
-
-### Regression ensemble-disagreement analysis
-
-The standalone diagnostic estimates how strongly different regression models disagree on the same waveform event. Run it directly on one or more prepared datasets:
-
-```bash
-python -m waveform_analysis.scripts.analyze_instance_hardness \
-  --prepared-dir waveform_analysis/processed_data/ml_prepared/timing_to_timing/49V-490mV
-```
-
-The analysis uses only the prepared dataset's training split and the normalized synchronized signal difference `d(t)=s1(t)-s2(t)`.
-
-The fixed model pool is:
-
-- `linear_svr`: `C=0.1`, `epsilon=10 ps`;
-- `difference_knn_k2`: `k=2`, distance weighting;
-- `difference_knn_k50`: `k=50`, distance weighting;
-- `minirocket`: MiniROCKET + default RidgeCV, 10,000 kernels and at most 32 dilations per kernel.
-
-All four models share the same deterministic OOF folds. For event `i`, the primary diagnostic is
-
-```
-D_i = std_m(yhat_mi)
-```
-
-where `m` runs over the four OOF waveform regressors. The population standard deviation is used because these four fixed models are the complete diagnostic ensemble. This score does not use the target value, so target magnitude cannot directly inflate the diagnostic.
-
-A secondary spread measure,
-
-```
-range_i = max_m(yhat_mi) - min_m(yhat_mi)
-```
-
-is also saved for interpretation.
-
-Default OOF evaluation uses three folds; use `--folds 5` for a more expensive estimate.
-
-Outputs are written under `./prediction_disagreement/<dataset>/` by default:
-
-- `prediction_disagreement.csv`: per-event target, disagreement, prediction range, ensemble prediction, and each model's OOF prediction/error;
-- `model_oof_summary.csv`: OOF RMSE/MAE for each model and for the equal-mean ensemble, plus mean/median disagreement;
-- `prediction_disagreement.npz`: compact numerical arrays;
-- `prediction_disagreement_vs_target.pdf`;
-- `prediction_disagreement_vs_abs_target.pdf`.
-
-The validation and blind/test splits are not used.

@@ -22,7 +22,7 @@ from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
-from .train import predict_indices, save_model, search_model, selected_model, target_range_counts
+from .train import predict_indices, save_model, search_model, selected_model
 from .view import calibrated_led, corrected_timing_residual, inverse_pair, model_target, standard_delta, target_family
 
 
@@ -172,13 +172,13 @@ def run_study(
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 11,
+        "schema_version": 12,
         "protocol": "single_mode_validation_ctr_selected_model_holdout",
         "mode": mode,
         "concatenate_datasets": concatenate,
         "test_used_for_selection": False,
         "model_selection_metric": "validation_ctr",
-        "selected_model_policy": "select_model_hyperparameters_and_training_target_range_on_full_validation_then_use_trained_model_without_refit",
+        "selected_model_policy": "select_model_hyperparameters_on_full_validation_then_use_trained_model_without_refit",
         "sample_mask_policy": {
             "derived_from": "training_split_only",
             "constant_fraction": SAMPLE_CONSTANT_FRACTION,
@@ -190,10 +190,9 @@ def run_study(
             "shared_across_models_within_dataset": True,
             "validation_and_test_do_not_define_mask": True,
         },
-        "training_target_range_search": {
-            "definition": "abs(model_target) <= target_abs_max_ps",
-            "candidates_ps": list(map(float, config["ml_training"]["target_abs_max_ps"])),
-            "filter_applies_to": "training_only",
+        "training_data_policy": {
+            "uses_full_training_split": True,
+            "target_filter": None,
             "validation_filter": None,
             "blind_test_filter": None,
         },
@@ -276,15 +275,10 @@ def run_study(
             removed_samples,
         )
 
-        training_target = model_target(dataset, mode)[np.asarray(dataset.training, dtype=np.int64)]
-        filter_summary = " | ".join(
-            f"±{limit:g} ps: {used}/{total} ({100.0 * fraction:.1f}%)"
-            for limit, used, total, fraction in target_range_counts(
-                training_target,
-                config["ml_training"]["target_abs_max_ps"],
-            )
+        logger.info(
+            "Training data | full split | events=%d | no target-value filtering",
+            dataset.training.size,
         )
-        logger.info("Target filters | %s", filter_summary)
 
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
@@ -304,20 +298,12 @@ def run_study(
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, search.best.candidate, "validation_ctr"))
-            selected_parameters = {
-                key: value
-                for key, value in search.best.candidate.items()
-                if key != "target_abs_max_ps"
-            }
             logger.info(
-                "Selected %s | CTR=%.6g ps | range=±%.6g ps | train=%d/%d (%.1f%%) | %s",
+                "Selected %s | CTR=%.6g ps | train=%d events | %s",
                 LABELS.get(model_name, model_name),
                 search.best.score,
-                float(search.best.metadata["training_target_abs_max_ps"]),
-                int(search.best.metadata["training_events_used"]),
-                int(search.best.metadata["training_events_available"]),
-                100.0 * float(search.best.metadata["training_fraction_used"]),
-                "default" if not selected_parameters else selected_parameters,
+                int(search.best.metadata["training_events"]),
+                "default" if not search.best.candidate else search.best.candidate,
             )
 
             xai = config.get("reporting", {}).get("xai", {}) or {}

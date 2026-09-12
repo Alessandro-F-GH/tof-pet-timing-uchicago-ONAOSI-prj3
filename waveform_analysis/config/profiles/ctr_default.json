@@ -44,13 +44,5 @@
       "end": 30
     },
     "subsampling": 1
-  },
-  "ml_training": {
-    "target_abs_max_ps": [
-      100,
-      200,
-      400,
-      800
-    ]
   }
 }
