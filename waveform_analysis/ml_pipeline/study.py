@@ -272,6 +272,11 @@ def run_study(
             removed_samples,
         )
 
+        validation_indices = np.asarray(dataset.validation, dtype=np.int64)
+        validation_target = model_target(dataset, mode)
+        validation_led = calibrated_led(dataset, mode)[validation_indices]
+        store.save_residuals(name, "led", validation_led, stage="validation")
+
         for model_name, model_config in config["models"].items():
             spec = get_model(model_name)
             search = search_model(
@@ -291,6 +296,23 @@ def run_study(
             store.save_search(name, model_name, search.as_dict())
             fitted_models[model_name] = fitted
             rows.append(_selection_row(name, voltage, mode, model_name, search.best.score, selected_parameters, "validation_ctr"))
+            validation_prediction, _validation_time, _validation_pair = predict_indices(
+                spec,
+                fitted,
+                dataset,
+                mode,
+                validation_indices,
+            )
+            store.save_model_output(name, model_name, validation_prediction, stage="validation")
+            store.save_residuals(
+                name,
+                model_name,
+                corrected_timing_residual(
+                    validation_target[validation_indices],
+                    validation_prediction,
+                ),
+                stage="validation",
+            )
             if len(search.candidates) > 1:
                 logger.info(
                     "Selected %s | %s",

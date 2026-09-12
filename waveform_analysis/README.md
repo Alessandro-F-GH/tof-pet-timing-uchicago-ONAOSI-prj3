@@ -71,6 +71,24 @@ All finite residuals are included in the canonical CTR calculation. There is no 
 
 Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
 
+### LED-threshold / ML interaction sweep
+
+`scripts/sweep_led_thresholds.py` retrains the configured ML models at fixed LED thresholds to test whether the LED threshold that minimizes standalone LED CTR is also the best threshold for an ML-corrected result. Each threshold gets a separate prepared-data cache because LED crossing, coincidence acceptance, waveform alignment and the ML target depend on the threshold; threshold-independent selection and waveform preprocessing caches are reused.
+
+Threshold ranking is performed on the intersection of validation event IDs that survive every successful threshold, so CTR differences cannot be explained by different retained validation populations. For each model the script reports LED CTR, ML CTR and relative improvement `(CTR_LED - CTR_ML) / CTR_LED`. The ML-paired threshold is selected by minimum common-validation ML CTR. Blind/test CTR is then reported only for that validation-selected threshold and is not used for threshold selection.
+
+Example:
+
+```powershell
+python waveform_analysis/scripts/sweep_led_thresholds.py \
+  --config waveform_analysis/config/experiments/timing.json \
+  --thresholds 5 10 15 20 25 30 35 40 50 60 \
+  --models cnn \
+  --overwrite
+```
+
+The sweep writes per-threshold runs under `runs/`, threshold-specific prepared caches under `prepared/`, comparison CSV files under `csv/`, and CTR/improvement plots under `plots/`.
+
 ## Results
 
 For ordinary per-voltage studies, the study root contains:
