@@ -178,12 +178,14 @@ python -m waveform_analysis.scripts.analyze_instance_hardness \
 
 The analysis uses only the prepared dataset's training split and only the normalized synchronized signal difference `d(t)=s1(t)-s2(t)`.
 
-The fixed model pool is intentionally small and fast:
+The fixed model pool is intentionally diverse while remaining efficient:
 
 - `linear_svr`: `C=0.1`, `epsilon=10 ps`;
-- `difference_knn`: `k=20`, distance weighting.
+- `difference_knn_k2`: `k=2`, distance weighting, emphasizing very local waveform similarity;
+- `difference_knn_k50`: `k=50`, distance weighting, providing a much smoother neighborhood estimate;
+- `minirocket`: MiniROCKET + its default RidgeCV regressor, with 10,000 kernels, at most 32 dilations per kernel, and all CPU cores.
 
-No CNN, 2-D CNN, or shapelet model is used. No study search results or selected hyperparameters are read.
+All four members receive exactly the same normalized difference signal `d(t)=s1(t)-s2(t)`. No CNN, 2-D CNN, or shapelet model is used. No study search results or selected hyperparameters are read. The same OOF folds are shared across ensemble members; model-specific seeds affect only the fitted estimator.
 
 For every model, deterministic out-of-fold predictions are generated over the prepared dataset's training population. Regression instance hardness follows the pool-of-regressors definition with an exponential kernel, squared target error, and target signal power `gamma = mean(y^2)` as normalization.
 
@@ -192,7 +194,7 @@ Default OOF evaluation uses three folds for efficiency; use `--folds 5` for a mo
 Outputs are written under `./instance_hardness/<dataset>/` by default:
 
 - `instance_hardness.csv`: per-event target, hardness, ensemble prediction, and each model's OOF prediction/error;
-- `model_oof_summary.csv`: OOF RMSE/MAE for the two members and their equal-mean ensemble;
+- `model_oof_summary.csv`: OOF RMSE/MAE for the four members and their equal-mean ensemble;
 - `instance_hardness.npz`: compact numerical arrays;
 - `instance_hardness_vs_target.pdf`;
 - `instance_hardness_vs_abs_target.pdf`.
