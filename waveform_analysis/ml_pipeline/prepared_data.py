@@ -421,8 +421,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         "led_development_ctr_ps": led_score,
         "led_development_coverage": led_development_coverage,
         "led_development_efficiency": led_development_efficiency,
-        "led_missing_by_family": missing_by_family,
-        "led_noncoincidence_by_family": noncoincidence_by_family,
         "led_training_mean_ps": led_training_mean,
         "calibration_bias_ps": calibration_bias,
         "cfd_fraction": cfd_choice,
