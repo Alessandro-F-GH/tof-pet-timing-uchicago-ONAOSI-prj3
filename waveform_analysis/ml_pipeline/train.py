@@ -109,9 +109,11 @@ def search_model(
 
     def fit_candidate(parameters, candidate_seed):
         model_parameters = dict(parameters)
+        runtime_model_config = copy.deepcopy(model_config)
+        runtime_model_config["_fit_config"] = fit_config
         fitted = _fit_once(
             spec,
-            model_config,
+            runtime_model_config,
             model_parameters,
             train_x,
             train_target,
