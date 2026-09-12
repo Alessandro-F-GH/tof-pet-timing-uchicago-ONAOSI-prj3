@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np, torch
+
+from utils_fit import fit_ctr_ps
 from torch import nn
 from torch.utils.data import DataLoader,TensorDataset
 
@@ -58,15 +60,17 @@ class HeteroscedasticCNNArtifact:
 
 def candidates(config):
     p=config.get("parameters",{}); training=config.get("training",{})
-    result=[]
-    for lr,wd,batch,sigma_max in itertools.product(
-        p.get("learning_rate",[1e-3]),p.get("weight_decay",[1e-5]),
-        p.get("batch_size",[training.get("batch_size",64)]),p.get("sigma_max_ps",[20.0])
-    ):
-        sigma_max=float(sigma_max)
-        if not np.isfinite(sigma_max) or sigma_max<=0: raise ValueError("sigma_max_ps must be positive")
-        result.append({"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch),"sigma_max_ps":sigma_max})
-    return result
+    sigma_values=[float(v) for v in p.get("sigma_max_ps",[20.0])]
+    if not sigma_values or any((not np.isfinite(v) or v<=0) for v in sigma_values):
+        raise ValueError("sigma_max_ps values must be finite and positive")
+    return [
+        {"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch)}
+        for lr,wd,batch in itertools.product(
+            p.get("learning_rate",[1e-3]),
+            p.get("weight_decay",[1e-5]),
+            p.get("batch_size",[training.get("batch_size",64)])
+        )
+    ]
 
 def gaussian_nll(mean,log_variance,target):
     residual=target-mean
@@ -98,7 +102,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     model.initialize_sigma(max(initial_pair_sigma/math.sqrt(2),1.0))
     optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"]))
     batch=int(params.get("batch_size",training.get("batch_size",64)))
-    sigma_max=float(params["sigma_max_ps"])
+    sigma_candidates=[float(v) for v in config.get("parameters",{}).get("sigma_max_ps",[20.0])]
     max_epochs=int(training.get("epochs",300)); patience=int(training.get("patience",10))
     min_delta=float(training.get("min_delta",0.01)); clip=float(training.get("gradient_clip_norm",10.0))
     loader=_loader(train_x,train_target,batch,shuffle=True,seed=training_seed)
@@ -125,16 +129,34 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     if best_state is None: raise RuntimeError("cnn_heteroscedastic produced no valid checkpoint")
     model.load_state_dict(best_state)
     validation_mean,validation_sigma=_predict_distribution(model,validation_x,device,batch)
-    gated=_gate(validation_mean,validation_sigma,sigma_max)
+    fit_config=dict(config.get("_fit_config") or {})
     output_limit=config.get("_prediction_max_abs_ps")
+    threshold_rows=[]
+    for sigma_max in sigma_candidates:
+        gated=_gate(validation_mean,validation_sigma,sigma_max)
+        if output_limit is not None:
+            gated=np.clip(gated,-float(output_limit),float(output_limit))
+        residual=np.asarray(validation_target,dtype=np.float64)-gated
+        ctr=float(fit_ctr_ps(residual,fit_config,seed=training_seed,bootstrap=False).ctr_ps)
+        threshold_rows.append({
+            "sigma_max_ps":float(sigma_max),
+            "validation_ctr_ps":ctr,
+            "validation_rmse_ps":_rmse(gated-validation_target),
+            "suppressed_fraction":float(np.mean(validation_sigma>sigma_max)),
+        })
+    best_threshold=min(threshold_rows,key=lambda row:(row["validation_ctr_ps"],row["sigma_max_ps"]))
+    sigma_max=float(best_threshold["sigma_max_ps"])
+    gated=_gate(validation_mean,validation_sigma,sigma_max)
     return HeteroscedasticCNNArtifact(model,str(device),sigma_max,{
         "best_epoch":int(best_epoch),
         "best_validation_rmse_ps":float(best_score),
-        "best_validation_gated_rmse_ps":_rmse(gated-validation_target),
+        "best_validation_gated_rmse_ps":float(best_threshold["validation_rmse_ps"]),
+        "best_validation_gated_ctr_ps":float(best_threshold["validation_ctr_ps"]),
+        "sigma_threshold_search":threshold_rows,
         "early_stopping_metric":"validation_raw_mean_rmse",
         "loss":"heteroscedastic_gaussian_negative_log_likelihood",
         "sigma_max_ps":sigma_max,
-        "validation_sigma_suppressed_fraction":float(np.mean(validation_sigma>sigma_max)),
+        "validation_sigma_suppressed_fraction":float(best_threshold["suppressed_fraction"]),
         "pair_sigma_definition":"sqrt(sigma(s1)^2 + sigma(s2)^2)",
         "pair_variance_assumption":"conditional independence of single-signal noise contributions",
         "prediction_definition":"mu(s1)-mu(s2) if pair sigma <= sigma_max_ps, else 0 ps",

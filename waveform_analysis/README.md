@@ -65,7 +65,7 @@ and, assuming conditionally independent single-signal noise contributions,
 
 `sigma_pair = sqrt(sigma(s1)^2 + sigma(s2)^2)`.
 
-It is trained with a Gaussian heteroscedastic negative log-likelihood. The configurable candidate parameter `sigma_max_ps` acts as an abstention threshold: when `sigma_pair > sigma_max_ps`, the returned timing correction is exactly `0 ps`; otherwise the returned correction is `mu_pair`. Because the uncertainty is symmetric under detector exchange while the mean is antisymmetric, the final gated prediction remains detector-swap antisymmetric. A comparison configuration is available at `config/experiments/timing_heteroscedastic.json`.
+It is trained with a Gaussian heteroscedastic negative log-likelihood. `sigma_max_ps` is a post-training validation threshold, not a training hyperparameter: each CNN is trained once for a given learning-rate/weight-decay/batch-size candidate, then all configured `sigma_max_ps` values are swept on the same validation predictions and the threshold with the best validation CTR is retained. When `sigma_pair > sigma_max_ps`, the returned timing correction is exactly `0 ps`; otherwise it is `mu_pair`. Because the uncertainty is symmetric under detector exchange while the mean is antisymmetric, the final gated prediction remains detector-swap antisymmetric. A comparison configuration is available at `config/experiments/timing_heteroscedastic.json`.
 
 The permanent test population is evaluated once after model selection. The LED reference residual is
 
