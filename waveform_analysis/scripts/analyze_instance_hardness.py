@@ -25,6 +25,8 @@ from waveform_analysis.ml_pipeline.view import model_target, waveform_view
 
 MODEL_SETTINGS: dict[str, dict[str, Any]] = {
     "linear_svr": {
+        "kind": "repository",
+        "repository_model": "linear_svr",
         "parameters": {"C": 0.1, "epsilon_ps": 10.0},
         "config": {
             "loss": "epsilon_insensitive",
@@ -33,9 +35,26 @@ MODEL_SETTINGS: dict[str, dict[str, Any]] = {
             "dual": "auto",
         },
     },
-    "difference_knn": {
-        "parameters": {"n_neighbors": 20, "weights": "distance"},
+    "difference_knn_k2": {
+        "kind": "repository",
+        "repository_model": "difference_knn",
+        "parameters": {"n_neighbors": 2, "weights": "distance"},
         "config": {"n_jobs": -1},
+    },
+    "difference_knn_k50": {
+        "kind": "repository",
+        "repository_model": "difference_knn",
+        "parameters": {"n_neighbors": 50, "weights": "distance"},
+        "config": {"n_jobs": -1},
+    },
+    "minirocket": {
+        "kind": "minirocket",
+        "parameters": {
+            "n_kernels": 10000,
+            "max_dilations_per_kernel": 32,
+            "n_jobs": -1,
+        },
+        "config": {},
     },
 }
 
@@ -44,7 +63,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Estimate regression instance hardness from prepared waveform datasets using "
-            "fixed Linear-SVR and k-NN regressors on d(t)=s1(t)-s2(t)."
+            "fixed Linear-SVR, two k-NN scales, and MiniROCKET regressors on d(t)=s1(t)-s2(t)."
         )
     )
     parser.add_argument(
@@ -137,40 +156,88 @@ def _mae(target: np.ndarray, prediction: np.ndarray) -> float:
     )
 
 
+def _fit_predict_fold(
+    model_name: str,
+    pair: np.ndarray,
+    target: np.ndarray,
+    fit_index: np.ndarray,
+    predict_index: np.ndarray,
+    *,
+    seed: int,
+) -> np.ndarray:
+    settings = MODEL_SETTINGS[model_name]
+    kind = str(settings["kind"])
+
+    if kind == "repository":
+        spec = get_model(str(settings["repository_model"]))
+        artifact = spec.fit(
+            dict(settings["parameters"]),
+            np.asarray(pair[fit_index], dtype=np.float32),
+            np.asarray(target[fit_index], dtype=np.float64),
+            seed=int(seed),
+            config=dict(settings["config"]),
+            validation_x=None,
+            validation_target=None,
+        )
+        return np.asarray(
+            spec.predict(artifact, pair[predict_index]),
+            dtype=np.float64,
+        ).reshape(-1)
+
+    if kind == "minirocket":
+        try:
+            from aeon.regression.convolution_based import MiniRocketRegressor
+        except ImportError as exc:
+            raise ImportError(
+                "MiniROCKET hardness analysis requires aeon; install waveform_analysis/requirements.txt"
+            ) from exc
+
+        difference = np.asarray(pair[:, 0, :], dtype=np.float32)
+        if difference.shape[1] < 9:
+            raise ValueError(
+                f"MiniROCKET requires at least 9 time samples, got {difference.shape[1]}"
+            )
+        parameters = dict(settings["parameters"])
+        model = MiniRocketRegressor(
+            n_kernels=int(parameters["n_kernels"]),
+            max_dilations_per_kernel=int(parameters["max_dilations_per_kernel"]),
+            random_state=int(seed),
+            n_jobs=int(parameters["n_jobs"]),
+        )
+        model.fit(difference[fit_index], np.asarray(target[fit_index], dtype=np.float64))
+        return np.asarray(model.predict(difference[predict_index]), dtype=np.float64).reshape(-1)
+
+    raise ValueError(f"Unknown hardness model kind: {kind!r}")
+
+
 def _oof_predictions(
     model_name: str,
     pair: np.ndarray,
     target: np.ndarray,
     *,
     folds: int,
-    seed: int,
+    split_seed: int,
+    model_seed: int,
 ) -> np.ndarray:
-    settings = MODEL_SETTINGS[model_name]
-    spec = get_model(model_name)
     n_events = int(target.size)
     if folds < 2 or folds > n_events:
         raise ValueError(f"--folds must lie in [2, {n_events}], got {folds}")
 
     predictions = np.full(n_events, np.nan, dtype=np.float64)
-    splitter = KFold(n_splits=folds, shuffle=True, random_state=int(seed))
+    splitter = KFold(n_splits=folds, shuffle=True, random_state=int(split_seed))
 
     for fold, (fit_index, predict_index) in enumerate(
         splitter.split(np.arange(n_events)),
         start=1,
     ):
-        artifact = spec.fit(
-            dict(settings["parameters"]),
-            np.asarray(pair[fit_index], dtype=np.float32),
-            np.asarray(target[fit_index], dtype=np.float64),
-            seed=semantic_seed(seed, model_name, "oof", fold),
-            config=dict(settings["config"]),
-            validation_x=None,
-            validation_target=None,
+        predictions[predict_index] = _fit_predict_fold(
+            model_name,
+            pair,
+            target,
+            np.asarray(fit_index, dtype=np.int64),
+            np.asarray(predict_index, dtype=np.int64),
+            seed=semantic_seed(model_seed, model_name, "oof", fold),
         )
-        predictions[predict_index] = np.asarray(
-            spec.predict(artifact, pair[predict_index]),
-            dtype=np.float64,
-        ).reshape(-1)
 
     if not np.all(np.isfinite(predictions)):
         raise RuntimeError(f"{model_name}: OOF prediction did not cover every training event")
@@ -283,7 +350,8 @@ def analyze_prepared_dataset(
             pair,
             target,
             folds=folds,
-            seed=semantic_seed(seed, label, model_name),
+            split_seed=semantic_seed(seed, label, "hardness_folds"),
+            model_seed=semantic_seed(seed, label, model_name),
         )
         predictions[model_name] = model_prediction
         summaries.append(
