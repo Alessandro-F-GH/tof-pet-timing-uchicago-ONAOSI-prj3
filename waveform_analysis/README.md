@@ -121,3 +121,20 @@ python -m waveform_analysis.cli run \
   --config waveform_analysis/config/experiments/timing_concatenated.json \
   --overwrite
 ```
+
+### Study summary analysis
+
+A completed per-voltage study can be summarized with:
+
+```bash
+python -m waveform_analysis.scripts.analyze_study_results \
+  --run-dir waveform_analysis/results/studies/complete_energy
+```
+
+By default this writes three files under `<run-dir>/analysis_summary/`:
+
+- `study_summary.tex`: ready-to-include LaTeX table with selected LED threshold, blind-test LED CTR, and blind-test CTR for every ML model at each voltage;
+- `study_summary_vs_voltage.pdf`: selected LED threshold and blind-test CTR versus bias voltage, including bootstrap CTR error bars;
+- `validation_ctr_vs_target_filter.pdf`: target-filter sensitivity, with one voltage per panel and one curve per model. For each `target_abs_max_ps`, the plotted value is the best validation CTR over that model's remaining hyperparameters; a star marks the globally selected candidate.
+
+Use `--plot-format png` for raster plots or `--output-dir <path>` to redirect the report.
