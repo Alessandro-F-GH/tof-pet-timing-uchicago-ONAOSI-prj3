@@ -140,3 +140,22 @@ By default this writes three files under `<run-dir>/analysis_summary/`:
 - `validation_ctr_vs_target_filter.pdf`: target-filter sensitivity, with one voltage per panel and one curve per model. For each `target_abs_max_ps`, the plotted value is the best validation CTR over that model's remaining hyperparameters; a star marks the globally selected candidate.
 
 Use `--plot-format png` for raster plots or `--output-dir <path>` to redirect the report.
+
+### Cross-voltage generalization
+
+To test whether a model trained at one bias voltage generalizes to the blind/test set of another voltage, run:
+
+```bash
+python -m waveform_analysis.scripts.cross_voltage_evaluation \
+  --run-dir waveform_analysis/results/studies/complete_energy
+```
+
+By default the script evaluates every ML model that has a trained artifact for every voltage in the study. It reuses the selected saved model from each training voltage, including its saved temporal sample mask and output clipping, and applies it to the destination voltage's prepared blind/test split and calibrated ML target.
+
+Outputs are written under `<run-dir>/cross_voltage/`:
+
+- `cross_voltage_results.csv`: long-form numeric results for every `model × V_train × V_predict` combination;
+- `cross_voltage_<model>.csv`: matrix with rows = training voltage, columns = prediction/blind-test voltage, and cells = `CTR ± bootstrap uncertainty`;
+- `cross_voltage_<model>.pdf`: annotated CTR heatmap for the same matrix.
+
+Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models cnn cnn_2d` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
