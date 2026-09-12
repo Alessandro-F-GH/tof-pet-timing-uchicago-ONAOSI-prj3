@@ -13,12 +13,7 @@ from .diagnostics import plot_missing_led_example, plot_ml_window_exceeds_exampl
 from .splits import semantic_seed, split_training_validation
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .timing import anchor_grid, cfd_grid, led_grid, pair_delta
-from .view import source_family, target_family
-
-
-def _families(config):
-    mode = config["mode"]
-    return {source_family(mode)}, {target_family(mode)}
+from .view import source_family
 
 
 def dataset_fingerprint(preprocessed, config):
@@ -211,8 +206,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     )
     training, validation = split.training, split.validation
     true_tof = float(config["data"]["true_tof_ps"])
-    sources, targets = _families(config)
-    families = sorted(sources | targets)
+    family = source_family(config["mode"])
     thresholds = np.asarray(config["standard_methods"]["led_thresholds_mV"], dtype=float)
     fractions = np.asarray(config["standard_methods"]["cfd_fractions"], dtype=float)
     led_min_eff = float(config["standard_methods"].get("led_minimum_crossing_efficiency", 0.95))
@@ -222,137 +216,104 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     if coincidence_window_ps <= 0:
         raise ValueError("standard_methods.led_coincidence_window_ns must be positive")
 
-    led_choice = {}
-    led_score = {}
-    led_development_coverage = {}
-    led_development_efficiency = {}
-    cfd_choice = {}
-    cfd_score = {}
-    led_times = {}
-    cfd_times = {}
-    anchor_idx = {}
-    anchor_times = {}
-    led_coverage = {}
-    led_missing_crossing = {}
-    led_noncoincidence = {}
     diagnostic_examples = {}
 
-    for family in families:
-        dev_led = led_grid(preprocessed, family, development, thresholds)
-        (
-            led_choice[family],
-            led_score[family],
-            led_development_coverage[family],
-            led_development_efficiency[family],
-        ) = _best_column(
-            dev_led,
-            thresholds,
+    dev_led = led_grid(preprocessed, family, development, thresholds)
+    led_choice, led_score, led_development_coverage, led_development_efficiency = _best_column(
+        dev_led,
+        thresholds,
+        true_tof,
+        config.get("fit"),
+        minimum_efficiency=led_min_eff,
+        coincidence_window_ps=coincidence_window_ps,
+        logger=logger,
+        label=f"{family} LED",
+    )
+    logger.info(
+        "Selected %s LED | threshold %.6g mV | development robust CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
+        family,
+        led_choice,
+        led_score,
+        100.0 * led_development_efficiency,
+        led_development_coverage,
+        development.size,
+        coincidence_window_ps / 1000.0,
+        100.0 * led_min_eff,
+    )
+    led_times = led_grid(
+        preprocessed,
+        family,
+        np.arange(preprocessed.n_events),
+        np.asarray([led_choice]),
+    )[:, :, 0]
+    finite_pair = np.all(np.isfinite(led_times), axis=1)
+    residual_pair = pair_delta(led_times) - true_tof
+    led_coverage = finite_pair & np.isfinite(residual_pair) & (np.abs(residual_pair) <= coincidence_window_ps)
+    missing = ~finite_pair
+    noncoincidence = finite_pair & ~led_coverage
+    anchor_idx, anchor_times = anchor_grid(preprocessed, family, led_choice)
+
+    cfd_choice = None
+    cfd_score = None
+    cfd_times = None
+    if config["cfd"]:
+        dev_cfd = cfd_grid(preprocessed, family, development, fractions)
+        cfd_choice, cfd_score, _coverage, _efficiency = _best_column(
+            dev_cfd,
+            fractions,
             true_tof,
             config.get("fit"),
-            minimum_efficiency=led_min_eff,
-            coincidence_window_ps=coincidence_window_ps,
             logger=logger,
-            label=f"{family} LED",
+            label=f"{family} CFD",
         )
-        logger.info(
-            "Selected %s LED | threshold %.6g mV | development robust CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
-            family,
-            led_choice[family],
-            led_score[family],
-            100.0 * led_development_efficiency[family],
-            led_development_coverage[family],
-            development.size,
-            coincidence_window_ps / 1000.0,
-            100.0 * led_min_eff,
-        )
-        led_times[family] = led_grid(
+        cfd_times = cfd_grid(
             preprocessed,
             family,
             np.arange(preprocessed.n_events),
-            np.asarray([led_choice[family]]),
+            np.asarray([cfd_choice]),
         )[:, :, 0]
-        finite_pair = np.all(np.isfinite(led_times[family]), axis=1)
-        residual_pair = pair_delta(led_times[family]) - true_tof
-        in_coincidence = finite_pair & np.isfinite(residual_pair) & (np.abs(residual_pair) <= coincidence_window_ps)
-        led_missing_crossing[family] = ~finite_pair
-        led_noncoincidence[family] = finite_pair & ~in_coincidence
-        led_coverage[family] = in_coincidence
-        anchor_idx[family], anchor_times[family] = anchor_grid(preprocessed, family, led_choice[family])
 
-        if config["cfd"] and family in targets:
-            dev_cfd = cfd_grid(preprocessed, family, development, fractions)
-            cfd_choice[family], cfd_score[family], _coverage, _efficiency = _best_column(
-                dev_cfd,
-                fractions,
-                true_tof,
-                config.get("fit"),
-                logger=logger,
-                label=f"{family} CFD",
-            )
-            cfd_times[family] = cfd_grid(
-                preprocessed,
-                family,
-                np.arange(preprocessed.n_events),
-                np.asarray([cfd_choice[family]]),
-            )[:, :, 0]
-
-    invalid_led = np.zeros(preprocessed.n_events, dtype=bool)
-    all_missing = np.zeros(preprocessed.n_events, dtype=bool)
-    all_noncoincidence = np.zeros(preprocessed.n_events, dtype=bool)
-    missing_by_family = {}
-    noncoincidence_by_family = {}
-    for family in families:
-        missing = led_missing_crossing[family]
-        noncoincidence = led_noncoincidence[family]
-        invalid = ~led_coverage[family]
-        invalid_led |= invalid
-        all_missing |= missing
-        all_noncoincidence |= noncoincidence
-        missing_by_family[family] = int(np.count_nonzero(missing))
-        noncoincidence_by_family[family] = int(np.count_nonzero(noncoincidence))
-        if np.any(missing) and "missing_led" not in diagnostic_examples:
-            event_row = int(np.flatnonzero(missing)[0])
-            diagnostic_examples["missing_led"] = {
-                "family": family,
-                "event_row": event_row,
-                "event_index": int(np.asarray(preprocessed.event_index)[event_row]),
-                "threshold_mV": float(led_choice[family]),
-            }
+    invalid_led = ~led_coverage
+    if np.any(missing):
+        event_row = int(np.flatnonzero(missing)[0])
+        diagnostic_examples["missing_led"] = {
+            "family": family,
+            "event_row": event_row,
+            "event_index": int(np.asarray(preprocessed.event_index)[event_row]),
+            "threshold_mV": float(led_choice),
+        }
 
     event_index = np.asarray(preprocessed.event_index, dtype=np.int64)
     invalid_led_index = event_index[invalid_led]
-    missing_led_index = event_index[all_missing]
-    noncoincidence_index = event_index[all_noncoincidence]
+    missing_led_index = event_index[missing]
+    noncoincidence_index = event_index[noncoincidence]
     np.save(base / "excluded_led_event_index.npy", invalid_led_index)
     np.save(base / "excluded_missing_led_event_index.npy", missing_led_index)
     np.save(base / "excluded_noncoincidence_event_index.npy", noncoincidence_index)
     if invalid_led_index.size:
         logger.warning(
-            "Discarding events outside selected LED coincidence | discarded=%d/%d | missing_crossing=%d | outside_±%.3fns=%d | missing_by_family=%s | noncoincidence_by_family=%s",
+            "Discarding events outside selected LED coincidence | discarded=%d/%d | missing_crossing=%d | outside_±%.3fns=%d",
             invalid_led_index.size,
             preprocessed.n_events,
             missing_led_index.size,
             coincidence_window_ps / 1000.0,
             noncoincidence_index.size,
-            missing_by_family,
-            noncoincidence_by_family,
         )
 
-    ml_window_invalid = np.zeros(preprocessed.n_events, dtype=bool)
-    for family in sorted(sources):
-        _offsets, _time, bad = _family_offsets_and_invalid(preprocessed, family, anchor_idx[family], config)
-        ml_window_invalid |= bad
-        candidates = np.flatnonzero(bad & ~invalid_led)
-        if not candidates.size:
-            candidates = np.flatnonzero(bad)
-        if candidates.size and "ml_window_exceeds_materialized" not in diagnostic_examples:
-            event_row = int(candidates[0])
-            diagnostic_examples["ml_window_exceeds_materialized"] = {
-                "family": family,
-                "event_row": event_row,
-                "event_index": int(np.asarray(preprocessed.event_index)[event_row]),
-                "threshold_mV": float(led_choice[family]),
-            }
+    _offsets, _time, ml_window_invalid = _family_offsets_and_invalid(
+        preprocessed, family, anchor_idx, config
+    )
+    candidates = np.flatnonzero(ml_window_invalid & ~invalid_led)
+    if not candidates.size:
+        candidates = np.flatnonzero(ml_window_invalid)
+    if candidates.size:
+        event_row = int(candidates[0])
+        diagnostic_examples["ml_window_exceeds_materialized"] = {
+            "family": family,
+            "event_row": event_row,
+            "event_index": int(np.asarray(preprocessed.event_index)[event_row]),
+            "threshold_mV": float(led_choice),
+        }
     ml_window_index = np.asarray(preprocessed.event_index, dtype=np.int64)[ml_window_invalid]
     np.save(base / "excluded_ml_window_event_index.npy", ml_window_index)
     if ml_window_index.size:
@@ -375,37 +336,32 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     np.save(base / "bias_voltage_V.npy", np.asarray(preprocessed.bias_voltage_V, dtype=np.float64)[keep])
     np.savez_compressed(base / "splits.npz", training=training_new, validation=validation_new, test=test_new)
 
-    transforms = {}
-    for family in sorted(sources):
-        normalized, time_ps, minimum, maximum = _materialize_family(preprocessed, family, anchor_idx[family], kept_rows, config)
-        target = open_memmap(base / f"{family}_windows.npy", mode="w+", dtype=np.float32, shape=normalized.shape)
-        target[:] = normalized
-        target.flush()
-        del target
-        np.save(base / f"{family}_time_ps.npy", time_ps)
-        np.savez_compressed(base / f"{family}_transform.npz", minimum=minimum, maximum=maximum)
-        transforms[family] = {
-            "type": "min_max",
-            "feature_range": [0.0, 1.0],
-            "source": f"preprocessing.{family}.vertical_scale_limit_mV",
-            "minimum_mV": minimum[:, 0].tolist(),
-            "maximum_mV": maximum[:, 0].tolist(),
-        }
+    normalized, time_ps, minimum, maximum = _materialize_family(
+        preprocessed, family, anchor_idx, kept_rows, config
+    )
+    target = open_memmap(base / f"{family}_windows.npy", mode="w+", dtype=np.float32, shape=normalized.shape)
+    target[:] = normalized
+    target.flush()
+    del target
+    np.save(base / f"{family}_time_ps.npy", time_ps)
+    np.savez_compressed(base / f"{family}_transform.npz", minimum=minimum, maximum=maximum)
+    transform = {
+        "type": "min_max",
+        "feature_range": [0.0, 1.0],
+        "source": f"preprocessing.{family}.vertical_scale_limit_mV",
+        "minimum_mV": minimum[:, 0].tolist(),
+        "maximum_mV": maximum[:, 0].tolist(),
+    }
 
-    led_training_mean = {}
-    calibration_bias = {}
-    for family in families:
-        led_pair = pair_delta(led_times[family][keep])
-        mean_led = float(np.mean(led_pair[training_new]))
-        c_hat = mean_led - true_tof
-        target_values = led_pair - true_tof - c_hat
-        led_training_mean[family] = mean_led
-        calibration_bias[family] = c_hat
-        np.save(base / f"{family}_led_time_ps.npy", led_times[family][keep])
-        np.save(base / f"{family}_anchor_time_ps.npy", anchor_times[family][keep])
-        np.save(base / f"{family}_target_ps.npy", target_values)
-        if family in cfd_times:
-            np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[family][keep])
+    led_pair = pair_delta(led_times[keep])
+    mean_led = float(np.mean(led_pair[training_new]))
+    calibration_bias = mean_led - true_tof
+    target_values = led_pair - true_tof - calibration_bias
+    np.save(base / f"{family}_led_time_ps.npy", led_times[keep])
+    np.save(base / f"{family}_anchor_time_ps.npy", anchor_times[keep])
+    np.save(base / f"{family}_target_ps.npy", target_values)
+    if cfd_times is not None:
+        np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[keep])
 
     manifest = {
         "format_version": DATASET_FORMAT_VERSION,
@@ -425,23 +381,22 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         "excluded_ml_window_exceeds_preprocessing": int(ml_window_index.size),
         "excluded_ml_window_event_index_file": "excluded_ml_window_event_index.npy",
         "split": {"training": int(training_new.size), "validation": int(validation_new.size), "test": int(test_new.size)},
-        "led_threshold_mV": led_choice,
+        "waveform_family": family,
+        "led_threshold_mV": float(led_choice),
         "led_minimum_crossing_efficiency": led_min_eff,
         "led_coincidence_window_ns": coincidence_window_ps / 1000.0,
-        "led_development_ctr_ps": led_score,
-        "led_development_coverage": led_development_coverage,
-        "led_development_efficiency": led_development_efficiency,
-        "led_missing_by_family": missing_by_family,
-        "led_noncoincidence_by_family": noncoincidence_by_family,
-        "led_training_mean_ps": led_training_mean,
+        "led_development_ctr_ps": float(led_score),
+        "led_development_coverage": int(led_development_coverage),
+        "led_development_efficiency": float(led_development_efficiency),
+        "led_training_mean_ps": mean_led,
         "calibration_bias_ps": calibration_bias,
-        "cfd_fraction": cfd_choice,
-        "cfd_development_ctr_ps": cfd_score,
+        "cfd_fraction": None if cfd_choice is None else float(cfd_choice),
+        "cfd_development_ctr_ps": None if cfd_score is None else float(cfd_score),
         "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
         "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
         "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
-        "normalization": transforms,
+        "normalization": transform,
         "diagnostic_examples": diagnostic_examples,
         "target_definition": "delta_t_led - true_tof - calibration_bias",
         "anchor_definition": "native sample nearest in time to interpolated selected LED crossing",
