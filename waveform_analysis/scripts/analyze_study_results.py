@@ -5,7 +5,6 @@ import csv
 import json
 import math
 import sys
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +20,7 @@ from waveform_analysis.ml_pipeline.reporting import LABELS, MODEL_ORDER
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Summarize a completed waveform study: selected LED threshold, blind-test CTR by voltage, "
-            "and validation CTR sensitivity to the symmetric training-target filter."
+            "Summarize a completed waveform study: selected LED threshold and blind-test CTR by voltage."
         )
     )
     parser.add_argument("--run-dir", type=Path, required=True, help="Completed study directory")
@@ -277,123 +275,6 @@ def _summary_plot(path: Path, manifest: dict[str, Any], summary: list[dict[str, 
     plt.close(fig)
 
 
-def _target_filter_curves(run: Path, datasets: list[str], models: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
-    output: dict[str, dict[str, dict[str, Any]]] = {}
-    for dataset in datasets:
-        dataset_output: dict[str, dict[str, Any]] = {}
-        for model in models:
-            path = run / "search" / dataset / f"{model}.json"
-            if not path.is_file():
-                continue
-            search = _read_json(path)
-            by_filter: dict[float, list[float]] = defaultdict(list)
-            for row in search.get("candidates") or []:
-                if row.get("error"):
-                    continue
-                candidate = row.get("candidate") or {}
-                limit = _float(candidate.get("target_abs_max_ps"))
-                score = _float(row.get("score"))
-                if np.isfinite(limit) and np.isfinite(score):
-                    by_filter[limit].append(score)
-            if not by_filter:
-                continue
-            limits = sorted(by_filter)
-            scores = [min(by_filter[limit]) for limit in limits]
-            best = search.get("best") or {}
-            selected_limit = _float((best.get("candidate") or {}).get("target_abs_max_ps"))
-            selected_score = _float(best.get("score"))
-            dataset_output[model] = {
-                "limits_ps": np.asarray(limits, dtype=float),
-                "validation_ctr_ps": np.asarray(scores, dtype=float),
-                "selected_limit_ps": selected_limit,
-                "selected_ctr_ps": selected_score,
-            }
-        if dataset_output:
-            output[dataset] = dataset_output
-    return output
-
-
-def _target_filter_plot(
-    path: Path,
-    summary: list[dict[str, Any]],
-    models: list[str],
-    curves: dict[str, dict[str, dict[str, Any]]],
-) -> None:
-    import matplotlib.pyplot as plt
-
-    datasets = [item["dataset"] for item in summary if item["dataset"] in curves]
-    if not datasets:
-        return
-    ncols = min(2, len(datasets))
-    nrows = int(math.ceil(len(datasets) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(7.0 * ncols, 4.8 * nrows), squeeze=False, sharey=True)
-    flat_axes = list(axes.ravel())
-
-    model_handles: dict[str, Any] = {}
-    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
-    model_colors = {
-        model: (colors[index % len(colors)] if colors else None)
-        for index, model in enumerate(models)
-    }
-    for ax, dataset in zip(flat_axes, datasets):
-        item = next(row for row in summary if row["dataset"] == dataset)
-        for model in models:
-            curve = curves[dataset].get(model)
-            if curve is None:
-                continue
-            line, = ax.plot(
-                curve["limits_ps"],
-                curve["validation_ctr_ps"],
-                marker="o",
-                color=model_colors[model],
-                label=LABELS.get(model, model),
-            )
-            model_handles.setdefault(model, line)
-            if np.isfinite(curve["selected_limit_ps"]) and np.isfinite(curve["selected_ctr_ps"]):
-                ax.scatter(
-                    [curve["selected_limit_ps"]],
-                    [curve["selected_ctr_ps"]],
-                    marker="*",
-                    s=120,
-                    color=line.get_color(),
-                    edgecolors="black",
-                    linewidths=0.5,
-                    zorder=5,
-                )
-        voltage = item["voltage_V"]
-        ax.set_title(f"{voltage:g} V" if np.isfinite(voltage) else dataset)
-        ax.set_xlabel(r"Training target filter $|y_{target}| \leq T$ [ps]")
-        ax.set_ylabel("Validation CTR [ps]")
-        ax.grid(True, alpha=0.2)
-
-    for ax in flat_axes[len(datasets):]:
-        ax.remove()
-
-    if model_handles:
-        ordered = [model for model in models if model in model_handles]
-        fig.suptitle("Validation CTR vs training-target filter", y=0.995)
-        fig.legend(
-            [model_handles[model] for model in ordered],
-            [LABELS.get(model, model) for model in ordered],
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.955),
-            ncol=max(1, min(4, len(ordered))),
-            frameon=False,
-        )
-        fig.text(
-            0.5,
-            0.015,
-            "Each point is the best validation CTR over the model's other hyperparameters; ★ marks the globally selected candidate.",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
-    fig.tight_layout(rect=(0, 0.05, 1, 0.89))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
 def analyze(run_dir: Path, output_dir: Path | None = None, plot_format: str = "pdf") -> list[Path]:
     run = run_dir.resolve()
     output = (output_dir or (run / "analysis_summary")).resolve()
@@ -401,18 +282,12 @@ def analyze(run_dir: Path, output_dir: Path | None = None, plot_format: str = "p
 
     table_path = output / "study_summary.tex"
     voltage_plot = output / f"study_summary_vs_voltage.{plot_format}"
-    target_plot = output / f"validation_ctr_vs_target_filter.{plot_format}"
-
     _write_latex_table(table_path, manifest, summary, models)
     _summary_plot(voltage_plot, manifest, summary, models)
-    curves = _target_filter_curves(run, [item["dataset"] for item in summary], models)
-    _target_filter_plot(target_plot, summary, models, curves)
 
     generated = [table_path]
     if voltage_plot.is_file():
         generated.append(voltage_plot)
-    if target_plot.is_file():
-        generated.append(target_plot)
     return generated
 
 
