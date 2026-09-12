@@ -62,46 +62,6 @@ def _fit_once(
     )
 
 
-def _target_range_candidates(spec: ModelSpec, model_config: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Cross model hyperparameters with configured symmetric training-target ranges."""
-    ranges = [float(value) for value in config["ml_training"]["target_abs_max_ps"]]
-    candidates: list[dict[str, Any]] = []
-    for raw in spec.candidates(model_config):
-        if not isinstance(raw, dict):
-            raise TypeError(f"{spec.name} candidates must be dictionaries to combine with target-range search")
-        if "target_abs_max_ps" in raw:
-            raise ValueError(f"{spec.name} model parameters cannot define reserved key target_abs_max_ps")
-        for limit in ranges:
-            candidates.append({**raw, "target_abs_max_ps": limit})
-    return candidates
-
-
-def _target_range_mask(target_ps: np.ndarray, abs_max_ps: float) -> np.ndarray:
-    target = np.asarray(target_ps, dtype=np.float64)
-    limit = float(abs_max_ps)
-    if not np.isfinite(limit) or limit <= 0.0:
-        raise ValueError("target_abs_max_ps must be finite and positive")
-    return np.isfinite(target) & (np.abs(target) <= limit)
-
-
-def target_range_counts(target_ps: np.ndarray, ranges_ps) -> list[tuple[float, int, int, float]]:
-    """Return retained-event counts for each symmetric training-target range."""
-    target = np.asarray(target_ps, dtype=np.float64)
-    total = int(target.size)
-    rows = []
-    for value in ranges_ps:
-        limit = float(value)
-        used = int(np.count_nonzero(_target_range_mask(target, limit)))
-        rows.append((limit, used, total, float(used / max(1, total))))
-    return rows
-
-
-def _candidate_log_parts(candidate: dict[str, Any]) -> tuple[float, str]:
-    values = dict(candidate)
-    target_range = float(values.pop("target_abs_max_ps"))
-    return target_range, ("default" if not values else str(values))
-
-
 def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.ndarray:
     model_input = apply_sample_mask(pair, fitted.sample_mask)
     values = np.asarray(spec.predict(fitted.artifact, model_input), dtype=np.float64)
@@ -149,21 +109,12 @@ def search_model(
 
     def fit_candidate(parameters, candidate_seed):
         model_parameters = dict(parameters)
-        target_abs_max_ps = float(model_parameters.pop("target_abs_max_ps"))
-        selected = _target_range_mask(train_target, target_abs_max_ps)
-        n_used = int(np.count_nonzero(selected))
-        minimum_training = int(fit_config.get("min_events", 100))
-        if n_used < minimum_training:
-            raise ValueError(
-                f"Training target range ±{target_abs_max_ps:g} ps retains only "
-                f"{n_used}/{train_target.size} events; need at least {minimum_training}"
-            )
         fitted = _fit_once(
             spec,
             model_config,
             model_parameters,
-            train_x[selected],
-            train_target[selected],
+            train_x,
+            train_target,
             seed=candidate_seed,
             validation_x=validation_x,
             validation_target=validation_target,
@@ -183,12 +134,8 @@ def search_model(
                 "input_samples_before_mask": int(sample_mask.size),
                 "input_samples_after_mask": int(np.count_nonzero(sample_mask)),
                 "input_samples_removed": int(sample_mask.size - np.count_nonzero(sample_mask)),
-                "training_target_abs_max_ps": target_abs_max_ps,
-                "training_target_range_ps": [-target_abs_max_ps, target_abs_max_ps],
-                "training_events_available": int(train_target.size),
-                "training_events_used": n_used,
-                "training_fraction_used": float(n_used / max(1, train_target.size)),
-                "validation_target_filter": None,
+                "training_events": int(train_target.size),
+                "training_uses_full_split": True,
             }
         )
         return fitted
@@ -212,39 +159,35 @@ def search_model(
 
     def on_start(number, total, candidate):
         if logger is not None:
-            target_range, parameters = _candidate_log_parts(candidate)
             logger.debug(
-                "  %d/%d | starting | range=±%.6g ps | %s",
+                "  %d/%d | starting | %s",
                 number,
                 total,
-                target_range,
-                parameters,
+                "default" if not candidate else candidate,
             )
 
     def on_result(number, total, result):
         if logger is None:
             return
-        target_range, parameters = _candidate_log_parts(result.candidate)
+        parameters = "default" if not result.candidate else result.candidate
         if result.error is None:
             logger.info(
-                "  %d/%d | CTR=%.6g ps | range=±%.6g ps | %s",
+                "  %d/%d | CTR=%.6g ps | %s",
                 number,
                 total,
                 result.score,
-                target_range,
                 parameters,
             )
         else:
             logger.warning(
-                "  %d/%d | FAILED | range=±%.6g ps | %s | %s",
+                "  %d/%d | FAILED | %s | %s",
                 number,
                 total,
-                target_range,
                 parameters,
                 result.error,
             )
 
-    candidates = _target_range_candidates(spec, model_config, config)
+    candidates = list(spec.candidates(model_config))
     if logger is not None:
         logger.info("%s search | candidates=%d", spec.name, len(candidates))
 
@@ -292,7 +235,7 @@ def save_model(spec, fitted, directory: Path, parameters):
             "parameters": parameters,
             "training": fitted.metadata,
             "sample_mask_file": sample_mask_file,
-            "selection_protocol": "full_validation_ctr_selected_model_and_training_target_range_used_directly_without_refit",
+            "selection_protocol": "full_training_split_validation_ctr_selected_model_used_directly_without_refit",
             "prediction_definition": prediction_definition,
         },
     )
