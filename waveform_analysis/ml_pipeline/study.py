@@ -23,7 +23,7 @@ from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
 from .train import predict_indices, save_model, search_model, selected_model, target_range_counts
-from .view import calibrated_led, corrected_timing_residual, inverse_pair, model_target, standard_delta, target_family
+from .view import calibrated_led, corrected_timing_residual, inverse_pair, model_target, standard_delta
 
 
 def _logger(run_dir: Path):
@@ -230,28 +230,27 @@ def run_study(
         voltage = _dataset_voltage(dataset, name)
         store.save_split(name, dataset)
         fitted_models = {}
-        family = target_family(mode)
-        threshold = float(dataset.manifest["led_threshold_mV"][family])
+        threshold = float(dataset.manifest["led_threshold_mV"])
         rows.append(
             _selection_row(
                 name,
                 voltage,
                 mode,
                 "led",
-                dataset.manifest["led_development_ctr_ps"][family],
+                dataset.manifest["led_development_ctr_ps"],
                 {"threshold_mV": threshold},
                 "development_ctr",
             )
         )
-        if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
-            fraction = float(dataset.manifest["cfd_fraction"][family])
+        if config["cfd"] and dataset.manifest["cfd_fraction"] is not None:
+            fraction = float(dataset.manifest["cfd_fraction"])
             rows.append(
                 _selection_row(
                     name,
                     voltage,
                     mode,
                     "cfd",
-                    dataset.manifest["cfd_development_ctr_ps"][family],
+                    dataset.manifest["cfd_development_ctr_ps"],
                     {"fraction": fraction},
                     "development_ctr",
                 )
@@ -353,7 +352,7 @@ def run_study(
             store.save_residuals(name, "led", led, stage=stage)
 
             if config["cfd"]:
-                led_mean = float(dataset.manifest["led_training_mean_ps"][family])
+                led_mean = float(dataset.manifest["led_training_mean_ps"])
                 cfd = standard_delta(dataset, mode, "cfd")[indices] - led_mean
                 rows.append(
                     _metric_row(
