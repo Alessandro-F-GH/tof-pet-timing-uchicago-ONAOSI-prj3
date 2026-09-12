@@ -57,6 +57,16 @@ CNN training is reproducible for a fixed candidate seed: NumPy, PyTorch CPU/CUDA
 
 The standard CNN comparison uses two paired-input architectures. `cnn` is the shared 1-D scorer: the same 1-D network scores each detector waveform and the correction is `score(s1)-score(s2)`, enforcing detector-swap antisymmetry. `cnn_2d` is one joint network over the stacked `[2,time]` detector pair. Its first temporal block preserves the two detector rows with a height-1 kernel; a configurable later convolution spans both rows once and fuses the detector axis before the remaining temporal blocks. The network then predicts one correction directly. The two model-space configs use the same temporal channels, kernels, strides, dilations, pooling and dense head so the comparison isolates the shared-1-D versus joint-2-D structure. Their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the **entire training split** and ranked **only by validation CTR** of `y_target - y_theta`. No events are removed according to the magnitude of `y_target`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
 
+A third optional architecture, `cnn_heteroscedastic`, keeps the shared single-waveform 1-D structure but predicts both a mean score and a single-signal uncertainty. For a detector pair,
+
+`mu_pair = mu(s1) - mu(s2)`
+
+and, assuming conditionally independent single-signal noise contributions,
+
+`sigma_pair = sqrt(sigma(s1)^2 + sigma(s2)^2)`.
+
+It is trained with a Gaussian heteroscedastic negative log-likelihood. The configurable candidate parameter `sigma_max_ps` acts as an abstention threshold: when `sigma_pair > sigma_max_ps`, the returned timing correction is exactly `0 ps`; otherwise the returned correction is `mu_pair`. Because the uncertainty is symmetric under detector exchange while the mean is antisymmetric, the final gated prediction remains detector-swap antisymmetric. A comparison configuration is available at `config/experiments/timing_heteroscedastic.json`.
+
 The permanent test population is evaluated once after model selection. The LED reference residual is
 
 `Delta t_LED - TOF - C_hat_12`,
