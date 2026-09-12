@@ -68,7 +68,7 @@ def standard_delta(dataset: PreparedDataset, mode: str, method: str) -> np.ndarr
 def calibration_bias_ps(dataset: PreparedDataset, mode: str) -> float:
     family = mode_family(mode)
     try:
-        mean_led = float(dataset.manifest["led_training_mean_ps"][family])
+        mean_led = float(dataset.manifest["led_training_mean_ps"])
         true_tof = float(dataset.manifest["true_tof_ps"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"LED calibration is unavailable for {family}") from exc
