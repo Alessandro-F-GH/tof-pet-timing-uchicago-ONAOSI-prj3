@@ -15,13 +15,12 @@ from .shapelet_reporting import plot_fixed_shapelets
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
 
-MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "cnn_heteroscedastic", "cnn_2d", "difference_shapelet", "difference_knn")
+MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "cnn_2d", "difference_shapelet", "difference_knn")
 LABELS = {
     "led": "LED",
     "cfd": "CFD",
     "linear_svr": "Linear SVR",
     "cnn": "CNN",
-    "cnn_heteroscedastic": "Heteroscedastic CNN",
     "cnn_2d": "2-D CNN",
     "difference_shapelet": "Fixed-shapelet regressor",
     "difference_knn": "Difference k-NN",
