@@ -5,12 +5,11 @@ import numpy as np
 from waveform_analysis.scripts.analyze_instance_hardness import (
     MODEL_SETTINGS,
     _difference_pair,
-    _oof_null_prediction,
-    _prediction_gain,
+    _ensemble_disagreement,
 )
 
 
-class PredictionGainTests(unittest.TestCase):
+class EnsembleDisagreementTests(unittest.TestCase):
     def test_fixed_model_pool_has_dual_knn_and_minirocket(self):
         self.assertEqual(
             set(MODEL_SETTINGS),
@@ -32,28 +31,30 @@ class PredictionGainTests(unittest.TestCase):
         np.testing.assert_allclose(transformed[:, 0, :], pair[:, 0, :] - pair[:, 1, :])
         np.testing.assert_array_equal(transformed[:, 1, :], 0.0)
 
-    def test_gain_is_positive_when_models_beat_null(self):
-        target = np.asarray([-10.0, 10.0])
-        null = np.asarray([0.0, 0.0])
-        predictions = np.asarray([[-9.0, 9.0], [-8.0, 8.0]])
-        gain, null_error, model_error = _prediction_gain(target, predictions, null)
-        np.testing.assert_allclose(null_error, [10.0, 10.0])
-        np.testing.assert_allclose(model_error, [1.5, 1.5])
-        np.testing.assert_allclose(gain, [8.5, 8.5])
+    def test_disagreement_is_zero_when_models_agree(self):
+        predictions = np.asarray(
+            [
+                [1.0, 2.0, 3.0],
+                [1.0, 2.0, 3.0],
+                [1.0, 2.0, 3.0],
+            ]
+        )
+        disagreement, prediction_range = _ensemble_disagreement(predictions)
+        np.testing.assert_allclose(disagreement, 0.0)
+        np.testing.assert_allclose(prediction_range, 0.0)
 
-    def test_gain_is_negative_when_models_are_worse_than_null(self):
-        target = np.asarray([1.0])
-        null = np.asarray([0.0])
-        predictions = np.asarray([[4.0], [-3.0]])
-        gain, _, _ = _prediction_gain(target, predictions, null)
-        self.assertLess(gain[0], 0.0)
-
-    def test_null_prediction_is_out_of_fold(self):
-        target = np.asarray([0.0, 2.0, 4.0, 6.0])
-        prediction = _oof_null_prediction(target, folds=2, split_seed=7)
-        self.assertEqual(prediction.shape, target.shape)
-        self.assertTrue(np.all(np.isfinite(prediction)))
-        self.assertFalse(np.allclose(prediction, np.mean(target)))
+    def test_disagreement_increases_with_prediction_spread(self):
+        predictions = np.asarray(
+            [
+                [0.0, 0.0],
+                [0.0, 2.0],
+                [0.0, 4.0],
+            ]
+        )
+        disagreement, prediction_range = _ensemble_disagreement(predictions)
+        self.assertEqual(disagreement[0], 0.0)
+        self.assertGreater(disagreement[1], disagreement[0])
+        np.testing.assert_allclose(prediction_range, [0.0, 4.0])
 
 
 if __name__ == "__main__":
