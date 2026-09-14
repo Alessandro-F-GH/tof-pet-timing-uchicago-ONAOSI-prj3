@@ -65,7 +65,7 @@ while the ML residual used for CTR is
 
 `y_target - y_theta`.
 
-CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this CTR estimator; the default is `500` resamples configured with `fit.bootstrap_samples`.
+CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this estimator; the default is `500` resamples configured with `fit.bootstrap_samples`. No configurable minimum event count is imposed: CTR only requires the mathematical minimum of two finite residuals.
 
 All finite residuals are included in the CTR calculation. There is no internal residual-magnitude rejection and there is no second FWHM-based timing metric.
 
