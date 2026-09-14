@@ -580,10 +580,6 @@ def _window_mask(
     dt_ps = float(np.median(np.diff(time))) if time.size > 1 else 0.0
     tolerance_ps = max(1e-6, 0.51 * abs(dt_ps))
     requested_ps = float(right_limit_ns) * 1000.0
-    if requested_ps > float(np.max(time)) + tolerance_ps:
-        raise ValueError(
-            f"Requested right limit {right_limit_ns:g} ns exceeds the prepared input window"
-        )
     temporal = time <= requested_ps + tolerance_ps
     combined = np.asarray(mask & temporal, dtype=bool)
     if np.count_nonzero(combined) < 2:
@@ -718,6 +714,7 @@ def run_window_scan(
         time_ps = np.asarray(view.time_ps, dtype=np.float64)
         base_mask = dataset_training_sample_mask(dataset, mode)
         left_ns = float(dataset.manifest["ml_input"]["window_ns"]["start"])
+        base_right_ns = float(dataset.manifest["ml_input"]["window_ns"]["end"])
         threshold_mV = float(dataset.manifest["led_threshold_mV"][target_family(mode)])
         led_row = final_metrics["led"][dataset_name]
         target = model_target(dataset, mode)
@@ -731,12 +728,23 @@ def run_window_scan(
         )
 
         for right_ns in limits:
+            is_base_window = np.isclose(
+                float(right_ns),
+                base_right_ns,
+                rtol=0.0,
+                atol=max(1e-12, 1e-9 * max(1.0, abs(base_right_ns))),
+            )
             try:
-                combined_mask, effective_right_ns, temporal_count = _window_mask(
-                    time_ps,
-                    base_mask,
-                    right_ns,
-                )
+                if is_base_window:
+                    combined_mask = np.asarray(base_mask, dtype=bool).copy()
+                    effective_right_ns = float(np.max(time_ps[combined_mask]) / 1000.0)
+                    temporal_count = int(base_mask.size)
+                else:
+                    combined_mask, effective_right_ns, temporal_count = _window_mask(
+                        time_ps,
+                        base_mask,
+                        right_ns,
+                    )
             except Exception as exc:
                 for model_name in models:
                     label = f"window scan | {dataset_name} | {model_name} | {right_ns:g} ns"
@@ -758,7 +766,10 @@ def run_window_scan(
             for model_name in models:
                 label = f"window scan | {dataset_name} | {model_name} | {right_ns:g} ns"
                 final_key = (dataset_name, model_name)
-                reused = np.array_equal(combined_mask, base_mask) and final_key in final_metrics["models"]
+                reused = (
+                    (is_base_window or np.array_equal(combined_mask, base_mask))
+                    and final_key in final_metrics["models"]
+                )
                 try:
                     if reused:
                         metric = final_metrics["models"][final_key]
