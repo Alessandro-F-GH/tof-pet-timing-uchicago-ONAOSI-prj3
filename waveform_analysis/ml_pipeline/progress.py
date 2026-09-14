@@ -42,17 +42,14 @@ class ProgressTracker:
     def _eta_seconds(self) -> float | None:
         if self.completed <= 0:
             return None
-        all_samples = [value for values in self.samples.values() for value in values if value > 0.0]
-        if not all_samples:
-            return None
-        fallback = sum(all_samples) / len(all_samples)
         estimate = 0.0
         for category, count in self.remaining.items():
             if count <= 0:
                 continue
             values = [value for value in self.samples.get(category, []) if value > 0.0]
-            average = sum(values) / len(values) if values else fallback
-            estimate += average * count
+            if not values:
+                return None
+            estimate += (sum(values) / len(values)) * count
         return max(0.0, estimate)
 
     def _finish(
