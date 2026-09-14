@@ -6,7 +6,6 @@
     "validation_fraction": 0.2
   },
   "fit": {
-    "min_events": 100,
     "coverage_fraction": 0.9,
     "bootstrap_samples": 500
   },
