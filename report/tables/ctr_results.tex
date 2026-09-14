@@ -1,15 +1,34 @@
 \begin{table}[H]
     \centering
-    \caption{Blind-test CTR results. Add one row per dataset/bias-voltage/method combination. The uncertainty column should use the canonical bootstrap CTR uncertainty from the study output.}
+    \caption{Blind-test CTR summary for the four waveform studies.  Populate from the frozen \texttt{results.csv} files generated with the canonical CTR estimator.  The relative change is computed with respect to the LED result on the same board, waveform family, bias voltage and blind-test population.}
     \label{tab:ctr-results}
-    \begin{tabular}{lllll}
+    \small
+    \begin{tabular}{lllrrrr}
         \toprule
-        Dataset / bias & Method & CTR [ps] & Uncertainty [ps] & Relative change vs.\ LED [\%] \\
+        Board & Waveform & Bias [V] & Method & CTR [ps] & Unc. [ps] & Improvement vs.\ LED [\%] \\
         \midrule
-        TODO & LED & TODO & TODO & -- \\
-        TODO & Linear SVR & TODO & TODO & TODO \\
-        TODO & Shared 1-D CNN & TODO & TODO & TODO \\
-        TODO & Joint 2-D CNN & TODO & TODO & TODO \\
+        UC  & Energy & TODO & LED            & TODO & TODO & -- \\
+        UC  & Energy & TODO & Linear SVR     & TODO & TODO & TODO \\
+        UC  & Energy & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
+        UC  & Energy & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        \addlinespace
+        UC  & Timing & TODO & LED            & TODO & TODO & -- \\
+        UC  & Timing & TODO & Linear SVR     & TODO & TODO & TODO \\
+        UC  & Timing & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
+        UC  & Timing & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        \addlinespace
+        FBK & Energy & TODO & LED            & TODO & TODO & -- \\
+        FBK & Energy & TODO & Linear SVR     & TODO & TODO & TODO \\
+        FBK & Energy & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
+        FBK & Energy & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        \addlinespace
+        FBK & Timing & TODO & LED            & TODO & TODO & -- \\
+        FBK & Timing & TODO & Linear SVR     & TODO & TODO & TODO \\
+        FBK & Timing & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
+        FBK & Timing & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
         \bottomrule
     \end{tabular}
 \end{table}
+
+\noindent
+The compact table above is intended for the principal operating points or best/representative bias values.  Complete voltage-by-voltage results should be retained in the generated LaTeX tables and CTR-versus-voltage figures rather than expanding the main-text table excessively.
