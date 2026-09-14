@@ -135,24 +135,27 @@ def _load_threshold_checkpoint(
     path = _threshold_checkpoint_path(output_dir, dataset_name, threshold_mV)
     if not path.is_file():
         return None
-    with np.load(path, allow_pickle=False) as data:
-        raw_keys = [json.loads(str(value)) for value in data["event_keys"]]
-        event_keys = tuple(
-            tuple(value) if isinstance(value, list) else value
-            for value in raw_keys
-        )
-        point = _ThresholdPoint(
-            threshold_mV=float(data["threshold_mV"][0]),
-            dataset_name=str(data["dataset_name"][0]),
-            prepared_dir=Path(str(data["prepared_dir"][0])),
-            event_keys=event_keys,
-            model_residual_ps=np.asarray(data["model_residual_ps"], dtype=np.float64),
-            led_residual_ps=np.asarray(data["led_residual_ps"], dtype=np.float64),
-            validation_ctr_ps=float(data["validation_ctr_ps"][0]),
-            selected_parameters_json=str(data["selected_parameters_json"][0]),
-            retained_events=int(data["retained_events"][0]),
-            validation_events=int(data["validation_events"][0]),
-        )
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            raw_keys = [json.loads(str(value)) for value in data["event_keys"]]
+            event_keys = tuple(
+                tuple(value) if isinstance(value, list) else value
+                for value in raw_keys
+            )
+            point = _ThresholdPoint(
+                threshold_mV=float(data["threshold_mV"][0]),
+                dataset_name=str(data["dataset_name"][0]),
+                prepared_dir=Path(str(data["prepared_dir"][0])),
+                event_keys=event_keys,
+                model_residual_ps=np.asarray(data["model_residual_ps"], dtype=np.float64),
+                led_residual_ps=np.asarray(data["led_residual_ps"], dtype=np.float64),
+                validation_ctr_ps=float(data["validation_ctr_ps"][0]),
+                selected_parameters_json=str(data["selected_parameters_json"][0]),
+                retained_events=int(data["retained_events"][0]),
+                validation_events=int(data["validation_events"][0]),
+            )
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, IndexError):
+        return None
     if not point.prepared_dir.is_dir():
         return None
     return point
@@ -316,6 +319,73 @@ def _plot_threshold_results(output_dir: Path, rows: list[dict[str, Any]], model_
             generated.append(path)
     return generated
 
+def _load_completed_threshold_scan(
+    preprocessed: list[Any],
+    config: dict[str, Any],
+    output_dir: Path,
+) -> ThresholdScanResult | None:
+    manifest_path = output_dir / "manifest.json"
+    selected_path = output_dir / "csv" / "selected_thresholds.csv"
+    threshold_path = output_dir / "csv" / "threshold_scan.csv"
+    if not (manifest_path.is_file() and selected_path.is_file() and threshold_path.is_file()):
+        return None
+    try:
+        manifest = read_json(manifest_path)
+        selected_rows = _read_csv(selected_path)
+    except (OSError, ValueError, KeyError, csv.Error):
+        return None
+
+    model_name = str(config["analyses"]["led_threshold_scan"]["selection_model"])
+    configured_thresholds = sorted(
+        {float(value) for value in config["standard_methods"]["led_thresholds_mV"]}
+    )
+    stored_thresholds = sorted(
+        float(value) for value in manifest.get("candidate_thresholds_mV", [])
+    )
+    if (
+        not bool(manifest.get("enabled", False))
+        or str(manifest.get("selection_model", "")) != model_name
+        or stored_thresholds != configured_thresholds
+    ):
+        return None
+
+    concatenate = bool(config["experiment"].get("concatenate_datasets", False))
+    if concatenate:
+        expected = {
+            str(config["experiment"].get("concatenated_dataset_name", "concatenated"))
+        }
+    else:
+        expected = {
+            Path(source.manifest["source"]).stem
+            for source in preprocessed
+        }
+    selected = {
+        str(row.get("dataset")): float(row["selected_threshold_mV"])
+        for row in selected_rows
+        if row.get("dataset") and row.get("selected_threshold_mV") not in {None, ""}
+    }
+    if set(selected) != expected:
+        return None
+
+    datasets: list[PreparedDataset] = []
+    for dataset_name in sorted(expected):
+        threshold = selected[dataset_name]
+        candidate_config = _threshold_config(config, threshold, output_dir)
+        if concatenate:
+            prepared_dir = (
+                Path(candidate_config["preprocessing"]["prepared_dir"]) / dataset_name
+            )
+        else:
+            prepared_dir = (
+                Path(candidate_config["preprocessing"]["prepared_dir"]) / dataset_name
+            )
+        try:
+            datasets.append(load_prepared_dataset(prepared_dir))
+        except Exception:
+            return None
+    return ThresholdScanResult(datasets, manifest, {})
+
+
 def run_led_threshold_scan(
     preprocessed: list[Any],
     config: dict[str, Any],
@@ -324,6 +394,7 @@ def run_led_threshold_scan(
     progress,
     *,
     rebuild: bool,
+    resume: bool = False,
 ) -> ThresholdScanResult:
     analysis = config["analyses"]["led_threshold_scan"]
     model_name = str(analysis["selection_model"])
@@ -334,6 +405,27 @@ def run_led_threshold_scan(
     fit_config = dict(config.get("fit") or {})
     seed = int(config["validation"]["seed"])
     failures: list[dict[str, Any]] = []
+
+    if resume and not rebuild:
+        completed = _load_completed_threshold_scan(
+            preprocessed,
+            config,
+            output_dir,
+        )
+        if completed is not None:
+            logger.info(
+                "LED threshold scan | reused completed scan | datasets=%d",
+                len(completed.datasets),
+            )
+            for _dataset in completed.datasets:
+                for _threshold in thresholds:
+                    progress.complete(
+                        "led_scan",
+                        f"threshold scan | {_dataset_name(_dataset)} | {_threshold:g} mV",
+                        note="reused completed scan",
+                        announce=False,
+                    )
+            return completed
 
     logger.info(
         "LED threshold scan | candidates=%s mV | selection model=%s | blind data not used",
@@ -433,17 +525,6 @@ def run_led_threshold_scan(
         if not candidates:
             raise RuntimeError(f"{dataset_name}: no LED-threshold candidate could be prepared")
 
-        common_sets = []
-        for _threshold, _candidate_config, dataset in candidates:
-            validation = np.asarray(dataset.validation, dtype=np.int64)
-            common_sets.append(set(_event_keys(dataset, validation)))
-        common = set.intersection(*common_sets) if common_sets else set()
-        common = tuple(sorted(common, key=str))
-        if len(common) < 2:
-            raise RuntimeError(
-                f"{dataset_name}: fewer than two validation events are common across successful LED thresholds"
-            )
-
         def development_led_score(item):
             threshold, _candidate_config, dataset = item
             score = float(dataset.manifest["led_development_ctr_ps"][family])
@@ -480,27 +561,37 @@ def run_led_threshold_scan(
             if order_index != 0 and not rebuild:
                 point = _load_threshold_checkpoint(output_dir, dataset_name, threshold)
 
-            if point is not None:
-                progress.complete(
-                    "led_scan",
-                    label,
-                    note="reused checkpoint",
-                    announce=False,
-                )
-            else:
-                with progress.task(
-                    "led_scan",
-                    label,
-                    announce_start=False,
-                    announce_finish=False,
-                ):
-                    point, search = _evaluate_threshold_candidate(
-                        dataset,
-                        candidate_config,
-                        model_name,
-                        logger,
+            try:
+                if point is not None:
+                    progress.complete(
+                        "led_scan",
+                        label,
+                        note="reused checkpoint",
+                        announce=False,
                     )
-                    _save_threshold_checkpoint(output_dir, point)
+                else:
+                    with progress.task(
+                        "led_scan",
+                        label,
+                        announce_start=False,
+                        announce_finish=False,
+                    ):
+                        point, search = _evaluate_threshold_candidate(
+                            dataset,
+                            candidate_config,
+                            model_name,
+                            logger,
+                        )
+                        _save_threshold_checkpoint(output_dir, point)
+            except Exception as exc:
+                failures.append(
+                    {
+                        "dataset": dataset_name,
+                        "threshold_mV": threshold,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
 
             points[threshold] = point
             if search is not None:
@@ -512,6 +603,14 @@ def run_led_threshold_scan(
                 point.validation_ctr_ps,
                 point.retained_events,
                 progress.stage_text("led_scan"),
+            )
+
+        if not points:
+            raise RuntimeError(f"{dataset_name}: every LED-threshold model fit failed")
+        common = _common_event_keys(list(points.values()))
+        if len(common) < 2:
+            raise RuntimeError(
+                f"{dataset_name}: fewer than two validation events are common across successful LED thresholds"
             )
 
         scored: list[tuple[float, float, _ThresholdPoint, dict[str, Any]]] = []
@@ -767,6 +866,8 @@ def run_window_scan(
     logger,
     progress,
     final_metrics: dict[str, Any],
+    *,
+    resume: bool = False,
 ) -> dict[str, Any]:
     analysis = config["analyses"]["window_scan"]
     limits = list(analysis["right_limits_ns"])
@@ -774,8 +875,20 @@ def run_window_scan(
     mode = str(config["mode"])
     fit_config = dict(config.get("fit") or {})
     seed = int(config["validation"]["seed"])
-    rows: list[dict[str, Any]] = []
+    csv_dir = output_dir / "csv"
+    window_csv = csv_dir / "window_scan.csv"
+    failed_csv = csv_dir / "failed_windows.csv"
+    rows: list[dict[str, Any]] = _read_csv(window_csv) if resume else []
     failures: list[dict[str, Any]] = []
+    completed = {
+        (
+            str(row.get("dataset")),
+            str(row.get("model")),
+            float(row.get("right_limit_ns")),
+        )
+        for row in rows
+        if row.get("dataset") and row.get("model") and row.get("right_limit_ns") not in {None, ""}
+    }
 
     logger.info(
         "ML window scan | right limits=%s ns | models=%s | target and splits fixed",
@@ -838,10 +951,19 @@ def run_window_scan(
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    _write_csv(failed_csv, failures)
                 continue
 
             for model_name in models:
                 label = f"window scan | {dataset_name} | {model_name} | {right_ns:g} ns"
+                point_key = (dataset_name, model_name, float(right_ns))
+                if point_key in completed:
+                    progress.complete(
+                        f"window_scan:{model_name}",
+                        label,
+                        note="reused window checkpoint",
+                    )
+                    continue
                 final_key = (dataset_name, model_name)
                 reused = (
                     (is_base_window or np.array_equal(combined_mask, base_mask))
@@ -945,6 +1067,8 @@ def run_window_scan(
                             "split_recomputed": False,
                         }
                     )
+                    completed.add(point_key)
+                    _write_csv(window_csv, rows)
                     logger.info(
                         "Window result | %s | %s | right=%g ns | blind CTR=%.3f ± %.3f ps",
                         dataset_name,
@@ -962,14 +1086,22 @@ def run_window_scan(
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    _write_csv(failed_csv, failures)
 
     if not rows:
         raise RuntimeError("ML window scan produced no successful result")
 
-    csv_dir = output_dir / "csv"
-    _write_csv(csv_dir / "window_scan.csv", rows)
+    expected = {
+        (str(_dataset_name(dataset)), str(model_name), float(right_ns))
+        for dataset in datasets
+        for model_name in models
+        for right_ns in limits
+    }
+    missing = sorted(expected - completed, key=lambda item: (item[0], item[1], item[2]))
     if failures:
-        _write_csv(csv_dir / "failed_windows.csv", failures)
+        _write_csv(failed_csv, failures)
+    elif failed_csv.is_file():
+        failed_csv.unlink()
 
     manifest = {
         "enabled": True,
@@ -981,7 +1113,18 @@ def run_window_scan(
         "blind_role": "post-selection sensitivity analysis only",
         "successful_points": len(rows),
         "failed_points": len(failures),
+        "missing_points": len(missing),
         "output_dir": str(output_dir.resolve()),
     }
     atomic_json(output_dir / "manifest.json", manifest)
+    if missing:
+        preview = ", ".join(
+            f"{dataset}/{model}/{right:g}ns"
+            for dataset, model, right in missing[:8]
+        )
+        suffix = "" if len(missing) <= 8 else f", ... (+{len(missing) - 8})"
+        raise RuntimeError(
+            f"ML window scan incomplete: {len(missing)} configured point(s) missing: "
+            f"{preview}{suffix}"
+        )
     return manifest
