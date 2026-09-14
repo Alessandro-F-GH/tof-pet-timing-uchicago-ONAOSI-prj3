@@ -283,7 +283,7 @@ def run_led_threshold_scan(
             candidate_config = _threshold_config(config, threshold, output_dir)
             label = f"threshold scan | {dataset_name} | {threshold:g} mV"
             try:
-                with progress.task("threshold_scan", label):
+                with progress.task("led_scan", label, announce_start=False, announce_finish=False):
                     prepared_sources = [
                         prepare_ml_dataset(
                             source,
@@ -311,13 +311,22 @@ def run_led_threshold_scan(
                     )
                 points.setdefault(dataset_name, []).append(point)
                 logger.info(
-                    "Threshold result | %s | %.6g mV | validation CTR=%.3f ps | retained=%d",
+                    "LED scan | %s | %.6g mV | validation CTR=%.3f ps | retained=%d | %s",
                     dataset_name,
                     threshold,
                     point.validation_ctr_ps,
                     point.retained_events,
+                    progress.stage_text("led_scan"),
                 )
             except Exception as exc:
+                logger.error(
+                    "LED scan failed | %s | %.6g mV | %s | %s: %s",
+                    dataset_name,
+                    threshold,
+                    progress.stage_text("led_scan"),
+                    type(exc).__name__,
+                    exc,
+                )
                 failures.append(
                     {
                         "dataset": dataset_name,
@@ -332,7 +341,7 @@ def run_led_threshold_scan(
                 dataset_name = Path(source.manifest["source"]).stem
                 label = f"threshold scan | {dataset_name} | {threshold:g} mV"
                 try:
-                    with progress.task("threshold_scan", label):
+                    with progress.task("led_scan", label, announce_start=False, announce_finish=False):
                         dataset = prepare_ml_dataset(
                             source,
                             candidate_config,
@@ -349,13 +358,22 @@ def run_led_threshold_scan(
                         )
                     points.setdefault(dataset_name, []).append(point)
                     logger.info(
-                        "Threshold result | %s | %.6g mV | validation CTR=%.3f ps | retained=%d",
+                        "LED scan | %s | %.6g mV | validation CTR=%.3f ps | retained=%d | %s",
                         dataset_name,
                         threshold,
                         point.validation_ctr_ps,
                         point.retained_events,
+                        progress.stage_text("led_scan"),
                     )
                 except Exception as exc:
+                    logger.error(
+                        "LED scan failed | %s | %.6g mV | %s | %s: %s",
+                        dataset_name,
+                        threshold,
+                        progress.stage_text("led_scan"),
+                        type(exc).__name__,
+                        exc,
+                    )
                     failures.append(
                         {
                             "dataset": dataset_name,
@@ -678,12 +696,12 @@ def run_window_scan(
                         test_row = metric["test_row"]
                         selected_parameters_json = metric["selected_parameters_json"]
                         progress.complete(
-                            "window_scan",
+                            f"window_scan:{model_name}",
                             label,
                             note="reused final full-window fit",
                         )
                     else:
-                        with progress.task("window_scan", label):
+                        with progress.task(f"window_scan:{model_name}", label):
                             spec = get_model(model_name)
                             search = search_model(
                                 spec,
