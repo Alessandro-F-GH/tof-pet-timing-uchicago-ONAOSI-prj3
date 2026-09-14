@@ -5,14 +5,26 @@ import numpy as np
 from .common import atomic_json
 
 class RunStore:
-    def __init__(self,root:str|Path,*,overwrite:bool=False):
+    def __init__(self,root:str|Path,*,overwrite:bool=False,resume:bool=False):
         self.root=Path(root).resolve()
+        if overwrite and resume:
+            raise ValueError("overwrite and resume are mutually exclusive")
         if overwrite and self.root.exists(): shutil.rmtree(self.root)
-        if self.root.exists() and any(self.root.iterdir()): raise FileExistsError(f"Run directory is not empty: {self.root}. Use --overwrite for a new run.")
+        if self.root.exists() and any(self.root.iterdir()) and not resume:
+            raise FileExistsError(
+                f"Run directory is not empty: {self.root}. "
+                "Use --resume to continue it or --overwrite to replace it."
+            )
         self.root.mkdir(parents=True,exist_ok=True)
+        self.resume=bool(resume)
         self.csv_dir=self.root/"csv"
         self.plots_dir=self.root/"plots"
     def write_manifest(self,value): atomic_json(self.root/"manifest.json",value)
+    def read_results(self):
+        path=self.csv_dir/"results.csv"
+        if not path.is_file(): return []
+        with path.open("r",encoding="utf-8",newline="") as stream:
+            return list(csv.DictReader(stream))
     def write_results(self,rows):
         self.csv_dir.mkdir(parents=True,exist_ok=True)
         fields=list(dict.fromkeys(key for row in rows for key in row)); fd,tmp=tempfile.mkstemp(prefix=".results.",suffix=".csv",dir=self.csv_dir)
