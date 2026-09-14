@@ -33,7 +33,9 @@ def dataset_fingerprint(preprocessed, config):
                 "validation_fraction": config["validation"]["validation_fraction"],
             },
             "standard_methods": config["standard_methods"],
-            "fit": config.get("fit"),
+            "ctr_coverage_fraction": float(
+                (config.get("fit") or {}).get("coverage_fraction", 0.90)
+            ),
             "ml_input": config["ml_input"],
             "mode": mode,
             "cfd": config["cfd"],
