@@ -105,15 +105,19 @@ Study outputs are type-separated from creation time:
 
 - `csv/results.csv`: canonical study results table;
 - `csv/relative_improvement.csv`: numerical values used in the paired-improvement plot;
-- `plots/ctr_vs_voltage.pdf`: grouped test CTR bars with bootstrap error bars;
+- `plots/ctr_vs_voltage.pdf`: publication-style CTR curves versus bias voltage with bootstrap error bars;
 - `plots/relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
 - `plots/corrections/<dataset>/`: top/worst correction figures;
 - `csv/corrections/<dataset>/`: corresponding correction ranking tables;
 - `plots/xai/<model>/`: model-grouped XAI plots; CNN and 2-D CNN importance is input-gradient importance aggregated onto the exact waveform time axis;
 - `csv/xai/<model>/`: tabular XAI/shapelet exports only when present;
-- `plots/model_output_diagnostics/`: prediction-vs-target diagnostics and model-output correlation matrices. Correlation matrices are plot-only diagnostics; redundant matrix/count CSV exports are not written.
+- `plots/model_output_diagnostics/`: publication-style prediction-vs-target and model-output correlation figures reconstructed from saved model-output/residual arrays.
 
 Reporting directories are created lazily, so absent diagnostics (for example XAI for a model without an explainer) do not leave empty folders behind.
+
+All report figures use one centralized publication style (`ml_pipeline/plot_style.py`): fixed single/double-column dimensions, embedded TrueType PDF fonts, color-vision-friendly model identities, line/marker redundancy for grayscale printing, restrained grids, and no plot titles or experiment-context text. Context belongs in the report caption.
+
+The experiment persists the numerical data needed to redraw the figures: final residuals, model outputs, XAI arrays, split/event identifiers, threshold-scan CSV data and window-scan CSV data. The first report render also caches the selected top/worst waveform examples inside the run artifacts. Therefore figure styling can be changed later without retraining models or rerunning the experiment.
 
 The paired relative improvement is computed as
 
@@ -140,6 +144,11 @@ python -m waveform_analysis.cli check --config waveform_analysis/config/experime
 python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/timing.json
 python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/timing.json --overwrite
 python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete_timing
+
+# optionally render into a separate directory without changing the run data
+python -m waveform_analysis.cli report \
+  --run-dir waveform_analysis/results/studies/complete_timing \
+  --output-dir waveform_analysis/results/paper_figures/complete_timing
 ```
 
 For the concatenated timing study:

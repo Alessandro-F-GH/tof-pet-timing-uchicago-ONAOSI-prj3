@@ -11,20 +11,22 @@ from utils_fit import fit_ctr_ps
 
 from .common import voltage_from_name
 from .dataset import load_prepared_dataset
+from .plot_style import (
+    DETECTOR_STYLES,
+    DOUBLE_COLUMN,
+    DOUBLE_COLUMN_TALL,
+    LABELS,
+    MODEL_ORDER,
+    SINGLE_COLUMN,
+    clean_axis,
+    model_style,
+    panel_label,
+    paper_context,
+    save_figure,
+)
 from .shapelet_reporting import plot_fixed_shapelets
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
-
-MODEL_ORDER = ("led", "cfd", "linear_svr", "cnn", "cnn_2d", "difference_shapelet", "difference_knn")
-LABELS = {
-    "led": "LED",
-    "cfd": "CFD",
-    "linear_svr": "Linear SVR",
-    "cnn": "CNN",
-    "cnn_2d": "2-D CNN",
-    "difference_shapelet": "Fixed-shapelet regressor",
-    "difference_knn": "Difference k-NN",
-}
 
 
 def read_results(run_dir: str | Path) -> list[dict[str, Any]]:
@@ -75,12 +77,6 @@ def _robust_display_range(samples, *, quantiles=(0.02, 0.98), margin_fraction=0.
     return lo - margin, hi + margin
 
 
-def _outside_count(values, xlim):
-    values = np.asarray(values, dtype=float).reshape(-1)
-    values = values[np.isfinite(values)]
-    return int(np.count_nonzero((values < float(xlim[0])) | (values > float(xlim[1]))))
-
-
 def _measurement_text(value, uncertainty):
     value = float(value)
     uncertainty = float(uncertainty)
@@ -101,7 +97,7 @@ def _distribution_methods(rows, dataset, stage):
     return [m for m in ordered if m in available]
 
 
-def _median_centered_display_edges(values, xlim, n_bins=20):
+def _median_centered_display_edges(values, xlim, n_bins=22):
     values = np.asarray(values, dtype=float).reshape(-1)
     values = values[np.isfinite(values)]
     low, high = float(xlim[0]), float(xlim[1])
@@ -141,63 +137,54 @@ def _stripe_importance(time_ns, importance, width_ns=1.0):
 def _xai_plot(output, artifact, mode, model, paths):
     import matplotlib.pyplot as plt
     from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import LinearSegmentedColormap, Normalize
+    from matplotlib.colors import Normalize
 
-    dataset = artifact.parent.name
     with np.load(artifact) as data:
         time = np.asarray(data["time_ps"], dtype=float) / 1000.0
         importance = np.asarray(data["importance"], dtype=float).reshape(-1)
         pair = np.asarray(data["example_pair_mV"], dtype=float)
     if not time.size or not importance.size:
         return
-    if importance.size != time.size:
-        raise ValueError(
-            f"{dataset}/{model}: XAI importance has {importance.size} time samples, "
-            f"but waveform axis has {time.size}"
-        )
-    if pair.ndim != 2 or pair.shape[0] != 2 or pair.shape[1] != time.size:
-        raise ValueError(
-            f"{dataset}/{model}: XAI waveform pair shape {pair.shape} is incompatible "
-            f"with time axis length {time.size}"
-        )
+    if importance.size != time.size or pair.shape != (2, time.size):
+        raise ValueError(f"Incompatible XAI arrays in {artifact}")
+
     stripes = _stripe_importance(time, importance, 1.0)
-    cmap = LinearSegmentedColormap.from_list("xai", ["white", "orange", "red"])
+    cmap = plt.get_cmap("cividis")
     norm = Normalize(0, 1)
-    fig = plt.figure(figsize=(8.8, 5.8))
+    fig = plt.figure(figsize=DOUBLE_COLUMN_TALL)
     grid = fig.add_gridspec(
-        2,
-        2,
-        width_ratios=(1.0, 0.045),
-        height_ratios=(2.0, 1.0),
-        hspace=0.12,
-        wspace=0.08,
+        2, 2, width_ratios=(1.0, 0.035), height_ratios=(1.6, 1.0),
+        hspace=0.08, wspace=0.08,
     )
     top = fig.add_subplot(grid[0, 0])
     bottom = fig.add_subplot(grid[1, 0], sharex=top)
     colorbar_ax = fig.add_subplot(grid[:, 1])
+
     for a, b, value in stripes:
-        top.axvspan(a, b, color=cmap(norm(value)), alpha=.7, lw=0)
-    top.plot(time, pair[0], label="detector 1")
-    top.plot(time, pair[1], label="detector 2")
+        top.axvspan(a, b, color=cmap(norm(value)), alpha=0.18, lw=0)
+    for detector in range(2):
+        top.plot(
+            time,
+            pair[detector],
+            label=f"Detector {detector + 1}",
+            **DETECTOR_STYLES[detector],
+        )
     top.set_ylabel("Signal [mV]")
-    top.legend()
-    top.grid(True, alpha=.2)
+    top.legend(loc="best")
+    clean_axis(top, grid=None)
+    top.tick_params(labelbottom=False)
+
     centers = np.asarray([(a + b) / 2 for a, b, _ in stripes])
     values = np.asarray([v for _, _, v in stripes])
-    bottom.plot(centers, values, marker="o")
+    bottom.plot(centers, values, color="#000000", marker="o")
     bottom.set_ylim(0, 1.05)
-    bottom.set_xlabel("Time relative to interpolated LED crossing [ns]")
-    bottom.set_ylabel("1 ns mean importance")
-    bottom.grid(True, alpha=.2)
+    bottom.set_xlabel("Time relative to LED crossing [ns]")
+    bottom.set_ylabel("Relative importance")
+    clean_axis(bottom, grid="y")
+
     cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=colorbar_ax)
-    cbar.set_label("Normalized importance")
-    voltage = voltage_from_name(dataset)
-    label = f"{voltage:g} V" if np.isfinite(voltage) else dataset
-    fig.suptitle(f"{LABELS.get(model, model)} · {mode.replace('_', ' ')} · {label}")
-    fig.subplots_adjust(top=0.90, bottom=0.10, left=0.10, right=0.94)
-    target = output / f"xai_{dataset}_{model}.pdf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target)
+    cbar.set_label("Relative importance")
+    target = save_figure(fig, output / f"xai_{artifact.parent.name}_{model}.pdf")
     plt.close(fig)
     paths.append(target)
 
@@ -213,14 +200,21 @@ def _correction_rankings(run, model, dataset):
     center = float(np.median(led[finite]))
     improvement = np.abs(led - center) - np.abs(corrected - center)
     event_indices = np.full(led.size, -1, dtype=np.int64)
-    try:
-        with np.load(run / "splits" / f"{dataset}.npz") as split:
-            test = np.asarray(split["test"], dtype=np.int64)
-        manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-        prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
-        event_indices = np.asarray(prepared.event_index[test], dtype=np.int64)
-    except Exception:
-        pass
+
+    split_path = run / "splits" / f"{dataset}.npz"
+    if split_path.is_file():
+        try:
+            with np.load(split_path) as split:
+                if "test_event_index" in split:
+                    event_indices = np.asarray(split["test_event_index"], dtype=np.int64)
+                else:
+                    test = np.asarray(split["test"], dtype=np.int64)
+                    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+                    prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
+                    event_indices = np.asarray(prepared.event_index[test], dtype=np.int64)
+        except Exception:
+            pass
+
     rows = [
         {
             "dataset": dataset,
@@ -250,8 +244,50 @@ def _write_rankings(output, dataset, model, top, worst):
         writer.writeheader()
         for group, items in (("top", top), ("worst", list(reversed(worst)))):
             for rank, row in enumerate(items, 1):
-                writer.writerow({"rank_group": group, "rank": rank, **{k: row[k] for k in fields if k not in {"rank_group", "rank"}}})
+                writer.writerow({
+                    "rank_group": group,
+                    "rank": rank,
+                    **{k: row[k] for k in fields if k not in {"rank_group", "rank"}},
+                })
     return target
+
+
+def _correction_example_artifact(run: Path, dataset: str, model: str, group: str) -> Path:
+    return run / "artifacts" / dataset / f"{model}_{group.lower()}_correction_examples.npz"
+
+
+def _load_or_cache_correction_examples(run, mode, model, dataset, group, rows):
+    artifact = _correction_example_artifact(run, dataset, model, group)
+    if artifact.is_file():
+        with np.load(artifact) as data:
+            return (
+                np.asarray(data["time_ns"], dtype=float),
+                np.asarray(data["pair_mV"], dtype=float),
+            )
+
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
+    with np.load(run / "splits" / f"{dataset}.npz") as split:
+        test = np.asarray(split["test"], dtype=np.int64)
+
+    times, pairs = [], []
+    for row in rows:
+        index = int(test[row["position"]])
+        view = waveform_view(prepared, mode, np.asarray([index]))
+        pairs.append(inverse_pair(prepared, mode, view.materialize())[0])
+        times.append(np.asarray(view.time_ps, dtype=float) / 1000.0)
+    if not times:
+        return np.empty((0, 0)), np.empty((0, 2, 0))
+
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        artifact,
+        time_ns=np.stack(times),
+        pair_mV=np.stack(pairs).astype(np.float32),
+        event_index=np.asarray([row["event_index"] for row in rows], dtype=np.int64),
+        improvement_ps=np.asarray([row["improvement_ps"] for row in rows], dtype=float),
+    )
+    return np.stack(times), np.stack(pairs)
 
 
 def _correction_example_group(output, run, mode, model, dataset, group, rows, paths):
@@ -260,32 +296,40 @@ def _correction_example_group(output, run, mode, model, dataset, group, rows, pa
     selected = list(rows)
     if not selected:
         return
-    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-    fig, axes = plt.subplots(len(selected), 1, figsize=(8.8, 3.0 * len(selected)), squeeze=False)
-    for ax, row in zip(axes[:, 0], selected):
-        try:
-            prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
-            with np.load(run / "splits" / f"{dataset}.npz") as split:
-                test = np.asarray(split["test"], dtype=np.int64)
-            index = int(test[row["position"]])
-            view = waveform_view(prepared, mode, np.asarray([index]))
-            pair = inverse_pair(prepared, mode, view.materialize())[0]
-            time = np.asarray(view.time_ps) / 1000.0
-            ax.plot(time, pair[0], label="detector 1")
-            ax.plot(time, pair[1], label="detector 2")
-            ax.axvline(0.0, ls="--", lw=1.0, alpha=.8)
-            ax.set_title(f"event #{row['event_index']} | improvement {row['improvement_ps']:.1f} ps")
-            ax.set_xlabel("Time [ns]")
-            ax.set_ylabel("Signal [mV]")
-            ax.grid(True, alpha=.2)
-        except Exception as exc:
-            ax.text(.5, .5, f"Unable to load example\n{exc}", ha="center", va="center", transform=ax.transAxes)
-    axes[0, 0].legend(loc="upper right")
-    fig.suptitle(f"{dataset} · {mode.replace('_', ' ')} · {LABELS.get(model, model)} · {group.lower()} corrections")
-    fig.tight_layout()
-    target = output / f"correction_examples_{group.lower()}_{dataset}_{model}.pdf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target)
+    try:
+        times, pairs = _load_or_cache_correction_examples(
+            run, mode, model, dataset, group, selected
+        )
+    except Exception:
+        return
+    if len(times) == 0:
+        return
+
+    fig, axes = plt.subplots(
+        len(selected), 1,
+        figsize=(DOUBLE_COLUMN[0], max(2.0, 1.75 * len(selected))),
+        squeeze=False,
+        sharex=True,
+    )
+    for index, ax in enumerate(axes[:, 0]):
+        for detector in range(2):
+            ax.plot(
+                times[index],
+                pairs[index, detector],
+                label=f"Detector {detector + 1}",
+                **DETECTOR_STYLES[detector],
+            )
+        ax.axvline(0.0, color="#7F7F7F", ls=":", lw=0.9)
+        ax.set_ylabel("Signal [mV]")
+        clean_axis(ax, grid=None)
+        panel_label(ax, f"({chr(97 + index)})")
+    axes[-1, 0].set_xlabel("Time [ns]")
+    axes[0, 0].legend(loc="best")
+    fig.tight_layout(h_pad=0.25)
+    target = save_figure(
+        fig,
+        output / f"correction_examples_{group.lower()}_{dataset}_{model}.pdf",
+    )
     plt.close(fig)
     paths.append(target)
 
@@ -326,7 +370,6 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
 
     for model, model_residual, model_row in models:
         pair = [led, (model, model_residual, model_row)]
-
         lows = [_float(row.get("interval_low_ps")) for _method, _residual, row in pair]
         highs = [_float(row.get("interval_high_ps")) for _method, _residual, row in pair]
         finite_lows = [value for value in lows if np.isfinite(value)]
@@ -340,65 +383,44 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
                 margin_fraction=0.06,
             )
 
-        fig, ax = plt.subplots(figsize=(8.8, 5.2))
-        colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+        fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
         peak = 0.0
-
         for index, (method, residual, row) in enumerate(pair):
-            color = colors[index % len(colors)] if colors else None
-            outside = _outside_count(residual, xlim)
-            label = (
-                f"{LABELS.get(method, method)} · CTR "
-                f"{_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps"
-                f" · outside {outside}"
-            )
             visible = residual[(residual >= xlim[0]) & (residual <= xlim[1])]
             bins = _median_centered_display_edges(visible, xlim, 22)
-            counts, edges = np.histogram(visible, bins=bins)
+            counts, _edges = np.histogram(visible, bins=bins)
             if counts.size:
                 peak = max(peak, float(np.max(counts)))
-
+            style = model_style(method, index)
+            label = (
+                f"{LABELS.get(method, method)}, CTR "
+                f"{_measurement_text(_float(row.get('ctr_ps')), _float(row.get('ctr_uncertainty_ps')))} ps"
+            )
             ax.hist(
                 visible,
                 bins=bins,
-                histtype="stepfilled",
-                alpha=0.5,
-                color=color,
-                edgecolor=color,
+                histtype="step",
+                color=style["color"],
+                linestyle=style["linestyle"],
                 linewidth=1.35,
                 label=label,
             )
 
-            core_fwhm = _float(row.get("core_fwhm_ps"))
-            if counts.size and np.isfinite(core_fwhm) and core_fwhm > 0:
-                half_height = 0.5 * float(np.max(counts))
-                centers = 0.5 * (edges[:-1] + edges[1:])
-                peak_center = float(centers[int(np.argmax(counts))])
-                ax.hlines(
-                    half_height,
-                    peak_center - 0.5 * core_fwhm,
-                    peak_center + 0.5 * core_fwhm,
-                    colors=color,
-                    linewidth=3.0,
-                )
-
         if peak > 0:
-            ax.set_ylim(0.0, peak * 1.20)
+            ax.set_ylim(0.0, peak * 1.16)
         ax.set_xlim(*xlim)
-        ax.set_xlabel(f"{stage.capitalize()} residual [ps]")
+        ax.set_xlabel("Timing residual [ps]")
         ax.set_ylabel("Events / bin")
-        ax.set_title(
-            f"{mode.replace('_', ' ')} · {dataset} · {stage} · "
-            f"{LABELS.get(model, model)} vs LED"
-        )
-        ax.legend(loc="upper right")
-        ax.grid(True, alpha=.2)
+        ax.legend(loc="best")
+        clean_axis(ax, grid="y")
         fig.tight_layout()
-        target = output / f"ctr_distribution_{stage}_{dataset}_{model}.pdf"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(target)
+        target = save_figure(
+            fig,
+            output / f"ctr_distribution_{stage}_{dataset}_{model}.pdf",
+        )
         plt.close(fig)
         paths.append(target)
+
 
 def _model_output_plot(output, run, mode, dataset, model, paths):
     import matplotlib.pyplot as plt
@@ -413,72 +435,72 @@ def _model_output_plot(output, run, mode, dataset, model, paths):
     test = test[np.isfinite(test)]
     if not train.size and not test.size:
         return
+
     xlim = _robust_display_range([train, test], quantiles=(0.02, 0.98), margin_fraction=0.06)
     bins = np.linspace(xlim[0], xlim[1], 21)
-    fig, axes = plt.subplots(2, 1, figsize=(8.6, 6.2), sharex=True)
-    for ax, stage, values in ((axes[0], "train", train), (axes[1], "test", test)):
-        outside = _outside_count(values, xlim)
+    fig, axes = plt.subplots(2, 1, figsize=(SINGLE_COLUMN[0], 4.3), sharex=True)
+    for panel, (ax, values) in enumerate(zip(axes, (train, test))):
         if values.size:
             visible = values[(values >= xlim[0]) & (values <= xlim[1])]
-            ax.hist(visible, bins=bins, histtype="step", label=f"n={values.size} · outside display={outside}")
-            ax.axvline(float(np.mean(values)), ls="--", lw=1.0, label=f"mean {np.mean(values):+.1f} ps")
-            ax.legend()
+            ax.hist(visible, bins=bins, histtype="step", color=model_style(model)["color"])
+            ax.axvline(float(np.mean(values)), color="#7F7F7F", ls=":", lw=0.9)
         ax.set_xlim(*xlim)
         ax.set_ylabel("Events / bin")
-        ax.set_title(stage.capitalize())
-        ax.grid(True, alpha=.2)
-    axes[1].set_xlabel(r"Learned correction $y_\theta(s_1,s_2)$ [ps]")
-    fig.suptitle(f"{LABELS.get(model, model)} model output · {mode.replace('_', ' ')} · {dataset}")
-    fig.tight_layout()
-    target = output / f"model_output_{dataset}.pdf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target)
+        clean_axis(ax, grid="y")
+        panel_label(ax, "(a)" if panel == 0 else "(b)")
+    axes[-1].set_xlabel(r"Model correction $y_\theta$ [ps]")
+    fig.tight_layout(h_pad=0.2)
+    target = save_figure(fig, output / f"model_output_{dataset}.pdf")
     plt.close(fig)
     paths.append(target)
 
 
-def _ctr_vs_voltage_bar_plot(run: Path, test_rows: list[dict[str, Any]], mode: str, paths: list[Path]) -> None:
+def _ctr_vs_voltage_plot(output: Path, test_rows: list[dict[str, Any]], paths: list[Path]) -> None:
     import matplotlib.pyplot as plt
 
     available_methods = {r["method"] for r in test_rows}
     methods = [m for m in MODEL_ORDER if m in available_methods]
     methods.extend(sorted(available_methods - set(methods)))
-    if not methods:
-        return
     voltages = sorted({_voltage(row) for row in test_rows if np.isfinite(_voltage(row))})
-    if not voltages:
+    if not methods or not voltages:
         return
 
-    x = np.arange(len(voltages), dtype=float)
-    group_width = 0.82
-    bar_width = group_width / len(methods)
-    offsets = (np.arange(len(methods), dtype=float) - 0.5 * (len(methods) - 1)) * bar_width
-    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
     for method_index, method in enumerate(methods):
-        ctr, error = [], []
+        values, errors = [], []
         for voltage in voltages:
-            row = next((r for r in test_rows if r["method"] == method and np.isfinite(_voltage(r)) and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)), None)
-            ctr.append(_float(row.get("ctr_ps")) if row is not None else np.nan)
-            error.append(_float(row.get("ctr_uncertainty_ps")) if row is not None else np.nan)
-        ctr = np.asarray(ctr, dtype=float)
-        error = np.asarray(error, dtype=float)
-        finite = np.isfinite(ctr)
+            row = next(
+                (
+                    r for r in test_rows
+                    if r["method"] == method
+                    and np.isfinite(_voltage(r))
+                    and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)
+                ),
+                None,
+            )
+            values.append(_float(row.get("ctr_ps")) if row is not None else np.nan)
+            errors.append(_float(row.get("ctr_uncertainty_ps")) if row is not None else np.nan)
+        values = np.asarray(values, dtype=float)
+        errors = np.asarray(errors, dtype=float)
+        finite = np.isfinite(values)
         if not np.any(finite):
             continue
-        safe_error = np.where(np.isfinite(error), error, 0.0)
-        ax.bar(x[finite] + offsets[method_index], ctr[finite], width=bar_width * 0.92, yerr=safe_error[finite], capsize=3, alpha=0.85, label=LABELS.get(method, method))
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{v:g} V" for v in voltages])
-    ax.set_xlabel("Bias voltage")
+        style = model_style(method, method_index)
+        ax.errorbar(
+            np.asarray(voltages)[finite],
+            values[finite],
+            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
+            capsize=2.5,
+            label=LABELS.get(method, method),
+            **style,
+        )
+    ax.set_xticks(voltages)
+    ax.set_xlabel("Bias voltage [V]")
     ax.set_ylabel("CTR [ps]")
-    ax.set_ylim(bottom=0.0)
-    ax.set_title(mode.replace("_", " "))
-    ax.grid(axis="y", alpha=.22)
-    ax.legend()
+    ax.legend(loc="best", ncol=2)
+    clean_axis(ax, grid="y")
     fig.tight_layout()
-    target = run / "plots" / "ctr_vs_voltage.pdf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target)
+    target = save_figure(fig, output / "ctr_vs_voltage.pdf")
     plt.close(fig)
     paths.append(target)
 
@@ -512,13 +534,16 @@ def _paired_relative_improvement(reference, method, fit_config, *, samples, seed
     return central, uncertainty, len(bootstrap)
 
 
-def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
+def _relative_improvement_plot(run, output, test_rows, manifest, paths):
     import matplotlib.pyplot as plt
 
     fit_config = dict((manifest.get("config") or {}).get("fit") or {})
     samples = int(fit_config.get("bootstrap_samples", 100))
     base_seed = int(((manifest.get("config") or {}).get("validation") or {}).get("seed", 0))
-    models = [m for m in MODEL_ORDER if m not in {"led", "cfd"} and any(r["method"] == m for r in test_rows)]
+    models = [
+        m for m in MODEL_ORDER
+        if m not in {"led", "cfd"} and any(r["method"] == m for r in test_rows)
+    ]
     models.extend(sorted({r["method"] for r in test_rows} - set(MODEL_ORDER) - {"led", "cfd"}))
     voltages = sorted({_voltage(row) for row in test_rows if np.isfinite(_voltage(row))})
     if not models or not voltages:
@@ -526,7 +551,11 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
 
     records = []
     for voltage in voltages:
-        dataset_rows = [r for r in test_rows if np.isfinite(_voltage(r)) and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)]
+        dataset_rows = [
+            r for r in test_rows
+            if np.isfinite(_voltage(r))
+            and np.isclose(_voltage(r), voltage, rtol=0.0, atol=1e-9)
+        ]
         dataset = next((r["dataset"] for r in dataset_rows if r["method"] == "led"), None)
         if dataset is None:
             continue
@@ -562,33 +591,40 @@ def _relative_improvement_plot(run, test_rows, manifest, mode, paths):
         writer.writeheader()
         writer.writerows(records)
 
-    x = np.arange(len(voltages), dtype=float)
-    group_width = 0.76
-    bar_width = group_width / max(1, len(models))
-    offsets = (np.arange(len(models), dtype=float) - 0.5 * (len(models) - 1)) * bar_width
-    fig, ax = plt.subplots(figsize=(8.6, 5.0))
+    fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
     for model_index, model in enumerate(models):
         values, errors = [], []
         for voltage in voltages:
-            row = next((r for r in records if r["method"] == model and np.isclose(r["voltage_V"], voltage, rtol=0.0, atol=1e-9)), None)
+            row = next(
+                (
+                    r for r in records
+                    if r["method"] == model
+                    and np.isclose(r["voltage_V"], voltage, rtol=0.0, atol=1e-9)
+                ),
+                None,
+            )
             values.append(float(row["relative_improvement_percent"]) if row else np.nan)
             errors.append(float(row["paired_bootstrap_uncertainty_percent"]) if row else np.nan)
         values = np.asarray(values, dtype=float)
         errors = np.asarray(errors, dtype=float)
         finite = np.isfinite(values)
-        ax.bar(x[finite] + offsets[model_index], values[finite], width=bar_width * 0.92, yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0), capsize=3, alpha=.85, label=LABELS.get(model, model))
-    ax.axhline(0.0, color="black", ls="--", lw=1.0)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{v:g} V" for v in voltages])
-    ax.set_xlabel("Bias voltage")
+        style = model_style(model, model_index)
+        ax.errorbar(
+            np.asarray(voltages)[finite],
+            values[finite],
+            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
+            capsize=2.5,
+            label=LABELS.get(model, model),
+            **style,
+        )
+    ax.axhline(0.0, color="#7F7F7F", ls=":", lw=0.9)
+    ax.set_xticks(voltages)
+    ax.set_xlabel("Bias voltage [V]")
     ax.set_ylabel("CTR improvement over LED [%]")
-    ax.set_title(f"{mode.replace('_', ' ')} · paired-bootstrap CTR improvement")
-    ax.grid(axis="y", alpha=.22)
-    ax.legend()
+    ax.legend(loc="best", ncol=2)
+    clean_axis(ax, grid="y")
     fig.tight_layout()
-    target = run / "plots" / "relative_improvement_vs_voltage.pdf"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target)
+    target = save_figure(fig, output / "relative_improvement_vs_voltage.pdf")
     plt.close(fig)
     paths.append(target)
 
@@ -597,7 +633,6 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
     run = Path(run_dir).resolve()
     plot_root = Path(output_dir).resolve() if output_dir else run / "plots"
     csv_root = run / "csv"
-
     plot_categories = {
         name: plot_root / name
         for name in ("corrections", "train_distribution", "test_distribution", "xai", "model_output")
@@ -614,59 +649,63 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
     datasets = sorted({r["dataset"] for r in test_rows}, key=voltage_from_name)
     paths: list[Path] = []
 
-    if not concatenated:
-        _ctr_vs_voltage_bar_plot(run, test_rows, mode, paths)
-        _relative_improvement_plot(run, test_rows, manifest, mode, paths)
+    with paper_context():
+        if not concatenated:
+            _ctr_vs_voltage_plot(plot_root, test_rows, paths)
+            _relative_improvement_plot(run, plot_root, test_rows, manifest, paths)
 
-    for dataset in datasets:
-        test_distribution_dir = plot_categories["test_distribution"] / dataset
-        train_distribution_dir = plot_categories["train_distribution"] / dataset
-        _distribution_plot(test_distribution_dir, run, all_rows, mode, dataset, "test", paths)
-        _distribution_plot(train_distribution_dir, run, all_rows, mode, dataset, "train", paths)
-
-    available_methods = {r["method"] for r in test_rows}
-    ordered_methods = [m for m in MODEL_ORDER if m in available_methods] + sorted(available_methods - set(MODEL_ORDER))
-    models = [m for m in ordered_methods if m not in {"led", "cfd"}]
-
-    for model in models:
-        model_output_dir = plot_categories["model_output"] / model
         for dataset in datasets:
-            _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
+            _distribution_plot(
+                plot_categories["test_distribution"] / dataset,
+                run, all_rows, mode, dataset, "test", paths,
+            )
+            _distribution_plot(
+                plot_categories["train_distribution"] / dataset,
+                run, all_rows, mode, dataset, "train", paths,
+            )
 
-        xai_plot_dir = plot_categories["xai"] / model
-        for artifact in sorted(
-            (run / "artifacts").glob(f"*/{model}_xai.npz"),
-            key=lambda p: voltage_from_name(p.parent.name),
-        ):
-            _xai_plot(xai_plot_dir, artifact, mode, model, paths)
+        available_methods = {r["method"] for r in test_rows}
+        ordered_methods = [
+            m for m in MODEL_ORDER if m in available_methods
+        ] + sorted(available_methods - set(MODEL_ORDER))
+        models = [m for m in ordered_methods if m not in {"led", "cfd"}]
 
-        if model == "difference_shapelet":
-            shapelet_plot_dir = xai_plot_dir / "shapelets"
-            shapelet_csv_dir = csv_categories["xai"] / model / "shapelets"
+        for model in models:
+            model_output_dir = plot_categories["model_output"] / model
             for dataset in datasets:
-                plot_fixed_shapelets(
-                    run,
-                    shapelet_plot_dir,
-                    shapelet_csv_dir,
-                    dataset,
-                    paths,
-                )
+                _model_output_plot(model_output_dir, run, mode, dataset, model, paths)
 
-        for dataset in datasets:
-            top, worst = _correction_rankings(run, model, dataset)
-            if top or worst:
-                correction_plot_dir = plot_categories["corrections"] / dataset
-                correction_csv_dir = csv_categories["corrections"] / dataset
-                paths.append(_write_rankings(correction_csv_dir, dataset, model, top, worst))
-                _correction_examples(
-                    correction_plot_dir,
-                    run,
-                    mode,
-                    model,
-                    dataset,
-                    top,
-                    worst,
-                    paths,
-                )
+            xai_plot_dir = plot_categories["xai"] / model
+            for artifact in sorted(
+                (run / "artifacts").glob(f"*/{model}_xai.npz"),
+                key=lambda p: voltage_from_name(p.parent.name),
+            ):
+                _xai_plot(xai_plot_dir, artifact, mode, model, paths)
+
+            if model == "difference_shapelet":
+                shapelet_plot_dir = xai_plot_dir / "shapelets"
+                shapelet_csv_dir = csv_categories["xai"] / model / "shapelets"
+                for dataset in datasets:
+                    plot_fixed_shapelets(
+                        run, shapelet_plot_dir, shapelet_csv_dir, dataset, paths
+                    )
+
+            for dataset in datasets:
+                top, worst = _correction_rankings(run, model, dataset)
+                if top or worst:
+                    correction_plot_dir = plot_categories["corrections"] / dataset
+                    correction_csv_dir = csv_categories["corrections"] / dataset
+                    paths.append(_write_rankings(
+                        correction_csv_dir, dataset, model, top, worst
+                    ))
+                    _correction_examples(
+                        correction_plot_dir,
+                        run,
+                        mode,
+                        model,
+                        dataset,
+                        top,
+                        worst,
+                        paths,
+                    )
     return paths
-

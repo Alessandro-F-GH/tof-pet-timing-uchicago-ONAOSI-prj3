@@ -6,8 +6,14 @@ from typing import Any
 
 import numpy as np
 
-from .dataset import load_prepared_dataset
-from .view import model_target, target_family
+from .plot_style import (
+    DOUBLE_COLUMN,
+    LABELS,
+    clean_axis,
+    panel_label,
+    paper_context,
+    save_figure,
+)
 
 
 def _model_output(run: Path, dataset: str, model: str, stage: str) -> np.ndarray | None:
@@ -15,20 +21,28 @@ def _model_output(run: Path, dataset: str, model: str, stage: str) -> np.ndarray
     return np.asarray(np.load(path), dtype=np.float64).reshape(-1) if path.is_file() else None
 
 
-def _stage_indices(run: Path, dataset: str, stage: str) -> np.ndarray:
-    path = run / "splits" / f"{dataset}.npz"
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing split artifact: {path}")
-    key = "training" if stage == "train" else "test"
-    with np.load(path) as split:
-        return np.asarray(split[key], dtype=np.int64)
+def _residual(run: Path, dataset: str, model: str, stage: str) -> np.ndarray | None:
+    path = run / "artifacts" / dataset / f"{model}_{stage}_residuals_ps.npy"
+    return np.asarray(np.load(path), dtype=np.float64).reshape(-1) if path.is_file() else None
 
 
-def _target(run: Path, manifest: dict[str, Any], dataset: str, mode: str, stage: str) -> np.ndarray:
-    prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
-    indices = _stage_indices(run, dataset, stage)
-    return np.asarray(model_target(prepared, mode)[indices], dtype=np.float64).reshape(-1)
-
+def _target_from_artifacts(
+    run: Path,
+    dataset: str,
+    model: str,
+    stage: str,
+) -> np.ndarray | None:
+    prediction = _model_output(run, dataset, model, stage)
+    residual = _residual(run, dataset, model, stage)
+    if prediction is None or residual is None:
+        return None
+    if prediction.shape != residual.shape:
+        raise ValueError(
+            f"{dataset}/{model}/{stage}: prediction/residual shape mismatch "
+            f"{prediction.shape} != {residual.shape}"
+        )
+    # corrected residual = target - prediction
+    return prediction + residual
 
 
 def _assert_selected_threshold_provenance(
@@ -36,39 +50,22 @@ def _assert_selected_threshold_provenance(
     dataset: str,
     mode: str,
 ) -> float:
-    """Require model-output diagnostics to use the study's selected LED threshold."""
     dataset_info = manifest["datasets"][dataset]
-    prepared = load_prepared_dataset(dataset_info["prepared_dir"])
-    family = target_family(mode)
-    prepared_threshold = float(prepared.manifest["led_threshold_mV"][family])
-
-    recorded_threshold = float(
-        dataset_info.get(
-            "selected_led_threshold_mV",
-            dataset_info["led_threshold_mV"][family],
-        )
-    )
-    if not np.isclose(prepared_threshold, recorded_threshold, rtol=0.0, atol=1e-12):
-        raise RuntimeError(
-            f"{dataset}: prepared LED threshold {prepared_threshold:g} mV does not match "
-            f"study-selected threshold {recorded_threshold:g} mV"
-        )
-
+    recorded_threshold = float(dataset_info["selected_led_threshold_mV"])
     threshold_analysis = (manifest.get("analyses") or {}).get("led_threshold_scan") or {}
     if bool(threshold_analysis.get("enabled", False)):
         selected = threshold_analysis.get("selected_thresholds_mV") or {}
         if dataset not in selected:
             raise RuntimeError(
-                f"{dataset}: LED-threshold scan is enabled but the selected threshold "
-                "is missing from the study manifest"
+                f"{dataset}: LED-threshold scan is enabled but its selected threshold is missing"
             )
         scan_threshold = float(selected[dataset])
-        if not np.isclose(prepared_threshold, scan_threshold, rtol=0.0, atol=1e-12):
+        if not np.isclose(recorded_threshold, scan_threshold, rtol=0.0, atol=1e-12):
             raise RuntimeError(
-                f"{dataset}: model-output dataset uses {prepared_threshold:g} mV but "
-                f"threshold scan selected {scan_threshold:g} mV"
+                f"{dataset}: study threshold {recorded_threshold:g} mV does not match "
+                f"threshold-scan selection {scan_threshold:g} mV"
             )
-    return prepared_threshold
+    return recorded_threshold
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> tuple[float, int]:
@@ -117,46 +114,50 @@ def plot_prediction_vs_target(
     label: str,
     paths: list[Path],
 ) -> None:
-    """Scatter model correction versus the exact ML target for train and blind/test."""
     import matplotlib.pyplot as plt
 
     stages: list[tuple[str, np.ndarray, np.ndarray]] = []
     for stage in ("train", "test"):
         prediction = _model_output(run, dataset, model, stage)
-        if prediction is None:
+        target = _target_from_artifacts(run, dataset, model, stage)
+        if prediction is None or target is None:
             continue
-        target = _target(run, manifest, dataset, mode, stage)
-        if prediction.size != target.size:
-            raise ValueError(
-                f"{dataset}/{model}/{stage}: prediction/target length mismatch "
-                f"{prediction.size} != {target.size}"
-            )
         stages.append((stage, target, prediction))
     if not stages:
         return
 
-    limits = _display_limits([array for _, target, prediction in stages for array in (target, prediction)])
-    fig, axes = plt.subplots(1, len(stages), figsize=(6.1 * len(stages), 5.4), squeeze=False)
-    for ax, (stage, target, prediction) in zip(axes[0], stages):
+    limits = _display_limits([
+        array for _, target, prediction in stages for array in (target, prediction)
+    ])
+    fig, axes = plt.subplots(
+        1,
+        len(stages),
+        figsize=DOUBLE_COLUMN if len(stages) > 1 else (3.45, 3.2),
+        squeeze=False,
+    )
+    for panel_index, (ax, (stage, target, prediction)) in enumerate(zip(axes[0], stages)):
         finite = np.isfinite(target) & np.isfinite(prediction)
         x = target[finite]
         y = prediction[finite]
         correlation, n = _pearson(target, prediction)
-        ax.scatter(x, y, s=7, alpha=0.28, rasterized=True)
-        ax.plot(limits, limits, ls="--", lw=1.1, label="ideal prediction")
+        ax.scatter(x, y, s=5, alpha=0.24, rasterized=True, color="#0072B2")
+        ax.plot(limits, limits, color="#7F7F7F", ls="--", lw=0.9)
         ax.set_xlim(*limits)
         ax.set_ylim(*limits)
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel("ML target [ps]")
         ax.set_ylabel("Model prediction [ps]")
-        ax.set_title(f"{stage.capitalize()} · Pearson r={correlation:.4f} · n={n}")
-        ax.grid(True, alpha=0.2)
-        ax.legend(loc="best")
-    fig.suptitle(f"{label} prediction vs target · {mode.replace('_', ' ')} · {dataset}")
-    fig.tight_layout()
-    target_path = output / f"prediction_vs_target_{dataset}.pdf"
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target_path, bbox_inches="tight")
+        clean_axis(ax, grid="both")
+        panel_label(ax, f"({chr(97 + panel_index)})")
+        ax.text(
+            0.98, 0.04,
+            f"$r$ = {correlation:.3f}\n$n$ = {n}",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+        )
+    fig.tight_layout(w_pad=0.8)
+    target_path = save_figure(fig, output / f"prediction_vs_target_{dataset}.pdf")
     plt.close(fig)
     paths.append(target_path)
 
@@ -174,12 +175,10 @@ def _stage_output_matrix(
             available.append((model, values))
     if len(available) < 2:
         return [], np.empty((0, 0), dtype=np.float64), np.empty((0, 0), dtype=np.int64)
-
     lengths = {values.size for _, values in available}
     if len(lengths) != 1:
         detail = {model: int(values.size) for model, values in available}
         raise ValueError(f"{dataset}/{stage}: model-output lengths differ: {detail}")
-
     names = [model for model, _ in available]
     n_models = len(names)
     corr = np.full((n_models, n_models), np.nan, dtype=np.float64)
@@ -201,7 +200,6 @@ def plot_model_output_correlations(
     labels: dict[str, str],
     paths: list[Path],
 ) -> None:
-    """Plot pairwise Pearson correlations between model correction outputs."""
     import matplotlib.pyplot as plt
 
     stages = []
@@ -215,41 +213,43 @@ def plot_model_output_correlations(
     fig, axes = plt.subplots(
         1,
         len(stages),
-        figsize=(6.0 * len(stages), 5.4),
+        figsize=DOUBLE_COLUMN if len(stages) > 1 else (3.45, 3.1),
         squeeze=False,
         constrained_layout=True,
     )
     image = None
-    for ax, (stage, names, matrix, counts) in zip(axes[0], stages):
-        image = ax.imshow(matrix, vmin=-1.0, vmax=1.0, cmap="coolwarm", interpolation="nearest")
+    for panel_index, (ax, (_stage, names, matrix, counts)) in enumerate(zip(axes[0], stages)):
+        mask = np.triu(np.ones_like(matrix, dtype=bool), k=1)
+        shown = np.ma.array(matrix, mask=mask)
+        image = ax.imshow(
+            shown,
+            vmin=-1.0,
+            vmax=1.0,
+            cmap="coolwarm",
+            interpolation="nearest",
+        )
         display_names = [labels.get(name, name) for name in names]
         ax.set_xticks(np.arange(len(names)))
         ax.set_yticks(np.arange(len(names)))
         ax.set_xticklabels(display_names, rotation=35, ha="right", rotation_mode="anchor")
         ax.set_yticklabels(display_names)
         ax.set_aspect("equal", adjustable="box")
-        finite_counts = counts[counts > 0]
-        if finite_counts.size:
-            n_min = int(np.min(finite_counts))
-            n_max = int(np.max(finite_counts))
-            n_label = f"n={n_min}" if n_min == n_max else f"n={n_min}–{n_max}"
-        else:
-            n_label = "n=0"
         for i in range(len(names)):
-            for j in range(len(names)):
+            for j in range(i + 1):
                 value = matrix[i, j]
-                text = "nan" if not np.isfinite(value) else f"{value:.3f}"
-                text_color = "white" if np.isfinite(value) and abs(value) >= 0.55 else "black"
-                ax.text(j, i, text, ha="center", va="center", fontsize=9, color=text_color)
-        ax.set_title(f"{stage.capitalize()} model outputs · {n_label}")
+                if not np.isfinite(value):
+                    continue
+                color = "white" if abs(value) >= 0.55 else "black"
+                ax.text(j, i, f"{value:.2f}", ha="center", va="center", fontsize=7, color=color)
+        panel_label(ax, f"({chr(97 + panel_index)})")
         ax.grid(False)
     if image is not None:
         cbar = fig.colorbar(image, ax=axes.ravel().tolist(), fraction=0.035, pad=0.04)
         cbar.set_label("Pearson correlation")
-    fig.suptitle(f"Model-output correlation · {mode.replace('_', ' ')} · {dataset}")
-    target_path = plot_output / f"model_output_correlation_{dataset}.pdf"
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target_path, bbox_inches="tight")
+    target_path = save_figure(
+        fig,
+        plot_output / f"model_output_correlation_{dataset}.pdf",
+    )
     plt.close(fig)
     paths.append(target_path)
 
@@ -260,51 +260,49 @@ def make_model_output_reports(
     *,
     labels: dict[str, str] | None = None,
 ) -> list[Path]:
-    """Create prediction-target scatters and multi-model output correlations."""
     run = Path(run_dir).resolve()
     plot_root = Path(plot_output_dir).resolve()
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
-    labels = dict(labels or {})
+    labels = dict(labels or LABELS)
     paths: list[Path] = []
 
-    datasets = list((manifest.get("datasets") or {}).keys())
-    for dataset in datasets:
-        _assert_selected_threshold_provenance(manifest, dataset, mode)
-        artifact_dir = run / "artifacts" / dataset
-        discovered_models = {
-            path.name[: -len("_test_model_output_ps.npy")]
-            for path in artifact_dir.glob("*_test_model_output_ps.npy")
-            if path.name.endswith("_test_model_output_ps.npy")
-        }
-        discovered_models.update(
-            path.name[: -len("_train_model_output_ps.npy")]
-            for path in artifact_dir.glob("*_train_model_output_ps.npy")
-            if path.name.endswith("_train_model_output_ps.npy")
-        )
-        models = [name for name in labels if name in discovered_models]
-        models.extend(sorted(discovered_models - set(models)))
-        for model in models:
-            model_dir = plot_root / model
-            plot_prediction_vs_target(
-                model_dir,
-                run,
-                manifest,
-                mode,
-                dataset,
-                model,
-                labels.get(model, model),
-                paths,
+    with paper_context():
+        datasets = list((manifest.get("datasets") or {}).keys())
+        for dataset in datasets:
+            _assert_selected_threshold_provenance(manifest, dataset, mode)
+            artifact_dir = run / "artifacts" / dataset
+            discovered_models = {
+                path.name[: -len("_test_model_output_ps.npy")]
+                for path in artifact_dir.glob("*_test_model_output_ps.npy")
+                if path.name.endswith("_test_model_output_ps.npy")
+            }
+            discovered_models.update(
+                path.name[: -len("_train_model_output_ps.npy")]
+                for path in artifact_dir.glob("*_train_model_output_ps.npy")
+                if path.name.endswith("_train_model_output_ps.npy")
             )
-        if len(models) > 1:
-            correlation_plot_dir = plot_root / "correlations"
-            plot_model_output_correlations(
-                correlation_plot_dir,
-                run,
-                mode,
-                dataset,
-                models,
-                labels,
-                paths,
-            )
+            models = [name for name in labels if name in discovered_models]
+            models.extend(sorted(discovered_models - set(models)))
+            for model in models:
+                plot_prediction_vs_target(
+                    plot_root / model,
+                    run,
+                    manifest,
+                    mode,
+                    dataset,
+                    model,
+                    labels.get(model, model),
+                    paths,
+                )
+            if len(models) > 1:
+                plot_model_output_correlations(
+                    plot_root / "correlations",
+                    run,
+                    mode,
+                    dataset,
+                    models,
+                    labels,
+                    paths,
+                )
     return paths

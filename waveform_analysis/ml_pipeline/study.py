@@ -15,7 +15,7 @@ from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
 from .event_selection import select_events
-from .model_output_reporting import make_model_output_reports
+from .plot_rebuild import rebuild_study_plots
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
@@ -650,18 +650,9 @@ def run_study(
     manifest["analyses"] = analyses_manifest
     store.write_manifest(manifest)
 
-    with progress.task("report", "model-output diagnostics"):
-        diagnostics_plot_dir = store.plots_dir / "model_output_diagnostics"
-        generated = make_model_output_reports(
-            store.root,
-            diagnostics_plot_dir,
-            labels=LABELS,
-        )
-    logger.info(
-        "Model-output diagnostics | files=%d | %s",
-        len(generated),
-        diagnostics_plot_dir,
-    )
+    with progress.task("report", "render study plots"):
+        generated = rebuild_study_plots(store.root)
+    logger.info("Study plots | files=%d | %s", len(generated), store.root)
 
     store.write_manifest(manifest)
     logger.info("Study complete | %s | elapsed=%s", store.root, progress.elapsed_text)

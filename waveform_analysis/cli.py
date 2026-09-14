@@ -11,7 +11,7 @@ from .ml_pipeline.data import preprocess_selected
 from .ml_pipeline.event_selection import select_events
 from .ml_pipeline.prepared_data import prepare_ml_dataset
 from .ml_pipeline.preflight import confirm_overwrite, inspect_preprocessing, study_overwrite_path
-from .ml_pipeline.reporting import make_plots
+from .ml_pipeline.plot_rebuild import rebuild_study_plots
 from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
@@ -61,7 +61,7 @@ def _prepare(config, rebuild: bool) -> int:
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "report":
-        for path in make_plots(args.run_dir, args.output_dir):
+        for path in rebuild_study_plots(args.run_dir, args.output_dir):
             print(path)
         return
     config = load_config(args.config, PROJECT_ROOT)

@@ -16,7 +16,15 @@ from .concatenate import concatenate_prepared_datasets
 from .dataset import PreparedDataset, load_prepared_dataset
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
-from .reporting import LABELS
+from .plot_style import (
+    DOUBLE_COLUMN,
+    LABELS,
+    SINGLE_COLUMN,
+    clean_axis,
+    model_style,
+    paper_context,
+    save_figure,
+)
 from .sample_mask import SAMPLE_CONSTANT_FRACTION, dataset_training_sample_mask
 from .splits import semantic_seed
 from .train import predict_indices, search_model, selected_model
@@ -178,45 +186,74 @@ def _plot_threshold_results(output_dir: Path, rows: list[dict[str, Any]], model_
     import matplotlib.pyplot as plt
 
     generated: list[Path] = []
-    for dataset_name in sorted({row["dataset"] for row in rows}):
-        subset = sorted(
-            [row for row in rows if row["dataset"] == dataset_name],
-            key=lambda row: float(row["threshold_mV"]),
-        )
-        threshold = np.asarray([row["threshold_mV"] for row in subset], dtype=float)
-        led = np.asarray([row["led_validation_ctr_ps"] for row in subset], dtype=float)
-        model = np.asarray([row["model_validation_ctr_ps"] for row in subset], dtype=float)
-        improvement = np.asarray([row["relative_improvement_pct"] for row in subset], dtype=float)
+    with paper_context():
+        for dataset_name in sorted({row["dataset"] for row in rows}):
+            subset = sorted(
+                [row for row in rows if row["dataset"] == dataset_name],
+                key=lambda row: float(row["threshold_mV"]),
+            )
+            threshold = np.asarray([row["threshold_mV"] for row in subset], dtype=float)
+            led = np.asarray([row["led_validation_ctr_ps"] for row in subset], dtype=float)
+            model = np.asarray([row["model_validation_ctr_ps"] for row in subset], dtype=float)
+            improvement = np.asarray([row["relative_improvement_pct"] for row in subset], dtype=float)
+            selected_index = int(np.nanargmin(model))
 
-        fig, ax = plt.subplots(figsize=(7.6, 5.0))
-        ax.plot(threshold, led, marker="o", label="LED")
-        ax.plot(threshold, model, marker="o", label=LABELS.get(model_name, model_name))
-        ax.set_xlabel("LED threshold [mV]")
-        ax.set_ylabel("Common-validation CTR [ps]")
-        ax.set_title(dataset_name)
-        ax.grid(True, alpha=0.2)
-        ax.legend(loc="best")
-        fig.tight_layout()
-        path = output_dir / f"ctr_vs_led_threshold_{dataset_name}.pdf"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path)
-        plt.close(fig)
-        generated.append(path)
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
+            ax.plot(
+                threshold, led,
+                label="LED",
+                **model_style("led"),
+            )
+            ax.plot(
+                threshold, model,
+                label=LABELS.get(model_name, model_name),
+                **model_style(model_name),
+            )
+            ax.scatter(
+                [threshold[selected_index]],
+                [model[selected_index]],
+                s=34,
+                facecolors="none",
+                edgecolors=model_style(model_name)["color"],
+                linewidths=1.1,
+                zorder=5,
+            )
+            ax.set_xlabel("LED threshold [mV]")
+            ax.set_ylabel("Validation CTR [ps]")
+            ax.legend(loc="best")
+            clean_axis(ax, grid="y")
+            fig.tight_layout()
+            path = save_figure(fig, output_dir / f"ctr_vs_led_threshold_{dataset_name}.pdf")
+            plt.close(fig)
+            generated.append(path)
 
-        fig, ax = plt.subplots(figsize=(7.6, 5.0))
-        ax.plot(threshold, improvement, marker="o")
-        ax.axhline(0.0, linestyle="--", linewidth=1.0)
-        ax.set_xlabel("LED threshold [mV]")
-        ax.set_ylabel("Relative CTR improvement [%]")
-        ax.set_title(dataset_name)
-        ax.grid(True, alpha=0.2)
-        fig.tight_layout()
-        path = output_dir / f"relative_improvement_vs_led_threshold_{dataset_name}.pdf"
-        fig.savefig(path)
-        plt.close(fig)
-        generated.append(path)
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
+            ax.plot(
+                threshold,
+                improvement,
+                **model_style(model_name),
+            )
+            ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
+            ax.scatter(
+                [threshold[selected_index]],
+                [improvement[selected_index]],
+                s=34,
+                facecolors="none",
+                edgecolors=model_style(model_name)["color"],
+                linewidths=1.1,
+                zorder=5,
+            )
+            ax.set_xlabel("LED threshold [mV]")
+            ax.set_ylabel("CTR improvement [%]")
+            clean_axis(ax, grid="y")
+            fig.tight_layout()
+            path = save_figure(
+                fig,
+                output_dir / f"relative_improvement_vs_led_threshold_{dataset_name}.pdf",
+            )
+            plt.close(fig)
+            generated.append(path)
     return generated
-
 
 def run_led_threshold_scan(
     preprocessed: list[Any],
@@ -421,14 +458,12 @@ def run_led_threshold_scan(
         raise RuntimeError("LED threshold scan produced no selectable dataset")
 
     csv_dir = output_dir / "csv"
-    plot_dir = output_dir / "plots"
     threshold_csv = csv_dir / "threshold_scan.csv"
     selected_csv = csv_dir / "selected_thresholds.csv"
     _write_csv(threshold_csv, rows)
     _write_csv(selected_csv, selected_rows)
     if failures:
         _write_csv(csv_dir / "failed_thresholds.csv", failures)
-    _plot_threshold_results(plot_dir, rows, model_name)
 
     manifest = {
         "enabled": True,
@@ -474,46 +509,96 @@ def _plot_window_results(output_dir: Path, rows: list[dict[str, Any]]) -> list[P
     import matplotlib.pyplot as plt
 
     generated: list[Path] = []
-    for dataset_name in sorted({row["dataset"] for row in rows}):
-        subset = [row for row in rows if row["dataset"] == dataset_name]
-        fig, ax = plt.subplots(figsize=(7.6, 5.0))
-        for model_name in list(dict.fromkeys(row["model"] for row in subset)):
-            model_rows = sorted(
-                [row for row in subset if row["model"] == model_name],
-                key=lambda row: float(row["right_limit_ns"]),
+    with paper_context():
+        for dataset_name in sorted({row["dataset"] for row in rows}):
+            subset = [row for row in rows if row["dataset"] == dataset_name]
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
+            for model_index, model_name in enumerate(dict.fromkeys(row["model"] for row in subset)):
+                model_rows = sorted(
+                    [row for row in subset if row["model"] == model_name],
+                    key=lambda row: float(row["right_limit_ns"]),
+                )
+                x = np.asarray([row["right_limit_ns"] for row in model_rows], dtype=float)
+                y = np.asarray([row["blind_ctr_ps"] for row in model_rows], dtype=float)
+                yerr = np.asarray(
+                    [row["blind_ctr_uncertainty_ps"] for row in model_rows],
+                    dtype=float,
+                )
+                ax.errorbar(
+                    x,
+                    y,
+                    yerr=yerr,
+                    capsize=2.5,
+                    label=LABELS.get(model_name, model_name),
+                    **model_style(model_name, model_index),
+                )
+            led_ctr = float(subset[0]["led_blind_ctr_ps"])
+            led_err = float(subset[0]["led_blind_ctr_uncertainty_ps"])
+            led_style = model_style("led")
+            ax.axhline(
+                led_ctr,
+                color=led_style["color"],
+                linestyle=led_style["linestyle"],
+                linewidth=1.0,
+                label="LED",
             )
-            x = np.asarray([row["right_limit_ns"] for row in model_rows], dtype=float)
-            y = np.asarray([row["blind_ctr_ps"] for row in model_rows], dtype=float)
-            yerr = np.asarray(
-                [row["blind_ctr_uncertainty_ps"] for row in model_rows],
-                dtype=float,
-            )
-            ax.errorbar(
-                x,
-                y,
-                yerr=yerr,
-                marker="o",
-                capsize=3,
-                label=LABELS.get(model_name, model_name),
-            )
-        led_ctr = float(subset[0]["led_blind_ctr_ps"])
-        led_err = float(subset[0]["led_blind_ctr_uncertainty_ps"])
-        ax.axhline(led_ctr, linestyle="--", linewidth=1.2, label="LED")
-        if np.isfinite(led_err) and led_err > 0:
-            ax.axhspan(led_ctr - led_err, led_ctr + led_err, alpha=0.12)
-        ax.set_xlabel("ML window right limit [ns]")
-        ax.set_ylabel("Blind-test CTR [ps]")
-        ax.set_title(dataset_name)
-        ax.grid(True, alpha=0.2)
-        ax.legend(loc="best")
-        fig.tight_layout()
-        path = output_dir / f"blind_ctr_vs_window_{dataset_name}.pdf"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path)
-        plt.close(fig)
-        generated.append(path)
+            if np.isfinite(led_err) and led_err > 0:
+                ax.axhspan(led_ctr - led_err, led_ctr + led_err, color="#7F7F7F", alpha=0.10)
+            ax.set_xlabel("Window right limit [ns]")
+            ax.set_ylabel("CTR [ps]")
+            ax.legend(loc="best")
+            clean_axis(ax, grid="y")
+            fig.tight_layout()
+            path = save_figure(fig, output_dir / f"blind_ctr_vs_window_{dataset_name}.pdf")
+            plt.close(fig)
+            generated.append(path)
     return generated
 
+
+def _read_csv(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def make_analysis_plots(
+    run_dir: str | Path,
+    output_root: str | Path | None = None,
+) -> list[Path]:
+    """Rebuild integrated-analysis figures from persisted CSV results."""
+    run = Path(run_dir).resolve()
+    destination = run if output_root is None else Path(output_root).resolve()
+    generated: list[Path] = []
+
+    threshold_root = run / "analyses" / "led_threshold"
+    threshold_rows = _read_csv(threshold_root / "csv" / "threshold_scan.csv")
+    if threshold_rows:
+        manifest_path = threshold_root / "manifest.json"
+        manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
+        model_name = str(
+            manifest.get("selection_model")
+            or threshold_rows[0].get("selection_model")
+            or "cnn"
+        )
+        generated.extend(
+            _plot_threshold_results(
+                destination / "analyses" / "led_threshold" / "plots",
+                threshold_rows,
+                model_name,
+            )
+        )
+
+    window_root = run / "analyses" / "window"
+    window_rows = _read_csv(window_root / "csv" / "window_scan.csv")
+    if window_rows:
+        generated.extend(
+            _plot_window_results(
+                destination / "analyses" / "window" / "plots",
+                window_rows,
+            )
+        )
+    return generated
 
 def run_window_scan(
     datasets: list[PreparedDataset],
@@ -712,7 +797,6 @@ def run_window_scan(
     _write_csv(csv_dir / "window_scan.csv", rows)
     if failures:
         _write_csv(csv_dir / "failed_windows.csv", failures)
-    _plot_window_results(plot_dir, rows)
 
     manifest = {
         "enabled": True,

@@ -24,7 +24,20 @@ class RunStore:
         finally:
             if os.path.exists(tmp): os.unlink(tmp)
     def save_split(self,dataset,prepared):
-        target=self.root/"splits"/f"{dataset}.npz"; target.parent.mkdir(parents=True,exist_ok=True); np.savez_compressed(target,development=np.asarray(prepared.development,dtype=np.int64),training=np.asarray(prepared.training,dtype=np.int64),validation=np.asarray(prepared.validation,dtype=np.int64),test=np.asarray(prepared.test,dtype=np.int64)); return target
+        target=self.root/"splits"/f"{dataset}.npz"; target.parent.mkdir(parents=True,exist_ok=True)
+        event_index=np.asarray(prepared.event_index,dtype=np.int64)
+        np.savez_compressed(
+            target,
+            development=np.asarray(prepared.development,dtype=np.int64),
+            training=np.asarray(prepared.training,dtype=np.int64),
+            validation=np.asarray(prepared.validation,dtype=np.int64),
+            test=np.asarray(prepared.test,dtype=np.int64),
+            development_event_index=event_index[np.asarray(prepared.development,dtype=np.int64)],
+            training_event_index=event_index[np.asarray(prepared.training,dtype=np.int64)],
+            validation_event_index=event_index[np.asarray(prepared.validation,dtype=np.int64)],
+            test_event_index=event_index[np.asarray(prepared.test,dtype=np.int64)],
+        )
+        return target
     def save_search(self,dataset,name,value):
         target=self.root/"search"/dataset/f"{name}.json"; target.parent.mkdir(parents=True,exist_ok=True); atomic_json(target,value); return target
     def model_dir(self,dataset,model):
