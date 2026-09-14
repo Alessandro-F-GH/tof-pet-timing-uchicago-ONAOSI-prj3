@@ -429,7 +429,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         "cfd_development_ctr_ps": cfd_score,
         "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
         "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
-        "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
         "normalization": transforms,
         "diagnostic_examples": diagnostic_examples,
