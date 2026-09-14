@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 from .analyses import make_analysis_plots
+from .latex_tables import make_latex_tables
 from .model_output_reporting import make_model_output_reports
 from .plot_style import LABELS
 from .reporting import make_plots
@@ -17,6 +18,8 @@ def _reset(directory: Path) -> None:
 def rebuild_study_plots(
     run_dir: str | Path,
     output_dir: str | Path | None = None,
+    *,
+    latex_tables: bool = False,
 ) -> list[Path]:
     """Recreate every study/report plot from persisted run artifacts only."""
     run = Path(run_dir).resolve()
@@ -39,4 +42,8 @@ def rebuild_study_plots(
         )
     )
     paths.extend(make_analysis_plots(run, plot_root / "analyses"))
+    if latex_tables:
+        table_root = destination / "latex_tables"
+        _reset(table_root)
+        paths.extend(make_latex_tables(run, table_root))
     return paths
