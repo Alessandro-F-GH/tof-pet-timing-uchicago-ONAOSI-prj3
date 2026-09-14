@@ -115,16 +115,10 @@ def anchor_grid(
     data: PreprocessedData,
     family: str,
     threshold_mV: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return native-grid anchors nearest in time to the interpolated LED crossing.
-
-    The waveform stays on the native sampling grid. For each detector the LED
-    crossing is first linearly interpolated, then the closest native sample is
-    used as the window anchor t_a. This implements delta = t_LED - t_a.
-    """
+) -> np.ndarray:
+    """Return native-grid anchor indices nearest to the interpolated LED crossing."""
     waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
     indices = np.full((data.n_events, 2), -1, dtype=np.int32)
-    times_ps = np.full((data.n_events, 2), np.nan, dtype=np.float64)
     for event in range(data.n_events):
         for detector in range(2):
             start = float(starts[event, detector])
@@ -153,8 +147,7 @@ def anchor_grid(
                 ),
             )
             indices[event, detector] = sample
-            times_ps[event, detector] = (start + sample * interval) * 1.0e12
-    return indices, times_ps
+    return indices
 
 
 def pair_delta(times_ps: np.ndarray) -> np.ndarray:
