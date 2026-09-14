@@ -20,12 +20,25 @@ from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
 from .reporting import LABELS
-from .sample_mask import SAMPLE_CONSTANT_FRACTION, dataset_training_sample_mask
+from .sample_mask import (
+    SAMPLE_CONSTANT_FRACTION,
+    apply_sample_mask,
+    apply_sample_mask_to_time,
+    dataset_training_sample_mask,
+)
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
 from .train import predict_indices, save_model, search_model, selected_model
-from .view import calibrated_led, corrected_timing_residual, inverse_pair, model_target, standard_delta, target_family
+from .view import (
+    calibrated_led,
+    corrected_timing_residual,
+    inverse_pair,
+    model_target,
+    standard_delta,
+    target_family,
+    waveform_view,
+)
 
 
 def _logger(run_dir: Path):
@@ -47,7 +60,6 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
     values = np.asarray(residual, dtype=float)
     finite = values[np.isfinite(values)]
     context = f"{name}/{mode}/{method}/{stage}"
-    summary = residual_summary(values)
     try:
         result = ctr_estimate(
             finite,
@@ -56,7 +68,7 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
             bootstrap=True,
         )
     except ValueError as exc:
-        detail = format_residual_summary(summary)
+        detail = format_residual_summary(residual_summary(values))
         logger.error("CTR unavailable | %s | reason=%s | %s", context, exc, detail)
         raise RuntimeError(f"{context}: CTR unavailable: {exc}; {detail}") from exc
     return {
@@ -101,11 +113,6 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
     }
 
 
-def _preprocess_one(root, config, rebuild, logger):
-    selection = select_events(root, config, rebuild=rebuild, logger=logger)
-    return preprocess_selected(root, selection, config, rebuild=rebuild, logger=logger)
-
-
 def _dataset_name(dataset):
     if bool(dataset.manifest.get("concatenated", False)):
         return str(dataset.manifest.get("dataset_name", "concatenated"))
@@ -131,7 +138,7 @@ def _prepare_without_threshold_scan(preprocessed, config, rebuild, logger, progr
     prepared = []
     for source in preprocessed:
         label = f"prepare ML dataset | {Path(source.manifest['source']).name}"
-        with progress.task("prepare", label):
+        with progress.task("led_prepare", label):
             prepared.append(
                 prepare_ml_dataset(
                     source,
@@ -145,7 +152,7 @@ def _prepare_without_threshold_scan(preprocessed, config, rebuild, logger, progr
         return prepared
 
     name = str(config["experiment"].get("concatenated_dataset_name", "concatenated"))
-    with progress.task("prepare", f"concatenate ML dataset | {name}"):
+    with progress.task("led_prepare", f"concatenate ML dataset | {name}"):
         return [
             concatenate_prepared_datasets(
                 prepared,
@@ -286,10 +293,7 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
             100.0 * SAMPLE_CONSTANT_FRACTION,
         )
 
-        validation = np.asarray(dataset.validation, dtype=np.int64)
         target = model_target(dataset, mode)
-        validation_led = calibrated_led(dataset, mode)[validation]
-        store.save_residuals(name, "led", validation_led, stage="validation")
 
         led_reference = calibrated_led(dataset, mode)
         for stage, indices in (
@@ -336,7 +340,7 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
             label = f"final model | {name} | {LABELS.get(model_name, model_name)}"
             search = None
             fitted = None
-            with progress.task("final_model", label):
+            with progress.task(f"final_model:{model_name}", label):
                 spec = get_model(model_name)
                 search = search_model(
                     spec,
@@ -370,39 +374,18 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
                     )
                 )
 
-                validation_prediction, _validation_time, _validation_pair = predict_indices(
-                    spec,
-                    fitted,
-                    dataset,
-                    mode,
-                    validation,
-                )
-                store.save_model_output(
-                    name,
-                    model_name,
-                    validation_prediction,
-                    stage="validation",
-                )
-                store.save_residuals(
-                    name,
-                    model_name,
-                    corrected_timing_residual(
-                        target[validation],
-                        validation_prediction,
-                    ),
-                    stage="validation",
-                )
-
                 xai = config.get("reporting", {}).get("xai", {}) or {}
                 if bool(xai.get("enabled", True)) and spec.explain is not None:
                     limit = min(dataset.development.size, int(xai.get("max_events", 1024)))
                     chosen = dataset.development[:limit]
-                    _prediction, time_ps, normalized = predict_indices(
-                        spec,
-                        fitted,
-                        dataset,
-                        mode,
-                        chosen,
+                    xai_view = waveform_view(dataset, mode, chosen)
+                    normalized = apply_sample_mask(
+                        xai_view.materialize(),
+                        fitted.sample_mask,
+                    )
+                    time_ps = apply_sample_mask_to_time(
+                        xai_view.time_ps,
+                        fitted.sample_mask,
                     )
                     importance = spec.explain(fitted.artifact, normalized)
                     physical = inverse_pair(dataset, mode, normalized)
@@ -515,13 +498,17 @@ def run_study(
     window_limits = list(window_cfg.get("right_limits_ns", [])) if window_enabled else []
 
     plan = {
-        "preprocess": len(roots),
-        "threshold_scan": dataset_count * threshold_count,
-        "prepare": prepare_count,
-        "final_model": dataset_count * len(config["models"]),
-        "window_scan": dataset_count * len(window_limits) * len(window_models),
-        "report": 1,
+        "selection": len(roots),
+        "native_preprocess": len(roots),
     }
+    if threshold_enabled:
+        plan["led_scan"] = dataset_count * threshold_count
+    elif prepare_count:
+        plan["led_prepare"] = prepare_count
+    for model_name in config["models"]:
+        plan[f"final_model:{model_name}"] = dataset_count
+    for model_name in window_models:
+        plan[f"window_scan:{model_name}"] = dataset_count * len(window_limits)
     progress = ProgressTracker(logger, plan)
 
     logger.info(
@@ -549,13 +536,21 @@ def run_study(
 
     preprocessed = []
     for root in roots:
-        with progress.task("preprocess", f"preprocess | {root.name}"):
+        with progress.task("selection", f"event selection | {root.name}"):
+            selection = select_events(
+                root,
+                config,
+                rebuild=rebuild_preprocessing,
+                logger=logger,
+            )
+        with progress.task("native_preprocess", f"native preprocessing | {root.name}"):
             preprocessed.append(
-                _preprocess_one(
+                preprocess_selected(
                     root,
+                    selection,
                     config,
-                    rebuild_preprocessing,
-                    logger,
+                    rebuild=rebuild_preprocessing,
+                    logger=logger,
                 )
             )
 
@@ -629,8 +624,8 @@ def run_study(
     manifest["analyses"] = analyses_manifest
     store.write_manifest(manifest)
 
-    with progress.task("report", "render study plots"):
-        generated = rebuild_study_plots(store.root)
+    logger.info("Rendering study plots")
+    generated = rebuild_study_plots(store.root)
     logger.info("Study plots | files=%d | %s", len(generated), store.root)
 
     store.write_manifest(manifest)
