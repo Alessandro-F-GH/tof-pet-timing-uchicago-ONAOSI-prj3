@@ -110,7 +110,7 @@ def _validate_analyses(config):
     selection_model = str(led.get("selection_model", "")).strip()
     if led["enabled"] and not selection_model:
         raise ConfigError("analyses.led_threshold_scan.selection_model is required when enabled")
-    if selection_model and selection_model not in config["models"]:
+    if led["enabled"] and selection_model not in config["models"]:
         raise ConfigError(
             "analyses.led_threshold_scan.selection_model must be one of the configured models"
         )
