@@ -16,7 +16,7 @@ There is **no denoising** and no event-wise baseline subtraction.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and ranked by the common robust CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is still the native sample nearest in time to the interpolated selected LED crossing for window materialization only.
+LED thresholds are scanned on development and ranked by the common CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is still the native sample nearest in time to the interpolated selected LED crossing for window materialization only.
 
 The fixed channel calibration is estimated from training only as
 
@@ -65,29 +65,37 @@ while the ML residual used for CTR is
 
 `y_target - y_theta`.
 
-CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this robust estimator; the default is `500` resamples configured with `fit.bootstrap_samples`.
+CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this CTR estimator; the default is `500` resamples configured with `fit.bootstrap_samples`.
 
 All finite residuals are included in the canonical CTR calculation. There is no internal `fit.max_abs_ps` rejection. The fixed-bin histogram FWHM is retained only as a secondary `core_fwhm_ps` diagnostic, together with `core_fraction`; `fit.bin_width_ps` controls only that diagnostic histogram.
 
 Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
 
-### LED-threshold / ML interaction sweep
+### Optional integrated analyses
 
-`scripts/sweep_led_thresholds.py` retrains the configured ML models at fixed LED thresholds to test whether the LED threshold that minimizes standalone LED CTR is also the best threshold for an ML-corrected result. Each threshold gets a separate prepared-data cache because LED crossing, coincidence acceptance, waveform alignment and the ML target depend on the threshold; threshold-independent selection and waveform preprocessing caches are reused.
-
-Threshold ranking is performed on the intersection of validation event IDs that survive every successful threshold, so CTR differences cannot be explained by different retained validation populations. For each model the script reports LED CTR, ML CTR and relative improvement `(CTR_LED - CTR_ML) / CTR_LED`. The ML-paired threshold is selected by minimum common-validation ML CTR. Blind/test CTR is then reported only for that validation-selected threshold and is not used for threshold selection.
+Long-running analyses are configured in the experiment JSON and executed by the normal `run` command; separate threshold/window sweep scripts are not required.
 
 Example:
 
-```powershell
-python waveform_analysis/scripts/sweep_led_thresholds.py \
-  --config waveform_analysis/config/experiments/timing.json \
-  --thresholds 5 10 15 20 25 30 35 40 50 60 \
-  --models cnn \
-  --overwrite
+```json
+"analyses": {
+  "led_threshold_scan": {
+    "enabled": true,
+    "selection_model": "cnn"
+  },
+  "window_scan": {
+    "enabled": true,
+    "right_limits_ns": [1, 5, 10, 20, 30],
+    "models": ["cnn", "cnn_2d"]
+  }
+}
 ```
 
-The sweep writes per-threshold runs under `runs/`, threshold-specific prepared caches under `prepared/`, comparison CSV files under `csv/`, and CTR/improvement plots under `plots/`.
+When the LED-threshold scan is enabled, each candidate in `standard_methods.led_thresholds_mV` is prepared in an isolated cache and only the configured selection model is trained. Threshold ranking uses the intersection of validation events retained by all successful candidates, and blind data are not used. The selected threshold is then frozen for the full model comparison.
+
+The optional ML-window scan runs only after the final LED threshold has been selected. It reuses that exact prepared dataset, target, calibration, event population and split. Each configured right limit is implemented by intersecting the normal training-derived constant-sample mask with a temporal mask, then retraining the requested model. Window-scan plots report blind CTR with bootstrap uncertainty as a post-selection sensitivity analysis.
+
+Integrated analysis outputs are written below `<run>/analyses/led_threshold/` and `<run>/analyses/window/`, with CSV and plot files kept in separate subdirectories. The study log reports stage/task progress, elapsed time and a running completion-time projection.
 
 ## Results
 
@@ -123,7 +131,7 @@ Detailed reporting is grouped under:
 - `plots/model_output/<model>/`
 - `plots/xai/`
 
-The reporting histograms are presentation views and use a compact display interval with about 20 bins. The canonical robust CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
+The reporting histograms are presentation views and use a compact display interval with about 20 bins. The canonical CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
 
 ## CLI
 

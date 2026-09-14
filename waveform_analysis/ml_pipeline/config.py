@@ -86,6 +86,71 @@ def mode_family(mode: str) -> str:
     raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
 
 
+
+def _validate_analyses(config):
+    import math
+
+    analyses = config.get("analyses")
+    if analyses is None:
+        analyses = {}
+        config["analyses"] = analyses
+    if not isinstance(analyses, dict):
+        raise ConfigError("analyses must be an object")
+    extra = sorted(set(analyses) - {"led_threshold_scan", "window_scan"})
+    if extra:
+        raise ConfigError(f"Unknown analyses option(s): {extra}")
+
+    led = analyses.setdefault("led_threshold_scan", {})
+    if not isinstance(led, dict):
+        raise ConfigError("analyses.led_threshold_scan must be an object")
+    extra = sorted(set(led) - {"enabled", "selection_model"})
+    if extra:
+        raise ConfigError(f"Unknown analyses.led_threshold_scan option(s): {extra}")
+    led["enabled"] = bool(led.get("enabled", False))
+    selection_model = str(led.get("selection_model", "")).strip()
+    if led["enabled"] and not selection_model:
+        raise ConfigError("analyses.led_threshold_scan.selection_model is required when enabled")
+    if selection_model and selection_model not in config["models"]:
+        raise ConfigError(
+            "analyses.led_threshold_scan.selection_model must be one of the configured models"
+        )
+    if led["enabled"] and len(config["standard_methods"]["led_thresholds_mV"]) < 2:
+        raise ConfigError("LED threshold scan requires at least two candidate thresholds")
+    if selection_model:
+        led["selection_model"] = selection_model
+
+    window = analyses.setdefault("window_scan", {})
+    if not isinstance(window, dict):
+        raise ConfigError("analyses.window_scan must be an object")
+    extra = sorted(set(window) - {"enabled", "right_limits_ns", "models"})
+    if extra:
+        raise ConfigError(f"Unknown analyses.window_scan option(s): {extra}")
+    window["enabled"] = bool(window.get("enabled", False))
+    if window["enabled"]:
+        raw_limits = window.get("right_limits_ns")
+        if not isinstance(raw_limits, list) or not raw_limits:
+            raise ConfigError(
+                "analyses.window_scan.right_limits_ns must be a non-empty list when enabled"
+            )
+        limits = sorted({float(value) for value in raw_limits})
+        start = float(config["ml_input"]["window_ns"]["start"])
+        end = float(config["ml_input"]["window_ns"]["end"])
+        if any((not math.isfinite(value)) or value <= start or value > end for value in limits):
+            raise ConfigError(
+                "analyses.window_scan.right_limits_ns must be finite, greater than the "
+                "configured window start, and no larger than the configured window end"
+            )
+        raw_models = window.get("models")
+        models = list(config["models"]) if raw_models is None else [str(value) for value in raw_models]
+        if not models:
+            raise ConfigError("analyses.window_scan.models must not be empty")
+        missing = sorted(set(models) - set(config["models"]))
+        if missing:
+            raise ConfigError(f"Window-scan model(s) are not configured: {missing}")
+        window["right_limits_ns"] = limits
+        window["models"] = list(dict.fromkeys(models))
+
+
 def validate_config(config):
     required = {"data", "preprocessing", "validation", "standard_methods", "models", "mode", "cfd", "ml_input", "ml_output", "fit", "experiment"}
     missing = sorted(required - set(config))
@@ -100,12 +165,22 @@ def validate_config(config):
 
     experiment = config["experiment"]
     concatenate = bool(experiment.get("concatenate_datasets", False))
+    raw_analyses = config.get("analyses")
+    led_scan_enabled = bool(
+        isinstance(raw_analyses, dict)
+        and isinstance(raw_analyses.get("led_threshold_scan"), dict)
+        and raw_analyses["led_threshold_scan"].get("enabled", False)
+    )
     if concatenate:
-        if "fixed_led_threshold_mV" not in experiment:
-            raise ConfigError("experiment.fixed_led_threshold_mV is required when concatenate_datasets=true")
-        fixed_led = float(experiment["fixed_led_threshold_mV"])
-        if not np_isfinite_positive(fixed_led):
-            raise ConfigError("experiment.fixed_led_threshold_mV must be finite and positive")
+        if "fixed_led_threshold_mV" not in experiment and not led_scan_enabled:
+            raise ConfigError(
+                "experiment.fixed_led_threshold_mV is required for concatenated studies "
+                "unless the LED threshold scan is enabled"
+            )
+        if "fixed_led_threshold_mV" in experiment:
+            fixed_led = float(experiment["fixed_led_threshold_mV"])
+            if not np_isfinite_positive(fixed_led):
+                raise ConfigError("experiment.fixed_led_threshold_mV must be finite and positive")
         name = str(experiment.get("concatenated_dataset_name", "concatenated")).strip()
         if not name:
             raise ConfigError("experiment.concatenated_dataset_name must not be empty")
@@ -201,6 +276,7 @@ def validate_config(config):
     unknown_models = set(config["models"]) - set(model_names())
     if unknown_models:
         raise ConfigError(f"Unregistered model(s): {sorted(unknown_models)}")
+    _validate_analyses(config)
     for name, model in config["models"].items():
         training = model.get("training", {}) or {}
         if "selection_metric" in training or "selection_metric" in model:

@@ -59,7 +59,7 @@ def _best_column(
     if total <= 0:
         raise RuntimeError(f"No development events available for {label} selection")
 
-    # Candidate selection uses the same robust CTR estimator as final reporting,
+    # Candidate selection uses the same CTR estimator as final reporting,
     # but skips bootstrap because uncertainty is not part of threshold ranking.
     for i, candidate in enumerate(candidates):
         residual = pair_delta(np.asarray(grid[:, :, i], dtype=np.float64)) - float(true_tof)
@@ -86,7 +86,7 @@ def _best_column(
         except ValueError as exc:
             if logger is not None:
                 logger.warning(
-                    "%s candidate %.6g robust CTR unavailable | coincidence efficiency %.2f%% (%d/%d) | reason=%s | %s",
+                    "%s candidate %.6g CTR unavailable | coincidence efficiency %.2f%% (%d/%d) | reason=%s | %s",
                     label,
                     float(candidate),
                     100.0 * efficiency,
@@ -103,7 +103,7 @@ def _best_column(
     if best is None:
         raise RuntimeError(
             f"No {label} candidate satisfies the minimum coincidence efficiency "
-            f"{100.0 * float(minimum_efficiency):.1f}% and provides a valid robust CTR; "
+            f"{100.0 * float(minimum_efficiency):.1f}% and provides a valid CTR; "
             f"best observed efficiency={100.0 * best_observed_efficiency:.2f}%"
         )
     return best[1], best[2], best[3], best[4]
@@ -190,7 +190,7 @@ def _ensure_diagnostics(preprocessed, config, manifest):
         )
 
 
-def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
+def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bool = True):
     base = dataset_cache_dir(config, "prepared_dir", preprocessed.manifest["source"])
     if base.is_dir() and not rebuild:
         manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
@@ -254,8 +254,9 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             logger=logger,
             label=f"{family} LED",
         )
-        logger.info(
-            "Selected %s LED | threshold %.6g mV | development robust CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
+        if log_summary:
+            logger.info(
+            "Selected %s LED | threshold %.6g mV | development CTR %.3f ps | coincidence efficiency %.2f%% (%d/%d) | window ±%.3f ns | minimum %.1f%%",
             family,
             led_choice[family],
             led_score[family],
@@ -264,7 +265,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
             development.size,
             coincidence_window_ps / 1000.0,
             100.0 * led_min_eff,
-        )
+            )
         led_times[family] = led_grid(
             preprocessed,
             family,
@@ -438,7 +439,8 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
     }
     atomic_json(base / "manifest.json", manifest)
     _ensure_diagnostics(preprocessed, config, manifest)
-    logger.info(
+    if log_summary:
+        logger.info(
         "ML dataset %s | train=%d validation=%d test=%d | excluded_led=%d (missing=%d, noncoincidence=%d) | excluded_ml_window=%d | subsampling=%d",
         Path(preprocessed.manifest["source"]).name,
         training_new.size,
@@ -449,5 +451,5 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger):
         noncoincidence_index.size,
         ml_window_index.size,
         int(config["ml_input"].get("subsampling", 1)),
-    )
+        )
     return load_prepared_dataset(base)

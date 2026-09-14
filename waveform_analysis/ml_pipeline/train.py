@@ -160,7 +160,7 @@ def search_model(
         )
 
     def on_start(number, total, candidate):
-        if logger is not None:
+        if logger is not None and total > 1:
             logger.debug(
                 "  %d/%d | starting | %s",
                 number,
@@ -169,7 +169,7 @@ def search_model(
             )
 
     def on_result(number, total, result):
-        if logger is None:
+        if logger is None or total <= 1:
             return
         parameters = "default" if not result.candidate else result.candidate
         if result.error is None:
@@ -190,7 +190,7 @@ def search_model(
             )
 
     candidates = list(spec.candidates(model_config))
-    if logger is not None:
+    if logger is not None and len(candidates) > 1:
         logger.info("%s search | candidates=%d", spec.name, len(candidates))
 
     return select_candidate(

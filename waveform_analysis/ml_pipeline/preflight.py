@@ -21,7 +21,7 @@ def _cache_path(config, key: str, root: Path) -> Path:
     return dataset_cache_dir(config, key, root)
 
 
-def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
+def inspect_preprocessing(config, *, rebuild: bool, include_prepared: bool = True) -> Preflight:
     """Validate every input cache before a multi-file run starts."""
     roots = tuple(discover_root_files(config))
     if not roots:
@@ -31,7 +31,8 @@ def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
     for root in roots:
         paths = {key: _cache_path(config, key, root) for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir")}
         if rebuild:
-            overwrite.extend(path for path in paths.values() if path.exists())
+            keys = ("selection_store_dir", "preprocessed_dir", "prepared_dir") if include_prepared else ("selection_store_dir", "preprocessed_dir")
+            overwrite.extend(paths[key] for key in keys if paths[key].exists())
             continue
         selection = None
         if paths["selection_store_dir"].exists():
@@ -39,7 +40,7 @@ def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
                 selection = load_selection(paths["selection_store_dir"], root, config)
             except Exception as exc:
                 problems.append(f"{root.name}: stale selection cache ({exc})")
-        elif paths["preprocessed_dir"].exists() or paths["prepared_dir"].exists():
+        elif paths["preprocessed_dir"].exists() or (include_prepared and paths["prepared_dir"].exists()):
             problems.append(f"{root.name}: preprocessing cache exists without its selection cache")
         preprocessed = None
         if selection is not None and paths["preprocessed_dir"].exists():
@@ -47,9 +48,9 @@ def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
                 preprocessed = load_preprocessed(paths["preprocessed_dir"], root, selection, config)
             except Exception as exc:
                 problems.append(f"{root.name}: stale native preprocessing cache ({exc})")
-        elif paths["prepared_dir"].exists() and not paths["preprocessed_dir"].exists():
+        elif include_prepared and paths["prepared_dir"].exists() and not paths["preprocessed_dir"].exists():
             problems.append(f"{root.name}: prepared ML cache exists without native preprocessing")
-        if preprocessed is not None and paths["prepared_dir"].exists():
+        if include_prepared and preprocessed is not None and paths["prepared_dir"].exists():
             try:
                 dataset = load_prepared_dataset(paths["prepared_dir"])
                 if dataset.manifest.get("fingerprint") != dataset_fingerprint(preprocessed, config):
@@ -57,7 +58,12 @@ def inspect_preprocessing(config, *, rebuild: bool) -> Preflight:
             except Exception as exc:
                 problems.append(f"{root.name}: stale prepared ML cache ({exc})")
 
-    if rebuild and bool(config["experiment"].get("concatenate_datasets", False)):
+    if rebuild and bool(config["analyses"]["led_threshold_scan"]["enabled"]):
+        threshold_cache = Path(config["preprocessing"]["prepared_dir"]).resolve() / "_led_threshold_scan"
+        if threshold_cache.exists():
+            overwrite.append(threshold_cache)
+
+    if rebuild and include_prepared and bool(config["experiment"].get("concatenate_datasets", False)):
         name = str(config["experiment"].get("concatenated_dataset_name", "concatenated"))
         concatenated = Path(config["preprocessing"]["prepared_dir"]).resolve() / name
         if concatenated.exists():

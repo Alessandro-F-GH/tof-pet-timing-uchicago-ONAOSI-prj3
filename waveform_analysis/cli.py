@@ -75,7 +75,11 @@ def main() -> None:
             return
         print(f"Prepared {_prepare(config, args.rebuild)} source dataset(s)")
         return
-    preflight = inspect_preprocessing(config, rebuild=args.rebuild_preprocessing)
+    preflight = inspect_preprocessing(
+        config,
+        rebuild=args.rebuild_preprocessing,
+        include_prepared=not bool(config["analyses"]["led_threshold_scan"]["enabled"]),
+    )
     run_overwrite = study_overwrite_path(config, overwrite=args.overwrite)
     overwrite_paths = list(preflight.overwrite_paths)
     if run_overwrite is not None:
