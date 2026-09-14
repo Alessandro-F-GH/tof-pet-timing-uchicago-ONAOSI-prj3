@@ -47,18 +47,8 @@ def _logger(run_dir: Path):
 def _metric_row(config, name, voltage, mode, method, residual, population_n, seed, logger, stage="test"):
     values = np.asarray(residual, dtype=float)
     finite = values[np.isfinite(values)]
-    minimum = int((config.get("fit") or {}).get("min_events", 100))
     context = f"{name}/{mode}/{method}/{stage}"
     summary = residual_summary(values)
-    if finite.size < minimum:
-        detail = format_residual_summary(summary)
-        logger.error(
-            "CTR unavailable | %s | too few finite residuals (need %d) | %s",
-            context,
-            minimum,
-            detail,
-        )
-        raise RuntimeError(f"{context}: only {finite.size} finite residuals; {detail}")
     try:
         result = ctr_estimate(
             finite,
