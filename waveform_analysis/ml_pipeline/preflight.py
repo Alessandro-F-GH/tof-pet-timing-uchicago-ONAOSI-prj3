@@ -75,11 +75,16 @@ def inspect_preprocessing(config, *, rebuild: bool, include_prepared: bool = Tru
     return Preflight(roots, tuple(dict.fromkeys(path.resolve() for path in overwrite)))
 
 
-def study_overwrite_path(config, *, overwrite: bool) -> Path | None:
+def study_overwrite_path(config, *, overwrite: bool, resume: bool = False) -> Path | None:
+    if overwrite and resume:
+        raise ValueError("--overwrite and --resume are mutually exclusive")
     run_dir = Path(config["experiment"]["output_dir"]).resolve()
     nonempty = run_dir.is_dir() and any(run_dir.iterdir())
-    if nonempty and not overwrite:
-        raise FileExistsError(f"Run directory is not empty: {run_dir}. Use --overwrite to replace it.")
+    if nonempty and not overwrite and not resume:
+        raise FileExistsError(
+            f"Run directory is not empty: {run_dir}. "
+            "Use --resume to continue it or --overwrite to replace it."
+        )
     return run_dir if nonempty and overwrite else None
 
 
