@@ -66,6 +66,31 @@ def _csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(stream))
 
 
+def _assert_resume_config_matches(config: dict[str, Any], run_dir: Path) -> None:
+    """Refuse to mix artifacts from different resolved study configurations."""
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    try:
+        manifest = read_json(manifest_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot resume study with unreadable manifest: {manifest_path}"
+        ) from exc
+    stored_config = manifest.get("config")
+    if not isinstance(stored_config, dict):
+        raise RuntimeError(
+            f"Cannot resume study because manifest has no resolved config: {manifest_path}"
+        )
+    stored_hash = canonical_hash(stored_config)
+    current_hash = str(config.get("_config_fingerprint", ""))
+    if stored_hash != current_hash:
+        raise RuntimeError(
+            "Cannot resume study with a different configuration. "
+            "Use the original config, choose a new output directory, or use --overwrite."
+        )
+
+
 def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
     """Return True only when the existing run is complete for this exact config."""
     manifest_path = run_dir / "manifest.json"
@@ -84,11 +109,8 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
     if canonical_hash(stored_config) != str(config.get("_config_fingerprint", "")):
         return False
 
-    if str(manifest.get("status", "")).lower() == "complete":
-        return True
-
-    # Backward-compatible completeness check for runs finished before the
-    # explicit status field existed.
+    # Verify persisted outputs even when status="complete". This protects
+    # against a stale/corrupt manifest or files removed after completion.
     roots = discover_root_files(config)
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     expected_datasets = 1 if concatenate else len(roots)
@@ -684,6 +706,8 @@ def run_study(
         resume=resume,
     )
     logger = _logger(store.root)
+    if resume:
+        _assert_resume_config_matches(config, store.root)
     if resume and _completed_run_matches(config, store.root):
         logger.info("Study already complete | %s | nothing to resume", store.root)
         return store.root
@@ -771,6 +795,7 @@ def run_study(
             logger,
             progress,
             rebuild=rebuild_preprocessing,
+            resume=resume,
         )
         datasets = threshold_result.datasets
         analyses_manifest["led_threshold_scan"] = threshold_result.manifest
@@ -828,6 +853,7 @@ def run_study(
             logger,
             progress,
             final_metrics,
+            resume=resume,
         )
     else:
         analyses_manifest["window_scan"] = {"enabled": False}
