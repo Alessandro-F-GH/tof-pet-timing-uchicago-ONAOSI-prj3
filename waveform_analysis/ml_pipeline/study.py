@@ -354,7 +354,16 @@ def _dataset_manifest(dataset, sample_count, retained_samples, threshold, mode):
     return value
 
 
-def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest):
+def _evaluate_final_datasets(
+    datasets,
+    config,
+    store,
+    logger,
+    progress,
+    manifest,
+    *,
+    prefit_searches=None,
+):
     rows = store.read_results() if store.resume else []
     existing = {
         (str(row.get("dataset")), str(row.get("method")), str(row.get("stage")))
@@ -372,6 +381,7 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
             None,
         )
     final_metrics: dict[str, Any] = {"led": {}, "models": {}}
+    prefit_searches = dict(prefit_searches or {})
     seed = int(config["validation"]["seed"])
     mode = str(config["mode"])
 
@@ -521,17 +531,25 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
                 continue
             with progress.task(f"final_model:{model_name}", label):
                 spec = get_model(model_name)
-                search = search_model(
-                    spec,
-                    model_config,
-                    config,
-                    dataset,
-                    mode,
-                    seed=semantic_seed(seed, name, mode, model_name, "search"),
-                    dataset_name=name,
-                    sample_mask=sample_mask,
-                    logger=logger,
-                )
+                search = prefit_searches.pop((name, model_name), None)
+                if search is not None:
+                    logger.info(
+                        "Final model | %s | %s | reusing fit from LED-threshold scan",
+                        name,
+                        LABELS.get(model_name, model_name),
+                    )
+                else:
+                    search = search_model(
+                        spec,
+                        model_config,
+                        config,
+                        dataset,
+                        mode,
+                        seed=semantic_seed(seed, name, mode, model_name, "search"),
+                        dataset_name=name,
+                        sample_mask=sample_mask,
+                        logger=logger,
+                    )
                 fitted = selected_model(search)
                 selected_parameters = dict(search.best.candidate or {})
                 save_model(
@@ -744,6 +762,7 @@ def run_study(
             )
 
     analyses_manifest: dict[str, Any] = {}
+    prefit_searches: dict[tuple[str, str], Any] = {}
     if threshold_enabled:
         threshold_result = run_led_threshold_scan(
             preprocessed,
@@ -755,6 +774,7 @@ def run_study(
         )
         datasets = threshold_result.datasets
         analyses_manifest["led_threshold_scan"] = threshold_result.manifest
+        prefit_searches = threshold_result.selected_searches
     else:
         datasets = _prepare_without_threshold_scan(
             preprocessed,
@@ -797,6 +817,7 @@ def run_study(
         logger,
         progress,
         manifest,
+        prefit_searches=prefit_searches,
     )
 
     if window_enabled:
