@@ -175,8 +175,6 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
             * len(window_cfg["right_limits_ns"])
             * len(window_cfg["models"])
         )
-        if len(window_rows) != expected_points:
-            return False
         combinations = {
             (
                 str(row.get("dataset")),
@@ -184,7 +182,12 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
                 float(row.get("right_limit_ns")),
             )
             for row in window_rows
+            if row.get("dataset")
+            and row.get("model")
+            and row.get("right_limit_ns") not in {None, ""}
         }
+        if len(combinations) != expected_points:
+            return False
         for dataset_name in datasets:
             for model_name in window_cfg["models"]:
                 for right_ns in window_cfg["right_limits_ns"]:
