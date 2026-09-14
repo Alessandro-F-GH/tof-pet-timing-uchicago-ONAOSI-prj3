@@ -319,14 +319,6 @@ def run_led_threshold_scan(
                     progress.stage_text("led_scan"),
                 )
             except Exception as exc:
-                logger.error(
-                    "LED scan failed | %s | %.6g mV | %s | %s: %s",
-                    dataset_name,
-                    threshold,
-                    progress.stage_text("led_scan"),
-                    type(exc).__name__,
-                    exc,
-                )
                 failures.append(
                     {
                         "dataset": dataset_name,
@@ -366,14 +358,6 @@ def run_led_threshold_scan(
                         progress.stage_text("led_scan"),
                     )
                 except Exception as exc:
-                    logger.error(
-                        "LED scan failed | %s | %.6g mV | %s | %s: %s",
-                        dataset_name,
-                        threshold,
-                        progress.stage_text("led_scan"),
-                        type(exc).__name__,
-                        exc,
-                    )
                     failures.append(
                         {
                             "dataset": dataset_name,
