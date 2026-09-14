@@ -13,7 +13,6 @@ class CTRTests(unittest.TestCase):
         result = fit_ctr_ps(
             values,
             {
-                "min_events": 100,
                 "coverage_fraction": 0.90,
                 "bootstrap_samples": 20,
             },
@@ -36,7 +35,6 @@ class CTRTests(unittest.TestCase):
         result = fit_ctr_ps(
             values,
             {
-                "min_events": 100,
                 "coverage_fraction": 0.90,
                 "bootstrap_samples": 10,
             },
@@ -59,7 +57,6 @@ class CTRTests(unittest.TestCase):
         result = fit_ctr_ps(
             rng.normal(0.0, 30.0, 4000),
             {
-                "min_events": 100,
                 "coverage_fraction": 0.90,
                 "bootstrap_samples": 30,
             },
@@ -70,6 +67,18 @@ class CTRTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.ctr_error_ps))
         self.assertGreater(result.ctr_error_ps, 0.0)
 
+    def test_two_events_are_mathematically_sufficient(self):
+        result = fit_ctr_ps(
+            np.array([0.0, 10.0]),
+            {
+                "coverage_fraction": 0.90,
+                "bootstrap_samples": 0,
+            },
+            seed=9,
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.n_valid, 2)
+
     def test_multimodal_side_peaks_increase_ctr(self):
         rng = np.random.default_rng(5)
         core = rng.normal(0.0, 2.0, 6000)
@@ -78,7 +87,6 @@ class CTRTests(unittest.TestCase):
         result = fit_ctr_ps(
             np.concatenate([core, left, right]),
             {
-                "min_events": 100,
                 "coverage_fraction": 0.90,
                 "bootstrap_samples": 10,
             },
@@ -96,7 +104,6 @@ class CTRTests(unittest.TestCase):
         result = fit_ctr_ps(
             values,
             {
-                "min_events": 100,
                 "coverage_fraction": 0.90,
                 "bootstrap_samples": 10,
             },
