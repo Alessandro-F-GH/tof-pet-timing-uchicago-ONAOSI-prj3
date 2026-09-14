@@ -319,7 +319,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
     np.save(base / "excluded_led_event_index.npy", invalid_led_index)
     np.save(base / "excluded_missing_led_event_index.npy", missing_led_index)
     np.save(base / "excluded_noncoincidence_event_index.npy", noncoincidence_index)
-    if invalid_led_index.size:
+    if log_summary and invalid_led_index.size:
         logger.warning(
             "Discarding events outside selected LED coincidence | discarded=%d/%d | missing_crossing=%d | outside_±%.3fns=%d",
             invalid_led_index.size,
@@ -346,7 +346,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
             }
     ml_window_index = np.asarray(preprocessed.event_index, dtype=np.int64)[ml_window_invalid]
     np.save(base / "excluded_ml_window_event_index.npy", ml_window_index)
-    if ml_window_index.size:
+    if log_summary and ml_window_index.size:
         logger.warning(
             "Discarding events whose ML window exceeds materialized waveform | discarded=%d/%d",
             ml_window_index.size,
