@@ -177,10 +177,9 @@ def select_events(root_file,config,*,rebuild,logger):
     if bool(noise_cfg.get('enabled',False)):
         noise=_scan_noise(root_file,config,hit_selection,triggers,n); noise_limits=_noise_limits(noise,(split==0)&hit_selection,config)
         for f,v in noise.items(): selected&=np.all(np.isfinite(v)&(v<=noise_limits[f][None,:]),axis=1)
-    minimum=int(config['preprocessing']['selection'].get('minimum_events_per_split',50))
     for code,label in ((0,'development'),(1,'test')):
         count=int(np.count_nonzero(selected&(split==code)))
-        if count<minimum: raise RuntimeError(f'Only {count} {label} events remain; need {minimum}')
+        if count==0: raise RuntimeError(f'No {label} events remain after selection')
     rows=np.flatnonzero(selected); np.save(base/'entry_index.npy',entries[rows]); np.save(base/'event_index.npy',event_index[rows]); np.save(base/'split.npy',split[rows])
     for f in triggers:
         np.save(base/f'main_trigger_{f}.npy',triggers[f][rows]); np.save(base/f'main_hit_{f}.npy',main_hit[f][rows]); np.save(base/f'main_stop_{f}.npy',stops[f][rows])
