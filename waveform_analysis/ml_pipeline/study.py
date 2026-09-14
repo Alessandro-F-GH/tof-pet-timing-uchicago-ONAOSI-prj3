@@ -477,10 +477,15 @@ def run_study(
     config_or_path: dict[str, Any] | str | Path,
     *,
     overwrite: bool = False,
+    resume: bool = False,
     rebuild_preprocessing: bool = False,
 ) -> Path:
     config = load_config(config_or_path) if not isinstance(config_or_path, dict) else config_or_path
-    store = RunStore(config["experiment"]["output_dir"], overwrite=overwrite)
+    store = RunStore(
+        config["experiment"]["output_dir"],
+        overwrite=overwrite,
+        resume=resume,
+    )
     logger = _logger(store.root)
     roots = discover_root_files(config)
     if not roots:
@@ -512,7 +517,8 @@ def run_study(
     progress = ProgressTracker(logger, plan)
 
     logger.info(
-        "Study | mode=%s | source files=%d | final datasets=%d | models=%s",
+        "%s | mode=%s | source files=%d | final datasets=%d | models=%s",
+        "Study resume" if resume else "Study",
         config["mode"],
         len(roots),
         dataset_count,
