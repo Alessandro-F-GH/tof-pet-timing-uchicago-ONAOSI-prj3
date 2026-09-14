@@ -27,15 +27,7 @@ def rebuild_study_plots(
 
     destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
     plot_root = destination / "plots"
-    analysis_root = destination / "analyses"
-
     _reset(plot_root)
-    # Only rendered analysis figures are disposable. Keep source CSV/manifests in run.
-    if destination != run:
-        _reset(analysis_root)
-    else:
-        for name in ("led_threshold", "window"):
-            _reset(run / "analyses" / name / "plots")
 
     paths: list[Path] = []
     paths.extend(make_plots(run, plot_root))
@@ -46,5 +38,5 @@ def rebuild_study_plots(
             labels=LABELS,
         )
     )
-    paths.extend(make_analysis_plots(run, destination))
+    paths.extend(make_analysis_plots(run, plot_root / "analyses"))
     return paths
