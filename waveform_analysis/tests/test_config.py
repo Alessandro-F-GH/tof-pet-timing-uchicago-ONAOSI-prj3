@@ -29,6 +29,17 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "Unknown/obsolete fit option"):
             validate_config(bad)
 
+    def test_validation_fraction_above_half_is_valid(self):
+        valid = copy.deepcopy(self.config)
+        valid["validation"]["test_fraction"] = 0.6
+        valid["validation"]["validation_fraction"] = 0.7
+        validate_config(valid)
+
+    def test_coverage_fraction_below_half_is_valid(self):
+        valid = copy.deepcopy(self.config)
+        valid["fit"]["coverage_fraction"] = 0.4
+        validate_config(valid)
+
     def test_threshold_selection_model_must_be_configured(self):
         bad = copy.deepcopy(self.config)
         bad["analyses"] = {

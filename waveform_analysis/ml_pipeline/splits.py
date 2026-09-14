@@ -15,8 +15,8 @@ def split_indices(indices: np.ndarray, fraction: float, seed: int) -> tuple[np.n
     values = np.asarray(indices, dtype=np.int64).reshape(-1)
     if values.size < 2:
         raise ValueError("Need at least two events to split")
-    if not 0.0 < float(fraction) < 0.5:
-        raise ValueError("Split fraction must be in (0, 0.5)")
+    if not 0.0 < float(fraction) < 1.0:
+        raise ValueError("Split fraction must be in (0, 1)")
     shuffled = np.random.default_rng(int(seed)).permutation(values)
     n_right = min(values.size - 1, max(1, int(round(values.size * float(fraction)))))
     return np.sort(shuffled[n_right:]), np.sort(shuffled[:n_right])

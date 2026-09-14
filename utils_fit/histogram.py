@@ -175,14 +175,14 @@ def _config(config: dict[str, Any] | None) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"Unknown CTR option(s): {sorted(unknown)}")
     coverage = float(cfg.get("coverage_fraction", 0.90))
-    if not np.isfinite(coverage) or not 0.5 < coverage < 1.0:
-        raise ValueError("fit.coverage_fraction must be in (0.5, 1.0)")
+    if not np.isfinite(coverage) or not 0.0 < coverage < 1.0:
+        raise ValueError("fit.coverage_fraction must be in (0, 1)")
     samples = int(cfg.get("bootstrap_samples", 500))
     if samples < 0:
         raise ValueError("fit.bootstrap_samples must be >= 0")
     minimum = int(cfg.get("min_events", 100))
-    if minimum < 3:
-        raise ValueError("fit.min_events must be >= 3")
+    if minimum < 2:
+        raise ValueError("fit.min_events must be >= 2")
     cfg["coverage_fraction"] = coverage
     cfg["bootstrap_samples"] = samples
     cfg["min_events"] = minimum

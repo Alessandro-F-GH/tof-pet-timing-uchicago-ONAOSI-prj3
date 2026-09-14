@@ -114,8 +114,6 @@ def _validate_analyses(config):
         raise ConfigError(
             "analyses.led_threshold_scan.selection_model must be one of the configured models"
         )
-    if led["enabled"] and len(config["standard_methods"]["led_thresholds_mV"]) < 2:
-        raise ConfigError("LED threshold scan requires at least two candidate thresholds")
     if selection_model:
         led["selection_model"] = selection_model
 
@@ -191,8 +189,9 @@ def validate_config(config):
     if extra:
         raise ConfigError(f"Unknown validation option(s): {extra}")
     for key in ("test_fraction", "validation_fraction"):
-        if not 0.0 < float(validation[key]) < 0.5:
-            raise ConfigError(f"validation.{key} must be in (0, 0.5)")
+        value = float(validation[key])
+        if not 0.0 < value < 1.0:
+            raise ConfigError(f"validation.{key} must be a fraction in (0, 1)")
 
     ml_input = config["ml_input"]
     if set(ml_input) - {"window_ns", "subsampling"}:
@@ -214,14 +213,15 @@ def validate_config(config):
             f"Unknown/obsolete fit option(s): {sorted(obsolete_fit)}. "
             "CTR is the Gaussian-equivalent shortest coverage interval."
         )
-    if int(fit.get("min_events", 0)) < 3:
-        raise ConfigError("fit.min_events must be an integer >= 3")
+    min_events = fit.get("min_events")
+    if isinstance(min_events, bool) or int(min_events) != min_events or int(min_events) < 2:
+        raise ConfigError("fit.min_events must be an integer >= 2")
     coverage = float(fit.get("coverage_fraction", 0.90))
-    if not 0.5 < coverage < 1.0:
-        raise ConfigError("fit.coverage_fraction must be in (0.5, 1.0)")
+    if not 0.0 < coverage < 1.0:
+        raise ConfigError("fit.coverage_fraction must be a fraction in (0, 1)")
     bootstrap_samples = fit.get("bootstrap_samples")
-    if isinstance(bootstrap_samples, bool) or int(bootstrap_samples) != bootstrap_samples or int(bootstrap_samples) < 2:
-        raise ConfigError("fit.bootstrap_samples must be an integer >= 2")
+    if isinstance(bootstrap_samples, bool) or int(bootstrap_samples) != bootstrap_samples or int(bootstrap_samples) < 0:
+        raise ConfigError("fit.bootstrap_samples must be a non-negative integer")
 
     preprocessing = config["preprocessing"]
     for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir", "materialized_window_ns", "selection", "photopeak", "energy"):
