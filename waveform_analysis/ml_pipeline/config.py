@@ -206,16 +206,13 @@ def validate_config(config):
         raise ConfigError("ml_output must contain one positive max_abs_ps")
 
     fit = config["fit"]
-    allowed_fit = {"min_events", "coverage_fraction", "bootstrap_samples"}
+    allowed_fit = {"coverage_fraction", "bootstrap_samples"}
     obsolete_fit = set(fit) - allowed_fit
     if obsolete_fit:
         raise ConfigError(
             f"Unknown/obsolete fit option(s): {sorted(obsolete_fit)}. "
             "CTR is the Gaussian-equivalent shortest coverage interval."
         )
-    min_events = fit.get("min_events")
-    if isinstance(min_events, bool) or int(min_events) != min_events or int(min_events) < 2:
-        raise ConfigError("fit.min_events must be an integer >= 2")
     coverage = float(fit.get("coverage_fraction", 0.90))
     if not 0.0 < coverage < 1.0:
         raise ConfigError("fit.coverage_fraction must be a fraction in (0, 1)")
