@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from .analyses import run_led_threshold_scan, run_window_scan
-from .common import voltage_from_name
+from .common import canonical_hash, read_json, voltage_from_name
 from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
@@ -54,6 +54,123 @@ def _logger(run_dir: Path):
         handler.setFormatter(fmt)
         logger.addHandler(handler)
     return logger
+
+
+
+def _csv_rows(path: Path) -> list[dict[str, str]]:
+    import csv
+
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
+    """Return True only when the existing run is complete for this exact config."""
+    manifest_path = run_dir / "manifest.json"
+    results_path = run_dir / "csv" / "results.csv"
+    if not manifest_path.is_file() or not results_path.is_file():
+        return False
+
+    try:
+        manifest = read_json(manifest_path)
+    except Exception:
+        return False
+
+    stored_config = manifest.get("config")
+    if not isinstance(stored_config, dict):
+        return False
+    if canonical_hash(stored_config) != str(config.get("_config_fingerprint", "")):
+        return False
+
+    if str(manifest.get("status", "")).lower() == "complete":
+        return True
+
+    # Backward-compatible completeness check for runs finished before the
+    # explicit status field existed.
+    roots = discover_root_files(config)
+    concatenate = bool(config["experiment"].get("concatenate_datasets", False))
+    expected_datasets = 1 if concatenate else len(roots)
+    datasets = manifest.get("datasets")
+    if not isinstance(datasets, dict) or len(datasets) != expected_datasets:
+        return False
+
+    rows = _csv_rows(results_path)
+    if not rows:
+        return False
+    available = {
+        (str(row.get("dataset")), str(row.get("method")), str(row.get("stage")))
+        for row in rows
+    }
+    for dataset_name in datasets:
+        required = {
+            (dataset_name, "led", "development_selection"),
+            (dataset_name, "led", "train"),
+            (dataset_name, "led", "test"),
+        }
+        if bool(config["cfd"]):
+            required.update(
+                {
+                    (dataset_name, "cfd", "development_selection"),
+                    (dataset_name, "cfd", "train"),
+                    (dataset_name, "cfd", "test"),
+                }
+            )
+        for model_name in config["models"]:
+            required.update(
+                {
+                    (dataset_name, model_name, "validation"),
+                    (dataset_name, model_name, "train"),
+                    (dataset_name, model_name, "test"),
+                }
+            )
+        if not required.issubset(available):
+            return False
+
+    analyses = manifest.get("analyses")
+    if not isinstance(analyses, dict):
+        return False
+
+    led_enabled = bool(config["analyses"]["led_threshold_scan"]["enabled"])
+    led_manifest = analyses.get("led_threshold_scan")
+    if not isinstance(led_manifest, dict) or bool(led_manifest.get("enabled")) != led_enabled:
+        return False
+    if led_enabled:
+        selected = led_manifest.get("selected_thresholds_mV")
+        if not isinstance(selected, dict) or len(selected) != expected_datasets:
+            return False
+
+    window_cfg = config["analyses"]["window_scan"]
+    window_enabled = bool(window_cfg["enabled"])
+    window_manifest = analyses.get("window_scan")
+    if not isinstance(window_manifest, dict) or bool(window_manifest.get("enabled")) != window_enabled:
+        return False
+    if window_enabled:
+        window_rows = _csv_rows(run_dir / "analyses" / "window" / "csv" / "window_scan.csv")
+        expected_points = (
+            expected_datasets
+            * len(window_cfg["right_limits_ns"])
+            * len(window_cfg["models"])
+        )
+        if len(window_rows) != expected_points:
+            return False
+        combinations = {
+            (
+                str(row.get("dataset")),
+                str(row.get("model")),
+                float(row.get("right_limit_ns")),
+            )
+            for row in window_rows
+        }
+        for dataset_name in datasets:
+            for model_name in window_cfg["models"]:
+                for right_ns in window_cfg["right_limits_ns"]:
+                    if (dataset_name, str(model_name), float(right_ns)) not in combinations:
+                        return False
+
+    return True
+
 
 
 def _metric_row(config, name, voltage, mode, method, residual, population_n, seed, logger, stage="test"):
@@ -169,6 +286,8 @@ def _base_manifest(config, concatenate, roots, analyses):
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
         "schema_version": 13,
+        "status": "running",
+        "config_fingerprint": str(config.get("_config_fingerprint", "")),
         "protocol": "single_mode_configured_analyses_holdout",
         "mode": str(config["mode"]),
         "concatenate_datasets": concatenate,
@@ -547,6 +666,10 @@ def run_study(
         resume=resume,
     )
     logger = _logger(store.root)
+    if resume and _completed_run_matches(config, store.root):
+        logger.info("Study already complete | %s | nothing to resume", store.root)
+        return store.root
+
     roots = discover_root_files(config)
     if not roots:
         raise FileNotFoundError("No ROOT files matched the configured source")
@@ -694,6 +817,7 @@ def run_study(
     generated = rebuild_study_plots(store.root)
     logger.info("Study plots | files=%d | %s", len(generated), store.root)
 
+    manifest["status"] = "complete"
     store.write_manifest(manifest)
     logger.info("Study complete | %s | elapsed=%s", store.root, progress.elapsed_text)
     return store.root
