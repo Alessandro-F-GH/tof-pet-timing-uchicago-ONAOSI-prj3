@@ -234,7 +234,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
     led_times = {}
     cfd_times = {}
     anchor_idx = {}
-    anchor_times = {}
     led_coverage = {}
     led_missing_crossing = {}
     led_noncoincidence = {}
@@ -281,7 +280,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         led_missing_crossing[family] = ~finite_pair
         led_noncoincidence[family] = finite_pair & ~in_coincidence
         led_coverage[family] = in_coincidence
-        anchor_idx[family], anchor_times[family] = anchor_grid(preprocessed, family, led_choice[family])
+        anchor_idx[family] = anchor_grid(preprocessed, family, led_choice[family])
 
         if config["cfd"] and family in targets:
             dev_cfd = cfd_grid(preprocessed, family, development, fractions)
@@ -396,7 +395,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         led_training_mean[family] = mean_led
         calibration_bias[family] = c_hat
         np.save(base / f"{family}_led_time_ps.npy", led_times[family][keep])
-        np.save(base / f"{family}_anchor_time_ps.npy", anchor_times[family][keep])
         np.save(base / f"{family}_target_ps.npy", target_values)
         if family in cfd_times:
             np.save(base / f"{family}_cfd_time_ps.npy", cfd_times[family][keep])
