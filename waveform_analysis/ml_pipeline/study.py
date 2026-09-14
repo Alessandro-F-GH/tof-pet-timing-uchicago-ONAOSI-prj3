@@ -21,7 +21,6 @@ from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
 from .reporting import LABELS
 from .sample_mask import SAMPLE_CONSTANT_FRACTION, dataset_training_sample_mask
-from .selection_outputs import ensure_selection_outputs
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
@@ -104,7 +103,6 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
 
 def _preprocess_one(root, config, rebuild, logger):
     selection = select_events(root, config, rebuild=rebuild, logger=logger)
-    ensure_selection_outputs(root, selection, config, logger)
     return preprocess_selected(root, selection, config, rebuild=rebuild, logger=logger)
 
 
