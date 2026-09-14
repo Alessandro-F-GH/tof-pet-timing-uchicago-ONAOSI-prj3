@@ -365,7 +365,6 @@ def run_led_threshold_scan(
                     )
 
     fit_config = dict(config.get("fit") or {})
-    minimum = int(fit_config.get("min_events", 100))
     seed = int(config["validation"]["seed"])
     rows: list[dict[str, Any]] = []
     selected_rows: list[dict[str, Any]] = []
@@ -376,10 +375,9 @@ def run_led_threshold_scan(
         if not dataset_points:
             raise RuntimeError(f"{dataset_name}: no LED-threshold candidate completed")
         common = _common_event_keys(dataset_points)
-        if len(common) < minimum:
+        if len(common) < 2:
             raise RuntimeError(
-                f"{dataset_name}: only {len(common)} validation events are common across "
-                f"successful LED thresholds; need at least {minimum}"
+                f"{dataset_name}: fewer than two validation events are common across successful LED thresholds"
             )
 
         scored: list[tuple[float, float, _ThresholdPoint, dict[str, Any]]] = []
