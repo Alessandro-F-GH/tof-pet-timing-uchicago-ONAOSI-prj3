@@ -254,6 +254,7 @@ def run_led_threshold_scan(
                             rebuild=rebuild,
                             logger=logger,
                             log_summary=False,
+                            write_diagnostics=False,
                         )
                         for source in preprocessed
                     ]
@@ -301,6 +302,7 @@ def run_led_threshold_scan(
                             rebuild=rebuild,
                             logger=logger,
                             log_summary=False,
+                            write_diagnostics=False,
                         )
                         point = _evaluate_threshold_candidate(
                             dataset,
