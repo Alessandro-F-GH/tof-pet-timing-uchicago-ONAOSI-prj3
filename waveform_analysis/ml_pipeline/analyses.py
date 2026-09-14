@@ -793,7 +793,6 @@ def run_window_scan(
         raise RuntimeError("ML window scan produced no successful result")
 
     csv_dir = output_dir / "csv"
-    plot_dir = output_dir / "plots"
     _write_csv(csv_dir / "window_scan.csv", rows)
     if failures:
         _write_csv(csv_dir / "failed_windows.csv", failures)
