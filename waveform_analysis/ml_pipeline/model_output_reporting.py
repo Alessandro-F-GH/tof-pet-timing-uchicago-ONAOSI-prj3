@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from .dataset import load_prepared_dataset
-from .view import model_target
+from .view import model_target, target_family
 
 
 def _model_output(run: Path, dataset: str, model: str, stage: str) -> np.ndarray | None:
@@ -28,6 +28,47 @@ def _target(run: Path, manifest: dict[str, Any], dataset: str, mode: str, stage:
     prepared = load_prepared_dataset(manifest["datasets"][dataset]["prepared_dir"])
     indices = _stage_indices(run, dataset, stage)
     return np.asarray(model_target(prepared, mode)[indices], dtype=np.float64).reshape(-1)
+
+
+
+def _assert_selected_threshold_provenance(
+    manifest: dict[str, Any],
+    dataset: str,
+    mode: str,
+) -> float:
+    """Require model-output diagnostics to use the study's selected LED threshold."""
+    dataset_info = manifest["datasets"][dataset]
+    prepared = load_prepared_dataset(dataset_info["prepared_dir"])
+    family = target_family(mode)
+    prepared_threshold = float(prepared.manifest["led_threshold_mV"][family])
+
+    recorded_threshold = float(
+        dataset_info.get(
+            "selected_led_threshold_mV",
+            dataset_info["led_threshold_mV"][family],
+        )
+    )
+    if not np.isclose(prepared_threshold, recorded_threshold, rtol=0.0, atol=1e-12):
+        raise RuntimeError(
+            f"{dataset}: prepared LED threshold {prepared_threshold:g} mV does not match "
+            f"study-selected threshold {recorded_threshold:g} mV"
+        )
+
+    threshold_analysis = (manifest.get("analyses") or {}).get("led_threshold_scan") or {}
+    if bool(threshold_analysis.get("enabled", False)):
+        selected = threshold_analysis.get("selected_thresholds_mV") or {}
+        if dataset not in selected:
+            raise RuntimeError(
+                f"{dataset}: LED-threshold scan is enabled but the selected threshold "
+                "is missing from the study manifest"
+            )
+        scan_threshold = float(selected[dataset])
+        if not np.isclose(prepared_threshold, scan_threshold, rtol=0.0, atol=1e-12):
+            raise RuntimeError(
+                f"{dataset}: model-output dataset uses {prepared_threshold:g} mV but "
+                f"threshold scan selected {scan_threshold:g} mV"
+            )
+    return prepared_threshold
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> tuple[float, int]:
@@ -229,6 +270,7 @@ def make_model_output_reports(
 
     datasets = list((manifest.get("datasets") or {}).keys())
     for dataset in datasets:
+        _assert_selected_threshold_provenance(manifest, dataset, mode)
         artifact_dir = run / "artifacts" / dataset
         discovered_models = {
             path.name[: -len("_test_model_output_ps.npy")]
