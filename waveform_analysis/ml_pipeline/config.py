@@ -133,10 +133,17 @@ def _validate_analyses(config):
         limits = sorted({float(value) for value in raw_limits})
         start = float(config["ml_input"]["window_ns"]["start"])
         end = float(config["ml_input"]["window_ns"]["end"])
-        if any((not math.isfinite(value)) or value <= start or value > end for value in limits):
+        invalid = [
+            value
+            for value in limits
+            if (not math.isfinite(value)) or value <= start or value > end
+        ]
+        if invalid:
             raise ConfigError(
-                "analyses.window_scan.right_limits_ns must be finite, greater than the "
-                "configured window start, and no larger than the configured window end"
+                "Invalid analyses.window_scan.right_limits_ns="
+                f"{invalid}: every limit must be finite, greater than "
+                f"ml_input.window_ns.start={start:g} ns, and no larger than "
+                f"ml_input.window_ns.end={end:g} ns"
             )
         raw_models = window.get("models")
         models = list(config["models"]) if raw_models is None else [str(value) for value in raw_models]
