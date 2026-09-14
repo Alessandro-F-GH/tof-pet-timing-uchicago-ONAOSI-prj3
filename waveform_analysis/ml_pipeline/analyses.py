@@ -878,17 +878,22 @@ def run_window_scan(
     csv_dir = output_dir / "csv"
     window_csv = csv_dir / "window_scan.csv"
     failed_csv = csv_dir / "failed_windows.csv"
-    rows: list[dict[str, Any]] = _read_csv(window_csv) if resume else []
-    failures: list[dict[str, Any]] = []
-    completed = {
-        (
+    loaded_rows: list[dict[str, Any]] = _read_csv(window_csv) if resume else []
+    unique_rows: dict[tuple[str, str, float], dict[str, Any]] = {}
+    for row in loaded_rows:
+        if not row.get("dataset") or not row.get("model") or row.get("right_limit_ns") in {None, ""}:
+            continue
+        key = (
             str(row.get("dataset")),
             str(row.get("model")),
             float(row.get("right_limit_ns")),
         )
-        for row in rows
-        if row.get("dataset") and row.get("model") and row.get("right_limit_ns") not in {None, ""}
-    }
+        unique_rows[key] = row
+    rows: list[dict[str, Any]] = list(unique_rows.values())
+    failures: list[dict[str, Any]] = []
+    completed = set(unique_rows)
+    if resume and len(rows) != len(loaded_rows):
+        _write_csv(window_csv, rows)
 
     logger.info(
         "ML window scan | right limits=%s ns | models=%s | target and splits fixed",
