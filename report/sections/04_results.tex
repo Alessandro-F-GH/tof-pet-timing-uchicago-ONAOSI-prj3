@@ -1,79 +1,176 @@
-\section{Evaluation strategy and results}
+\section{Results}
 
-The results should be organized by the scientific questions of the study rather than by output file type. Validation quantities are reported only to document model selection; the main quantitative comparisons use the permanent blind-test population.
+Four independent waveform studies are considered: energy-channel and timing-channel correction for the UC board and for the FBK board.  Each study uses the same selection, train--validation--test protocol and the same CTR definition.  Numerical comparisons below refer to the permanent blind-test population unless explicitly identified as validation-only analyses.  LED-threshold selection is performed on development/validation data, while the window scan is treated as a post-selection sensitivity study and does not alter the final model chosen for the main blind-test result.
 
-\subsection{Dataset and selection summary}
+\subsection{Overview of the four waveform studies}
 
-\todo{State the frozen run directory or manifest used as the source for every numerical result. Summarize final event counts and selection efficiency by board and bias voltage.}
-
-\input{tables/event_selection_summary}
-
-\subsection{Energy-channel study: constrained versus joint correction}
-
-The energy-channel waveform is the primary methodological test bed. This section should compare the standard LED reference, Linear SVR, the detector-shared CNN, and the joint CNN on the same blind-test populations.
-
-The key question is not only which model gives the lowest CTR, but whether the detector-shared architecture retains the gain obtained by the more flexible joint model.
+The main results are summarized jointly rather than treating the two boards or waveform families as separate experiments.  This is useful because the absolute timing scale and the available room for ML correction are substantially different for the energy and timing channels, whereas the two boards provide an independent check that the conclusions are not tied to one front-end implementation.
 
 \input{tables/ctr_results}
 
-\reportfigure
-    {figures/energy_ctr_vs_voltage.pdf}
-    {Blind-test energy-channel CTR as a function of bias voltage for the reference timing estimator and the reported ML models.}
-    {fig:energy-ctr}
+The main comparison should be read in two complementary ways.  First, the \emph{absolute} CTR indicates the timing quality of the complete signal chain.  Second, the \emph{relative improvement over LED} measures how much event-by-event timing structure remains available to the ML correction after the conventional leading-edge estimate.  The dedicated timing channel therefore need not show the largest relative ML gain to provide the best absolute timing performance.
+
+\subsection{LED-threshold dependence}
+
+The LED threshold is not treated as a fixed preprocessing constant.  For every board, waveform family and bias-voltage point, the configured threshold candidates are evaluated using the selected ML model on validation data.  Candidate thresholds are compared on the intersection of validation events retained by all successful candidates, so a threshold cannot benefit merely by changing the evaluated event population.  Bootstrap uncertainty is intentionally omitted from this selection step because it does not enter the ranking.
+
+\IfFileExists{tables/led_threshold_results.tex}{
+    \input{tables/led_threshold_results}
+}{
+    \todo{Copy the generated LED-threshold summary from the four completed studies to \texttt{report/tables/led\_threshold\_results.tex}.}
+}
 
 \reportfigure
-    {figures/energy_relative_improvement_vs_voltage.pdf}
-    {Relative energy-channel CTR improvement with respect to LED, with paired-bootstrap uncertainty where available.}
-    {fig:energy-relative-improvement}
-
-\subsection{Timing-information localization}
-
-This section should investigate whether predictive timing information is confined to the conventional leading-edge region or remains available elsewhere in the waveform.
-
-The preferred evidence combines a controlled window study with XAI:
-\begin{itemize}
-    \item evaluate CTR as the temporal extent of the ML input window is changed;
-    \item compare the performance trend with the temporal sensitivity highlighted by the trained models;
-    \item assess whether the same regions remain important across operating points and architectures.
-\end{itemize}
+    {figures/uc_energy_led_threshold_scan.pdf}
+    {UC-board energy-channel LED-threshold scan.  The LED-only CTR and the ML-corrected validation CTR are shown on the common retained validation population.}
+    {fig:uc-energy-led-scan}
 
 \reportfigure
-    {figures/ctr_vs_window.pdf}
-    {CTR as a function of the available waveform-window extent or ablation. Define each window relative to the common alignment reference.}
-    {fig:ctr-window}
+    {figures/uc_timing_led_threshold_scan.pdf}
+    {UC-board timing-channel LED-threshold scan.}
+    {fig:uc-timing-led-scan}
+
+\reportfigure
+    {figures/fbk_energy_led_threshold_scan.pdf}
+    {FBK-board energy-channel LED-threshold scan.}
+    {fig:fbk-energy-led-scan}
+
+\reportfigure
+    {figures/fbk_timing_led_threshold_scan.pdf}
+    {FBK-board timing-channel LED-threshold scan.}
+    {fig:fbk-timing-led-scan}
+
+The threshold study is relevant because the best standalone LED operating point is not guaranteed to be the best reference for a learned correction.  The quantity of interest is therefore the final validation CTR after correction, not the LED CTR alone.  The selected threshold is subsequently frozen before the blind-test metrics are computed.
+
+\subsection{Blind-test CTR: energy-channel waveforms}
+
+The energy-channel study provides the largest timing-correction problem because the first-stage energy waveform retains appreciable amplitude-dependent and pulse-shape-dependent timing variation.  Across the available studies, the ML correction produces a substantially larger relative gain on this waveform family than on the dedicated timing channel.  This is consistent with the energy waveform containing more correctable time-walk and shape dependence, while also having a worse uncorrected timing baseline.
+
+\reportfigure
+    {figures/uc_energy_ctr_vs_voltage.pdf}
+    {UC-board energy-channel blind-test CTR versus bias voltage.  All methods use the same selected event population at each voltage.}
+    {fig:uc-energy-ctr}
+
+\reportfigure
+    {figures/uc_energy_relative_improvement_vs_voltage.pdf}
+    {UC-board energy-channel relative CTR improvement with respect to LED.}
+    {fig:uc-energy-improvement}
+
+\reportfigure
+    {figures/fbk_energy_ctr_vs_voltage.pdf}
+    {FBK-board energy-channel blind-test CTR versus bias voltage.}
+    {fig:fbk-energy-ctr}
+
+\reportfigure
+    {figures/fbk_energy_relative_improvement_vs_voltage.pdf}
+    {FBK-board energy-channel relative CTR improvement with respect to LED.}
+    {fig:fbk-energy-improvement}
+
+The linear SVR is an important reference in this comparison: any improvement already obtained by the linear difference model indicates timing information that can be extracted directly from the temporal waveform samples without nonlinear feature learning.  The CNN comparison then quantifies the additional value, if any, of nonlinear temporal features.
+
+\subsection{Blind-test CTR: timing-channel waveforms}
+
+The timing-channel waveforms start from a substantially better conventional timing baseline.  Consequently, the remaining ML correction is smaller in absolute and relative terms than for the energy waveform, but the resulting CTR can still be the best absolute timing performance of the complete study.  This distinction is important: relative ML improvement measures remaining correctable error, not the intrinsic quality of the front-end signal.
+
+\reportfigure
+    {figures/uc_timing_ctr_vs_voltage.pdf}
+    {UC-board timing-channel blind-test CTR versus bias voltage.}
+    {fig:uc-timing-ctr}
+
+\reportfigure
+    {figures/uc_timing_relative_improvement_vs_voltage.pdf}
+    {UC-board timing-channel relative CTR improvement with respect to LED.}
+    {fig:uc-timing-improvement}
+
+\reportfigure
+    {figures/fbk_timing_ctr_vs_voltage.pdf}
+    {FBK-board timing-channel blind-test CTR versus bias voltage.}
+    {fig:fbk-timing-ctr}
+
+\reportfigure
+    {figures/fbk_timing_relative_improvement_vs_voltage.pdf}
+    {FBK-board timing-channel relative CTR improvement with respect to LED.}
+    {fig:fbk-timing-improvement}
+
+A representative residual distribution should accompany the voltage scans for each waveform family.  The distribution plots are useful for checking that an apparent CTR improvement is associated with a genuine narrowing of the central timing population rather than a small number of isolated events.
+
+\subsection{Detector-shared versus joint CNN}
+
+The shared 1-D CNN and the joint 2-D CNN are evaluated on identical train, validation and blind-test populations and use the same selected LED reference.  Their comparison addresses a different question from the comparison with LED: whether an unconstrained detector-pair model is required, or whether the physically constrained correction
+\[
+    y_\theta=g_\theta(s_1)-g_\theta(s_2)
+\]
+retains the useful timing information.
+
+The architecture comparison should therefore be judged from the \emph{difference between the two CNN CTR values at the same board, channel and bias voltage}, rather than from their absolute distance from LED.  Similar blind-test performance supports the use of the detector-shared form because it enforces detector exchange antisymmetry and reuses the same detector-level scorer.  A reproducible advantage of the joint 2-D model would instead quantify the performance cost of that physical constraint.
+
+\reportfigure
+    {figures/cnn_architecture_comparison.pdf}
+    {Blind-test CTR difference between the detector-shared 1-D CNN and the joint 2-D CNN across the available board, waveform-family and bias-voltage combinations.}
+    {fig:cnn-architecture-comparison}
+
+\subsection{Waveform-window dependence}
+
+The window scan tests how much of the waveform is required after the common pre-LED starting point.  For each right-window limit, the target, event split, LED threshold, normalization and train-derived constant-sample mask are held fixed; only the available temporal samples are changed and the model is retrained.  The full configured window point reuses the already evaluated final model rather than repeating the fit.  Because this analysis examines blind performance after the main model-selection procedure, it is interpreted as a sensitivity/ablation study rather than as an additional model-selection stage.
+
+\IfFileExists{tables/window_scan_results.tex}{
+    \input{tables/window_scan_results}
+}{
+    \todo{Copy the generated window-scan summary from the completed studies to \texttt{report/tables/window\_scan\_results.tex}.}
+}
+
+\reportfigure
+    {figures/uc_energy_ctr_vs_window.pdf}
+    {UC-board energy-channel blind-test CTR as a function of the waveform right-window limit.}
+    {fig:uc-energy-window}
+
+\reportfigure
+    {figures/uc_timing_ctr_vs_window.pdf}
+    {UC-board timing-channel blind-test CTR as a function of the waveform right-window limit.}
+    {fig:uc-timing-window}
+
+\reportfigure
+    {figures/fbk_energy_ctr_vs_window.pdf}
+    {FBK-board energy-channel blind-test CTR as a function of the waveform right-window limit.}
+    {fig:fbk-energy-window}
+
+\reportfigure
+    {figures/fbk_timing_ctr_vs_window.pdf}
+    {FBK-board timing-channel blind-test CTR as a function of the waveform right-window limit.}
+    {fig:fbk-timing-window}
+
+The window dependence provides the strongest performance-based evidence for the temporal location of useful timing information.  A plateau at short right limits would indicate that most correctable information is concentrated near the rising edge; continued improvement as later samples are added would demonstrate that useful event-by-event timing information persists beyond the immediate threshold-crossing region.
+
+\subsection{Temporal sensitivity and XAI}
+
+The window study is complemented by temporal model sensitivity.  Gradient-based CNN importance and Linear-SVR coefficient magnitude identify the samples to which the fitted models are most sensitive.  These quantities are interpreted together with the window scan: XAI alone is not used as evidence that a time region is causally necessary for timing correction.
 
 \reportfigure
     {figures/xai_energy_information.pdf}
-    {Energy-channel waveform and temporal model sensitivity for the selected model or models.}
+    {Representative energy-channel waveform and temporal model sensitivity.}
     {fig:xai-energy}
-
-\subsection{Timing-channel extension}
-
-The same event-selection and correction framework is then applied using the dedicated second-stage timing waveform as the ML input. Energy-channel information remains the basis for photopeak selection, while timing-channel waveforms provide the timing features.
-
-This section should report the absolute timing performance and the remaining ML correction gain. A smaller relative improvement than in the energy-channel study would not necessarily indicate a weaker method if the timing channel already provides a substantially better baseline CTR.
-
-\reportfigure
-    {figures/timing_ctr_vs_voltage.pdf}
-    {Blind-test CTR obtained from timing-channel waveforms.}
-    {fig:timing-ctr}
 
 \reportfigure
     {figures/xai_timing_information.pdf}
-    {Timing-channel waveform and temporal model sensitivity.}
+    {Representative timing-channel waveform and temporal model sensitivity.}
     {fig:xai-timing}
 
-\subsection{Board dependence and robustness}
+Agreement between the XAI profile and the performance window scan strengthens the interpretation of where useful information is located.  Conversely, a sensitive region whose removal does not change blind CTR should be treated as model-dependent sensitivity rather than indispensable timing information.
 
-The UC-board and FBK-board datasets provide an opportunity to assess whether the qualitative conclusions depend on the front-end electronics.
+\subsection{Board dependence}
 
-\todo{Only include a direct board-to-board robustness claim if acquisition conditions and analysis settings make the comparison meaningful. If cross-board training and testing is not performed, restrict the discussion to independent within-board trends.}
+The UC and FBK studies are analyzed independently with the same pipeline.  The comparison therefore establishes whether the \emph{within-board} conclusions---ML gain over LED, relative behavior of the shared and joint CNNs, threshold dependence and window dependence---are reproduced with different front-end electronics.
 
-\reportfigure
-    {figures/board_comparison.pdf}
-    {Optional comparison of within-board CTR improvement or temporal-importance patterns.}
-    {fig:board-comparison}
+No direct cross-board transfer claim is made here: training on one board and testing on the other would be required to demonstrate domain transfer.  Differences in absolute CTR between the two boards should also be interpreted together with their acquisition conditions and operating points rather than attributed to the board design alone.
 
-\subsection{Result synthesis}
+\subsection{Main result synthesis}
 
-\todo{After results are frozen, summarize the evidence in the same order as the research questions: shared versus joint architecture; location of useful timing information; and extension to the dedicated timing channel. Report the best CTR as an outcome of the study, not as its sole objective.}
+Taken together, the four studies separate three effects that would be conflated by reporting only the single best CTR:
+\begin{enumerate}
+    \item \textbf{Signal quality versus correctability.}  The timing channel provides the stronger conventional timing signal, while the energy waveform leaves more room for an event-by-event waveform correction.
+    \item \textbf{Model flexibility versus physical structure.}  The shared 1-D and joint 2-D CNN comparison quantifies whether arbitrary detector-pair interactions materially improve timing beyond the antisymmetric shared-scorer model.
+    \item \textbf{Reference and temporal-context dependence.}  The LED-threshold scan shows that the timing reference must be evaluated together with the learned correction, while the window scan determines how much waveform context is actually required.
+    \item \textbf{Hardware robustness.}  Repeating the same analyses on the UC and FBK boards tests whether these conclusions persist across two independent front-end implementations.
+\end{enumerate}
+
+The headline result should therefore be reported as a set of board- and channel-specific blind-test CTR values together with their improvement over LED, rather than as one global optimum.  The lowest absolute CTR identifies the best measured operating point, while the architecture, threshold and window studies explain \emph{why} that performance is obtained and which parts of the result are robust across the experimental configurations.
