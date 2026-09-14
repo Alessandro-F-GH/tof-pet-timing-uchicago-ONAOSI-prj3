@@ -513,9 +513,8 @@ def _paired_relative_improvement(reference, method, fit_config, *, samples, seed
     finite = np.isfinite(reference) & np.isfinite(method)
     reference = reference[finite]
     method = method[finite]
-    minimum = int(fit_config.get("min_events", 100))
-    if reference.size < minimum:
-        raise ValueError(f"Only {reference.size} common finite residuals")
+    if reference.size < 2:
+        raise ValueError("At least two common finite residuals are required")
     full_ref = fit_ctr_ps(reference, fit_config, bootstrap=False).ctr_ps
     full_method = fit_ctr_ps(method, fit_config, bootstrap=False).ctr_ps
     central = 100.0 * (full_ref - full_method) / full_ref
