@@ -236,7 +236,22 @@ def _dataset_manifest(dataset, sample_count, retained_samples, threshold, mode):
 
 
 def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest):
-    rows = []
+    rows = store.read_results() if store.resume else []
+    existing = {
+        (str(row.get("dataset")), str(row.get("method")), str(row.get("stage")))
+        for row in rows
+    }
+
+    def existing_row(dataset_name, method, stage):
+        return next(
+            (
+                row for row in rows
+                if str(row.get("dataset")) == str(dataset_name)
+                and str(row.get("method")) == str(method)
+                and str(row.get("stage")) == str(stage)
+            ),
+            None,
+        )
     final_metrics: dict[str, Any] = {"led": {}, "models": {}}
     seed = int(config["validation"]["seed"])
     mode = str(config["mode"])
@@ -257,30 +272,34 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
             dataset.test.size,
         )
 
-        rows.append(
-            _selection_row(
-                name,
-                voltage,
-                mode,
-                "led",
-                dataset.manifest["led_development_ctr_ps"][family],
-                {"threshold_mV": threshold},
-                "development_ctr",
-            )
-        )
-        if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
-            fraction = float(dataset.manifest["cfd_fraction"][family])
+        if (name, "led", "development_selection") not in existing:
             rows.append(
                 _selection_row(
                     name,
                     voltage,
                     mode,
-                    "cfd",
-                    dataset.manifest["cfd_development_ctr_ps"][family],
-                    {"fraction": fraction},
+                    "led",
+                    dataset.manifest["led_development_ctr_ps"][family],
+                    {"threshold_mV": threshold},
                     "development_ctr",
                 )
             )
+            existing.add((name, "led", "development_selection"))
+        if config["cfd"] and family in dataset.manifest["cfd_fraction"]:
+            fraction = float(dataset.manifest["cfd_fraction"][family])
+            if (name, "cfd", "development_selection") not in existing:
+                rows.append(
+                    _selection_row(
+                        name,
+                        voltage,
+                        mode,
+                        "cfd",
+                        dataset.manifest["cfd_development_ctr_ps"][family],
+                        {"fraction": fraction},
+                        "development_ctr",
+                    )
+                )
+                existing.add((name, "cfd", "development_selection"))
 
         sample_mask = dataset_training_sample_mask(dataset, mode)
         sample_count = int(sample_mask.size)
@@ -301,45 +320,86 @@ def _evaluate_final_datasets(datasets, config, store, logger, progress, manifest
             ("test", np.asarray(dataset.test, dtype=np.int64)),
         ):
             led = led_reference[indices]
-            led_row = _metric_row(
-                config,
-                name,
-                voltage,
-                mode,
-                "led",
-                led,
-                indices.size,
-                semantic_seed(seed, name, mode, "led", stage),
-                logger,
-                stage=stage,
-            )
-            rows.append(led_row)
-            store.save_residuals(name, "led", led, stage=stage)
-            if stage == "test":
-                final_metrics["led"][name] = led_row
-
-            if config["cfd"]:
-                led_mean = float(dataset.manifest["led_training_mean_ps"][family])
-                cfd = standard_delta(dataset, mode, "cfd")[indices] - led_mean
-                cfd_row = _metric_row(
+            led_row = existing_row(name, "led", stage)
+            if led_row is None:
+                led_row = _metric_row(
                     config,
                     name,
                     voltage,
                     mode,
-                    "cfd",
-                    cfd,
+                    "led",
+                    led,
                     indices.size,
-                    semantic_seed(seed, name, mode, "cfd", stage),
+                    semantic_seed(seed, name, mode, "led", stage),
                     logger,
                     stage=stage,
                 )
-                rows.append(cfd_row)
-                store.save_residuals(name, "cfd", cfd, stage=stage)
+                rows.append(led_row)
+                existing.add((name, "led", stage))
+                store.save_residuals(name, "led", led, stage=stage)
+            if stage == "test":
+                final_metrics["led"][name] = led_row
+
+            if config["cfd"]:
+                cfd_row = existing_row(name, "cfd", stage)
+                if cfd_row is None:
+                    led_mean = float(dataset.manifest["led_training_mean_ps"][family])
+                    cfd = standard_delta(dataset, mode, "cfd")[indices] - led_mean
+                    cfd_row = _metric_row(
+                        config,
+                        name,
+                        voltage,
+                        mode,
+                        "cfd",
+                        cfd,
+                        indices.size,
+                        semantic_seed(seed, name, mode, "cfd", stage),
+                        logger,
+                        stage=stage,
+                    )
+                    rows.append(cfd_row)
+                    existing.add((name, "cfd", stage))
+                    store.save_residuals(name, "cfd", cfd, stage=stage)
 
         for model_name, model_config in config["models"].items():
             label = f"final model | {name} | {LABELS.get(model_name, model_name)}"
             search = None
             fitted = None
+            validation_row = existing_row(name, model_name, "validation")
+            train_row = existing_row(name, model_name, "train")
+            test_row_existing = existing_row(name, model_name, "test")
+            artifacts = store.root / "artifacts" / name
+            completed = (
+                store.resume
+                and validation_row is not None
+                and train_row is not None
+                and test_row_existing is not None
+                and (store.root / "models" / name / model_name).is_dir()
+                and (artifacts / f"{model_name}_train_model_output_ps.npy").is_file()
+                and (artifacts / f"{model_name}_test_model_output_ps.npy").is_file()
+                and (artifacts / f"{model_name}_train_residuals_ps.npy").is_file()
+                and (artifacts / f"{model_name}_test_residuals_ps.npy").is_file()
+            )
+            if completed:
+                progress.complete(
+                    f"final_model:{model_name}",
+                    label,
+                    note="reused completed result",
+                )
+                final_metrics["models"][(name, model_name)] = {
+                    "validation_ctr_ps": float(validation_row["selection_score"]),
+                    "selected_parameters_json": str(validation_row.get("parameters_json") or "{}"),
+                    "test_row": test_row_existing,
+                }
+                logger.info(
+                    "Final result reused | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                    name,
+                    LABELS.get(model_name, model_name),
+                    float(validation_row["selection_score"]),
+                    float(test_row_existing["ctr_ps"]),
+                    float(test_row_existing["ctr_uncertainty_ps"]),
+                )
+                continue
             with progress.task(f"final_model:{model_name}", label):
                 spec = get_model(model_name)
                 search = search_model(
