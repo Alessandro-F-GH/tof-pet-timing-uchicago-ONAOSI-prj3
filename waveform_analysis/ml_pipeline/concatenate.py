@@ -57,7 +57,9 @@ def concatenated_fingerprint(datasets: list[PreparedDataset], config: dict[str, 
             "mode": str(config["mode"]),
             "fixed_led_threshold_mV": float(config["experiment"]["fixed_led_threshold_mV"]),
             "true_tof_ps": float(config["data"]["true_tof_ps"]),
-            "fit": config.get("fit"),
+            "ctr_coverage_fraction": float(
+                (config.get("fit") or {}).get("coverage_fraction", 0.90)
+            ),
             "ml_input": config.get("ml_input"),
             "sources": [dataset.manifest.get("fingerprint") for dataset in datasets],
         }
@@ -232,7 +234,6 @@ def concatenate_prepared_datasets(
         "cfd_development_ctr_ps": {},
         "ctr_selection_metric": "gaussian_equivalent_shortest_coverage_interval",
         "ctr_coverage_fraction": float(config["fit"].get("coverage_fraction", 0.90)),
-        "ctr_core_bin_width_ps": float(config["fit"]["bin_width_ps"]),
         "ml_input": config["ml_input"],
         "normalization": first.manifest["normalization"],
         "target_definition": "delta_t_led - true_tof - global_concatenated_calibration_bias",
