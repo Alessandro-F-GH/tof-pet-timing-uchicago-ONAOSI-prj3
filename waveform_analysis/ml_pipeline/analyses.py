@@ -12,7 +12,7 @@ import numpy as np
 
 from utils_fit import fit_ctr_ps
 
-from .common import atomic_json, canonical_json
+from .common import atomic_json, canonical_json, read_json
 from .concatenate import concatenate_prepared_datasets
 from .dataset import PreparedDataset, load_prepared_dataset
 from .models import get_model
@@ -662,7 +662,7 @@ def make_analysis_plots(
     threshold_rows = _read_csv(threshold_root / "csv" / "threshold_scan.csv")
     if threshold_rows:
         manifest_path = threshold_root / "manifest.json"
-        manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
+        manifest = read_json(manifest_path) if manifest_path.is_file() else {}
         model_name = str(
             manifest.get("selection_model")
             or threshold_rows[0].get("selection_model")
