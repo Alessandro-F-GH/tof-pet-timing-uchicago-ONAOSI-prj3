@@ -50,6 +50,7 @@ class _ThresholdPoint:
 class ThresholdScanResult:
     datasets: list[PreparedDataset]
     manifest: dict[str, Any]
+    selected_searches: dict[tuple[str, str], Any]
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -193,7 +194,7 @@ def _evaluate_threshold_candidate(
     config: dict[str, Any],
     model_name: str,
     logger,
-) -> _ThresholdPoint:
+) -> tuple[_ThresholdPoint, Any]:
     mode = str(config["mode"])
     dataset_name = _dataset_name(dataset)
     validation = np.asarray(dataset.validation, dtype=np.int64)
@@ -239,10 +240,7 @@ def _evaluate_threshold_candidate(
         retained_events=int(dataset.n_events),
         validation_events=int(validation.size),
     )
-    search.best.artifact = None
-    del fitted
-    gc.collect()
-    return point
+    return point, search
 
 
 def _plot_threshold_results(output_dir: Path, rows: list[dict[str, Any]], model_name: str) -> list[Path]:
@@ -331,7 +329,10 @@ def run_led_threshold_scan(
     model_name = str(analysis["selection_model"])
     thresholds = sorted({float(value) for value in config["standard_methods"]["led_thresholds_mV"]})
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
-    points: dict[str, list[_ThresholdPoint]] = {}
+    mode = str(config["mode"])
+    family = target_family(mode)
+    fit_config = dict(config.get("fit") or {})
+    seed = int(config["validation"]["seed"])
     failures: list[dict[str, Any]] = []
 
     logger.info(
@@ -340,60 +341,45 @@ def run_led_threshold_scan(
         LABELS.get(model_name, model_name),
     )
 
+    # Phase 1: prepare every threshold-specific dataset without fitting ML models.
+    # This makes the common validation population known before the expensive scan.
+    prepared_candidates: dict[str, list[tuple[float, dict[str, Any], PreparedDataset]]] = {}
+
     if concatenate:
         dataset_name = str(config["experiment"].get("concatenated_dataset_name", "concatenated"))
         for threshold in thresholds:
             candidate_config = _threshold_config(config, threshold, output_dir)
             label = f"threshold scan | {dataset_name} | {threshold:g} mV"
             try:
-                point = None if rebuild else _load_threshold_checkpoint(
-                    output_dir, dataset_name, threshold
-                )
-                if point is not None:
-                    progress.complete(
-                        "led_scan",
-                        label,
-                        note="reused checkpoint",
-                        announce=False,
+                prepared_sources = [
+                    prepare_ml_dataset(
+                        source,
+                        candidate_config,
+                        rebuild=rebuild,
+                        logger=logger,
+                        log_summary=False,
+                        write_diagnostics=False,
                     )
-                else:
-                    with progress.task("led_scan", label, announce_start=False, announce_finish=False):
-                        prepared_sources = [
-                            prepare_ml_dataset(
-                                source,
-                                candidate_config,
-                                rebuild=rebuild,
-                                logger=logger,
-                                log_summary=False,
-                                write_diagnostics=False,
-                            )
-                            for source in preprocessed
-                        ]
-                        dataset = concatenate_prepared_datasets(
-                            prepared_sources,
-                            Path(candidate_config["preprocessing"]["prepared_dir"]) / dataset_name,
-                            candidate_config,
-                            name=dataset_name,
-                            rebuild=rebuild,
-                            logger=None,
-                        )
-                        point = _evaluate_threshold_candidate(
-                            dataset,
-                            candidate_config,
-                            model_name,
-                            logger,
-                        )
-                        _save_threshold_checkpoint(output_dir, point)
-                points.setdefault(dataset_name, []).append(point)
-                logger.info(
-                    "LED scan | %s | %.6g mV | validation CTR=%.3f ps | retained=%d | %s",
-                    dataset_name,
-                    threshold,
-                    point.validation_ctr_ps,
-                    point.retained_events,
-                    progress.stage_text("led_scan"),
+                    for source in preprocessed
+                ]
+                dataset = concatenate_prepared_datasets(
+                    prepared_sources,
+                    Path(candidate_config["preprocessing"]["prepared_dir"]) / dataset_name,
+                    candidate_config,
+                    name=dataset_name,
+                    rebuild=rebuild,
+                    logger=None,
+                )
+                prepared_candidates.setdefault(dataset_name, []).append(
+                    (threshold, candidate_config, dataset)
                 )
             except Exception as exc:
+                progress.complete(
+                    "led_scan",
+                    label,
+                    note=f"prepare failed: {type(exc).__name__}: {exc}",
+                    announce=False,
+                )
                 failures.append(
                     {
                         "dataset": dataset_name,
@@ -402,49 +388,30 @@ def run_led_threshold_scan(
                     }
                 )
     else:
-        for threshold in thresholds:
-            candidate_config = _threshold_config(config, threshold, output_dir)
-            for source in preprocessed:
-                dataset_name = Path(source.manifest["source"]).stem
+        for source in preprocessed:
+            dataset_name = Path(source.manifest["source"]).stem
+            for threshold in thresholds:
+                candidate_config = _threshold_config(config, threshold, output_dir)
                 label = f"threshold scan | {dataset_name} | {threshold:g} mV"
                 try:
-                    point = None if rebuild else _load_threshold_checkpoint(
-                        output_dir, dataset_name, threshold
+                    dataset = prepare_ml_dataset(
+                        source,
+                        candidate_config,
+                        rebuild=rebuild,
+                        logger=logger,
+                        log_summary=False,
+                        write_diagnostics=False,
                     )
-                    if point is not None:
-                        progress.complete(
-                            "led_scan",
-                            label,
-                            note="reused checkpoint",
-                            announce=False,
-                        )
-                    else:
-                        with progress.task("led_scan", label, announce_start=False, announce_finish=False):
-                            dataset = prepare_ml_dataset(
-                                source,
-                                candidate_config,
-                                rebuild=rebuild,
-                                logger=logger,
-                                log_summary=False,
-                                write_diagnostics=False,
-                            )
-                            point = _evaluate_threshold_candidate(
-                                dataset,
-                                candidate_config,
-                                model_name,
-                                logger,
-                            )
-                            _save_threshold_checkpoint(output_dir, point)
-                    points.setdefault(dataset_name, []).append(point)
-                    logger.info(
-                        "LED scan | %s | %.6g mV | validation CTR=%.3f ps | retained=%d | %s",
-                        dataset_name,
-                        threshold,
-                        point.validation_ctr_ps,
-                        point.retained_events,
-                        progress.stage_text("led_scan"),
+                    prepared_candidates.setdefault(dataset_name, []).append(
+                        (threshold, candidate_config, dataset)
                     )
                 except Exception as exc:
+                    progress.complete(
+                        "led_scan",
+                        label,
+                        note=f"prepare failed: {type(exc).__name__}: {exc}",
+                        announce=False,
+                    )
                     failures.append(
                         {
                             "dataset": dataset_name,
@@ -453,24 +420,103 @@ def run_led_threshold_scan(
                         }
                     )
 
-    fit_config = dict(config.get("fit") or {})
-    seed = int(config["validation"]["seed"])
     rows: list[dict[str, Any]] = []
     selected_rows: list[dict[str, Any]] = []
     selected_datasets: list[PreparedDataset] = []
     selected_thresholds: dict[str, float] = {}
+    selected_searches: dict[tuple[str, str], Any] = {}
+    initial_led_thresholds: dict[str, float] = {}
 
-    for dataset_name, dataset_points in points.items():
-        if not dataset_points:
-            raise RuntimeError(f"{dataset_name}: no LED-threshold candidate completed")
-        common = _common_event_keys(dataset_points)
+    # Phase 2: for each dataset, fit the development-best LED threshold first,
+    # then scan every other threshold exactly once.
+    for dataset_name, candidates in prepared_candidates.items():
+        if not candidates:
+            raise RuntimeError(f"{dataset_name}: no LED-threshold candidate could be prepared")
+
+        common_sets = []
+        for _threshold, _candidate_config, dataset in candidates:
+            validation = np.asarray(dataset.validation, dtype=np.int64)
+            common_sets.append(set(_event_keys(dataset, validation)))
+        common = set.intersection(*common_sets) if common_sets else set()
+        common = tuple(sorted(common, key=str))
         if len(common) < 2:
             raise RuntimeError(
                 f"{dataset_name}: fewer than two validation events are common across successful LED thresholds"
             )
 
+        def development_led_score(item):
+            threshold, _candidate_config, dataset = item
+            score = float(dataset.manifest["led_development_ctr_ps"][family])
+            return score, float(threshold)
+
+        best_led_candidate = min(candidates, key=development_led_score)
+        best_led_threshold = float(best_led_candidate[0])
+        initial_led_thresholds[dataset_name] = best_led_threshold
+        logger.info(
+            "LED scan order | %s | fit development-best LED first: %.6g mV",
+            dataset_name,
+            best_led_threshold,
+        )
+
+        ordered = [best_led_candidate] + [
+            item for item in sorted(candidates, key=lambda item: item[0])
+            if not np.isclose(float(item[0]), best_led_threshold, rtol=0.0, atol=1e-12)
+        ]
+
+        points: dict[float, _ThresholdPoint] = {}
+        searches: dict[float, Any] = {}
+        datasets_by_threshold = {float(item[0]): item[2] for item in candidates}
+        configs_by_threshold = {float(item[0]): item[1] for item in candidates}
+
+        for order_index, (threshold, candidate_config, dataset) in enumerate(ordered):
+            threshold = float(threshold)
+            label = f"threshold scan | {dataset_name} | {threshold:g} mV"
+            point = None
+            search = None
+
+            # Always fit the development-best LED point first so that its trained
+            # model is available for reuse. Other completed checkpoints can be
+            # reused during resume without retraining.
+            if order_index != 0 and not rebuild:
+                point = _load_threshold_checkpoint(output_dir, dataset_name, threshold)
+
+            if point is not None:
+                progress.complete(
+                    "led_scan",
+                    label,
+                    note="reused checkpoint",
+                    announce=False,
+                )
+            else:
+                with progress.task(
+                    "led_scan",
+                    label,
+                    announce_start=False,
+                    announce_finish=False,
+                ):
+                    point, search = _evaluate_threshold_candidate(
+                        dataset,
+                        candidate_config,
+                        model_name,
+                        logger,
+                    )
+                    _save_threshold_checkpoint(output_dir, point)
+
+            points[threshold] = point
+            if search is not None:
+                searches[threshold] = search
+            logger.info(
+                "LED scan | %s | %.6g mV | validation CTR=%.3f ps | retained=%d | %s",
+                dataset_name,
+                threshold,
+                point.validation_ctr_ps,
+                point.retained_events,
+                progress.stage_text("led_scan"),
+            )
+
         scored: list[tuple[float, float, _ThresholdPoint, dict[str, Any]]] = []
-        for point in sorted(dataset_points, key=lambda item: item.threshold_mV):
+        for threshold in sorted(points):
+            point = points[threshold]
             model_residual = _aligned(point.model_residual_ps, point.event_keys, common)
             led_residual = _aligned(point.led_residual_ps, point.event_keys, common)
             model_ctr = fit_ctr_ps(
@@ -481,7 +527,7 @@ def run_led_threshold_scan(
                     dataset_name,
                     model_name,
                     "threshold_scan",
-                    f"{point.threshold_mV:g}",
+                    f"{threshold:g}",
                 ),
                 bootstrap=False,
             ).ctr_ps
@@ -493,14 +539,14 @@ def run_led_threshold_scan(
                     dataset_name,
                     "led",
                     "threshold_scan",
-                    f"{point.threshold_mV:g}",
+                    f"{threshold:g}",
                 ),
                 bootstrap=False,
             ).ctr_ps
             improvement = 100.0 * (led_ctr - model_ctr) / led_ctr
             row = {
                 "dataset": dataset_name,
-                "threshold_mV": point.threshold_mV,
+                "threshold_mV": threshold,
                 "selection_model": model_name,
                 "common_validation_events": len(common),
                 "threshold_validation_events": point.validation_events,
@@ -510,21 +556,51 @@ def run_led_threshold_scan(
                 "relative_improvement_pct": float(improvement),
                 "candidate_search_validation_ctr_ps": point.validation_ctr_ps,
                 "selected_parameters_json": point.selected_parameters_json,
+                "development_best_led_threshold": bool(
+                    np.isclose(threshold, best_led_threshold, rtol=0.0, atol=1e-12)
+                ),
             }
             rows.append(row)
-            scored.append((float(model_ctr), point.threshold_mV, point, row))
+            scored.append((float(model_ctr), threshold, point, row))
 
         _score, selected_threshold, selected_point, selected_row = min(
             scored,
             key=lambda item: (item[0], item[1]),
         )
-        selected_thresholds[dataset_name] = float(selected_threshold)
-        selected_datasets.append(load_prepared_dataset(selected_point.prepared_dir))
+        selected_threshold = float(selected_threshold)
+
+        # On an interrupted/resumed run the winning point may have come from a
+        # numerical checkpoint. Materialize only that one model if necessary.
+        selected_search = searches.get(selected_threshold)
+        if selected_search is None:
+            logger.info(
+                "LED scan | %s | materializing selected %.6g mV model from checkpoint",
+                dataset_name,
+                selected_threshold,
+            )
+            selected_point, selected_search = _evaluate_threshold_candidate(
+                datasets_by_threshold[selected_threshold],
+                configs_by_threshold[selected_threshold],
+                model_name,
+                logger,
+            )
+            _save_threshold_checkpoint(output_dir, selected_point)
+
+        # Keep only the winning trained artifact for direct final evaluation.
+        for threshold, search in searches.items():
+            if threshold != selected_threshold:
+                search.best.artifact = None
+        gc.collect()
+
+        selected_thresholds[dataset_name] = selected_threshold
+        selected_datasets.append(datasets_by_threshold[selected_threshold])
+        selected_searches[(dataset_name, model_name)] = selected_search
         selected_rows.append(
             {
                 "dataset": dataset_name,
                 "selection_model": model_name,
-                "selected_threshold_mV": float(selected_threshold),
+                "development_best_led_threshold_mV": best_led_threshold,
+                "selected_threshold_mV": selected_threshold,
                 "common_validation_events": len(common),
                 "validation_led_ctr_ps": selected_row["led_validation_ctr_ps"],
                 "validation_model_ctr_ps": selected_row["model_validation_ctr_ps"],
@@ -534,21 +610,20 @@ def run_led_threshold_scan(
             }
         )
         logger.info(
-            "Threshold selected | %s | %.6g mV | common-validation CTR=%.3f ps | events=%d",
+            "Threshold selected | %s | %.6g mV | common-validation CTR=%.3f ps | events=%d%s",
             dataset_name,
             selected_threshold,
             selected_row["model_validation_ctr_ps"],
             len(common),
+            " | reusing already-fitted model",
         )
 
     if not selected_datasets:
         raise RuntimeError("LED threshold scan produced no selectable dataset")
 
     csv_dir = output_dir / "csv"
-    threshold_csv = csv_dir / "threshold_scan.csv"
-    selected_csv = csv_dir / "selected_thresholds.csv"
-    _write_csv(threshold_csv, rows)
-    _write_csv(selected_csv, selected_rows)
+    _write_csv(csv_dir / "threshold_scan.csv", rows)
+    _write_csv(csv_dir / "selected_thresholds.csv", selected_rows)
     if failures:
         _write_csv(csv_dir / "failed_thresholds.csv", failures)
 
@@ -556,7 +631,9 @@ def run_led_threshold_scan(
         "enabled": True,
         "selection_model": model_name,
         "candidate_thresholds_mV": thresholds,
+        "development_best_led_thresholds_mV": initial_led_thresholds,
         "selected_thresholds_mV": selected_thresholds,
+        "scan_order_policy": "fit development-best LED threshold first, then skip it in the remaining ML threshold scan",
         "selection_population": "intersection of validation events retained by every successful candidate threshold",
         "selection_metric": "validation_ctr",
         "blind_used_for_threshold_selection": False,
@@ -565,7 +642,7 @@ def run_led_threshold_scan(
         "output_dir": str(output_dir.resolve()),
     }
     atomic_json(output_dir / "manifest.json", manifest)
-    return ThresholdScanResult(selected_datasets, manifest)
+    return ThresholdScanResult(selected_datasets, manifest, selected_searches)
 
 
 def _window_mask(
