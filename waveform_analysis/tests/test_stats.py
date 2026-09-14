@@ -5,7 +5,7 @@ import numpy as np
 from utils_fit import fit_ctr_ps
 
 
-class RobustCTRTests(unittest.TestCase):
+class CTRTests(unittest.TestCase):
     def test_gaussian_equivalent_shortest_90_interval_recovers_gaussian_fwhm(self):
         rng = np.random.default_rng(1)
         sigma = 42.0
@@ -15,7 +15,6 @@ class RobustCTRTests(unittest.TestCase):
             {
                 "min_events": 100,
                 "coverage_fraction": 0.90,
-                "bin_width_ps": 5.0,
                 "bootstrap_samples": 20,
             },
             seed=11,
@@ -31,7 +30,7 @@ class RobustCTRTests(unittest.TestCase):
             places=12,
         )
 
-    def test_interval_endpoints_define_robust_ctr(self):
+    def test_interval_endpoints_define_ctr(self):
         rng = np.random.default_rng(2)
         values = rng.normal(12.0, 30.0, 10000)
         result = fit_ctr_ps(
@@ -39,7 +38,6 @@ class RobustCTRTests(unittest.TestCase):
             {
                 "min_events": 100,
                 "coverage_fraction": 0.90,
-                "bin_width_ps": 5.0,
                 "bootstrap_samples": 10,
             },
             seed=12,
@@ -56,14 +54,13 @@ class RobustCTRTests(unittest.TestCase):
             places=12,
         )
 
-    def test_bootstrap_reports_robust_ctr_uncertainty(self):
+    def test_bootstrap_reports_ctr_uncertainty(self):
         rng = np.random.default_rng(4)
         result = fit_ctr_ps(
             rng.normal(0.0, 30.0, 4000),
             {
                 "min_events": 100,
                 "coverage_fraction": 0.90,
-                "bin_width_ps": 5.0,
                 "bootstrap_samples": 30,
             },
             seed=13,
@@ -73,7 +70,7 @@ class RobustCTRTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.ctr_error_ps))
         self.assertGreater(result.ctr_error_ps, 0.0)
 
-    def test_multimodal_side_peaks_increase_robust_ctr(self):
+    def test_multimodal_side_peaks_increase_ctr(self):
         rng = np.random.default_rng(5)
         core = rng.normal(0.0, 2.0, 6000)
         left = rng.normal(-25.0, 2.0, 2000)
@@ -83,15 +80,12 @@ class RobustCTRTests(unittest.TestCase):
             {
                 "min_events": 100,
                 "coverage_fraction": 0.90,
-                "bin_width_ps": 1.0,
                 "bootstrap_samples": 10,
             },
             seed=14,
         )
         self.assertTrue(result.success)
         self.assertGreater(result.ctr_ps, 20.0)
-        self.assertLess(result.core_fwhm_ps, 10.0)
-        self.assertLess(result.core_fraction, 0.70)
 
     def test_no_silent_absolute_residual_cut(self):
         rng = np.random.default_rng(6)
@@ -104,7 +98,6 @@ class RobustCTRTests(unittest.TestCase):
             {
                 "min_events": 100,
                 "coverage_fraction": 0.90,
-                "bin_width_ps": 5.0,
                 "bootstrap_samples": 10,
             },
             seed=15,

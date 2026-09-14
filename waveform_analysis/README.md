@@ -67,7 +67,7 @@ while the ML residual used for CTR is
 
 CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this CTR estimator; the default is `500` resamples configured with `fit.bootstrap_samples`.
 
-All finite residuals are included in the canonical CTR calculation. There is no internal `fit.max_abs_ps` rejection. The fixed-bin histogram FWHM is retained only as a secondary `core_fwhm_ps` diagnostic, together with `core_fraction`; `fit.bin_width_ps` controls only that diagnostic histogram.
+All finite residuals are included in the CTR calculation. There is no internal residual-magnitude rejection and there is no second FWHM-based timing metric.
 
 Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
 
@@ -135,7 +135,7 @@ Detailed reporting is grouped under:
 - `plots/model_output/<model>/`
 - `plots/xai/`
 
-The reporting histograms are presentation views and use a compact display interval with about 20 bins. The canonical CTR itself is bin-free; `fit.bin_width_ps` is used only for the secondary core-FWHM diagnostic.
+The reporting histograms are presentation views and use a compact display interval with about 20 bins. CTR itself is bin-free and does not depend on the presentation histogram.
 
 ## CLI
 

@@ -23,6 +23,12 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "ml_training is obsolete"):
             validate_config(stale)
 
+    def test_removed_bin_width_is_rejected(self):
+        bad = copy.deepcopy(self.config)
+        bad["fit"]["bin_width_ps"] = 5.0
+        with self.assertRaisesRegex(ConfigError, "Unknown/obsolete fit option"):
+            validate_config(bad)
+
     def test_threshold_selection_model_must_be_configured(self):
         bad = copy.deepcopy(self.config)
         bad["analyses"] = {

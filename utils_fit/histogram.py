@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 from statistics import NormalDist
 from typing import Any
@@ -13,21 +13,13 @@ FWHM_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 DEFAULT_FIT_CONFIG: dict[str, Any] = {
     "min_events": 100,
     "coverage_fraction": 0.90,
-    "bin_width_ps": 5.0,
     "bootstrap_samples": 500,
 }
 
 
 @dataclass
 class CTRResult:
-    """Robust timing-resolution result with a secondary core-peak FWHM diagnostic.
-
-    ``ctr_ps`` is the Gaussian-equivalent shortest interval containing the
-    configured fraction of all finite residuals. For the default 90% coverage,
-    CTR = 0.715814... * W90. The histogram FWHM of the dominant local peak is
-    retained separately as ``core_fwhm_ps`` and is never used as the canonical
-    CTR value.
-    """
+    """CTR from the Gaussian-equivalent shortest empirical coverage interval."""
 
     method: str
     parameter: float
@@ -45,19 +37,9 @@ class CTRResult:
     interval_high_ps: float
     interval_width_ps: float
     gaussian_equivalent_scale: float
-    core_fwhm_ps: float
-    core_fwhm_error_ps: float
-    core_fraction: float
-    left_half_ps: float
-    right_half_ps: float
-    half_max_events: float
-    bin_width_ps: float
     bootstrap_samples: int
     bootstrap_successful: int
-    core_bootstrap_successful: int
     message: str = ""
-    edges_ps: np.ndarray = field(default_factory=lambda: np.empty(0), repr=False)
-    counts: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64), repr=False)
 
     @property
     def n_fit(self) -> int:
@@ -135,16 +117,8 @@ class CTRResult:
             "interval_high_ps": self.interval_high_ps,
             "interval_width_ps": self.interval_width_ps,
             "gaussian_equivalent_scale": self.gaussian_equivalent_scale,
-            "core_fwhm_ps": self.core_fwhm_ps,
-            "core_fwhm_error_ps": self.core_fwhm_error_ps,
-            "core_fraction": self.core_fraction,
-            "left_half_ps": self.left_half_ps,
-            "right_half_ps": self.right_half_ps,
-            "half_max_events": self.half_max_events,
-            "bin_width_ps": self.bin_width_ps,
             "bootstrap_samples": self.bootstrap_samples,
             "bootstrap_successful": self.bootstrap_successful,
-            "core_bootstrap_successful": self.core_bootstrap_successful,
             "message": self.message,
         }
 
@@ -153,7 +127,7 @@ FitResult = CTRResult
 
 
 def _gaussian_equivalent_scale(coverage_fraction: float) -> float:
-    """Scale a central Gaussian coverage width to the Gaussian FWHM."""
+    """Scale a central Gaussian coverage width to Gaussian FWHM."""
     p = float(coverage_fraction)
     z = NormalDist().inv_cdf(0.5 * (1.0 + p))
     return float(FWHM_SIGMA / (2.0 * z))
@@ -167,7 +141,6 @@ def _failure(
     n_selected: int,
     n_valid: int,
     coverage_fraction: float,
-    bin_width_ps: float,
     bootstrap_samples: int,
     message: str,
 ) -> CTRResult:
@@ -188,16 +161,8 @@ def _failure(
         interval_high_ps=np.nan,
         interval_width_ps=np.nan,
         gaussian_equivalent_scale=_gaussian_equivalent_scale(coverage_fraction),
-        core_fwhm_ps=np.nan,
-        core_fwhm_error_ps=np.nan,
-        core_fraction=np.nan,
-        left_half_ps=np.nan,
-        right_half_ps=np.nan,
-        half_max_events=np.nan,
-        bin_width_ps=float(bin_width_ps),
         bootstrap_samples=int(bootstrap_samples),
         bootstrap_successful=0,
-        core_bootstrap_successful=0,
         message=message,
     )
 
@@ -206,14 +171,9 @@ def _config(config: dict[str, Any] | None) -> dict[str, Any]:
     cfg = dict(DEFAULT_FIT_CONFIG)
     if config:
         cfg.update(config)
-    if "max_abs_ps" in cfg:
-        raise ValueError(
-            "fit.max_abs_ps is obsolete: robust CTR uses every finite residual. "
-            "Apply any physical/event rejection explicitly before CTR evaluation."
-        )
-    width = float(cfg.get("bin_width_ps", 5.0))
-    if not np.isfinite(width) or width <= 0.0:
-        raise ValueError("fit.bin_width_ps must be positive")
+    unknown = set(cfg) - set(DEFAULT_FIT_CONFIG)
+    if unknown:
+        raise ValueError(f"Unknown CTR option(s): {sorted(unknown)}")
     coverage = float(cfg.get("coverage_fraction", 0.90))
     if not np.isfinite(coverage) or not 0.5 < coverage < 1.0:
         raise ValueError("fit.coverage_fraction must be in (0.5, 1.0)")
@@ -223,7 +183,6 @@ def _config(config: dict[str, Any] | None) -> dict[str, Any]:
     minimum = int(cfg.get("min_events", 100))
     if minimum < 3:
         raise ValueError("fit.min_events must be >= 3")
-    cfg["bin_width_ps"] = width
     cfg["coverage_fraction"] = coverage
     cfg["bootstrap_samples"] = samples
     cfg["min_events"] = minimum
@@ -234,7 +193,7 @@ def _shortest_interval(
     values_ps: np.ndarray,
     coverage_fraction: float,
 ) -> tuple[float, float, float, float, float, int]:
-    """Return Gaussian-equivalent CTR and the shortest empirical coverage interval."""
+    """Return CTR and the shortest empirical interval containing the requested coverage."""
     values = np.sort(np.asarray(values_ps, dtype=np.float64).reshape(-1))
     n = int(values.size)
     if n < 2:
@@ -256,87 +215,8 @@ def _shortest_interval(
     high = float(values[index + count - 1])
     width = float(high - low)
     center = 0.5 * (low + high)
-    scale = _gaussian_equivalent_scale(coverage_fraction)
-    ctr = float(scale * width)
+    ctr = float(_gaussian_equivalent_scale(coverage_fraction) * width)
     return ctr, center, low, high, width, count
-
-
-def _fixed_edges(values_ps: np.ndarray, width_ps: float) -> np.ndarray:
-    """Fixed-width histogram grid used only for the secondary core FWHM."""
-    values = np.asarray(values_ps, dtype=np.float64)
-    if values.size == 0:
-        raise ValueError("Cannot build histogram edges from an empty sample")
-    width = float(width_ps)
-    median = float(np.median(values))
-    low = float(np.min(values))
-    high = float(np.max(values))
-    if high <= low:
-        low -= width
-        high += width
-    median_bin_left = median - 0.5 * width
-    steps_left = max(0, int(np.ceil((median_bin_left - low) / width)))
-    start = median_bin_left - steps_left * width
-    n_bins = max(3, int(np.ceil((high - start) / width)))
-    # The pipeline normally has physically bounded residuals. Avoid allocating a
-    # pathological histogram if a standalone caller supplies an extreme value.
-    if n_bins > 1_000_000:
-        raise ValueError("Residual range is too large for the configured core-FWHM bin width")
-    edges = start + np.arange(n_bins + 1, dtype=np.float64) * width
-    if edges[-1] < high - 1e-12:
-        edges = np.append(edges, edges[-1] + width)
-    return edges
-
-
-def _interpolate_crossing(x0: float, y0: float, x1: float, y1: float, level: float) -> float:
-    if y1 == y0:
-        return 0.5 * (float(x0) + float(x1))
-    fraction = (float(level) - float(y0)) / (float(y1) - float(y0))
-    return float(x0) + float(np.clip(fraction, 0.0, 1.0)) * (float(x1) - float(x0))
-
-
-def _measure_histogram(
-    values_ps: np.ndarray,
-    edges_ps: np.ndarray,
-) -> tuple[float, float, float, float, np.ndarray] | None:
-    values = np.asarray(values_ps, dtype=np.float64)
-    counts, edges = np.histogram(values, bins=np.asarray(edges_ps, dtype=np.float64))
-    if counts.size < 3 or int(np.max(counts)) <= 0:
-        return None
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    peak = int(np.argmax(counts))
-    half = 0.5 * float(counts[peak])
-
-    left = None
-    for i in range(peak - 1, -1, -1):
-        if float(counts[i]) < half <= float(counts[i + 1]):
-            left = _interpolate_crossing(centers[i], counts[i], centers[i + 1], counts[i + 1], half)
-            break
-        if float(counts[i]) == half:
-            left = float(centers[i])
-            break
-
-    right = None
-    for i in range(peak, counts.size - 1):
-        if float(counts[i]) >= half > float(counts[i + 1]):
-            right = _interpolate_crossing(centers[i], counts[i], centers[i + 1], counts[i + 1], half)
-            break
-        if i > peak and float(counts[i]) == half:
-            right = float(centers[i])
-            break
-
-    if left is None or right is None or not np.isfinite(left) or not np.isfinite(right) or right <= left:
-        return None
-    fwhm = float(right - left)
-    center = 0.5 * float(left + right)
-    return fwhm, center, float(left), float(right), counts.astype(np.int64, copy=False)
-
-
-def _core_measurement(values_ps: np.ndarray, width_ps: float):
-    try:
-        edges = _fixed_edges(values_ps, width_ps)
-    except ValueError:
-        return None, np.empty(0, dtype=np.float64)
-    return _measure_histogram(values_ps, edges), edges
 
 
 def _estimate_values(
@@ -355,7 +235,6 @@ def _estimate_values(
     finite = values[np.isfinite(values)]
     n_valid = int(finite.size)
     coverage = float(cfg["coverage_fraction"])
-    width = float(cfg["bin_width_ps"])
     requested = int(cfg["bootstrap_samples"]) if bootstrap else 0
     if n_valid < int(cfg["min_events"]):
         return _failure(
@@ -365,24 +244,16 @@ def _estimate_values(
             n_selected=n_selected,
             n_valid=n_valid,
             coverage_fraction=coverage,
-            bin_width_ps=width,
             bootstrap_samples=requested,
             message=f"Only {n_valid} finite events; need {cfg['min_events']}",
         )
 
-    ctr, center, interval_low, interval_high, interval_width, interval_events = _shortest_interval(finite, coverage)
-    core, edges = _core_measurement(finite, width)
-    if core is None:
-        core_fwhm = core_center = left = right = half_max = float("nan")
-        counts = np.empty(0, dtype=np.int64)
-        core_fraction = float("nan")
-    else:
-        core_fwhm, core_center, left, right, counts = core
-        half_max = 0.5 * float(np.max(counts))
-        core_fraction = float(np.mean((finite >= left) & (finite <= right)))
+    ctr, center, interval_low, interval_high, interval_width, interval_events = _shortest_interval(
+        finite,
+        coverage,
+    )
 
     bootstrap_ctrs: list[float] = []
-    bootstrap_core: list[float] = []
     if requested > 1:
         rng = np.random.default_rng(int(seed))
         for _ in range(requested):
@@ -393,12 +264,8 @@ def _estimate_values(
                 continue
             if np.isfinite(trial_ctr):
                 bootstrap_ctrs.append(float(trial_ctr))
-            trial_core, _trial_edges = _core_measurement(sample, width)
-            if trial_core is not None and np.isfinite(trial_core[0]):
-                bootstrap_core.append(float(trial_core[0]))
 
     error = float(np.std(bootstrap_ctrs, ddof=1)) if len(bootstrap_ctrs) > 1 else float("nan")
-    core_error = float(np.std(bootstrap_core, ddof=1)) if len(bootstrap_core) > 1 else float("nan")
 
     return CTRResult(
         method=method,
@@ -417,19 +284,8 @@ def _estimate_values(
         interval_high_ps=float(interval_high),
         interval_width_ps=float(interval_width),
         gaussian_equivalent_scale=_gaussian_equivalent_scale(coverage),
-        core_fwhm_ps=float(core_fwhm),
-        core_fwhm_error_ps=core_error,
-        core_fraction=float(core_fraction),
-        left_half_ps=float(left),
-        right_half_ps=float(right),
-        half_max_events=float(half_max),
-        bin_width_ps=width,
         bootstrap_samples=requested,
         bootstrap_successful=len(bootstrap_ctrs),
-        core_bootstrap_successful=len(bootstrap_core),
-        message=("" if core is not None else "Canonical robust CTR succeeded; secondary core FWHM unavailable"),
-        edges_ps=np.asarray(edges, dtype=np.float64),
-        counts=np.asarray(counts, dtype=np.int64),
     )
 
 

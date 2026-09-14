@@ -18,12 +18,7 @@ def fit_ctr_ps(
     seed: int = 0,
     bootstrap: bool = True,
 ) -> CTRResult:
-    """Canonical robust CTR estimator with optional bootstrap.
-
-    ``ctr_ps`` is the Gaussian-equivalent shortest coverage interval (90% by
-    default). The dominant-peak histogram FWHM remains available separately as
-    ``core_fwhm_ps``.
-    """
+    """Canonical CTR estimator with optional event-bootstrap uncertainty."""
     result = estimate_delta_times_ps(
         np.asarray(values_ps, dtype=np.float64),
         method="ctr",
@@ -32,7 +27,7 @@ def fit_ctr_ps(
         bootstrap=bool(bootstrap),
     )
     if not result.success or not np.isfinite(result.ctr_ps):
-        raise ValueError(result.message or "Robust CTR estimation failed")
+        raise ValueError(result.message or "CTR estimation failed")
     return result
 
 
@@ -47,7 +42,7 @@ def fit_delta_times_ps(
     seed: int = 0,
     bootstrap: bool = False,
 ) -> CTRResult:
-    """Generic robust timing-width extraction; bootstrap is opt-in for scans."""
+    """Generic timing-width extraction using the canonical CTR definition."""
     return estimate_delta_times_ps(
         delta_ps,
         method=method,
@@ -71,7 +66,7 @@ def fit_delta_times_integer_fs(
     seed: int = 0,
     bootstrap: bool = False,
 ) -> CTRResult:
-    """Integer-fs counterpart of :func:`fit_delta_times_ps`."""
+    """Integer-fs counterpart of fit_delta_times_ps."""
     return estimate_delta_times_integer_fs(
         delta_fs,
         method=method,
