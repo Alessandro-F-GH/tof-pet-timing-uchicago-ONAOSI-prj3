@@ -11,7 +11,6 @@ FS_PER_PS = 1000.0
 DEFAULT_INVALID_TIME_FS = np.iinfo(np.int64).min
 FWHM_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 DEFAULT_FIT_CONFIG: dict[str, Any] = {
-    "min_events": 100,
     "coverage_fraction": 0.90,
     "bootstrap_samples": 500,
 }
@@ -180,12 +179,8 @@ def _config(config: dict[str, Any] | None) -> dict[str, Any]:
     samples = int(cfg.get("bootstrap_samples", 500))
     if samples < 0:
         raise ValueError("fit.bootstrap_samples must be >= 0")
-    minimum = int(cfg.get("min_events", 100))
-    if minimum < 2:
-        raise ValueError("fit.min_events must be >= 2")
     cfg["coverage_fraction"] = coverage
     cfg["bootstrap_samples"] = samples
-    cfg["min_events"] = minimum
     return cfg
 
 
@@ -236,7 +231,7 @@ def _estimate_values(
     n_valid = int(finite.size)
     coverage = float(cfg["coverage_fraction"])
     requested = int(cfg["bootstrap_samples"]) if bootstrap else 0
-    if n_valid < int(cfg["min_events"]):
+    if n_valid < 2:
         return _failure(
             method=method,
             parameter=parameter,
@@ -245,7 +240,7 @@ def _estimate_values(
             n_valid=n_valid,
             coverage_fraction=coverage,
             bootstrap_samples=requested,
-            message=f"Only {n_valid} finite events; need {cfg['min_events']}",
+            message="At least two finite residuals are required for CTR",
         )
 
     ctr, center, interval_low, interval_high, interval_width, interval_events = _shortest_interval(
