@@ -168,11 +168,9 @@ def concatenate_prepared_datasets(
     np.savez_compressed(output / "splits.npz", training=training, validation=validation, test=test)
 
     led = _concat_optional(datasets, f"{family}_led_time_ps")
-    anchor = _concat_optional(datasets, f"{family}_anchor_time_ps")
-    if led is None or anchor is None:
-        raise ValueError(f"Cannot concatenate: {family} LED/anchor arrays are incomplete")
+    if led is None:
+        raise ValueError(f"Cannot concatenate: {family} LED timing is missing")
     np.save(output / f"{family}_led_time_ps.npy", np.asarray(led, dtype=np.float64))
-    np.save(output / f"{family}_anchor_time_ps.npy", np.asarray(anchor, dtype=np.float64))
 
     led_pair = np.asarray(led[:, 0] - led[:, 1], dtype=np.float64)
     mean_led = float(np.mean(led_pair[training]))
