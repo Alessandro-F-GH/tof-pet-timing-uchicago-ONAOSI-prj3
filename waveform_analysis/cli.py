@@ -33,6 +33,11 @@ def _parser() -> argparse.ArgumentParser:
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
     report.add_argument("--output-dir", type=Path)
+    report.add_argument(
+        "--latex-tables",
+        action="store_true",
+        help="also export LaTeX tables from persisted numerical results",
+    )
     return parser
 
 
@@ -63,7 +68,11 @@ def _prepare(config, rebuild: bool) -> int:
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "report":
-        for path in rebuild_study_plots(args.run_dir, args.output_dir):
+        for path in rebuild_study_plots(
+            args.run_dir,
+            args.output_dir,
+            latex_tables=args.latex_tables,
+        ):
             print(path)
         return
     config = load_config(args.config, PROJECT_ROOT)
