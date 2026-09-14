@@ -647,11 +647,11 @@ def _read_csv(path: Path) -> list[dict[str, Any]]:
 
 def make_analysis_plots(
     run_dir: str | Path,
-    output_root: str | Path | None = None,
+    plot_root: str | Path,
 ) -> list[Path]:
     """Rebuild integrated-analysis figures from persisted CSV results."""
     run = Path(run_dir).resolve()
-    destination = run if output_root is None else Path(output_root).resolve()
+    destination = Path(plot_root).resolve()
     generated: list[Path] = []
 
     threshold_root = run / "analyses" / "led_threshold"
@@ -666,7 +666,7 @@ def make_analysis_plots(
         )
         generated.extend(
             _plot_threshold_results(
-                destination / "analyses" / "led_threshold" / "plots",
+                destination / "led_threshold",
                 threshold_rows,
                 model_name,
             )
@@ -677,7 +677,7 @@ def make_analysis_plots(
     if window_rows:
         generated.extend(
             _plot_window_results(
-                destination / "analyses" / "window" / "plots",
+                destination / "window_scan",
                 window_rows,
             )
         )
