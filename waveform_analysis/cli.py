@@ -26,7 +26,9 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config", type=Path, required=True)
     commands.choices["prepare"].add_argument("--rebuild", action="store_true")
     run = commands.choices["run"]
-    run.add_argument("--overwrite", action="store_true")
+    mode = run.add_mutually_exclusive_group()
+    mode.add_argument("--overwrite", action="store_true")
+    mode.add_argument("--resume", action="store_true")
     run.add_argument("--rebuild-preprocessing", action="store_true")
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
@@ -80,14 +82,25 @@ def main() -> None:
         rebuild=args.rebuild_preprocessing,
         include_prepared=not bool(config["analyses"]["led_threshold_scan"]["enabled"]),
     )
-    run_overwrite = study_overwrite_path(config, overwrite=args.overwrite)
+    run_overwrite = study_overwrite_path(
+        config,
+        overwrite=args.overwrite,
+        resume=args.resume,
+    )
     overwrite_paths = list(preflight.overwrite_paths)
     if run_overwrite is not None:
         overwrite_paths.append(run_overwrite)
     if not confirm_overwrite(overwrite_paths):
         print("No files were changed.")
         return
-    print(run_study(config, overwrite=args.overwrite, rebuild_preprocessing=args.rebuild_preprocessing))
+    print(
+        run_study(
+            config,
+            overwrite=args.overwrite,
+            resume=args.resume,
+            rebuild_preprocessing=args.rebuild_preprocessing,
+        )
+    )
 
 
 if __name__ == "__main__":
