@@ -190,13 +190,14 @@ def _ensure_diagnostics(preprocessed, config, manifest):
         )
 
 
-def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bool = True):
+def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bool = True, write_diagnostics: bool = True):
     base = dataset_cache_dir(config, "prepared_dir", preprocessed.manifest["source"])
     if base.is_dir() and not rebuild:
         manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("fingerprint") != dataset_fingerprint(preprocessed, config):
             raise ValueError(f"Prepared dataset cache is stale: {base}")
-        _ensure_diagnostics(preprocessed, config, manifest)
+        if write_diagnostics:
+            _ensure_diagnostics(preprocessed, config, manifest)
         return load_prepared_dataset(base)
     if base.exists():
         shutil.rmtree(base)
@@ -438,7 +439,8 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         "time_reference": "native_grid_anchor_nearest_interpolated_led",
     }
     atomic_json(base / "manifest.json", manifest)
-    _ensure_diagnostics(preprocessed, config, manifest)
+    if write_diagnostics:
+        _ensure_diagnostics(preprocessed, config, manifest)
     if log_summary:
         logger.info(
         "ML dataset %s | train=%d validation=%d test=%d | excluded_led=%d (missing=%d, noncoincidence=%d) | excluded_ml_window=%d | subsampling=%d",
