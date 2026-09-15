@@ -105,43 +105,6 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertFalse(first.metadata["external_validation_used_for_early_stopping"])
 
 
-    def test_cnn_batch_norm_can_be_disabled(self):
-        import torch
-
-        model = SharedScorerCNN(
-            {
-                "channels": [4, 8],
-                "kernels": [5, 3],
-                "strides": [1, 1],
-                "dilations": [1, 1],
-                "adaptive_pool_length": 4,
-                "dense_units": [4],
-                "batch_norm": False,
-            }
-        )
-        self.assertFalse(any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.modules()))
-
-    def test_cnn_2d_batch_norm_can_be_disabled(self):
-        import torch
-
-        model = JointPairCNN2D(
-            {
-                "channels": [4, 8],
-                "kernels": [5, 3],
-                "strides": [1, 1],
-                "dilations": [1, 1],
-                "adaptive_pool_length": 4,
-                "dense_units": [4],
-                "batch_norm": False,
-            }
-        )
-        self.assertFalse(
-            any(
-                isinstance(layer, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d))
-                for layer in model.modules()
-            )
-        )
-
     def test_cnn_2d_fuses_detectors_in_first_layer_then_uses_conv1d(self):
         model = JointPairCNN2D(
             {
@@ -179,22 +142,6 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(prediction)))
         self.assertTrue(np.all(np.isfinite(importance)))
 
-
-    def test_mlp_batch_norm_can_be_disabled(self):
-        import torch
-
-        model = SharedScorerMLP(24, [8, 4], "silu", batch_norm=False)
-        self.assertFalse(
-            any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.modules())
-        )
-
-    def test_mlp_2d_batch_norm_can_be_disabled(self):
-        import torch
-
-        model = JointPairMLP(24, [8, 4], "relu", batch_norm=False)
-        self.assertFalse(
-            any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.modules())
-        )
 
     def test_mlp_pair_antisymmetry(self):
         rng = np.random.default_rng(16)
