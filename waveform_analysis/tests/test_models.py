@@ -7,11 +7,11 @@ from waveform_analysis.ml_pipeline.models.cnn import (
     fit as fit_cnn,
     predict as predict_cnn,
 )
-from waveform_analysis.ml_pipeline.models.cnn_2d import (
-    CNN2DArtifact,
-    JointPairCNN2D,
-    explain as explain_cnn_2d,
-    predict as predict_cnn_2d,
+from waveform_analysis.ml_pipeline.models.onishi_cnn import (
+    OnishiCNNArtifact,
+    OnishiPairedCNN,
+    explain as explain_onishi_cnn,
+    predict as predict_onishi_cnn,
 )
 from waveform_analysis.ml_pipeline.models.linear_svr import fit as fit_svr, predict as predict_svr
 from waveform_analysis.ml_pipeline.models.mlp import (
@@ -103,10 +103,10 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertFalse(first.metadata["external_validation_used_for_early_stopping"])
 
 
-    def test_cnn_2d_matches_onishi_architecture(self):
+    def test_onishi_cnn_matches_reference_architecture(self):
         import torch
 
-        model = JointPairCNN2D(
+        model = OnishiPairedCNN(
             {
                 "channels": [32, 64, 64],
                 "kernels": [5, 3, 3],
@@ -132,10 +132,10 @@ class AntisymmetryTests(unittest.TestCase):
         )
         self.assertEqual(len(pool_layers), 3)
 
-    def test_cnn_2d_joint_pair_forward_and_xai_shape(self):
+    def test_onishi_cnn_forward_and_xai_shape(self):
         rng = np.random.default_rng(14)
         pair = rng.normal(size=(6, 2, 64)).astype(np.float32)
-        model = JointPairCNN2D(
+        model = OnishiPairedCNN(
             {
                 "channels": [32, 64, 64],
                 "kernels": [5, 3, 3],
@@ -143,9 +143,9 @@ class AntisymmetryTests(unittest.TestCase):
                 "dense_units": 256,
             }
         )
-        artifact = CNN2DArtifact(model, "cpu", {})
-        prediction = predict_cnn_2d(artifact, pair)
-        importance = explain_cnn_2d(artifact, pair)
+        artifact = OnishiCNNArtifact(model, "cpu", {})
+        prediction = predict_onishi_cnn(artifact, pair)
+        importance = explain_onishi_cnn(artifact, pair)
         self.assertEqual(prediction.shape, (6,))
         self.assertEqual(importance.shape, (64,))
         self.assertTrue(np.all(np.isfinite(prediction)))
