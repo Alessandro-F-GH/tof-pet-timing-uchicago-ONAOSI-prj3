@@ -83,18 +83,30 @@ def candidates(config):
         "batch_size", [training.get("batch_size", 128)]
     )
     weight_decays = parameters.get("weight_decay", [1e-5])
-    return [
-        {
+    losses = [str(value).strip().lower() for value in parameters.get("loss", ["rmse"])]
+    huber_deltas = [float(value) for value in parameters.get("huber_delta_ps", [20.0])]
+    rows = []
+    for architecture, activation, learning_rate, batch_size, weight_decay in itertools.product(
+        architectures, activations, learning_rates, batch_sizes, weight_decays
+    ):
+        base = {
             "architecture": _validate_architecture(architecture),
             "activation": str(activation).strip().lower(),
             "learning_rate": float(learning_rate),
             "batch_size": int(batch_size),
             "weight_decay": float(weight_decay),
         }
-        for architecture, activation, learning_rate, batch_size, weight_decay in itertools.product(
-            architectures, activations, learning_rates, batch_sizes, weight_decays
-        )
-    ]
+        for loss in losses:
+            if loss == "rmse":
+                rows.append({**base, "loss": "rmse"})
+            elif loss == "huber":
+                for delta in huber_deltas:
+                    if delta <= 0:
+                        raise ValueError("huber_delta_ps must be positive")
+                    rows.append({**base, "loss": "huber", "huber_delta_ps": float(delta)})
+            else:
+                raise ValueError(f"Unsupported MLP loss {loss!r}; available: ['huber', 'rmse']")
+    return rows
 
 
 def fit_mlp(
@@ -137,16 +149,28 @@ def fit_mlp(
         lr=float(params["learning_rate"]),
         weight_decay=float(params["weight_decay"]),
     )
+    loss_name = str(params.get("loss", "rmse")).strip().lower()
+    if loss_name == "rmse":
+        loss_fn = _rmse_loss
+        huber_delta = None
+    elif loss_name == "huber":
+        huber_delta = float(params.get("huber_delta_ps", 20.0))
+        if huber_delta <= 0:
+            raise ValueError("huber_delta_ps must be positive")
+        loss_fn = nn.HuberLoss(delta=huber_delta)
+    else:
+        raise ValueError(f"Unsupported MLP loss {loss_name!r}; available: ['huber', 'rmse']")
     loader = _loader(
         fit_x, fit_target, batch, shuffle=True, seed=training_seed
     )
 
     if verbose and logger is not None:
         logger.info(
-            "%s training | loss=RMSE | architecture=%s | activation=%s | "
+            "%s training | loss=%s | architecture=%s | activation=%s | "
             "lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | "
             "early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             model_name,
+            loss_name.upper() if huber_delta is None else f"HUBER(delta={huber_delta:g} ps)",
             architecture,
             activation,
             float(params["learning_rate"]),
@@ -173,7 +197,7 @@ def fit_mlp(
             pair = pair.to(device)
             target = target.to(device)
             optimizer.zero_grad(set_to_none=True)
-            loss = _rmse_loss(model(pair), target)
+            loss = loss_fn(model(pair), target)
             loss.backward()
             if verbose and logger is not None:
                 epoch_gradient_norms.append(_gradient_norm(model))
@@ -229,7 +253,8 @@ def fit_mlp(
 
     metadata = {
         "best_epoch": int(best_epoch),
-        "training_loss": "rmse",
+        "training_loss": loss_name,
+        "huber_delta_ps": huber_delta,
         "best_early_stopping_rmse_ps": float(best_score),
         "early_stopping_metric": "internal_train_holdout_rmse",
         "early_stopping_fraction": early_fraction,
