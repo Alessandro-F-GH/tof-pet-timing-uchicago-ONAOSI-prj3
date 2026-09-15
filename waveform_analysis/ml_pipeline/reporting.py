@@ -812,11 +812,17 @@ def plot_model_study_windows(
     manifest: dict[str, Any],
     paths: list[Path],
     *,
+    output_dir: str | Path | None = None,
     filename: str = "ctr_vs_voltage_windows.pdf",
 ) -> None:
     import matplotlib.pyplot as plt
 
     root = Path(root).resolve()
+    output = (
+        root / "plots"
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
     windows = list((manifest.get("windows_ns") or {}).keys())
     model = str(manifest.get("model") or "")
     if not windows or not model:
@@ -866,73 +872,74 @@ def plot_model_study_windows(
         return
 
     voltages = sorted(all_voltages)
-    fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
+    with paper_context():
+        fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
 
-    led_values, led_errors = [], []
-    for voltage in voltages:
-        row = next(
-            (
-                item
-                for item in led_rows
-                if np.isfinite(_voltage(item))
-                and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
-            ),
-            None,
-        )
-        led_values.append(_float(row.get("ctr_ps")) if row else np.nan)
-        led_errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
-    led_values = np.asarray(led_values, dtype=float)
-    led_errors = np.asarray(led_errors, dtype=float)
-    finite_led = np.isfinite(led_values)
-    if np.any(finite_led):
-        ax.errorbar(
-            np.asarray(voltages)[finite_led],
-            led_values[finite_led],
-            yerr=np.where(np.isfinite(led_errors[finite_led]), led_errors[finite_led], 0.0),
-            capsize=2.5,
-            label=LABELS["led"],
-            **model_style("led"),
-        )
-
-    for index, window in enumerate(windows):
-        rows = window_rows.get(window)
-        if not rows:
-            continue
-        values, errors = [], []
+        led_values, led_errors = [], []
         for voltage in voltages:
             row = next(
                 (
                     item
-                    for item in rows
+                    for item in led_rows
                     if np.isfinite(_voltage(item))
                     and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
                 ),
                 None,
             )
-            values.append(_float(row.get("ctr_ps")) if row else np.nan)
-            errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
-        values = np.asarray(values, dtype=float)
-        errors = np.asarray(errors, dtype=float)
-        finite = np.isfinite(values)
-        if not np.any(finite):
-            continue
-        ax.errorbar(
-            np.asarray(voltages)[finite],
-            values[finite],
-            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
-            capsize=2.5,
-            label=str(window),
-            **window_style(model, index),
-        )
+            led_values.append(_float(row.get("ctr_ps")) if row else np.nan)
+            led_errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
+        led_values = np.asarray(led_values, dtype=float)
+        led_errors = np.asarray(led_errors, dtype=float)
+        finite_led = np.isfinite(led_values)
+        if np.any(finite_led):
+            ax.errorbar(
+                np.asarray(voltages)[finite_led],
+                led_values[finite_led],
+                yerr=np.where(np.isfinite(led_errors[finite_led]), led_errors[finite_led], 0.0),
+                capsize=2.5,
+                label=LABELS["led"],
+                **model_style("led"),
+            )
 
-    set_voltage_ticks(ax, voltages)
-    ax.set_xlabel("Voltage [V]")
-    ax.set_ylabel("CTR [ps]")
-    ax.legend(loc="best", ncol=2)
-    clean_axis(ax, grid="y")
-    fig.tight_layout()
-    target = save_figure(fig, root / "plots" / filename)
-    plt.close(fig)
+        for index, window in enumerate(windows):
+            rows = window_rows.get(window)
+            if not rows:
+                continue
+            values, errors = [], []
+            for voltage in voltages:
+                row = next(
+                    (
+                        item
+                        for item in rows
+                        if np.isfinite(_voltage(item))
+                        and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
+                    ),
+                    None,
+                )
+                values.append(_float(row.get("ctr_ps")) if row else np.nan)
+                errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
+            values = np.asarray(values, dtype=float)
+            errors = np.asarray(errors, dtype=float)
+            finite = np.isfinite(values)
+            if not np.any(finite):
+                continue
+            ax.errorbar(
+                np.asarray(voltages)[finite],
+                values[finite],
+                yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
+                capsize=2.5,
+                label=str(window),
+                **window_style(model, index),
+            )
+
+        set_voltage_ticks(ax, voltages)
+        ax.set_xlabel("Voltage [V]")
+        ax.set_ylabel("CTR [ps]")
+        ax.legend(loc="best", ncol=2)
+        clean_axis(ax, grid="y")
+        fig.tight_layout()
+        target = save_figure(fig, output / filename)
+        plt.close(fig)
     paths.append(target)
 
 
