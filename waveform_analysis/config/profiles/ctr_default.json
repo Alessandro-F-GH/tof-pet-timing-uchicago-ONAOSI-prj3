@@ -42,25 +42,5 @@
       "end": 30
     },
     "subsampling": 1
-  },
-  "analyses": {
-    "led_threshold_scan": {
-      "enabled": false,
-      "selection_model": "mlp"
-    },
-    "window_scan": {
-      "enabled": false,
-      "right_limits_ns": [
-        1,
-        5,
-        10,
-        20,
-        30
-      ],
-      "models": [
-        "mlp",
-        "onishi_cnn"
-      ]
-    }
   }
 }
