@@ -1,6 +1,6 @@
-from utils_fit import fit_ctr_ps
-
 from __future__ import annotations
+
+from utils_fit import fit_ctr_ps
 
 import copy
 import csv
