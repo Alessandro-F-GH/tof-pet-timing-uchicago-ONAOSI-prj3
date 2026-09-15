@@ -249,7 +249,7 @@ def plot_model_output_correlations(
         ax.grid(False)
     if image is not None:
         cbar = fig.colorbar(image, ax=axes.ravel().tolist(), fraction=0.035, pad=0.04)
-        cbar.set_label("Pearson correlation")
+        cbar.set_label("Correlation [–]")
     target_path = save_figure(
         fig,
         plot_output / f"model_output_correlation_{dataset}.pdf",
