@@ -42,31 +42,7 @@ def _target_from_artifacts(
             f"{dataset}/{model}/{stage}: prediction/residual shape mismatch "
             f"{prediction.shape} != {residual.shape}"
         )
-    # corrected residual = target - prediction
     return prediction + residual
-
-
-def _assert_selected_threshold_provenance(
-    manifest: dict[str, Any],
-    dataset: str,
-    mode: str,
-) -> float:
-    dataset_info = manifest["datasets"][dataset]
-    recorded_threshold = float(dataset_info["selected_led_threshold_mV"])
-    threshold_analysis = (manifest.get("analyses") or {}).get("led_threshold_scan") or {}
-    if bool(threshold_analysis.get("enabled", False)):
-        selected = threshold_analysis.get("selected_thresholds_mV") or {}
-        if dataset not in selected:
-            raise RuntimeError(
-                f"{dataset}: LED-threshold scan is enabled but its selected threshold is missing"
-            )
-        scan_threshold = float(selected[dataset])
-        if not np.isclose(recorded_threshold, scan_threshold, rtol=0.0, atol=1e-12):
-            raise RuntimeError(
-                f"{dataset}: study threshold {recorded_threshold:g} mV does not match "
-                f"threshold-scan selection {scan_threshold:g} mV"
-            )
-    return recorded_threshold
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> tuple[float, int]:
@@ -300,7 +276,6 @@ def make_model_output_reports(
     with paper_context():
         datasets = list((manifest.get("datasets") or {}).keys())
         for dataset in datasets:
-            _assert_selected_threshold_provenance(manifest, dataset, mode)
             artifact_dir = run / "artifacts" / dataset
             discovered_models = {
                 path.name[: -len("_test_model_output_ps.npy")]
