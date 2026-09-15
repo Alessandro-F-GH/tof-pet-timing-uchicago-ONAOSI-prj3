@@ -103,18 +103,12 @@ def rebuild_experiment_plots(
                     latex_tables=latex_tables,
                 )
             )
-        if output_dir is None:
-            plot_model_study_windows(run, manifest, paths)
-        else:
-            # Build the root summary from the original run artifacts, then move it
-            # into the requested report destination.
-            temporary: list[Path] = []
-            plot_model_study_windows(run, manifest, temporary)
-            for source in temporary:
-                target = destination / "plots" / source.name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-                paths.append(target)
+        plot_model_study_windows(
+            run,
+            manifest,
+            paths,
+            output_dir=destination / "plots",
+        )
         return paths
 
     if experiment_type == "threshold_scan":
