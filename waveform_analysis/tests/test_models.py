@@ -88,9 +88,11 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertEqual(first.metadata["training_seed"], 12345)
         self.assertEqual(first.metadata["best_epoch"], second.metadata["best_epoch"])
         self.assertEqual(
-            first.metadata["best_validation_rmse_ps"],
-            second.metadata["best_validation_rmse_ps"],
+            first.metadata["best_early_stopping_rmse_ps"],
+            second.metadata["best_early_stopping_rmse_ps"],
         )
+        self.assertFalse(first.metadata["refit_on_full_training_split"])
+        self.assertFalse(first.metadata["external_validation_used_for_early_stopping"])
 
 
     def test_cnn_2d_fuses_detectors_in_first_layer_then_uses_conv1d(self):
