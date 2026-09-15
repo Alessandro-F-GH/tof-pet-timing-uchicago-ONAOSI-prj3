@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,13 +82,24 @@ class OnishiCNNArtifact:
 def candidates(config):
     p = config.get("parameters", {})
     training = config.get("training", {})
-    return [
-        {"learning_rate": float(lr), "batch_size": int(batch)}
-        for lr, batch in itertools.product(
-            p.get("learning_rate", [1e-4]),
-            p.get("batch_size", [training.get("batch_size", 32)]),
+    learning_rates = [float(v) for v in p.get("learning_rate", [1e-4])]
+    batches = [int(v) for v in p.get("batch_size", [32])]
+    if learning_rates != [1e-4] or batches != [32]:
+        raise ValueError(
+            "onishi_cnn uses the fixed reference hyperparameters: "
+            "learning_rate=[1e-4], batch_size=[32]"
         )
-    ]
+    if int(training.get("epochs", 100)) != 100:
+        raise ValueError("onishi_cnn fixed reference training requires epochs=100")
+    if [int(v) for v in training.get("lr_decay_epochs", [30, 60])] != [30, 60]:
+        raise ValueError(
+            "onishi_cnn fixed reference training requires lr_decay_epochs=[30, 60]"
+        )
+    if float(training.get("lr_decay_factor", 0.1)) != 0.1:
+        raise ValueError(
+            "onishi_cnn fixed reference training requires lr_decay_factor=0.1"
+        )
+    return [{"learning_rate": 1e-4, "batch_size": 32}]
 
 
 def _mse_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
