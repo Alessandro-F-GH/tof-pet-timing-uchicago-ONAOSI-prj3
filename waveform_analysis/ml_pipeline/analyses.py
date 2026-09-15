@@ -1303,7 +1303,11 @@ def run_blind_led_threshold_scan(
         )
 
     csv_path = output_dir / "csv" / "threshold_scan.csv"
+    selection_csv = output_dir / "csv" / "hyperparameter_selection.csv"
     rows = _read_csv(csv_path) if resume and csv_path.is_file() else []
+    selection_rows = (
+        _read_csv(selection_csv) if resume and selection_csv.is_file() else []
+    )
     completed = {
         (str(row.get("dataset")), float(row.get("threshold_mV")))
         for row in rows
@@ -1449,6 +1453,38 @@ def run_blind_led_threshold_scan(
                         )
                     )
                 ]
+                selection_rows = [
+                    row
+                    for row in selection_rows
+                    if not (
+                        str(row.get("dataset")) == dataset_name
+                        and row.get("threshold_mV") not in {None, ""}
+                        and np.isclose(
+                            float(row["threshold_mV"]),
+                            threshold,
+                            rtol=0.0,
+                            atol=1e-12,
+                        )
+                    )
+                ]
+                selection_rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "voltage_V": target_voltage,
+                        "mode": mode,
+                        "threshold_mV": float(threshold),
+                        "model": model_name,
+                        "selection_population": "validation",
+                        "selection_metric": "validation_ctr",
+                        "validation_ctr_ps": float(search.best.score),
+                        "selected_parameters_json": canonical_json(
+                            search.best.candidate
+                        ),
+                        "refit_after_selection": False,
+                    }
+                )
+                _write_csv(selection_csv, selection_rows)
+
                 rows.append(
                     {
                         "dataset": dataset_name,
@@ -1456,12 +1492,6 @@ def run_blind_led_threshold_scan(
                         "mode": mode,
                         "threshold_mV": float(threshold),
                         "model": model_name,
-                        "hyperparameter_selection_population": "validation",
-                        "hyperparameter_selection_metric": "validation_ctr",
-                        "validation_ctr_ps": float(search.best.score),
-                        "selected_parameters_json": canonical_json(
-                            search.best.candidate
-                        ),
                         "final_population": "blind",
                         "blind_events": int(blind.size),
                         "led_blind_ctr_ps": float(led_fit.ctr_ps),
@@ -1475,7 +1505,6 @@ def run_blind_led_threshold_scan(
                         "relative_improvement_percent": improvement,
                         "paired_bootstrap_uncertainty_percent": improvement_error,
                         "paired_bootstrap_successful": paired_successful,
-                        "refit_after_validation_selection": False,
                     }
                 )
                 _write_csv(csv_path, rows)
@@ -1498,6 +1527,13 @@ def run_blind_led_threshold_scan(
         )
     )
     _write_csv(csv_path, rows)
+    selection_rows.sort(
+        key=lambda row: (
+            str(row.get("dataset")),
+            float(row.get("threshold_mV", 0.0)),
+        )
+    )
+    _write_csv(selection_csv, selection_rows)
     _plot_blind_threshold_scan(output_dir, rows)
     manifest = {
         "experiment_type": "threshold_scan",
