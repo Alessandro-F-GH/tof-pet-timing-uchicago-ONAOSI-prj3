@@ -12,7 +12,7 @@ import numpy as np
 
 from utils_fit import fit_ctr_ps
 
-from .common import atomic_json, canonical_json, read_json
+from .common import atomic_json, canonical_json, read_json, voltage_from_name
 from .concatenate import concatenate_prepared_datasets
 from .dataset import PreparedDataset, load_prepared_dataset
 from .models import get_model
@@ -1132,4 +1132,288 @@ def run_window_scan(
             f"ML window scan incomplete: {len(missing)} configured point(s) missing: "
             f"{preview}{suffix}"
         )
+    return manifest
+
+
+def _paired_blind_improvement(
+    led_residual: np.ndarray,
+    model_residual: np.ndarray,
+    fit_config: dict[str, Any],
+    *,
+    samples: int,
+    seed: int,
+) -> tuple[float, float, int]:
+    led = np.asarray(led_residual, dtype=np.float64).reshape(-1)
+    model = np.asarray(model_residual, dtype=np.float64).reshape(-1)
+    if led.shape != model.shape:
+        raise ValueError("Paired blind bootstrap requires aligned residual arrays")
+    finite = np.isfinite(led) & np.isfinite(model)
+    led = led[finite]
+    model = model[finite]
+    if led.size < 2:
+        raise ValueError("Paired blind bootstrap requires at least two events")
+    led_ctr = fit_ctr_ps(led, fit_config, bootstrap=False).ctr_ps
+    model_ctr = fit_ctr_ps(model, fit_config, bootstrap=False).ctr_ps
+    central = 100.0 * (led_ctr - model_ctr) / led_ctr
+    rng = np.random.default_rng(int(seed))
+    boot = []
+    for _ in range(int(samples)):
+        idx = rng.integers(0, led.size, size=led.size)
+        try:
+            ref = fit_ctr_ps(led[idx], fit_config, bootstrap=False).ctr_ps
+            val = fit_ctr_ps(model[idx], fit_config, bootstrap=False).ctr_ps
+        except ValueError:
+            continue
+        if np.isfinite(ref) and ref > 0 and np.isfinite(val):
+            boot.append(100.0 * (ref - val) / ref)
+    error = float(np.std(boot, ddof=1)) if len(boot) > 1 else float("nan")
+    return float(central), error, len(boot)
+
+
+def run_blind_led_threshold_scan(
+    preprocessed: list[Any],
+    config: dict[str, Any],
+    output_dir: Path,
+    logger,
+    progress,
+    *,
+    rebuild: bool,
+    resume: bool = False,
+) -> dict[str, Any]:
+    """Evaluate MLP LED-threshold sensitivity on blind data without selecting a threshold."""
+    model_name = "mlp"
+    thresholds = sorted(
+        {float(value) for value in config["standard_methods"]["led_thresholds_mV"]}
+    )
+    target_voltage = float(config["experiment"]["voltage_V"])
+    mode = str(config["mode"])
+    fit_config = dict(config.get("fit") or {})
+    bootstrap_samples = int(fit_config.get("bootstrap_samples", 0))
+    seed = int(config["validation"]["seed"])
+
+    selected_sources = []
+    for source in preprocessed:
+        name = Path(source.manifest["source"]).stem
+        voltage = voltage_from_name(name)
+        if np.isfinite(voltage) and np.isclose(
+            voltage, target_voltage, rtol=0.0, atol=1e-9
+        ):
+            selected_sources.append(source)
+    if not selected_sources:
+        raise RuntimeError(
+            f"No preprocessed dataset matches threshold-scan voltage {target_voltage:g} V"
+        )
+
+    csv_path = output_dir / "csv" / "threshold_scan.csv"
+    rows = _read_csv(csv_path) if resume and csv_path.is_file() else []
+    completed = {
+        (str(row.get("dataset")), float(row.get("threshold_mV")))
+        for row in rows
+        if row.get("dataset") and row.get("threshold_mV") not in {None, ""}
+    }
+
+    for source in selected_sources:
+        dataset_name = Path(source.manifest["source"]).stem
+        for threshold in thresholds:
+            key = (dataset_name, float(threshold))
+            artifact_dir = (
+                output_dir
+                / "artifacts"
+                / dataset_name
+                / _threshold_label(threshold)
+            )
+            residual_path = artifact_dir / "mlp_blind_residuals_ps.npy"
+            led_path = artifact_dir / "led_blind_residuals_ps.npy"
+            if (
+                resume
+                and key in completed
+                and residual_path.is_file()
+                and led_path.is_file()
+            ):
+                progress.complete(
+                    "threshold_scan",
+                    f"threshold scan | {dataset_name} | {threshold:g} mV",
+                    note="reused completed blind result",
+                    announce=False,
+                )
+                continue
+
+            candidate_config = _threshold_config(config, threshold, output_dir)
+            candidate_config["models"] = {"mlp": config["models"]["mlp"]}
+            candidate_config["standard_methods"]["led_thresholds_mV"] = [float(threshold)]
+            label = f"threshold scan | {dataset_name} | {threshold:g} mV"
+            with progress.task(
+                "threshold_scan",
+                label,
+                announce_start=False,
+                announce_finish=False,
+            ):
+                dataset = prepare_ml_dataset(
+                    source,
+                    candidate_config,
+                    rebuild=rebuild,
+                    logger=logger,
+                    log_summary=False,
+                    write_diagnostics=False,
+                )
+                sample_mask = dataset_training_sample_mask(dataset, mode)
+                spec = get_model(model_name)
+                search = search_model(
+                    spec,
+                    config["models"][model_name],
+                    candidate_config,
+                    dataset,
+                    mode,
+                    seed=semantic_seed(
+                        seed,
+                        dataset_name,
+                        mode,
+                        model_name,
+                        "threshold_scan",
+                        f"{threshold:g}",
+                    ),
+                    dataset_name=dataset_name,
+                    sample_mask=sample_mask,
+                    logger=logger,
+                )
+                fitted = selected_model(search)
+                blind = np.asarray(dataset.test, dtype=np.int64)
+                prediction, _time, _pair = predict_indices(
+                    spec,
+                    fitted,
+                    dataset,
+                    mode,
+                    blind,
+                )
+                target = model_target(dataset, mode)
+                model_residual = corrected_timing_residual(
+                    target[blind], prediction
+                )
+                led_residual = calibrated_led(dataset, mode)[blind]
+
+                led_fit = fit_ctr_ps(
+                    np.asarray(led_residual, dtype=np.float64),
+                    fit_config,
+                    seed=semantic_seed(
+                        seed, dataset_name, "led", "threshold_scan", f"{threshold:g}"
+                    ),
+                    bootstrap=True,
+                )
+                model_fit = fit_ctr_ps(
+                    np.asarray(model_residual, dtype=np.float64),
+                    fit_config,
+                    seed=semantic_seed(
+                        seed, dataset_name, model_name, "threshold_scan", f"{threshold:g}"
+                    ),
+                    bootstrap=True,
+                )
+                improvement, improvement_error, paired_successful = (
+                    _paired_blind_improvement(
+                        led_residual,
+                        model_residual,
+                        fit_config,
+                        samples=bootstrap_samples,
+                        seed=semantic_seed(
+                            seed,
+                            dataset_name,
+                            model_name,
+                            "threshold_scan_paired",
+                            f"{threshold:g}",
+                        ),
+                    )
+                )
+
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                np.save(
+                    residual_path,
+                    np.asarray(model_residual, dtype=np.float64),
+                )
+                np.save(
+                    led_path,
+                    np.asarray(led_residual, dtype=np.float64),
+                )
+                np.save(
+                    artifact_dir / "mlp_blind_model_output_ps.npy",
+                    np.asarray(prediction, dtype=np.float64),
+                )
+
+                rows = [
+                    row
+                    for row in rows
+                    if not (
+                        str(row.get("dataset")) == dataset_name
+                        and row.get("threshold_mV") not in {None, ""}
+                        and np.isclose(
+                            float(row["threshold_mV"]),
+                            threshold,
+                            rtol=0.0,
+                            atol=1e-12,
+                        )
+                    )
+                ]
+                rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "voltage_V": target_voltage,
+                        "mode": mode,
+                        "threshold_mV": float(threshold),
+                        "model": model_name,
+                        "hyperparameter_selection_population": "validation",
+                        "hyperparameter_selection_metric": "validation_ctr",
+                        "validation_ctr_ps": float(search.best.score),
+                        "selected_parameters_json": canonical_json(
+                            search.best.candidate
+                        ),
+                        "final_population": "blind",
+                        "blind_events": int(blind.size),
+                        "led_blind_ctr_ps": float(led_fit.ctr_ps),
+                        "led_blind_ctr_uncertainty_ps": float(
+                            led_fit.ctr_error_ps
+                        ),
+                        "mlp_blind_ctr_ps": float(model_fit.ctr_ps),
+                        "mlp_blind_ctr_uncertainty_ps": float(
+                            model_fit.ctr_error_ps
+                        ),
+                        "relative_improvement_percent": improvement,
+                        "paired_bootstrap_uncertainty_percent": improvement_error,
+                        "paired_bootstrap_successful": paired_successful,
+                        "refit_after_validation_selection": False,
+                    }
+                )
+                _write_csv(csv_path, rows)
+                search.best.artifact = None
+                del fitted
+                gc.collect()
+
+            logger.info(
+                "Threshold blind result | %s | %.6g mV | MLP CTR=%.3f ± %.3f ps",
+                dataset_name,
+                threshold,
+                float(model_fit.ctr_ps),
+                float(model_fit.ctr_error_ps),
+            )
+
+    rows.sort(
+        key=lambda row: (
+            str(row.get("dataset")),
+            float(row.get("threshold_mV", 0.0)),
+        )
+    )
+    _write_csv(csv_path, rows)
+    manifest = {
+        "experiment_type": "threshold_scan",
+        "model": model_name,
+        "voltage_V": target_voltage,
+        "mode": mode,
+        "candidate_thresholds_mV": thresholds,
+        "hyperparameter_selection_population": "validation",
+        "hyperparameter_selection_metric": "validation_ctr",
+        "final_evaluation_population": "blind",
+        "threshold_selected_from_scan": False,
+        "refit_after_validation_selection": False,
+        "ctr_uncertainty": "event_bootstrap",
+        "relative_improvement_uncertainty": "paired_event_bootstrap",
+        "output_dir": str(output_dir.resolve()),
+    }
+    atomic_json(output_dir / "manifest.json", manifest)
     return manifest
