@@ -85,7 +85,7 @@ def fit_fixed_model(
     sample_mask: np.ndarray | None = None,
     logger=None,
 ) -> tuple[FittedModel, dict[str, Any]]:
-    """Fit one fixed-reference candidate on train only; validation is never consulted."""
+    """Fit one fixed-reference candidate on training+validation without model selection."""
     candidates = list(spec.candidates(model_config))
     if len(candidates) != 1:
         raise ValueError(
@@ -96,8 +96,14 @@ def fit_fixed_model(
     fit_indices = np.asarray(dataset.development, dtype=np.int64)
     train_view = waveform_view(dataset, mode, fit_indices)
     train_x_full = train_view.materialize()
+    mask_training_events = int(np.asarray(dataset.training, dtype=np.int64).size)
     if sample_mask is None:
-        sample_mask = training_sample_mask(train_x_full)
+        mask_view = waveform_view(
+            dataset,
+            mode,
+            np.asarray(dataset.training, dtype=np.int64),
+        )
+        sample_mask = training_sample_mask(mask_view.materialize())
     sample_mask = np.asarray(sample_mask, dtype=bool).reshape(-1)
     if sample_mask.size != train_x_full.shape[-1]:
         raise ValueError(
@@ -131,7 +137,7 @@ def fit_fixed_model(
                 "value in at least 99% of training events"
             ),
             "sample_mask_constant_fraction": 0.99,
-            "sample_mask_training_events": int(train_x_full.shape[0]),
+            "sample_mask_training_events": mask_training_events,
             "input_samples_before_mask": int(sample_mask.size),
             "input_samples_after_mask": int(np.count_nonzero(sample_mask)),
             "input_samples_removed": int(
