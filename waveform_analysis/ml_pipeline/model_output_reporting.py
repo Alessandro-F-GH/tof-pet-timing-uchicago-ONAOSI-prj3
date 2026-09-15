@@ -85,7 +85,6 @@ def plot_prediction_vs_target(
     output: Path,
     run: Path,
     manifest: dict[str, Any],
-    mode: str,
     dataset: str,
     model: str,
     label: str,
@@ -268,7 +267,6 @@ def make_model_output_reports(
     run = Path(run_dir).resolve()
     plot_root = Path(plot_output_dir).resolve()
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-    mode = str(manifest.get("mode") or manifest["config"]["mode"])
     labels = dict(labels or LABELS)
     paths: list[Path] = []
     correlation_rows: list[dict[str, Any]] = []
@@ -294,7 +292,6 @@ def make_model_output_reports(
                     plot_root / model,
                     run,
                     manifest,
-                    mode,
                     dataset,
                     model,
                     labels.get(model, model),
