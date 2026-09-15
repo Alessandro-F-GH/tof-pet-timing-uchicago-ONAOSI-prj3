@@ -55,7 +55,7 @@ class AntisymmetryTests(unittest.TestCase):
         train_y = rng.normal(scale=20.0, size=32)
         validation_x = rng.normal(size=(12, 2, 32)).astype(np.float32)
         validation_y = rng.normal(scale=20.0, size=12)
-        params = {"learning_rate": 1e-3, "weight_decay": 0.0, "batch_size": 8, "first_layer_weight_norm": 1.0}
+        params = {"learning_rate": 1e-3, "weight_decay": 0.0, "batch_size": 8}
         config = {
             "architecture": {
                 "channels": [4],
