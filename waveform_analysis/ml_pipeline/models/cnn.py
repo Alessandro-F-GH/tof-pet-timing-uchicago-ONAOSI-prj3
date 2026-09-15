@@ -65,35 +65,65 @@ def _gradient_norm(model):
             value=parameter.grad.detach().norm(2).item()
             total+=value*value
     return float(total**0.5)
+
+def _internal_early_stopping_split(x,y,fraction,seed):
+    x=np.asarray(x,dtype=np.float32); y=np.asarray(y,dtype=np.float64)
+    if x.shape[0]!=y.shape[0]: raise ValueError("CNN train_x and train_target must contain the same number of events")
+    n=int(y.shape[0]); fraction=float(fraction)
+    if not 0.0<fraction<1.0: raise ValueError("training.early_stopping_fraction must lie in (0, 1)")
+    if n<2: raise ValueError("CNN training requires at least two training events")
+    n_early=max(1,min(n-1,int(round(n*fraction))))
+    order=np.random.default_rng(int(seed)).permutation(n)
+    early_idx=order[:n_early]; fit_idx=order[n_early:]
+    return x[fit_idx],y[fit_idx],x[early_idx],y[early_idx]
+
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None):
-    if validation_x is None or validation_target is None: raise ValueError("CNN training requires a validation set for early stopping")
     training_seed=_configure_reproducibility(seed)
-    training=config.get("training",{}); verbose=bool(config.get("verbose",False)); logger=config.get("_logger"); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device)
-    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta",.05)); loader=_loader(train_x,train_target,batch,shuffle=True,seed=training_seed); best_score=float("inf"); best_epoch=0; best_state=None; stale=0; output_limit=config.get('_prediction_max_abs_ps')
+    training=config.get("training",{}); verbose=bool(config.get("verbose",False)); logger=config.get("_logger"); device=_device(config)
+    batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta",.05)); early_fraction=float(training.get("early_stopping_fraction",0.20)); output_limit=config.get('_prediction_max_abs_ps'); clip=float(training.get("gradient_clip_norm",10.0))
+    fit_x,fit_target,early_x,early_target=_internal_early_stopping_split(train_x,train_target,early_fraction,training_seed)
+    model=SharedScorerCNN(config.get("architecture",{})).to(device)
+    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
     if verbose and logger is not None:
-        logger.info("cnn training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,device)
+        logger.info("cnn training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
+    best_score=float("inf"); best_epoch=0; stale=0
     for epoch in range(1,max_epochs+1):
         model.train(); epoch_gradient_norms=[]
         for pair,target in loader:
-            pair=pair.to(device); target=target.to(device); optimizer.zero_grad(set_to_none=True); loss=loss_fn(model(pair),target); loss.backward(); clip=float(training.get("gradient_clip_norm",10.0))
+            pair=pair.to(device); target=target.to(device); optimizer.zero_grad(set_to_none=True); loss=loss_fn(model(pair),target); loss.backward()
             if verbose and logger is not None: epoch_gradient_norms.append(_gradient_norm(model))
             if clip>0: nn.utils.clip_grad_norm_(model.parameters(),clip)
             optimizer.step()
-        prediction=_predict_tensor(model,validation_x,device,batch)
+        prediction=_predict_tensor(model,early_x,device,batch)
         if output_limit is not None: prediction=np.clip(prediction,-float(output_limit),float(output_limit))
-        residual=prediction-np.asarray(validation_target); score=_rmse(residual)
+        score=_rmse(prediction-early_target)
         if verbose and logger is not None:
-            train_prediction=_predict_tensor(model,train_x,device,batch)
-            if output_limit is not None: train_prediction=np.clip(train_prediction,-float(output_limit),float(output_limit))
-            train_score=_rmse(train_prediction-np.asarray(train_target,dtype=np.float64))
-            logger.info("cnn epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | grad norm=%.6g | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",epoch,max_epochs,train_score,score,float(np.mean(epoch_gradient_norms)) if epoch_gradient_norms else float("nan"),float(np.mean(prediction)),float(np.std(prediction)),float(np.min(prediction)),float(np.max(prediction)))
-        if score<best_score-min_delta: best_score=score; best_epoch=epoch; best_state=copy.deepcopy(model.state_dict()); stale=0
+            fit_prediction=_predict_tensor(model,fit_x,device,batch)
+            if output_limit is not None: fit_prediction=np.clip(fit_prediction,-float(output_limit),float(output_limit))
+            fit_score=_rmse(fit_prediction-fit_target)
+            logger.info("cnn epoch %d/%d | fit RMSE=%.4f ps | early-stop RMSE=%.4f ps | grad norm=%.6g | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",epoch,max_epochs,fit_score,score,float(np.mean(epoch_gradient_norms)) if epoch_gradient_norms else float("nan"),float(np.mean(prediction)),float(np.std(prediction)),float(np.min(prediction)),float(np.max(prediction)))
+        if score<best_score-min_delta: best_score=score; best_epoch=epoch; stale=0
         else:
             stale+=1
             if stale>=patience: break
-    if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
-    model.load_state_dict(best_state)
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"early_stopping_metric":"validation_rmse","learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
+    if best_epoch<1: raise RuntimeError("CNN early stopping did not select a valid epoch")
+
+    # Refit from the same deterministic initialization on the complete training
+    # split for the epoch count selected only from the internal train holdout.
+    _configure_reproducibility(training_seed)
+    model=SharedScorerCNN(config.get("architecture",{})).to(device)
+    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"]))
+    loader=_loader(train_x,train_target,batch,shuffle=True,seed=training_seed)
+    if verbose and logger is not None:
+        logger.info("cnn refit | full train=%d | epochs=%d",len(train_target),best_epoch)
+    for _epoch in range(1,best_epoch+1):
+        model.train()
+        for pair,target in loader:
+            pair=pair.to(device); target=target.to(device); optimizer.zero_grad(set_to_none=True); loss=loss_fn(model(pair),target); loss.backward()
+            if clip>0: nn.utils.clip_grad_norm_(model.parameters(),clip)
+            optimizer.step()
+
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"early_stopping_fit_events":int(fit_target.size),"refit_events":int(len(train_target)),"refit_on_full_training_split":True,"external_validation_used_for_early_stopping":False,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
