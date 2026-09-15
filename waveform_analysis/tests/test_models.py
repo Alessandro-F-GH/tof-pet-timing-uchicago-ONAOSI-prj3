@@ -58,9 +58,8 @@ class ActiveModelTests(unittest.TestCase):
 
         model = OnishiPairedCNN(
             {
-                "channels": [32, 64, 64],
+                "channels": [32, 32, 64],
                 "kernels": [5, 3, 3],
-                "pool_size": 3,
                 "dense_units": 256,
             }
         )
@@ -68,28 +67,25 @@ class ActiveModelTests(unittest.TestCase):
             layer for layer in model.features
             if isinstance(layer, torch.nn.Conv2d)
         ]
-        pool_layers = [
-            layer for layer in model.features
-            if isinstance(layer, torch.nn.MaxPool2d)
-        ]
         self.assertEqual(
             [layer.kernel_size for layer in conv_layers],
             [(2, 5), (1, 3), (1, 3)],
         )
         self.assertEqual(
             [layer.out_channels for layer in conv_layers],
-            [32, 64, 64],
+            [32, 32, 64],
         )
-        self.assertEqual(len(pool_layers), 3)
+        self.assertFalse(
+            any(isinstance(layer, torch.nn.MaxPool2d) for layer in model.features)
+        )
 
     def test_onishi_cnn_forward_and_xai_shape(self):
         rng = np.random.default_rng(14)
         pair = rng.normal(size=(6, 2, 64)).astype(np.float32)
         model = OnishiPairedCNN(
             {
-                "channels": [32, 64, 64],
+                "channels": [32, 32, 64],
                 "kernels": [5, 3, 3],
-                "pool_size": 3,
                 "dense_units": 256,
             }
         )
