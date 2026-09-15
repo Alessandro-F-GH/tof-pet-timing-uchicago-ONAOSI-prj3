@@ -187,7 +187,7 @@ def rebuild_experiment_plots(
     *,
     latex_tables: bool = False,
 ) -> list[Path]:
-    """Recreate plots for standard, model-comparison, or threshold-scan runs."""
+    """Recreate plots for standard, model-study, or threshold-scan runs."""
     run = Path(run_dir).resolve()
     manifest_path = run / "manifest.json"
     if not manifest_path.is_file():
@@ -198,20 +198,15 @@ def rebuild_experiment_plots(
         or ((manifest.get("config") or {}).get("experiment") or {}).get("type", "standard")
     ).lower()
 
-    if experiment_type == "model_comparison":
+    if experiment_type == "model_study":
         destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
-        _reset(destination / "plots")
         paths: list[Path] = []
         windows = list(
             (manifest.get("windows_ns") or (manifest.get("subruns") or {})).keys()
         )
         for window in windows:
             subrun = _subrun_path(run, manifest, window)
-            sub_destination = (
-                subrun
-                if output_dir is None
-                else destination / window
-            )
+            sub_destination = subrun if output_dir is None else destination / window
             paths.extend(
                 rebuild_study_plots(
                     subrun,
@@ -219,7 +214,6 @@ def rebuild_experiment_plots(
                     latex_tables=latex_tables,
                 )
             )
-        paths.extend(rebuild_model_comparison_root_plots(run, destination))
         return paths
 
     if experiment_type == "threshold_scan":
