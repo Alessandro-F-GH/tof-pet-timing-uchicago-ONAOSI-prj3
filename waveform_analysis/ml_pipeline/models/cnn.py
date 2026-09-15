@@ -15,12 +15,15 @@ class SharedScorerCNN(nn.Module):
     def __init__(self,architecture:dict[str,Any]):
         super().__init__(); channels=[int(v) for v in architecture.get("channels",[16,32,64])]; kernels=[int(v) for v in architecture.get("kernels",[9,7,5])]; strides=[int(v) for v in architecture.get("strides",[2,2,2])]; dilations=[int(v) for v in architecture.get("dilations",[1,1,1])]
         if not(len(channels)==len(kernels)==len(strides)==len(dilations)): raise ValueError("CNN channels/kernels/strides/dilations must have equal length")
-        pool_length=int(architecture.get("adaptive_pool_length",128)); pooling=str(architecture.get("pooling","avg_max")).lower()
+        pool_length=int(architecture.get("adaptive_pool_length",128)); pooling=str(architecture.get("pooling","avg_max")).lower(); self.batch_norm=bool(architecture.get("batch_norm",True))
         if pool_length<1: raise ValueError("adaptive_pool_length must be >= 1")
         if pooling not in {"avg","max","avg_max"}: raise ValueError("CNN pooling must be avg, max, or avg_max")
         layers=[]; incoming=1
         for outgoing,kernel,stride,dilation in zip(channels,kernels,strides,dilations):
-            padding=dilation*(kernel-1)//2; layers.extend([nn.Conv1d(incoming,outgoing,kernel,stride=stride,dilation=dilation,padding=padding),nn.BatchNorm1d(outgoing),nn.SiLU()]); incoming=outgoing
+            padding=dilation*(kernel-1)//2
+            layers.append(nn.Conv1d(incoming,outgoing,kernel,stride=stride,dilation=dilation,padding=padding))
+            if self.batch_norm: layers.append(nn.BatchNorm1d(outgoing))
+            layers.append(nn.SiLU()); incoming=outgoing
         self.features=nn.Sequential(*layers); self.avg_pool=nn.AdaptiveAvgPool1d(pool_length) if pooling in {"avg","avg_max"} else None; self.max_pool=nn.AdaptiveMaxPool1d(pool_length) if pooling in {"max","avg_max"} else None
         incoming*=pool_length*(2 if pooling=="avg_max" else 1); head=[nn.Flatten()]
         for width in [int(v) for v in architecture.get("dense_units",[32])]: head.extend([nn.Linear(incoming,width),nn.SiLU()]); incoming=width
@@ -109,10 +112,10 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     split_seed=int(config.get("_early_stopping_seed",seed))
     fit_x,fit_target,early_x,early_target=_internal_early_stopping_split(train_x,train_target,early_fraction,split_seed)
     model=SharedScorerCNN(config.get("architecture",{})).to(device)
-    first_layer_weight_norm=_set_first_layer_weight_norm(model,params["first_layer_weight_norm"])
+    first_layer_weight_norm=_set_first_layer_weight_norm(model,params.get("first_layer_weight_norm",1.0))
     optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=_rmse_loss; loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
     if verbose and logger is not None:
-        logger.info("cnn training | loss=RMSE | first_layer_weight_norm=%.6g | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",first_layer_weight_norm,float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
+        logger.info("cnn training | loss=RMSE | batch_norm=%s | first_layer_weight_norm=%.6g | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",model.batch_norm,first_layer_weight_norm,float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
     best_score=float("inf"); best_epoch=0; best_state=None; stale=0
     for epoch in range(1,max_epochs+1):
         model.train(); epoch_gradient_norms=[]
@@ -136,7 +139,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
     model.load_state_dict(best_state)
 
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"training_loss":"rmse","first_layer_weight_norm":first_layer_weight_norm,"best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"optimizer_training_events":int(fit_target.size),"training_events_available":int(len(train_target)),"training_uses_full_split":False,"refit_on_full_training_split":False,"external_validation_used_for_early_stopping":False,"early_stopping_split_seed":split_seed,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"training_loss":"rmse","batch_norm":model.batch_norm,"first_layer_weight_norm":first_layer_weight_norm,"best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"optimizer_training_events":int(fit_target.size),"training_events_available":int(len(train_target)),"training_uses_full_split":False,"refit_on_full_training_split":False,"external_validation_used_for_early_stopping":False,"early_stopping_split_seed":split_seed,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
