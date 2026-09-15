@@ -46,6 +46,41 @@ class ConfigTests(unittest.TestCase):
         valid["fit"]["coverage_fraction"] = 0.4
         validate_config(valid)
 
+
+    def test_model_comparison_requires_final_model_pair(self):
+        bad = copy.deepcopy(self.config)
+        bad["experiment"]["type"] = "model_comparison"
+        bad["experiment"]["fixed_led_threshold_mV"] = 15.0
+        bad["experiment"]["windows"] = {
+            "onishi": {"start": -1.5, "end": 2.0},
+            "wide": {"start": -2.0, "end": 30.0},
+        }
+        bad["models"] = {"mlp": self.config["models"]["mlp"]}
+        with self.assertRaisesRegex(ConfigError, "mlp.*onishi_cnn"):
+            validate_config(bad)
+
+    def test_threshold_scan_requires_voltage(self):
+        bad = copy.deepcopy(self.config)
+        bad["experiment"]["type"] = "threshold_scan"
+        bad["models"] = {"mlp": self.config["models"]["mlp"]}
+        with self.assertRaisesRegex(ConfigError, "voltage_V"):
+            validate_config(bad)
+
+    def test_onishi_window_is_fixed(self):
+        bad = copy.deepcopy(self.config)
+        bad["experiment"].update(
+            {
+                "type": "model_comparison",
+                "fixed_led_threshold_mV": 15.0,
+                "windows": {
+                    "onishi": {"start": -1.0, "end": 2.0},
+                    "wide": {"start": -2.0, "end": 30.0},
+                },
+            }
+        )
+        with self.assertRaisesRegex(ConfigError, "fixed to"):
+            validate_config(bad)
+
     def test_threshold_selection_model_must_be_configured(self):
         bad = copy.deepcopy(self.config)
         bad["analyses"] = {
