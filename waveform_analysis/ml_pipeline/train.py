@@ -37,9 +37,12 @@ def _fit_once(
     output_max_abs_ps=None,
     input_time_ps=None,
     sample_mask=None,
+    logger=None,
 ):
     runtime_config = copy.deepcopy(model_config)
     runtime_config["_prediction_max_abs_ps"] = None if output_max_abs_ps is None else float(output_max_abs_ps)
+    if logger is not None:
+        runtime_config["_logger"] = logger
     if input_time_ps is not None:
         runtime_config["_input_time_ps"] = np.asarray(input_time_ps, dtype=np.float64)
     artifact = spec.fit(
@@ -123,6 +126,7 @@ def search_model(
             output_max_abs_ps=output_limit,
             input_time_ps=masked_time_ps,
             sample_mask=sample_mask,
+            logger=logger,
         )
         fitted.metadata.update(
             {
