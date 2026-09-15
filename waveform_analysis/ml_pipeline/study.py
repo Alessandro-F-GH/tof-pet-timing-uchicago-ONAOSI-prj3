@@ -1175,10 +1175,11 @@ def _run_model_comparison_experiment(
     fixed_led = float(config["experiment"]["fixed_led_threshold_mV"])
     windows = dict(config["experiment"]["windows"])
     logger.info(
-        "%s | model comparison | mode=%s | LED=%g mV | windows=onishi,wide",
+        "%s | model comparison | mode=%s | LED=%g mV | windows=%s",
         "Resume" if resume else "Experiment",
         config["mode"],
         fixed_led,
+        ",".join(windows),
     )
     base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
 
@@ -1195,7 +1196,7 @@ def _run_model_comparison_experiment(
     )
     subruns: dict[str, str] = {}
     paired_rows: list[dict[str, Any]] = []
-    for index, window_name in enumerate(("onishi", "wide")):
+    for index, window_name in enumerate(windows):
         sub = copy.deepcopy(config)
         sub["experiment"]["type"] = "standard"
         sub["experiment"]["output_dir"] = str(root / window_name)
