@@ -279,6 +279,8 @@ def validate_config(config):
         raise ConfigError(f"Unregistered model(s): {sorted(unknown_models)}")
     _validate_analyses(config)
     for name, model in config["models"].items():
+        if "verbose" in model and not isinstance(model["verbose"], bool):
+            raise ConfigError(f"{name}: verbose must be a boolean")
         training = model.get("training", {}) or {}
         if "selection_metric" in training or "selection_metric" in model:
             raise ConfigError(f"{name}: selection_metric is fixed to validation CTR and must not be configured")
