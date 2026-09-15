@@ -64,6 +64,13 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
 def _dataset_name(dataset: PreparedDataset) -> str:
     if bool(dataset.manifest.get("concatenated", False)):
         return str(dataset.manifest.get("dataset_name", "concatenated"))
