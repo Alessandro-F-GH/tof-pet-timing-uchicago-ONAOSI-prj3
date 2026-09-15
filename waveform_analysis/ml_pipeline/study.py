@@ -580,11 +580,26 @@ def _evaluate_final_datasets(
             ):
                 spec = get_model(model_name)
                 if fixed_reference:
+                    fixed_log_parameters = {
+                        **dict(spec.candidates(model_config)[0] or {}),
+                        "epochs": int((model_config.get("training") or {}).get("epochs", 100)),
+                        "lr_decay_epochs": list(
+                            (model_config.get("training") or {}).get(
+                                "lr_decay_epochs", [30, 60]
+                            )
+                        ),
+                        "lr_decay_factor": float(
+                            (model_config.get("training") or {}).get(
+                                "lr_decay_factor", 0.1
+                            )
+                        ),
+                        "architecture": dict(model_config.get("architecture") or {}),
+                    }
                     logger.info(
                         "Train | %s | %s | params=%s | train+validation=%d",
                         name,
                         LABELS.get(model_name, model_name),
-                        json.dumps(dict(spec.candidates(model_config)[0] or {}), sort_keys=True),
+                        json.dumps(fixed_log_parameters, sort_keys=True),
                         int(dataset.development.size),
                     )
                     fitted, selected_parameters = fit_fixed_model(
@@ -749,10 +764,9 @@ def _evaluate_final_datasets(
                 )
             else:
                 logger.info(
-                    "Result | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
                     name,
                     LABELS.get(model_name, model_name),
-                    validation_ctr,
                     float(test_row["ctr_ps"]),
                     float(test_row["ctr_uncertainty_ps"]),
                 )
