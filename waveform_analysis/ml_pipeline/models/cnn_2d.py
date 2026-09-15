@@ -129,6 +129,8 @@ def fit(
     training_seed = _configure_reproducibility(seed)
 
     training = config.get("training", {})
+    verbose = bool(config.get("verbose", False))
+    logger = config.get("_logger")
     device = _device(config)
     model = JointPairCNN2D(config.get("architecture", {})).to(device)
     optimizer = torch.optim.AdamW(
@@ -143,6 +145,17 @@ def fit(
     min_delta = float(training.get("min_delta", 0.05))
     loader = _loader(train_x, train_target, batch, shuffle=True, seed=training_seed)
     output_limit = config.get("_prediction_max_abs_ps")
+    if verbose and logger is not None:
+        logger.info(
+            "cnn_2d training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | device=%s",
+            float(params["learning_rate"]),
+            float(params["weight_decay"]),
+            batch,
+            max_epochs,
+            patience,
+            min_delta,
+            device,
+        )
 
     best_score = float("inf")
     best_epoch = 0
@@ -167,6 +180,22 @@ def fit(
         if output_limit is not None:
             prediction = np.clip(prediction, -float(output_limit), float(output_limit))
         score = _rmse(prediction - validation_target)
+        if verbose and logger is not None:
+            train_prediction = _predict_tensor(model, train_x, device, batch)
+            if output_limit is not None:
+                train_prediction = np.clip(train_prediction, -float(output_limit), float(output_limit))
+            train_score = _rmse(train_prediction - np.asarray(train_target, dtype=np.float64))
+            logger.info(
+                "cnn_2d epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",
+                epoch,
+                max_epochs,
+                train_score,
+                score,
+                float(np.mean(prediction)),
+                float(np.std(prediction)),
+                float(np.min(prediction)),
+                float(np.max(prediction)),
+            )
         if score < best_score - min_delta:
             best_score = score
             best_epoch = epoch
@@ -188,6 +217,8 @@ def fit(
             "best_epoch": int(best_epoch),
             "best_validation_rmse_ps": float(best_score),
             "early_stopping_metric": "validation_rmse",
+            "learning_rate": float(params["learning_rate"]),
+            "weight_decay": float(params["weight_decay"]),
             "batch_size": batch,
             "output_max_abs_ps": None if output_limit is None else float(output_limit),
             "training_seed": training_seed,
