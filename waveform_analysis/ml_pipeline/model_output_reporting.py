@@ -121,8 +121,8 @@ def plot_prediction_vs_target(
         ax.set_xlim(*limits)
         ax.set_ylim(*limits)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("ML target [ps]")
-        ax.set_ylabel("Model prediction [ps]")
+        ax.set_xlabel("Target [ps]")
+        ax.set_ylabel("Prediction [ps]")
         clean_axis(ax, grid="both")
         panel_label(ax, f"({chr(97 + panel_index)})")
         ax.text(
