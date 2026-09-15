@@ -17,7 +17,7 @@ from .spec import ModelSpec
 
 
 class JointPairCNN2D(nn.Module):
-    """Joint CNN with delayed fusion of the stacked detector pair [2, time]."""
+    """Joint CNN: one 2-D detector-fusion convolution followed by 1-D temporal convolutions."""
 
     def __init__(self, architecture: dict[str, Any]):
         super().__init__()
@@ -30,14 +30,6 @@ class JointPairCNN2D(nn.Module):
         if any(kernel < 1 for kernel in kernels) or any(stride < 1 for stride in strides) or any(dilation < 1 for dilation in dilations):
             raise ValueError("cnn_2d kernels/strides/dilations must be positive")
 
-        default_fusion_layer = 1 if len(channels) > 1 else 0
-        detector_fusion_layer = int(architecture.get("detector_fusion_layer", default_fusion_layer))
-        if detector_fusion_layer < 0 or detector_fusion_layer >= len(channels):
-            raise ValueError(
-                f"cnn_2d detector_fusion_layer must lie in [0, {len(channels) - 1}]"
-            )
-        self.detector_fusion_layer = detector_fusion_layer
-
         pool_length = int(architecture.get("adaptive_pool_length", 128))
         pooling = str(architecture.get("pooling", "avg_max")).lower()
         if pool_length < 1:
@@ -45,43 +37,50 @@ class JointPairCNN2D(nn.Module):
         if pooling not in {"avg", "max", "avg_max"}:
             raise ValueError("cnn_2d pooling must be avg, max, or avg_max")
 
-        layers: list[nn.Module] = []
-        detector_kernel_heights: list[int] = []
-        incoming = 1
-        for layer_index, (outgoing, kernel, stride, dilation) in enumerate(
-            zip(channels, kernels, strides, dilations)
+        first_padding = dilations[0] * (kernels[0] - 1) // 2
+        self.fusion = nn.Sequential(
+            nn.Conv2d(
+                1,
+                channels[0],
+                kernel_size=(2, kernels[0]),
+                stride=(1, strides[0]),
+                dilation=(1, dilations[0]),
+                padding=(0, first_padding),
+            ),
+            nn.BatchNorm2d(channels[0]),
+            nn.SiLU(),
+        )
+
+        temporal_layers: list[nn.Module] = []
+        incoming = channels[0]
+        for outgoing, kernel, stride, dilation in zip(
+            channels[1:], kernels[1:], strides[1:], dilations[1:]
         ):
-            # Before fusion, height-1 kernels preserve the two detector rows and
-            # apply the same temporal filters to each row. The configured fusion
-            # layer then spans both rows once, reducing detector height 2 -> 1.
-            detector_height = 2 if layer_index == detector_fusion_layer else 1
-            detector_kernel_heights.append(detector_height)
             temporal_padding = dilation * (kernel - 1) // 2
-            layers.extend(
+            temporal_layers.extend(
                 [
-                    nn.Conv2d(
+                    nn.Conv1d(
                         incoming,
                         outgoing,
-                        kernel_size=(detector_height, kernel),
-                        stride=(1, stride),
-                        dilation=(1, dilation),
-                        padding=(0, temporal_padding),
+                        kernel_size=kernel,
+                        stride=stride,
+                        dilation=dilation,
+                        padding=temporal_padding,
                     ),
-                    nn.BatchNorm2d(outgoing),
+                    nn.BatchNorm1d(outgoing),
                     nn.SiLU(),
                 ]
             )
             incoming = outgoing
+        self.features = nn.Sequential(*temporal_layers)
 
-        self.detector_kernel_heights = tuple(detector_kernel_heights)
-        self.features = nn.Sequential(*layers)
         self.avg_pool = (
-            nn.AdaptiveAvgPool2d((1, pool_length))
+            nn.AdaptiveAvgPool1d(pool_length)
             if pooling in {"avg", "avg_max"}
             else None
         )
         self.max_pool = (
-            nn.AdaptiveMaxPool2d((1, pool_length))
+            nn.AdaptiveMaxPool1d(pool_length)
             if pooling in {"max", "avg_max"}
             else None
         )
@@ -97,7 +96,12 @@ class JointPairCNN2D(nn.Module):
     def forward(self, pair: torch.Tensor) -> torch.Tensor:
         if pair.ndim != 3 or pair.shape[1] != 2:
             raise ValueError(f"cnn_2d expects [event, detector=2, time], got {tuple(pair.shape)}")
-        features = self.features(pair[:, None, :, :])
+        features_2d = self.fusion(pair[:, None, :, :])
+        if features_2d.shape[2] != 1:
+            raise RuntimeError(
+                f"cnn_2d fusion must reduce detector height to 1, got {tuple(features_2d.shape)}"
+            )
+        features = self.features(features_2d.squeeze(2))
         pooled = []
         if self.avg_pool is not None:
             pooled.append(self.avg_pool(features))
@@ -224,10 +228,8 @@ def fit(
             "training_seed": training_seed,
             "deterministic_algorithms": True,
             "input_definition": "normalized detector pair stacked as one [2,time] input",
-            "prediction_definition": "single joint CNN f_theta([s1;s2]) [ps] with delayed detector fusion",
-            "detector_fusion_layer": int(model.detector_fusion_layer),
-            "detector_kernel_heights": list(model.detector_kernel_heights),
-            "detector_axis_policy": "preserve height 2 before fusion, fuse once with a height-2 kernel, then continue at height 1",
+            "prediction_definition": "single joint CNN f_theta([s1;s2]) [ps] with immediate 2-D detector fusion followed by 1-D temporal convolutions",
+            "detector_axis_policy": "first convolution spans both detector rows (2-D -> 1-D), all subsequent convolutions are temporal Conv1d layers",
             "detector_swap_antisymmetry_enforced": False,
             "parameter_count": int(sum(parameter.numel() for parameter in model.parameters())),
         },
