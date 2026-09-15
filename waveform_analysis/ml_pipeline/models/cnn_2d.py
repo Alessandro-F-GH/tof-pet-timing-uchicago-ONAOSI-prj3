@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _configure_reproducibility, _device, _gradient_norm, _loader, _predict_tensor, _rmse, candidates
+from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, candidates
 from .spec import ModelSpec
 
 
@@ -124,8 +124,8 @@ def fit(
     *,
     seed,
     config,
-    early_x=None,
-    early_target=None,
+    validation_x=None,
+    validation_target=None,
 ):
     training_seed = _configure_reproducibility(seed)
 
