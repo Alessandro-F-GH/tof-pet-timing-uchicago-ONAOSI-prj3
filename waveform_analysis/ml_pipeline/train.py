@@ -73,6 +73,78 @@ def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.
     return values
 
 
+
+def fit_fixed_model(
+    spec,
+    model_config,
+    config,
+    dataset,
+    mode: str,
+    *,
+    seed: int,
+    sample_mask: np.ndarray | None = None,
+    logger=None,
+) -> tuple[FittedModel, dict[str, Any]]:
+    """Fit one fixed-reference candidate on train only; validation is never consulted."""
+    candidates = list(spec.candidates(model_config))
+    if len(candidates) != 1:
+        raise ValueError(
+            f"Fixed-reference model {spec.name!r} must expose exactly one candidate, "
+            f"got {len(candidates)}"
+        )
+    parameters = dict(candidates[0] or {})
+    training = np.asarray(dataset.training, dtype=np.int64)
+    train_view = waveform_view(dataset, mode, training)
+    train_x_full = train_view.materialize()
+    if sample_mask is None:
+        sample_mask = training_sample_mask(train_x_full)
+    sample_mask = np.asarray(sample_mask, dtype=bool).reshape(-1)
+    if sample_mask.size != train_x_full.shape[-1]:
+        raise ValueError(
+            f"Sample mask has {sample_mask.size} entries but waveform has "
+            f"{train_x_full.shape[-1]} samples"
+        )
+    if not np.any(sample_mask):
+        raise ValueError("Sample mask removes every waveform sample")
+    train_x = apply_sample_mask(train_x_full, sample_mask)
+    masked_time_ps = apply_sample_mask_to_time(train_view.time_ps, sample_mask)
+    train_target = model_target(dataset, mode)[training]
+    fitted = _fit_once(
+        spec,
+        model_config,
+        parameters,
+        train_x,
+        train_target,
+        seed=seed,
+        validation_x=None,
+        validation_target=None,
+        output_max_abs_ps=float(config["ml_output"]["max_abs_ps"]),
+        input_time_ps=masked_time_ps,
+        sample_mask=sample_mask,
+        logger=logger,
+    )
+    fitted.metadata.update(
+        {
+            "sample_mask_definition": (
+                "shared temporal mask derived from the full training split; discard a sample "
+                "when both detector channels independently have one exact normalized float32 "
+                "value in at least 99% of training events"
+            ),
+            "sample_mask_constant_fraction": 0.99,
+            "sample_mask_training_events": int(train_x_full.shape[0]),
+            "input_samples_before_mask": int(sample_mask.size),
+            "input_samples_after_mask": int(np.count_nonzero(sample_mask)),
+            "input_samples_removed": int(
+                sample_mask.size - np.count_nonzero(sample_mask)
+            ),
+            "training_events": int(train_target.size),
+            "selection_protocol": "fixed_reference_configuration_no_validation_selection",
+            "validation_used_for_selection": False,
+            "refit_after_selection": False,
+        }
+    )
+    return fitted, parameters
+
 def search_model(
     spec,
     model_config,
@@ -241,7 +313,10 @@ def save_model(spec, fitted, directory: Path, parameters):
             "parameters": parameters,
             "training": fitted.metadata,
             "sample_mask_file": sample_mask_file,
-            "selection_protocol": "internal_train_holdout_early_stopping_validation_ctr_model_selection_selected_checkpoint_used_directly_without_refit",
+            "selection_protocol": fitted.metadata.get(
+                "selection_protocol",
+                "internal_train_holdout_early_stopping_validation_ctr_model_selection_selected_checkpoint_used_directly_without_refit",
+            ),
             "prediction_definition": prediction_definition,
         },
     )
