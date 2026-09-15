@@ -58,10 +58,6 @@ def inspect_preprocessing(config, *, rebuild: bool, include_prepared: bool = Tru
             except Exception as exc:
                 problems.append(f"{root.name}: stale prepared ML cache ({exc})")
 
-    if rebuild and bool(config["analyses"]["led_threshold_scan"]["enabled"]):
-        threshold_cache = Path(config["preprocessing"]["prepared_dir"]).resolve() / "_led_threshold_scan"
-        if threshold_cache.exists():
-            overwrite.append(threshold_cache)
 
     if rebuild and include_prepared and bool(config["experiment"].get("concatenate_datasets", False)):
         name = str(config["experiment"].get("concatenated_dataset_name", "concatenated"))
