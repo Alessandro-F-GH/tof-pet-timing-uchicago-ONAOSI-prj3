@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _rmse_loss, candidates
+from .cnn import _configure_reproducibility, _dense_head, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _rmse_loss, candidates
 from .spec import ModelSpec
 
 
@@ -39,13 +39,6 @@ class JointPairCNN2D(nn.Module):
                 f"cnn_2d detector_fusion_layer must lie in [0, {len(channels) - 1}]"
             )
         self.detector_fusion_layer = detector_fusion_layer
-
-        pool_length = int(architecture.get("adaptive_pool_length", 128))
-        pooling = str(architecture.get("pooling", "avg_max")).lower()
-        if pool_length < 1:
-            raise ValueError("cnn_2d adaptive_pool_length must be >= 1")
-        if pooling not in {"avg", "max", "avg_max"}:
-            raise ValueError("cnn_2d pooling must be avg, max, or avg_max")
 
         layers: list[nn.Module] = []
         detector_kernel_heights: list[int] = []
@@ -75,24 +68,7 @@ class JointPairCNN2D(nn.Module):
 
         self.detector_kernel_heights = tuple(detector_kernel_heights)
         self.features = nn.Sequential(*layers)
-        self.avg_pool = (
-            nn.AdaptiveAvgPool2d((1, pool_length))
-            if pooling in {"avg", "avg_max"}
-            else None
-        )
-        self.max_pool = (
-            nn.AdaptiveMaxPool2d((1, pool_length))
-            if pooling in {"max", "avg_max"}
-            else None
-        )
-
-        incoming *= pool_length * (2 if pooling == "avg_max" else 1)
-        head: list[nn.Module] = [nn.Flatten()]
-        for width in [int(v) for v in architecture.get("dense_units", [32])]:
-            head.extend([nn.Linear(incoming, width), nn.SiLU()])
-            incoming = width
-        head.append(nn.Linear(incoming, 1))
-        self.head = nn.Sequential(*head)
+        self.head = _dense_head(architecture.get("dense_units", [32]))
 
     def forward(self, pair: torch.Tensor) -> torch.Tensor:
         if pair.ndim != 3 or pair.shape[1] != 2:
@@ -102,14 +78,7 @@ class JointPairCNN2D(nn.Module):
             raise RuntimeError(
                 f"cnn_2d detector fusion must reduce detector height to 1, got {tuple(features.shape)}"
             )
-        pooled = []
-        if self.avg_pool is not None:
-            pooled.append(self.avg_pool(features))
-        if self.max_pool is not None:
-            pooled.append(self.max_pool(features))
-        return self.head(
-            torch.cat(pooled, dim=1) if len(pooled) > 1 else pooled[0]
-        ).squeeze(1)
+        return self.head(features).squeeze(1)
 
 
 @dataclass
@@ -145,6 +114,8 @@ def fit(
         train_x, train_target, early_fraction, split_seed
     )
     model = JointPairCNN2D(config.get("architecture", {})).to(device)
+    with torch.no_grad():
+        model(torch.from_numpy(np.ascontiguousarray(fit_x[:1], dtype=np.float32)).to(device))
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(params["learning_rate"]),
