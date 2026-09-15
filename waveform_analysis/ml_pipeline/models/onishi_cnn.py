@@ -11,13 +11,13 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import (
-    _configure_reproducibility,
-    _device,
-    _gradient_norm,
-    _loader,
-    _predict_tensor,
-    _rmse,
+from ._torch_common import (
+    configure_reproducibility as _configure_reproducibility,
+    device_from_config as _device,
+    gradient_norm as _gradient_norm,
+    make_loader as _loader,
+    predict_tensor as _predict_tensor,
+    rmse as _rmse,
 )
 from .spec import ModelSpec
 
