@@ -10,15 +10,15 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import (
-    _configure_reproducibility,
-    _device,
-    _gradient_norm,
-    _internal_early_stopping_split,
-    _loader,
-    _predict_tensor,
-    _rmse,
-    _rmse_loss,
+from ._torch_common import (
+    configure_reproducibility as _configure_reproducibility,
+    device_from_config as _device,
+    gradient_norm as _gradient_norm,
+    internal_early_stopping_split as _internal_early_stopping_split,
+    make_loader as _loader,
+    predict_tensor as _predict_tensor,
+    rmse as _rmse,
+    rmse_loss as _rmse_loss,
 )
 
 
