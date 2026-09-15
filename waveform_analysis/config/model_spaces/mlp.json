@@ -28,5 +28,6 @@
     "gradient_clip_norm": 10,
     "early_stopping_fraction": 0.2
   },
-  "verbose": false
+  "verbose": false,
+  "batch_norm": true
 }
