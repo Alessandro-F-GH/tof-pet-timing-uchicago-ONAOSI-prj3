@@ -23,7 +23,7 @@ from .plot_rebuild import rebuild_study_plots
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
-from .reporting import LABELS
+from .reporting import LABELS, plot_ctr_vs_voltage, read_results
 from .sample_mask import (
     SAMPLE_CONSTANT_FRACTION,
     apply_sample_mask,
@@ -1056,86 +1056,88 @@ def _write_model_comparison_plot(
 ) -> list[Path]:
     import matplotlib.pyplot as plt
 
+    from .plot_style import (
+        DOUBLE_COLUMN,
+        clean_axis,
+        model_style,
+        paper_context,
+        save_figure,
+    )
+
     generated: list[Path] = []
     plot_dir = root / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
-    for window in sorted({str(row["window"]) for row in rows}):
-        subset = sorted(
-            [row for row in rows if str(row["window"]) == window],
-            key=lambda row: float(row["voltage_V"]),
-        )
-        if not subset:
-            continue
 
-        x = np.asarray([float(row["voltage_V"]) for row in subset], dtype=float)
-        mlp_ctr = np.asarray([float(row["mlp_ctr_ps"]) for row in subset], dtype=float)
-        mlp_err = np.asarray(
-            [float(row["mlp_ctr_uncertainty_ps"]) for row in subset], dtype=float
-        )
-        onishi_ctr = np.asarray(
-            [float(row["onishi_cnn_ctr_ps"]) for row in subset], dtype=float
-        )
-        onishi_err = np.asarray(
-            [float(row["onishi_cnn_ctr_uncertainty_ps"]) for row in subset],
-            dtype=float,
-        )
+    with paper_context():
+        for window in sorted({str(row["window"]) for row in rows}):
+            subrun = root / window
+            results_path = subrun / "csv" / "results.csv"
+            if results_path.is_file():
+                test_rows = [
+                    row for row in read_results(subrun)
+                    if row.get("stage") == "test"
+                ]
+                plot_ctr_vs_voltage(
+                    plot_dir,
+                    test_rows,
+                    generated,
+                    filename=f"ctr_vs_voltage_{window}.pdf",
+                )
 
-        fig, ax = plt.subplots(figsize=(7.0, 3.35))
-        ax.errorbar(
-            x,
-            mlp_ctr,
-            yerr=np.where(np.isfinite(mlp_err), mlp_err, 0.0),
-            marker="o",
-            capsize=2.5,
-            label=LABELS.get("mlp", "Antisymmetric MLP"),
-        )
-        ax.errorbar(
-            x,
-            onishi_ctr,
-            yerr=np.where(np.isfinite(onishi_err), onishi_err, 0.0),
-            marker="s",
-            capsize=2.5,
-            label=LABELS.get("onishi_cnn", "Onishi paired CNN"),
-        )
-        ax.set_xlabel("Bias voltage [V]")
-        ax.set_ylabel("Blind CTR [ps]")
-        ax.legend(loc="best")
-        ax.grid(axis="y", linewidth=0.5, alpha=0.22)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        fig.tight_layout()
-        target = plot_dir / f"ctr_vs_voltage_{window}.pdf"
-        fig.savefig(target, bbox_inches="tight", pad_inches=0.03)
-        plt.close(fig)
-        generated.append(target)
+            subset = sorted(
+                [row for row in rows if str(row["window"]) == window],
+                key=lambda row: float(row["voltage_V"]),
+            )
+            if not subset:
+                continue
 
-        improvement = np.asarray(
-            [float(row["mlp_improvement_over_onishi_percent"]) for row in subset],
-            dtype=float,
-        )
-        improvement_err = np.asarray(
-            [float(row["paired_bootstrap_uncertainty_percent"]) for row in subset],
-            dtype=float,
-        )
-        fig, ax = plt.subplots(figsize=(7.0, 3.35))
-        ax.errorbar(
-            x,
-            improvement,
-            yerr=np.where(np.isfinite(improvement_err), improvement_err, 0.0),
-            marker="o",
-            capsize=2.5,
-        )
-        ax.axhline(0.0, color="#7F7F7F", ls=":", lw=0.9)
-        ax.set_xlabel("Bias voltage [V]")
-        ax.set_ylabel("MLP improvement over Onishi paired CNN [%]")
-        ax.grid(axis="y", linewidth=0.5, alpha=0.22)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        fig.tight_layout()
-        target = plot_dir / f"paired_model_improvement_{window}.pdf"
-        fig.savefig(target, bbox_inches="tight", pad_inches=0.03)
-        plt.close(fig)
-        generated.append(target)
+            x = np.asarray(
+                [float(row["voltage_V"]) for row in subset],
+                dtype=float,
+            )
+            improvement = np.asarray(
+                [
+                    float(row["mlp_improvement_over_onishi_percent"])
+                    for row in subset
+                ],
+                dtype=float,
+            )
+            improvement_err = np.asarray(
+                [
+                    float(row["paired_bootstrap_uncertainty_percent"])
+                    for row in subset
+                ],
+                dtype=float,
+            )
+            fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
+            ax.errorbar(
+                x,
+                improvement,
+                yerr=np.where(
+                    np.isfinite(improvement_err),
+                    improvement_err,
+                    0.0,
+                ),
+                capsize=2.5,
+                **model_style("mlp"),
+            )
+            ax.axhline(
+                0.0,
+                color="#7F7F7F",
+                linestyle=":",
+                linewidth=0.9,
+            )
+            ax.set_xticks(x)
+            ax.set_xlabel("Bias voltage [V]")
+            ax.set_ylabel("CTR improvement over Onishi CNN [%]")
+            clean_axis(ax, grid="y")
+            fig.tight_layout()
+            target = save_figure(
+                fig,
+                plot_dir / f"paired_model_improvement_{window}.pdf",
+            )
+            plt.close(fig)
+            generated.append(target)
     return generated
 
 
