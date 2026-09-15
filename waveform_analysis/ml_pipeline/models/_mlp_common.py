@@ -82,15 +82,17 @@ def candidates(config):
     batch_sizes = parameters.get(
         "batch_size", [training.get("batch_size", 128)]
     )
+    weight_decays = parameters.get("weight_decay", [1e-5])
     return [
         {
             "architecture": _validate_architecture(architecture),
             "activation": str(activation).strip().lower(),
             "learning_rate": float(learning_rate),
             "batch_size": int(batch_size),
+            "weight_decay": float(weight_decay),
         }
-        for architecture, activation, learning_rate, batch_size in itertools.product(
-            architectures, activations, learning_rates, batch_sizes
+        for architecture, activation, learning_rate, batch_size, weight_decay in itertools.product(
+            architectures, activations, learning_rates, batch_sizes, weight_decays
         )
     ]
 
@@ -130,8 +132,10 @@ def fit_mlp(
     model = model_factory(
         int(train_x.shape[-1]), architecture, activation
     ).to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=float(params["learning_rate"])
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(params["learning_rate"]),
+        weight_decay=float(params["weight_decay"]),
     )
     loader = _loader(
         fit_x, fit_target, batch, shuffle=True, seed=training_seed
@@ -140,12 +144,13 @@ def fit_mlp(
     if verbose and logger is not None:
         logger.info(
             "%s training | loss=RMSE | architecture=%s | activation=%s | "
-            "lr=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | "
+            "lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | "
             "early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             model_name,
             architecture,
             activation,
             float(params["learning_rate"]),
+            float(params["weight_decay"]),
             batch,
             max_epochs,
             patience,
@@ -238,6 +243,7 @@ def fit_mlp(
         "architecture": architecture,
         "activation": activation,
         "learning_rate": float(params["learning_rate"]),
+        "weight_decay": float(params["weight_decay"]),
         "batch_size": batch,
         "output_max_abs_ps": None
         if output_limit is None
