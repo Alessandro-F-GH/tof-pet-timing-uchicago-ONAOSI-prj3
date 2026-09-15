@@ -1158,7 +1158,48 @@ def _write_model_comparison_plot(
     return generated
 
 
-def _run_model_comparison_experiment(
+def _model_study_compatibility(
+    config: dict[str, Any],
+    windows: dict[str, Any],
+    fixed_led: float,
+) -> dict[str, Any]:
+    data = copy.deepcopy(config["data"])
+    data.pop("root_folder", None)
+    preprocessing = copy.deepcopy(config["preprocessing"])
+    for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir"):
+        preprocessing.pop(key, None)
+    payload = {
+        "mode": str(config["mode"]),
+        "data": data,
+        "preprocessing": preprocessing,
+        "validation": copy.deepcopy(config["validation"]),
+        "fit": copy.deepcopy(config["fit"]),
+        "standard_methods": {
+            "fixed_led_threshold_mV": float(fixed_led),
+            "led_minimum_crossing_efficiency": float(
+                config["standard_methods"].get(
+                    "led_minimum_crossing_efficiency", 0.95
+                )
+            ),
+            "led_coincidence_window_ns": float(
+                config["standard_methods"].get(
+                    "led_coincidence_window_ns", 2.0
+                )
+            ),
+        },
+        "ml_input": {
+            "windows": copy.deepcopy(windows),
+            "subsampling": int(config["ml_input"].get("subsampling", 1)),
+        },
+        "ml_output": copy.deepcopy(config["ml_output"]),
+    }
+    return {
+        "signature": canonical_hash(payload),
+        "payload": payload,
+    }
+
+
+def _run_model_study_experiment(
     config: dict[str, Any],
     *,
     overwrite: bool,
@@ -1172,21 +1213,30 @@ def _run_model_comparison_experiment(
     )
     logger = _logger(root)
     _check_experiment_resume_config(config, root, resume=resume)
+
+    model_name = next(iter(config["models"]))
     fixed_led = float(config["experiment"]["fixed_led_threshold_mV"])
-    windows = dict(config["experiment"]["windows"])
+    windows = copy.deepcopy(config["ml_input"]["windows"])
+    compatibility = _model_study_compatibility(config, windows, fixed_led)
+
     logger.info(
-        "%s | model comparison | mode=%s | LED=%g mV | windows=%s",
+        "%s | model study | model=%s | mode=%s | LED=%g mV | windows=%s",
         "Resume" if resume else "Experiment",
+        LABELS.get(model_name, model_name),
         config["mode"],
         fixed_led,
         ",".join(windows),
     )
-    base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
 
     running_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "running",
-        "experiment_type": "model_comparison",
+        "experiment_type": "model_study",
+        "model": model_name,
+        "model_label": LABELS.get(model_name, model_name),
+        "windows_ns": windows,
+        "fixed_led_threshold_mV": fixed_led,
+        "compatibility": compatibility,
         "config_fingerprint": str(config.get("_config_fingerprint", "")),
         "config": public_config(config),
     }
@@ -1194,22 +1244,26 @@ def _run_model_comparison_experiment(
         json.dumps(running_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+    base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
     subruns: dict[str, str] = {}
-    paired_rows: list[dict[str, Any]] = []
-    for index, window_name in enumerate(windows):
+    for index, (window_name, window) in enumerate(windows.items()):
         sub = copy.deepcopy(config)
         sub["experiment"]["type"] = "standard"
         sub["experiment"]["output_dir"] = str(root / window_name)
         sub["experiment"]["name"] = (
-            f"{config['experiment'].get('name', 'model_comparison')}_{window_name}"
+            f"{config['experiment'].get('name', model_name)}_{window_name}"
         )
         sub["standard_methods"]["led_thresholds_mV"] = [fixed_led]
-        sub["ml_input"]["window_ns"] = {
-            "start": float(windows[window_name]["start"]),
-            "end": float(windows[window_name]["end"]),
+        sub["ml_input"] = {
+            "window_ns": {
+                "start": float(window["start"]),
+                "end": float(window["end"]),
+            },
+            "subsampling": int(config["ml_input"].get("subsampling", 1)),
         }
         sub["preprocessing"]["prepared_dir"] = str(
-            base_prepared / "_model_comparison" / window_name
+            base_prepared / "_model_study" / window_name
         )
         sub["_config_fingerprint"] = canonical_hash(public_config(sub))
         subrun = _run_standard_study(
@@ -1221,62 +1275,24 @@ def _run_model_comparison_experiment(
             ),
         )
         subruns[window_name] = str(subrun)
-        paired_rows.extend(
-            _paired_model_comparison_rows(subrun, window_name, sub)
-        )
-
-    csv_dir = root / "csv"
-    csv_dir.mkdir(parents=True, exist_ok=True)
-
-    correlation_rows: list[dict[str, Any]] = []
-    for window_name, subrun_path in subruns.items():
-        correlation_path = Path(subrun_path) / "csv" / "model_output_correlations.csv"
-        for row in _csv_rows(correlation_path):
-            correlation_rows.append({"window": window_name, **row})
-    if correlation_rows:
-        correlation_csv = csv_dir / "model_output_correlations.csv"
-        fields = list(dict.fromkeys(key for row in correlation_rows for key in row))
-        with correlation_csv.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(correlation_rows)
-
-    paired_csv = csv_dir / "paired_model_comparison.csv"
-    if paired_rows:
-        fields = list(dict.fromkeys(key for row in paired_rows for key in row))
-        with paired_csv.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(paired_rows)
-        _write_model_comparison_plot(root, paired_rows)
 
     manifest = {
         **running_manifest,
         "status": "complete",
-        "models": {
-            "proposed": "mlp",
-            "reference": "onishi_cnn",
-        },
-        "model_labels": {
-            "mlp": "Antisymmetric MLP",
-            "onishi_cnn": "Onishi paired CNN",
-        },
-        "windows_ns": windows,
-        "fixed_led_threshold_mV": fixed_led,
-        "mlp_hyperparameter_selection_population": "validation",
-        "mlp_hyperparameter_selection_metric": "validation_ctr",
-        "onishi_cnn_configuration": "fixed_reference_fit_on_training_plus_validation_no_model_selection",
-        "final_evaluation_population": "blind",
-        "refit_after_selection": False,
-        "paired_model_comparison": "blind paired event bootstrap",
         "subruns": subruns,
+        "final_evaluation_population": "blind",
+        "model_selection": (
+            "validation_ctr"
+            if model_name == "mlp"
+            else "fixed_reference_configuration"
+        ),
         "config": public_config(config),
     }
     (root / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    logger.info("Model comparison complete | %s", root)
+    logger.info("Model study complete | model=%s | %s", model_name, root)
     return root
 
 
@@ -1396,8 +1412,8 @@ def run_study(
     experiment_type = str(
         config.get("experiment", {}).get("type", "standard")
     ).lower()
-    if experiment_type == "model_comparison":
-        return _run_model_comparison_experiment(
+    if experiment_type == "model_study":
+        return _run_model_study_experiment(
             config,
             overwrite=overwrite,
             resume=resume,
