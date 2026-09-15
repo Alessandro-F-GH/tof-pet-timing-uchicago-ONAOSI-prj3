@@ -40,6 +40,15 @@ DETECTOR_STYLES = (
     {"color": "#D55E00", "linestyle": "--", "linewidth": 1.25},
 )
 
+_WINDOW_VARIANTS = (
+    {"marker": "o", "linestyle": "-"},
+    {"marker": "s", "linestyle": "--"},
+    {"marker": "^", "linestyle": "-."},
+    {"marker": "D", "linestyle": ":"},
+    {"marker": "P", "linestyle": "-"},
+    {"marker": "X", "linestyle": "--"},
+)
+
 
 @contextmanager
 def paper_context():
@@ -72,6 +81,12 @@ def model_style(name: str, index: int = 0) -> dict:
     if style is None:
         style = _FALLBACK_STYLES[index % len(_FALLBACK_STYLES)]
     return dict(style)
+
+
+def window_style(model: str, index: int) -> dict:
+    style = model_style(model)
+    style.update(_WINDOW_VARIANTS[index % len(_WINDOW_VARIANTS)])
+    return style
 
 
 def set_voltage_ticks(ax, values) -> None:

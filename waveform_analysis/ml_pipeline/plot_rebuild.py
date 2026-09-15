@@ -10,7 +10,7 @@ from .analyses import plot_threshold_scan
 from .latex_tables import make_latex_tables
 from .model_output_reporting import make_model_output_reports
 from .plot_style import LABELS
-from .reporting import make_plots
+from .reporting import make_plots, plot_model_study_windows
 
 
 def _reset(directory: Path) -> None:
@@ -103,6 +103,12 @@ def rebuild_experiment_plots(
                     latex_tables=latex_tables,
                 )
             )
+        plot_model_study_windows(
+            run,
+            manifest,
+            paths,
+            output_dir=destination / "plots",
+        )
         return paths
 
     if experiment_type == "threshold_scan":

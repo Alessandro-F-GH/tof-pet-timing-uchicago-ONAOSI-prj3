@@ -24,6 +24,7 @@ from .plot_style import (
     paper_context,
     save_figure,
     set_voltage_ticks,
+    window_style,
 )
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
@@ -803,6 +804,142 @@ def _relative_improvement_plot(run, output, test_rows, manifest, paths):
     fig.tight_layout()
     target = save_figure(fig, output / "relative_improvement_vs_voltage.pdf")
     plt.close(fig)
+    paths.append(target)
+
+
+def plot_model_study_windows(
+    root: str | Path,
+    manifest: dict[str, Any],
+    paths: list[Path],
+    *,
+    output_dir: str | Path | None = None,
+    filename: str = "ctr_vs_voltage_windows.pdf",
+) -> None:
+    import matplotlib.pyplot as plt
+
+    root = Path(root).resolve()
+    output = (
+        root / "plots"
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    windows = list((manifest.get("windows_ns") or {}).keys())
+    model = str(manifest.get("model") or "")
+    if not windows or not model:
+        return
+
+    window_rows: dict[str, list[dict[str, Any]]] = {}
+    led_rows: list[dict[str, Any]] | None = None
+    all_voltages: set[float] = set()
+
+    for window in windows:
+        subrun = root / window
+        if not subrun.is_dir():
+            configured = (manifest.get("subruns") or {}).get(window)
+            if configured:
+                candidate = Path(str(configured)).expanduser()
+                if candidate.is_dir():
+                    subrun = candidate.resolve()
+        results_path = subrun / "csv" / "results.csv"
+        if not results_path.is_file():
+            continue
+        rows = [row for row in read_results(subrun) if row.get("stage") == "test"]
+        model_rows = [row for row in rows if row.get("method") == model]
+        current_led = [row for row in rows if row.get("method") == "led"]
+        if not model_rows or not current_led:
+            continue
+        current_led = sorted(current_led, key=_voltage)
+        if led_rows is None:
+            led_rows = current_led
+        else:
+            if [row["dataset"] for row in current_led] != [row["dataset"] for row in led_rows]:
+                raise ValueError("Model-study windows contain different LED datasets")
+            for reference, current in zip(led_rows, current_led):
+                if not np.isclose(
+                    _float(reference.get("ctr_ps")),
+                    _float(current.get("ctr_ps")),
+                    rtol=0.0,
+                    atol=1e-9,
+                ):
+                    raise ValueError(
+                        "LED CTR differs across model-study windows for "
+                        f"{reference['dataset']}"
+                    )
+        window_rows[window] = model_rows
+        all_voltages.update(_voltage(row) for row in model_rows if np.isfinite(_voltage(row)))
+
+    if led_rows is None or not window_rows or not all_voltages:
+        return
+
+    voltages = sorted(all_voltages)
+    with paper_context():
+        fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
+
+        led_values, led_errors = [], []
+        for voltage in voltages:
+            row = next(
+                (
+                    item
+                    for item in led_rows
+                    if np.isfinite(_voltage(item))
+                    and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
+                ),
+                None,
+            )
+            led_values.append(_float(row.get("ctr_ps")) if row else np.nan)
+            led_errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
+        led_values = np.asarray(led_values, dtype=float)
+        led_errors = np.asarray(led_errors, dtype=float)
+        finite_led = np.isfinite(led_values)
+        if np.any(finite_led):
+            ax.errorbar(
+                np.asarray(voltages)[finite_led],
+                led_values[finite_led],
+                yerr=np.where(np.isfinite(led_errors[finite_led]), led_errors[finite_led], 0.0),
+                capsize=2.5,
+                label=LABELS["led"],
+                **model_style("led"),
+            )
+
+        for index, window in enumerate(windows):
+            rows = window_rows.get(window)
+            if not rows:
+                continue
+            values, errors = [], []
+            for voltage in voltages:
+                row = next(
+                    (
+                        item
+                        for item in rows
+                        if np.isfinite(_voltage(item))
+                        and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
+                    ),
+                    None,
+                )
+                values.append(_float(row.get("ctr_ps")) if row else np.nan)
+                errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
+            values = np.asarray(values, dtype=float)
+            errors = np.asarray(errors, dtype=float)
+            finite = np.isfinite(values)
+            if not np.any(finite):
+                continue
+            ax.errorbar(
+                np.asarray(voltages)[finite],
+                values[finite],
+                yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
+                capsize=2.5,
+                label=str(window),
+                **window_style(model, index),
+            )
+
+        set_voltage_ticks(ax, voltages)
+        ax.set_xlabel("Voltage [V]")
+        ax.set_ylabel("CTR [ps]")
+        ax.legend(loc="best", ncol=2)
+        clean_axis(ax, grid="y")
+        fig.tight_layout()
+        target = save_figure(fig, output / filename)
+        plt.close(fig)
     paths.append(target)
 
 
