@@ -61,9 +61,7 @@ class AntisymmetryTests(unittest.TestCase):
                 "channels": [4],
                 "kernels": [5],
                 "strides": [1],
-                "dilations": [1],
-                "adaptive_pool_length": 4,
-                "dense_units": [4],
+                "dilations": [1],                "dense_units": [4],
             },
             "training": {
                 "device": "cpu",
@@ -112,9 +110,7 @@ class AntisymmetryTests(unittest.TestCase):
                 "kernels": [5, 3, 3],
                 "strides": [1, 1, 1],
                 "dilations": [1, 1, 1],
-                "detector_fusion_layer": 1,
-                "adaptive_pool_length": 8,
-                "dense_units": [4],
+                "detector_fusion_layer": 1,                "dense_units": [4],
             }
         )
         conv_layers = [
@@ -132,9 +128,7 @@ class AntisymmetryTests(unittest.TestCase):
                 "channels": [4],
                 "kernels": [5],
                 "strides": [1],
-                "dilations": [1],
-                "adaptive_pool_length": 8,
-                "dense_units": [4],
+                "dilations": [1],                "dense_units": [4],
             }
         )
         artifact = CNN2DArtifact(model, "cpu", {})
