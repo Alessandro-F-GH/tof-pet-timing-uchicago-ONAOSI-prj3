@@ -28,7 +28,7 @@ def _display_category(category: str) -> str:
     if category == "led_prepare":
         return "LED selection + ML preparation"
     if category.startswith("final_model:"):
-        return f"final {category.split(':', 1)[1]}"
+        return f"model {category.split(':', 1)[1]}"
     if category.startswith("window_scan:"):
         return f"window scan {category.split(':', 1)[1]}"
     return category
