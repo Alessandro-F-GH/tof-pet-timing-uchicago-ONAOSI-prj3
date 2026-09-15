@@ -406,7 +406,7 @@ def _evaluate_final_datasets(
         store.save_split(name, dataset)
 
         logger.info(
-            "Final dataset | %s | LED=%.6g mV | train=%d | validation=%d | blind=%d",
+            "Dataset | %s | LED=%.6g mV | train=%d | validation=%d | blind=%d",
             name,
             threshold,
             dataset.training.size,
@@ -447,7 +447,7 @@ def _evaluate_final_datasets(
         sample_count = int(sample_mask.size)
         retained_samples = int(np.count_nonzero(sample_mask))
         logger.info(
-            "Input mask | %s | retained=%d/%d samples | train-only constant threshold=%.1f%%",
+            "Input | %s | retained=%d/%d samples | constant-threshold=%.1f%%",
             name,
             retained_samples,
             sample_count,
@@ -504,7 +504,7 @@ def _evaluate_final_datasets(
                     store.save_residuals(name, "cfd", cfd, stage=stage)
 
         for model_name, model_config in config["models"].items():
-            label = f"final model | {name} | {LABELS.get(model_name, model_name)}"
+            label = f"{name} | {LABELS.get(model_name, model_name)}"
             fixed_reference = model_name == "onishi_cnn"
             selection_stage = "fixed_configuration" if fixed_reference else "validation"
             selection_row = existing_row(name, model_name, selection_stage)
@@ -537,6 +537,7 @@ def _evaluate_final_datasets(
                     f"final_model:{model_name}",
                     label,
                     note="resume",
+                    announce=False,
                 )
                 final_metrics["models"][(name, model_name)] = {
                     "selection_stage": selection_stage,
@@ -552,7 +553,7 @@ def _evaluate_final_datasets(
                 }
                 if fixed_reference:
                     logger.info(
-                        "Resume result | %s | %s | blind CTR=%.3f ± %.3f ps",
+                        "Result | %s | %s | resumed | blind CTR=%.3f ± %.3f ps",
                         name,
                         LABELS.get(model_name, model_name),
                         float(test_row_existing["ctr_ps"]),
@@ -560,10 +561,9 @@ def _evaluate_final_datasets(
                     )
                 else:
                     logger.info(
-                        "Resume result | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                        "Result | %s | %s | resumed | blind CTR=%.3f ± %.3f ps",
                         name,
                         LABELS.get(model_name, model_name),
-                        float(selection_row["selection_score"]),
                         float(test_row_existing["ctr_ps"]),
                         float(test_row_existing["ctr_uncertainty_ps"]),
                     )
@@ -571,13 +571,34 @@ def _evaluate_final_datasets(
 
             search = None
             fitted = None
-            with progress.task(f"final_model:{model_name}", label):
+            with progress.task(
+                f"final_model:{model_name}",
+                label,
+                announce_start=False,
+                announce_finish=False,
+            ):
                 spec = get_model(model_name)
                 if fixed_reference:
+                    fixed_log_parameters = {
+                        **dict(spec.candidates(model_config)[0] or {}),
+                        "epochs": int((model_config.get("training") or {}).get("epochs", 100)),
+                        "lr_decay_epochs": list(
+                            (model_config.get("training") or {}).get(
+                                "lr_decay_epochs", [30, 60]
+                            )
+                        ),
+                        "lr_decay_factor": float(
+                            (model_config.get("training") or {}).get(
+                                "lr_decay_factor", 0.1
+                            )
+                        ),
+                        "architecture": dict(model_config.get("architecture") or {}),
+                    }
                     logger.info(
-                        "Fit | %s | %s | fixed paper configuration | fit=train+validation (%d events)",
+                        "Train | %s | %s | params=%s | train+validation=%d",
                         name,
                         LABELS.get(model_name, model_name),
+                        json.dumps(fixed_log_parameters, sort_keys=True),
                         int(dataset.development.size),
                     )
                     fitted, selected_parameters = fit_fixed_model(
@@ -613,7 +634,7 @@ def _evaluate_final_datasets(
                     search = prefit_searches.pop((name, model_name), None)
                     if search is not None:
                         logger.info(
-                            "Final model | %s | %s | reusing validation-selected fit",
+                            "Model selection | %s | %s | reusing saved validation-selected fit",
                             name,
                             LABELS.get(model_name, model_name),
                         )
@@ -734,7 +755,7 @@ def _evaluate_final_datasets(
 
             if fixed_reference:
                 logger.info(
-                    "Final result | %s | %s | fit=train+validation | blind CTR=%.3f ± %.3f ps",
+                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
                     name,
                     LABELS.get(model_name, model_name),
                     float(test_row["ctr_ps"]),
@@ -742,10 +763,9 @@ def _evaluate_final_datasets(
                 )
             else:
                 logger.info(
-                    "Final result | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
                     name,
                     LABELS.get(model_name, model_name),
-                    validation_ctr,
                     float(test_row["ctr_ps"]),
                     float(test_row["ctr_uncertainty_ps"]),
                 )
