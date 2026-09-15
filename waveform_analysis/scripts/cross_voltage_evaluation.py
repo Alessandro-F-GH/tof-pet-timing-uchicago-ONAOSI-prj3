@@ -419,8 +419,8 @@ def _plot_matrix(path: Path, model: str, train_voltages, predict_voltages, ctr, 
     ax.set_yticks(np.arange(len(train_voltages)))
     ax.set_xticklabels([f"{value:g} V" for value in predict_voltages])
     ax.set_yticklabels([f"{value:g} V" for value in train_voltages])
-    ax.set_xlabel("Prediction / blind-test voltage")
-    ax.set_ylabel("Training voltage")
+    ax.set_xlabel("Prediction voltage [V]")
+    ax.set_ylabel("Training voltage [V]")
 
     midpoint = 0.5 * (float(np.nanmin(ctr)) + float(np.nanmax(ctr)))
     for i in range(len(train_voltages)):
