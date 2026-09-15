@@ -251,7 +251,7 @@ def search_model(
             return
         parameters = "default" if not result.candidate else result.candidate
         if result.error is None:
-            logger.info(
+            logger.debug(
                 "  %d/%d | CTR=%.6g ps | %s",
                 number,
                 total,
