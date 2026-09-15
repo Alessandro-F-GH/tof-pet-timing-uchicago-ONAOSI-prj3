@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from utils_fit import fit_ctr_ps
-
 import copy
-import csv
 import gc
 import json
 import logging
@@ -23,12 +20,7 @@ from .plot_rebuild import rebuild_study_plots
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
-from .reporting import (
-    LABELS,
-    plot_ctr_vs_voltage,
-    plot_improvement_vs_led,
-    read_results,
-)
+from .reporting import LABELS
 from .sample_mask import (
     SAMPLE_CONSTANT_FRACTION,
     apply_sample_mask,
