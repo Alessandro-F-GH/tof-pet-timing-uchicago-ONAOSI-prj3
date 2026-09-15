@@ -93,21 +93,21 @@ class AntisymmetryTests(unittest.TestCase):
         )
 
 
-    def test_cnn_2d_delays_detector_fusion(self):
+    def test_cnn_2d_fuses_detectors_in_first_layer_then_uses_conv1d(self):
         model = JointPairCNN2D(
             {
                 "channels": [4, 8, 12],
                 "kernels": [5, 3, 3],
                 "strides": [1, 1, 1],
                 "dilations": [1, 1, 1],
-                "detector_fusion_layer": 1,
                 "adaptive_pool_length": 8,
                 "dense_units": [4],
             }
         )
-        conv_layers = [layer for layer in model.features if hasattr(layer, "kernel_size")]
-        self.assertEqual([layer.kernel_size[0] for layer in conv_layers], [1, 2, 1])
-        self.assertEqual(model.detector_fusion_layer, 1)
+        fusion_conv = next(layer for layer in model.fusion if isinstance(layer, __import__("torch").nn.Conv2d))
+        temporal_convs = [layer for layer in model.features if isinstance(layer, __import__("torch").nn.Conv1d)]
+        self.assertEqual(fusion_conv.kernel_size[0], 2)
+        self.assertEqual(len(temporal_convs), 2)
 
     def test_cnn_2d_joint_pair_forward_and_xai_shape(self):
         rng = np.random.default_rng(14)
