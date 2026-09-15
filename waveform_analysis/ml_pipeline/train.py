@@ -93,8 +93,8 @@ def fit_fixed_model(
             f"got {len(candidates)}"
         )
     parameters = dict(candidates[0] or {})
-    training = np.asarray(dataset.training, dtype=np.int64)
-    train_view = waveform_view(dataset, mode, training)
+    fit_indices = np.asarray(dataset.development, dtype=np.int64)
+    train_view = waveform_view(dataset, mode, fit_indices)
     train_x_full = train_view.materialize()
     if sample_mask is None:
         sample_mask = training_sample_mask(train_x_full)
@@ -108,7 +108,7 @@ def fit_fixed_model(
         raise ValueError("Sample mask removes every waveform sample")
     train_x = apply_sample_mask(train_x_full, sample_mask)
     masked_time_ps = apply_sample_mask_to_time(train_view.time_ps, sample_mask)
-    train_target = model_target(dataset, mode)[training]
+    train_target = model_target(dataset, mode)[fit_indices]
     fitted = _fit_once(
         spec,
         model_config,
@@ -138,8 +138,10 @@ def fit_fixed_model(
                 sample_mask.size - np.count_nonzero(sample_mask)
             ),
             "training_events": int(train_target.size),
-            "selection_protocol": "fixed_reference_configuration_no_validation_selection",
+            "fit_population": "training_plus_validation",
+            "validation_used_for_training": True,
             "validation_used_for_selection": False,
+            "selection_protocol": "fixed_reference_configuration_no_model_selection",
             "refit_after_selection": False,
         }
     )
