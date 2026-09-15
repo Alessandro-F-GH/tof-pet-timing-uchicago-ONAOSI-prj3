@@ -98,55 +98,104 @@ No target-magnitude filtering is used and no model is refitted after validation 
 
 The experiment JSON explicitly declares `experiment.type`. Final analyses no longer require combining LED-threshold and window scans inside one ordinary study.
 
-### `model_comparison`
+### `model_study`
 
-This is the main final experiment. It requires exactly:
+Final ML runs are **single-model experiments**. A model study requires exactly one
+configured model, for example `mlp` or `onishi_cnn`, plus one fixed LED
+threshold. The waveform windows are not defined in the experiment file: they
+live in the shared profile under `ml_input.windows`.
 
-`models: ["mlp", "onishi_cnn"]`.
+The default profile currently defines:
 
-It also requires:
+```json
+"ml_input": {
+  "windows": {
+    "onishi_window": {"start": -1.5, "end": 2.0},
+    "wide_window": {"start": -2.0, "end": 30.0}
+  },
+  "default_window": "wide_window",
+  "subsampling": 1
+}
+```
 
-- one fixed LED threshold;
-- an `onishi` window fixed to `[-1.5, 2.0]` ns relative to the LED crossing;
-- one configured `wide` window.
+A model study creates one complete standard sub-run for every profile window:
 
-The runner creates two complete sub-runs:
+```text
+<output>/
+├── onishi_window/
+└── wide_window/
+```
 
-`<output>/onishi/`
+Each window is independently complete and portable. It contains the saved
+split identities, LED residuals, model residuals/output, model/search metadata,
+XAI and publication plots. In particular each window produces:
 
-and
+- `plots/ctr_vs_voltage.pdf`: LED reference plus the studied model;
+- `plots/improvement_vs_led.pdf`: absolute paired-bootstrap improvement
+  `CTR_LED - CTR_model` in ps;
+- `plots/relative_improvement_vs_voltage.pdf`: paired-bootstrap relative
+  improvement in percent;
+- XAI and the ordinary correction/distribution/model-output diagnostics.
 
-`<output>/wide/`.
+This makes expensive models independent: MLP and Onishi CNN can be trained on
+different computers, operating systems or GPUs. The complete result directory
+is the portable analysis unit; no preprocessing cache or checkpoint from the
+other machine is required.
 
-Each sub-run iterates over every configured bias-voltage ROOT dataset and produces the normal study outputs: blind CTR versus voltage, paired-bootstrap improvement over LED, residual distributions, model outputs, prediction-target correlations, model-output correlations, correction examples, XAI, saved searches, models, splits and numerical artifacts.
-
-After both sub-runs finish, the experiment root additionally compares **Antisymmetric MLP vs Onishi CNN directly on the blind population**. The same event indices are resampled for the two models in every bootstrap replicate. The numerical comparison is stored in:
-
-`csv/paired_model_comparison.csv`.
-
-The experiment is intended to be run separately for each board dataset configuration and for each channel mode (`energy_to_energy` and `timing_to_timing`), keeping the board-specific input source explicit in `data_config`.
-
-Minimal experiment-specific section:
+Example MLP experiment:
 
 ```json
 {
   "experiment": {
-    "type": "model_comparison",
-    "name": "BOARD_MODE_model_comparison",
-    "output_dir": "results/studies/BOARD_MODE_model_comparison",
-    "fixed_led_threshold_mV": 15.0,
-    "windows": {
-      "onishi": {"start": -1.5, "end": 2.0},
-      "wide": {"start": -2.0, "end": 30.0}
-    }
+    "type": "model_study",
+    "name": "timing_mlp",
+    "output_dir": "results/studies/timing_mlp",
+    "fixed_led_threshold_mV": 15.0
   },
-  "models": ["mlp", "onishi_cnn"],
+  "models": ["mlp"],
   "mode": "timing_to_timing",
   "cfd": false
 }
 ```
 
-The threshold and wide-window values in a real experiment must be set deliberately for that dataset; the example above is only a configuration example.
+The corresponding Onishi experiment differs only in model/name/output:
+
+```json
+{
+  "experiment": {
+    "type": "model_study",
+    "name": "timing_onishi_cnn",
+    "output_dir": "results/studies/timing_onishi_cnn",
+    "fixed_led_threshold_mV": 15.0
+  },
+  "models": ["onishi_cnn"],
+  "mode": "timing_to_timing",
+  "cfd": false
+}
+```
+
+### Comparing completed model studies
+
+After the run directories have been copied onto one machine, combine them
+without retraining:
+
+```bash
+python -m waveform_analysis.cli compare-runs \
+  --runs waveform_analysis/results/studies/timing_mlp \
+         waveform_analysis/results/studies/timing_onishi_cnn \
+  --output-dir waveform_analysis/results/comparisons/timing_models
+```
+
+The comparison first checks a portable compatibility signature covering data
+definition, preprocessing, split policy, LED threshold, CTR settings and
+profile windows. It then verifies the exact persisted blind `event_index`
+arrays for every dataset/window before any paired model comparison.
+
+The combined report contains one CTR-vs-voltage plot per window with a single
+LED reference and all supplied models, paired-bootstrap improvement versus LED
+for each model, and numerical pairwise model comparisons. Because pairing is
+verified from persisted event identities, runs produced independently on
+different machines can be safely compared.
 
 ### `threshold_scan`
 
@@ -185,9 +234,9 @@ Minimal experiment-specific section:
 
 Run separate threshold-scan configs for UC/FBK and energy/timing as required.
 
-## 6. Ordinary/legacy study runner
+## 6. Low-level standard study runner
 
-`experiment.type: "standard"` remains the low-level single-window study runner used internally by the model-comparison experiment. It still supports the existing study/report artifacts, but final paper comparisons should use the explicit experiment types above rather than mixing several questions in one run.
+`experiment.type: "standard"` remains the low-level single-window runner used internally by `model_study`. Final paper model runs should use `model_study`; `standard` remains useful for focused development/debugging.
 
 ## Results
 
@@ -211,8 +260,7 @@ All report figures use one centralized publication style (`ml_pipeline/plot_styl
 
 The experiment persists the numerical data needed to redraw the figures: blind residuals, model outputs, XAI arrays, split/event identifiers and experiment-specific comparison CSV files. The first report render also caches the selected top/worst waveform examples inside the run artifacts. Therefore figure styling can be changed later without retraining models or rerunning the experiment.
 
-Plot generation is intentionally separated from training. The `--remake-plots` run option deletes and recreates only plot directories from persisted numerical artifacts; it does not rerun event selection, preprocessing, model selection, fitting, or blind evaluation. Model-comparison root CTR-vs-voltage figures use the same canonical paper style as ordinary studies and include LED as the reference curve alongside Antisymmetric MLP and Onishi paired CNN.
-Model-comparison roots also include `improvement_vs_led_onishi.pdf` and `improvement_vs_led_wide.pdf`, showing absolute CTR improvement `CTR_LED - CTR_model` in ps for both MLP and Onishi CNN with paired-event bootstrap uncertainties. Plot axes use concise paper-style labels with explicit units, and voltage axes show integer tick labels only.
+Plot generation is intentionally separated from training. The `--remake-plots` run option deletes and recreates only plot directories from persisted numerical artifacts; it does not rerun event selection, preprocessing, model selection, fitting, or blind evaluation. For a `model_study`, every configured window is rebuilt independently from its saved artifacts. Plot axes use concise paper-style labels with explicit units, and voltage axes show integer tick labels only.
 
 The paired relative improvement is computed as
 
