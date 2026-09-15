@@ -27,30 +27,24 @@ class OnishiPairedCNN(nn.Module):
 
     def __init__(self, architecture: dict[str, Any]):
         super().__init__()
-        channels = [int(v) for v in architecture.get("channels", [32, 64, 64])]
+        channels = [int(v) for v in architecture.get("channels", [32, 32, 64])]
         kernels = [int(v) for v in architecture.get("kernels", [5, 3, 3])]
         dense_units = int(architecture.get("dense_units", 256))
-        pool_size = int(architecture.get("pool_size", 3))
 
-        if channels != [32, 64, 64]:
-            raise ValueError("onishi_cnn Onishi architecture requires channels=[32, 64, 64]")
+        if channels != [32, 32, 64]:
+            raise ValueError("onishi_cnn reference architecture requires channels=[32, 32, 64]")
         if kernels != [5, 3, 3]:
-            raise ValueError("onishi_cnn Onishi architecture requires kernels=[5, 3, 3]")
+            raise ValueError("onishi_cnn reference architecture requires kernels=[5, 3, 3]")
         if dense_units != 256:
-            raise ValueError("onishi_cnn Onishi architecture requires dense_units=256")
-        if pool_size != 3:
-            raise ValueError("onishi_cnn Onishi architecture requires pool_size=3")
+            raise ValueError("onishi_cnn reference architecture requires dense_units=256")
 
         self.features = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(2, 5)),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
+            nn.Conv2d(32, 32, kernel_size=(1, 3)),
+            nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=(1, 3)),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
-            nn.Conv2d(64, 64, kernel_size=(1, 3)),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(1, 3), stride=(1, 3)),
         )
         self.head = nn.Sequential(
             nn.Flatten(),
@@ -82,24 +76,24 @@ class OnishiCNNArtifact:
 def candidates(config):
     p = config.get("parameters", {})
     training = config.get("training", {})
-    learning_rates = [float(v) for v in p.get("learning_rate", [1e-4])]
-    batches = [int(v) for v in p.get("batch_size", [32])]
-    if learning_rates != [1e-4] or batches != [32]:
+    learning_rates = [float(v) for v in p.get("learning_rate", [1e-3])]
+    batches = [int(v) for v in p.get("batch_size", [128])]
+    if learning_rates != [1e-3] or batches != [128]:
         raise ValueError(
-            "onishi_cnn uses the fixed reference hyperparameters: "
-            "learning_rate=[1e-4], batch_size=[32]"
+            "onishi_cnn uses the fixed paper hyperparameters: "
+            "learning_rate=[1e-3], batch_size=[128]"
         )
-    if int(training.get("epochs", 100)) != 100:
-        raise ValueError("onishi_cnn fixed reference training requires epochs=100")
-    if [int(v) for v in training.get("lr_decay_epochs", [30, 60])] != [30, 60]:
+    if int(training.get("epochs", 600)) != 600:
+        raise ValueError("onishi_cnn fixed paper training requires epochs=600")
+    if [int(v) for v in training.get("lr_decay_epochs", [180, 360])] != [180, 360]:
         raise ValueError(
-            "onishi_cnn fixed reference training requires lr_decay_epochs=[30, 60]"
+            "onishi_cnn fixed paper training requires lr_decay_epochs=[180, 360]"
         )
     if float(training.get("lr_decay_factor", 0.1)) != 0.1:
         raise ValueError(
-            "onishi_cnn fixed reference training requires lr_decay_factor=0.1"
+            "onishi_cnn fixed paper training requires lr_decay_factor=0.1"
         )
-    return [{"learning_rate": 1e-4, "batch_size": 32}]
+    return [{"learning_rate": 1e-3, "batch_size": 128}]
 
 
 def _mse_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -122,10 +116,10 @@ def fit(
     logger = config.get("_logger")
     device = _device(config)
 
-    batch = int(params.get("batch_size", training.get("batch_size", 32)))
-    epochs = int(training.get("epochs", 100))
-    learning_rate = float(params.get("learning_rate", 1e-4))
-    decay_epochs = [int(v) for v in training.get("lr_decay_epochs", [30, 60])]
+    batch = int(params.get("batch_size", training.get("batch_size", 128)))
+    epochs = int(training.get("epochs", 600))
+    learning_rate = float(params.get("learning_rate", 1e-3))
+    decay_epochs = [int(v) for v in training.get("lr_decay_epochs", [180, 360])]
     decay_factor = float(training.get("lr_decay_factor", 0.1))
 
     x = np.asarray(train_x, dtype=np.float32)
@@ -150,7 +144,7 @@ def fit(
 
     if verbose and logger is not None:
         logger.info(
-            "onishi_cnn training | Onishi-style | loss=MSE | optimizer=Adam | "
+            "onishi_cnn training | Onishi 2022 reference | loss=MSE | optimizer=Adam | "
             "lr=%.6g | batch=%d | epochs=%d | lr_decay_epochs=%s | "
             "lr_decay_factor=%.6g | train=%d | device=%s",
             learning_rate,
@@ -219,7 +213,7 @@ def fit(
             else float(output_limit),
             "training_seed": training_seed,
             "deterministic_algorithms": True,
-            "architecture_reference": "Onishi et al., Phys Med Biol 67 (2022) 04NT01",
+            "architecture_reference": "Onishi et al., Phys Med Biol 67 (2022) 04NT01, Fig. 2 and Sec. 2.2.3",
             "input_definition": "paired normalized detector waveforms stacked as [2,time]",
             "prediction_definition": "joint CNN correction f_theta([s1;s2]) [ps]",
             "detector_axis_policy": "first 2x5 convolution fuses the two detector rows immediately",

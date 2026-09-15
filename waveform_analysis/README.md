@@ -71,12 +71,13 @@ The paired CNN reference is registered as `onishi_cnn` and labelled **Onishi CNN
 
 The fixed reference configuration is stored in `config/model_spaces/onishi_cnn.json`:
 
-- Conv2D 2x5, 32 channels, ReLU, max-pool 1x3;
-- Conv2D 1x3, 64 channels, ReLU, max-pool 1x3;
-- Conv2D 1x3, 64 channels, ReLU, max-pool 1x3;
+- Conv2D 2x5, 32 channels, ReLU;
+- Conv2D 1x3, 32 channels, ReLU;
+- Conv2D 1x3, 64 channels, ReLU;
+- no pooling layers;
 - flatten, dense 256, ReLU, scalar output;
-- Adam, MSE, batch size 32, initial learning rate 1e-4;
-- 100 epochs, learning-rate factor 0.1 at epochs 30 and 60.
+- Adam, MSE, batch size 128, initial learning rate 1e-3;
+- 600 epochs, learning rate reduced to 1e-4 and 1e-5 at epochs 180 and 360 (30% and 60% of training).
 
 The Onishi CNN has one fixed candidate. Validation is therefore not used to tune its architecture; it only passes through the same model-selection interface. The trained checkpoint is not refitted.
 

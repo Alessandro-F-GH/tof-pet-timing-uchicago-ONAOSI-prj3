@@ -11,6 +11,7 @@ from waveform_analysis.ml_pipeline.models.mlp import (
 from waveform_analysis.ml_pipeline.models.onishi_cnn import (
     OnishiCNNArtifact,
     OnishiPairedCNN,
+    candidates as onishi_candidates,
     explain as explain_onishi_cnn,
     predict as predict_onishi_cnn,
 )
@@ -58,9 +59,8 @@ class ActiveModelTests(unittest.TestCase):
 
         model = OnishiPairedCNN(
             {
-                "channels": [32, 64, 64],
+                "channels": [32, 32, 64],
                 "kernels": [5, 3, 3],
-                "pool_size": 3,
                 "dense_units": 256,
             }
         )
@@ -68,28 +68,42 @@ class ActiveModelTests(unittest.TestCase):
             layer for layer in model.features
             if isinstance(layer, torch.nn.Conv2d)
         ]
-        pool_layers = [
-            layer for layer in model.features
-            if isinstance(layer, torch.nn.MaxPool2d)
-        ]
         self.assertEqual(
             [layer.kernel_size for layer in conv_layers],
             [(2, 5), (1, 3), (1, 3)],
         )
         self.assertEqual(
             [layer.out_channels for layer in conv_layers],
-            [32, 64, 64],
+            [32, 32, 64],
         )
-        self.assertEqual(len(pool_layers), 3)
+        self.assertFalse(
+            any(isinstance(layer, torch.nn.MaxPool2d) for layer in model.features)
+        )
+
+    def test_onishi_cnn_uses_paper_training_hyperparameters(self):
+        config = {
+            "parameters": {
+                "learning_rate": [1e-3],
+                "batch_size": [128],
+            },
+            "training": {
+                "epochs": 600,
+                "lr_decay_epochs": [180, 360],
+                "lr_decay_factor": 0.1,
+            },
+        }
+        self.assertEqual(
+            onishi_candidates(config),
+            [{"learning_rate": 1e-3, "batch_size": 128}],
+        )
 
     def test_onishi_cnn_forward_and_xai_shape(self):
         rng = np.random.default_rng(14)
         pair = rng.normal(size=(6, 2, 64)).astype(np.float32)
         model = OnishiPairedCNN(
             {
-                "channels": [32, 64, 64],
+                "channels": [32, 32, 64],
                 "kernels": [5, 3, 3],
-                "pool_size": 3,
                 "dense_units": 256,
             }
         )
