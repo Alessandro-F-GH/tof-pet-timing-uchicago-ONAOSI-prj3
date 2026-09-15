@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, candidates
+from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _rmse_loss, candidates
 from .spec import ModelSpec
 
 
@@ -148,12 +148,12 @@ def fit(
         lr=float(params["learning_rate"]),
         weight_decay=float(params["weight_decay"]),
     )
-    loss_fn = nn.MSELoss()
+    loss_fn = _rmse_loss
     loader = _loader(fit_x, fit_target, batch, shuffle=True, seed=training_seed)
     output_limit = config.get("_prediction_max_abs_ps")
     if verbose and logger is not None:
         logger.info(
-            "cnn_2d training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
+            "cnn_2d training | loss=RMSE | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             float(params["learning_rate"]),
             float(params["weight_decay"]),
             batch,
@@ -226,6 +226,7 @@ def fit(
         device=str(device),
         metadata={
             "best_epoch": int(best_epoch),
+            "training_loss": "rmse",
             "best_early_stopping_rmse_ps": float(best_score),
             "early_stopping_metric": "internal_train_holdout_rmse",
             "early_stopping_fraction": early_fraction,
