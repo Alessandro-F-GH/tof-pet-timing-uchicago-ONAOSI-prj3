@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _rmse_loss, _set_first_layer_weight_norm, candidates
+from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _rmse_loss, candidates
 from .spec import ModelSpec
 
 
@@ -139,9 +139,6 @@ def fit(
         train_x, train_target, early_fraction, split_seed
     )
     model = JointPairCNN2D(config.get("architecture", {})).to(device)
-    first_layer_weight_norm = _set_first_layer_weight_norm(
-        model, params.get("first_layer_weight_norm", 1.0)
-    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(params["learning_rate"]),
@@ -152,8 +149,7 @@ def fit(
     output_limit = config.get("_prediction_max_abs_ps")
     if verbose and logger is not None:
         logger.info(
-            "cnn_2d training | loss=RMSE | first_layer_weight_norm=%.6g | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
-            first_layer_weight_norm,
+            "cnn_2d training | loss=RMSE | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             float(params["learning_rate"]),
             float(params["weight_decay"]),
             batch,
@@ -227,7 +223,6 @@ def fit(
         metadata={
             "best_epoch": int(best_epoch),
             "training_loss": "rmse",
-            "first_layer_weight_norm": first_layer_weight_norm,
             "best_early_stopping_rmse_ps": float(best_score),
             "early_stopping_metric": "internal_train_holdout_rmse",
             "early_stopping_fraction": early_fraction,
