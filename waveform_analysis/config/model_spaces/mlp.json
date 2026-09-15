@@ -1,0 +1,29 @@
+{
+  "model": "mlp",
+  "parameters": {
+    "architecture": [
+      [
+        128,
+        64
+      ]
+    ],
+    "activation": [
+      "silu"
+    ],
+    "learning_rate": [
+      0.001
+    ],
+    "batch_size": [
+      128
+    ]
+  },
+  "training": {
+    "device": "auto",
+    "epochs": 300,
+    "patience": 10,
+    "min_delta": 0.01,
+    "gradient_clip_norm": 10,
+    "early_stopping_fraction": 0.2
+  },
+  "verbose": false
+}
