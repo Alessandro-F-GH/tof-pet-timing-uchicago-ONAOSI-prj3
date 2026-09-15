@@ -103,32 +103,44 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertFalse(first.metadata["external_validation_used_for_early_stopping"])
 
 
-    def test_cnn_2d_delays_detector_fusion(self):
+    def test_cnn_2d_matches_onishi_architecture(self):
+        import torch
+
         model = JointPairCNN2D(
             {
-                "channels": [4, 8, 12],
+                "channels": [32, 64, 64],
                 "kernels": [5, 3, 3],
-                "strides": [1, 1, 1],
-                "dilations": [1, 1, 1],
-                "detector_fusion_layer": 1,                "dense_units": [4],
+                "pool_size": 3,
+                "dense_units": 256,
             }
         )
         conv_layers = [
             layer for layer in model.features
-            if isinstance(layer, __import__("torch").nn.Conv2d)
+            if isinstance(layer, torch.nn.Conv2d)
         ]
-        self.assertEqual([layer.kernel_size[0] for layer in conv_layers], [1, 2, 1])
-        self.assertEqual(model.detector_fusion_layer, 1)
+        pool_layers = [
+            layer for layer in model.features
+            if isinstance(layer, torch.nn.MaxPool2d)
+        ]
+        self.assertEqual(
+            [layer.kernel_size for layer in conv_layers],
+            [(2, 5), (1, 3), (1, 3)],
+        )
+        self.assertEqual(
+            [layer.out_channels for layer in conv_layers],
+            [32, 64, 64],
+        )
+        self.assertEqual(len(pool_layers), 3)
 
     def test_cnn_2d_joint_pair_forward_and_xai_shape(self):
         rng = np.random.default_rng(14)
         pair = rng.normal(size=(6, 2, 64)).astype(np.float32)
         model = JointPairCNN2D(
             {
-                "channels": [4],
-                "kernels": [5],
-                "strides": [1],
-                "dilations": [1],                "dense_units": [4],
+                "channels": [32, 64, 64],
+                "kernels": [5, 3, 3],
+                "pool_size": 3,
+                "dense_units": 256,
             }
         )
         artifact = CNN2DArtifact(model, "cpu", {})
