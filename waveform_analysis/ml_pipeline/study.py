@@ -23,7 +23,12 @@ from .plot_rebuild import rebuild_study_plots
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
-from .reporting import LABELS, plot_ctr_vs_voltage, read_results
+from .reporting import (
+    LABELS,
+    plot_ctr_vs_voltage,
+    plot_improvement_vs_led,
+    read_results,
+)
 from .sample_mask import (
     SAMPLE_CONSTANT_FRACTION,
     apply_sample_mask,
@@ -1083,6 +1088,17 @@ def _write_model_comparison_plot(
                     generated,
                     filename=f"ctr_vs_voltage_{window}.pdf",
                 )
+                sub_manifest = json.loads(
+                    (subrun / "manifest.json").read_text(encoding="utf-8")
+                )
+                plot_improvement_vs_led(
+                    subrun,
+                    plot_dir,
+                    test_rows,
+                    sub_manifest,
+                    generated,
+                    filename=f"improvement_vs_led_{window}.pdf",
+                )
 
             subset = sorted(
                 [row for row in rows if str(row["window"]) == window],
@@ -1127,9 +1143,10 @@ def _write_model_comparison_plot(
                 linestyle=":",
                 linewidth=0.9,
             )
-            ax.set_xticks(x)
-            ax.set_xlabel("Bias voltage [V]")
-            ax.set_ylabel("CTR improvement over Onishi CNN [%]")
+            from .plot_style import set_voltage_ticks
+            set_voltage_ticks(ax, x)
+            ax.set_xlabel("Voltage [V]")
+            ax.set_ylabel("Improvement [%]")
             clean_axis(ax, grid="y")
             fig.tight_layout()
             target = save_figure(
