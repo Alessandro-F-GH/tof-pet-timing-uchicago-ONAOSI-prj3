@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from .analyses import run_blind_led_threshold_scan, run_led_threshold_scan, run_window_scan
+from .analyses import run_blind_led_threshold_scan
 from .common import canonical_hash, read_json, voltage_from_name
 from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
@@ -160,49 +160,6 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
         if not required.issubset(available):
             return False
 
-    analyses = manifest.get("analyses")
-    if not isinstance(analyses, dict):
-        return False
-
-    led_enabled = bool(config["analyses"]["led_threshold_scan"]["enabled"])
-    led_manifest = analyses.get("led_threshold_scan")
-    if not isinstance(led_manifest, dict) or bool(led_manifest.get("enabled")) != led_enabled:
-        return False
-    if led_enabled:
-        selected = led_manifest.get("selected_thresholds_mV")
-        if not isinstance(selected, dict) or len(selected) != expected_datasets:
-            return False
-
-    window_cfg = config["analyses"]["window_scan"]
-    window_enabled = bool(window_cfg["enabled"])
-    window_manifest = analyses.get("window_scan")
-    if not isinstance(window_manifest, dict) or bool(window_manifest.get("enabled")) != window_enabled:
-        return False
-    if window_enabled:
-        window_rows = _csv_rows(run_dir / "analyses" / "window" / "csv" / "window_scan.csv")
-        expected_points = (
-            expected_datasets
-            * len(window_cfg["right_limits_ns"])
-            * len(window_cfg["models"])
-        )
-        combinations = {
-            (
-                str(row.get("dataset")),
-                str(row.get("model")),
-                float(row.get("right_limit_ns")),
-            )
-            for row in window_rows
-            if row.get("dataset")
-            and row.get("model")
-            and row.get("right_limit_ns") not in {None, ""}
-        }
-        if len(combinations) != expected_points:
-            return False
-        for dataset_name in datasets:
-            for model_name in window_cfg["models"]:
-                for right_ns in window_cfg["right_limits_ns"]:
-                    if (dataset_name, str(model_name), float(right_ns)) not in combinations:
-                        return False
 
     return True
 
@@ -298,7 +255,7 @@ def _dataset_voltage(dataset, name):
     return float(np.median(finite)) if finite.size else voltage_from_name(name)
 
 
-def _prepare_without_threshold_scan(preprocessed, config, rebuild, logger, progress):
+def _prepare_datasets(preprocessed, config, rebuild, logger, progress):
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     prep_config = copy.deepcopy(config)
     if concatenate:
@@ -336,20 +293,20 @@ def _prepare_without_threshold_scan(preprocessed, config, rebuild, logger, progr
         ]
 
 
-def _base_manifest(config, concatenate, roots, analyses):
+def _base_manifest(config, concatenate, roots):
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
         "schema_version": 13,
         "status": "running",
         "config_fingerprint": str(config.get("_config_fingerprint", "")),
-        "protocol": "single_mode_configured_analyses_holdout",
+        "protocol": "single_mode_holdout",
         "mode": str(config["mode"]),
         "concatenate_datasets": concatenate,
         "test_used_for_model_selection": False,
         "model_selection_metric": "validation_ctr_for_tuned_models_only",
         "model_policies": {
             "mlp": "grid search on validation CTR; selected trained checkpoint used directly without refit",
-            "onishi_cnn": "fixed Onishi reference configuration; train-only fit; validation not used; no refit",
+            "onishi_cnn": "fixed Onishi reference configuration; fit on training+validation; no model selection; blind held out",
         },
         "sample_mask_policy": {
             "derived_from": "training_split_only",
@@ -362,7 +319,7 @@ def _base_manifest(config, concatenate, roots, analyses):
             "shared_across_models_within_dataset": True,
             "validation_and_test_do_not_define_mask": True,
         },
-        "training_data_policy": {"uses_full_training_split": True},
+        "training_data_policy": {"mlp": "training only", "onishi_cnn": "training plus validation"},
         "ml_target": "delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
@@ -373,7 +330,6 @@ def _base_manifest(config, concatenate, roots, analyses):
         "ctr_uncertainty": "event_bootstrap_ctr_std",
         "ctr_bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
         "config": public_config(config),
-        "analyses": analyses,
         "source_count": len(roots),
         "datasets": {},
     }
@@ -815,53 +771,23 @@ def _run_standard_study(
 
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     dataset_count = 1 if concatenate else len(roots)
-    threshold_cfg = config["analyses"]["led_threshold_scan"]
-    window_cfg = config["analyses"]["window_scan"]
-    threshold_enabled = bool(threshold_cfg["enabled"])
-    window_enabled = bool(window_cfg["enabled"])
-    threshold_count = len(config["standard_methods"]["led_thresholds_mV"]) if threshold_enabled else 0
-    prepare_count = 0 if threshold_enabled else len(roots) + (1 if concatenate else 0)
-    window_models = list(window_cfg.get("models", [])) if window_enabled else []
-    window_limits = list(window_cfg.get("right_limits_ns", [])) if window_enabled else []
-
+    prepare_count = len(roots) + (1 if concatenate else 0)
     plan = {
         "selection": len(roots),
         "native_preprocess": len(roots),
+        "led_prepare": prepare_count,
     }
-    if threshold_enabled:
-        plan["led_scan"] = dataset_count * threshold_count
-    elif prepare_count:
-        plan["led_prepare"] = prepare_count
     for model_name in config["models"]:
         plan[f"final_model:{model_name}"] = dataset_count
-    for model_name in window_models:
-        plan[f"window_scan:{model_name}"] = dataset_count * len(window_limits)
     progress = ProgressTracker(logger, plan)
 
     logger.info(
-        "%s | mode=%s | source files=%d | final datasets=%d | models=%s",
-        "Study resume" if resume else "Study",
+        "%s | mode=%s | datasets=%d | models=%s",
+        "Resume" if resume else "Study",
         config["mode"],
-        len(roots),
         dataset_count,
         ", ".join(LABELS.get(name, name) for name in config["models"]),
     )
-    logger.info(
-        "Configured analyses | LED threshold scan=%s%s | ML window scan=%s%s",
-        "on" if threshold_enabled else "off",
-        (
-            f" ({LABELS.get(str(threshold_cfg.get('selection_model')), str(threshold_cfg.get('selection_model')))})"
-            if threshold_enabled
-            else ""
-        ),
-        "on" if window_enabled else "off",
-        (
-            f" ({len(window_limits)} limits × {len(window_models)} models)"
-            if window_enabled
-            else ""
-        ),
-    )
-
     preprocessed = []
     for root in roots:
         with progress.task("selection", f"event selection | {root.name}"):
@@ -882,44 +808,19 @@ def _run_standard_study(
                 )
             )
 
-    analyses_manifest: dict[str, Any] = {}
+    datasets = _prepare_datasets(
+        preprocessed,
+        config,
+        rebuild_preprocessing,
+        logger,
+        progress,
+    )
     prefit_searches: dict[tuple[str, str], Any] = {}
-    if threshold_enabled:
-        threshold_result = run_led_threshold_scan(
-            preprocessed,
-            config,
-            store.root / "analyses" / "led_threshold",
-            logger,
-            progress,
-            rebuild=rebuild_preprocessing,
-            resume=resume,
-        )
-        datasets = threshold_result.datasets
-        analyses_manifest["led_threshold_scan"] = threshold_result.manifest
-        prefit_searches = threshold_result.selected_searches
-    else:
-        datasets = _prepare_without_threshold_scan(
-            preprocessed,
-            config,
-            rebuild_preprocessing,
-            logger,
-            progress,
-        )
-        family = target_family(str(config["mode"]))
-        analyses_manifest["led_threshold_scan"] = {
-            "enabled": False,
-            "selection_policy": "development LED CTR during ML dataset preparation",
-            "selected_thresholds_mV": {
-                _dataset_name(dataset): float(dataset.manifest["led_threshold_mV"][family])
-                for dataset in datasets
-            },
-        }
 
     manifest = _base_manifest(
         config,
         concatenate,
         roots,
-        analyses_manifest,
     )
     if concatenate:
         family = target_family(str(config["mode"]))
@@ -942,24 +843,8 @@ def _run_standard_study(
         prefit_searches=prefit_searches,
     )
 
-    if window_enabled:
-        analyses_manifest["window_scan"] = run_window_scan(
-            datasets,
-            config,
-            store.root / "analyses" / "window",
-            logger,
-            progress,
-            final_metrics,
-            resume=resume,
-        )
-    else:
-        analyses_manifest["window_scan"] = {"enabled": False}
-    manifest["analyses"] = analyses_manifest
-    store.write_manifest(manifest)
-
-    logger.info("Rendering study plots")
     generated = rebuild_study_plots(store.root)
-    logger.info("Study plots | files=%d | %s", len(generated), store.root)
+    logger.info("Plots | generated=%d", len(generated))
 
     manifest["status"] = "complete"
     store.write_manifest(manifest)
@@ -985,6 +870,30 @@ def _prepare_experiment_root(
         )
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _check_experiment_resume_config(
+    config: dict[str, Any],
+    root: Path,
+    *,
+    resume: bool,
+) -> None:
+    if not resume:
+        return
+    path = root / "manifest.json"
+    if not path.is_file():
+        return
+    manifest = read_json(path)
+    stored = manifest.get("config")
+    if not isinstance(stored, dict):
+        raise RuntimeError(
+            f"Cannot resume experiment with missing resolved config: {path}"
+        )
+    if canonical_hash(stored) != str(config.get("_config_fingerprint", "")):
+        raise RuntimeError(
+            "Cannot resume experiment with a different configuration. "
+            "Use the original config or --overwrite."
+        )
 
 
 def _paired_model_comparison_rows(
@@ -1199,10 +1108,29 @@ def _run_model_comparison_experiment(
         overwrite=overwrite,
         resume=resume,
     )
+    logger = _logger(root)
+    _check_experiment_resume_config(config, root, resume=resume)
     fixed_led = float(config["experiment"]["fixed_led_threshold_mV"])
     windows = dict(config["experiment"]["windows"])
+    logger.info(
+        "%s | model comparison | mode=%s | LED=%g mV | windows=onishi,wide",
+        "Resume" if resume else "Experiment",
+        config["mode"],
+        fixed_led,
+    )
     base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
 
+    running_manifest = {
+        "schema_version": 1,
+        "status": "running",
+        "experiment_type": "model_comparison",
+        "config_fingerprint": str(config.get("_config_fingerprint", "")),
+        "config": public_config(config),
+    }
+    (root / "manifest.json").write_text(
+        json.dumps(running_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     subruns: dict[str, str] = {}
     paired_rows: list[dict[str, Any]] = []
     for index, window_name in enumerate(("onishi", "wide")):
@@ -1257,9 +1185,8 @@ def _run_model_comparison_experiment(
         _write_model_comparison_plot(root, paired_rows)
 
     manifest = {
-        "schema_version": 1,
+        **running_manifest,
         "status": "complete",
-        "experiment_type": "model_comparison",
         "models": {
             "proposed": "mlp",
             "reference": "onishi_cnn",
@@ -1272,7 +1199,7 @@ def _run_model_comparison_experiment(
         "fixed_led_threshold_mV": fixed_led,
         "mlp_hyperparameter_selection_population": "validation",
         "mlp_hyperparameter_selection_metric": "validation_ctr",
-        "onishi_cnn_configuration": "fixed_reference_no_validation_selection",
+        "onishi_cnn_configuration": "fixed_reference_fit_on_training_plus_validation_no_model_selection",
         "final_evaluation_population": "blind",
         "refit_after_selection": False,
         "paired_model_comparison": "blind paired event bootstrap",
@@ -1299,6 +1226,18 @@ def _run_threshold_scan_experiment(
         resume=resume,
     )
     logger = _logger(root)
+    _check_experiment_resume_config(config, root, resume=resume)
+    running_manifest = {
+        "schema_version": 1,
+        "status": "running",
+        "experiment_type": "threshold_scan",
+        "config_fingerprint": str(config.get("_config_fingerprint", "")),
+        "config": public_config(config),
+    }
+    (root / "manifest.json").write_text(
+        json.dumps(running_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     roots = discover_root_files(config)
     target_voltage = float(config["experiment"]["voltage_V"])
     roots = [
@@ -1347,7 +1286,7 @@ def _run_threshold_scan_experiment(
                 )
             )
 
-    run_blind_led_threshold_scan(
+    scan_manifest = run_blind_led_threshold_scan(
         preprocessed,
         config,
         root,
@@ -1355,6 +1294,17 @@ def _run_threshold_scan_experiment(
         progress,
         rebuild=rebuild_preprocessing,
         resume=resume,
+    )
+    final_manifest = {
+        **running_manifest,
+        **scan_manifest,
+        "status": "complete",
+        "config_fingerprint": str(config.get("_config_fingerprint", "")),
+        "config": public_config(config),
+    }
+    (root / "manifest.json").write_text(
+        json.dumps(final_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
     logger.info(
         "Threshold scan complete | voltage=%g V | %s",
