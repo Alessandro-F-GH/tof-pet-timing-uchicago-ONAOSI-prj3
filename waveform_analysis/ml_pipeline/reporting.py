@@ -23,6 +23,7 @@ from .plot_style import (
     panel_label,
     paper_context,
     save_figure,
+    set_voltage_ticks,
 )
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
@@ -177,8 +178,8 @@ def _xai_plot(output, artifact, mode, model, paths):
     values = np.asarray([v for _, _, v in stripes])
     bottom.plot(centers, values, color="#000000", marker="o")
     bottom.set_ylim(0, 1.05)
-    bottom.set_xlabel("Time relative to LED crossing [ns]")
-    bottom.set_ylabel("Relative importance")
+    bottom.set_xlabel("Time [ns]")
+    bottom.set_ylabel("Importance [a.u.]")
     clean_axis(bottom, grid="y")
 
     cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=colorbar_ax)
@@ -408,8 +409,8 @@ def _distribution_plot(output, run, rows, mode, dataset, stage, paths):
         if peak > 0:
             ax.set_ylim(0.0, peak * 1.16)
         ax.set_xlim(*xlim)
-        ax.set_xlabel("Timing residual [ps]")
-        ax.set_ylabel("Events / bin")
+        ax.set_xlabel("Residual [ps]")
+        ax.set_ylabel("Events [count]")
         ax.legend(loc="best")
         clean_axis(ax, grid="y")
         fig.tight_layout()
@@ -444,7 +445,7 @@ def _model_output_plot(output, run, mode, dataset, model, paths):
             ax.hist(visible, bins=bins, histtype="step", color=model_style(model)["color"])
             ax.axvline(float(np.mean(values)), color="#7F7F7F", ls=":", lw=0.9)
         ax.set_xlim(*xlim)
-        ax.set_ylabel("Events / bin")
+        ax.set_ylabel("Events [count]")
         clean_axis(ax, grid="y")
         panel_label(ax, "(a)" if panel == 0 else "(b)")
     axes[-1].set_xlabel(r"Model correction $y_\theta$ [ps]")
@@ -499,8 +500,8 @@ def plot_ctr_vs_voltage(
             label=LABELS.get(method, method),
             **style,
         )
-    ax.set_xticks(voltages)
-    ax.set_xlabel("Bias voltage [V]")
+    set_voltage_ticks(ax, voltages)
+    ax.set_xlabel("Voltage [V]")
     ax.set_ylabel("CTR [ps]")
     ax.legend(loc="best", ncol=2)
     clean_axis(ax, grid="y")
@@ -510,7 +511,15 @@ def plot_ctr_vs_voltage(
     paths.append(target)
 
 
-def _paired_relative_improvement(reference, method, fit_config, *, samples, seed):
+def _paired_improvement(
+    reference,
+    method,
+    fit_config,
+    *,
+    samples,
+    seed,
+    relative: bool,
+):
     reference = np.asarray(reference, dtype=np.float64).reshape(-1)
     method = np.asarray(method, dtype=np.float64).reshape(-1)
     if reference.shape != method.shape:
@@ -522,7 +531,11 @@ def _paired_relative_improvement(reference, method, fit_config, *, samples, seed
         raise ValueError("At least two common finite residuals are required")
     full_ref = fit_ctr_ps(reference, fit_config, bootstrap=False).ctr_ps
     full_method = fit_ctr_ps(method, fit_config, bootstrap=False).ctr_ps
-    central = 100.0 * (full_ref - full_method) / full_ref
+    if relative:
+        central = 100.0 * (full_ref - full_method) / full_ref
+    else:
+        central = full_ref - full_method
+
     rng = np.random.default_rng(int(seed))
     bootstrap = []
     for _ in range(int(samples)):
@@ -532,10 +545,170 @@ def _paired_relative_improvement(reference, method, fit_config, *, samples, seed
             method_ctr = fit_ctr_ps(method[idx], fit_config, bootstrap=False).ctr_ps
         except ValueError:
             continue
-        if np.isfinite(ref_ctr) and ref_ctr > 0 and np.isfinite(method_ctr):
+        if not (np.isfinite(ref_ctr) and ref_ctr > 0 and np.isfinite(method_ctr)):
+            continue
+        if relative:
             bootstrap.append(100.0 * (ref_ctr - method_ctr) / ref_ctr)
-    uncertainty = float(np.std(bootstrap, ddof=1)) if len(bootstrap) > 1 else float("nan")
-    return central, uncertainty, len(bootstrap)
+        else:
+            bootstrap.append(ref_ctr - method_ctr)
+    uncertainty = (
+        float(np.std(bootstrap, ddof=1))
+        if len(bootstrap) > 1
+        else float("nan")
+    )
+    return float(central), uncertainty, len(bootstrap)
+
+
+def _paired_absolute_improvement(reference, method, fit_config, *, samples, seed):
+    return _paired_improvement(
+        reference,
+        method,
+        fit_config,
+        samples=samples,
+        seed=seed,
+        relative=False,
+    )
+
+
+def _paired_relative_improvement(reference, method, fit_config, *, samples, seed):
+    return _paired_improvement(
+        reference,
+        method,
+        fit_config,
+        samples=samples,
+        seed=seed,
+        relative=True,
+    )
+
+
+def plot_improvement_vs_led(
+    run,
+    output,
+    test_rows,
+    manifest,
+    paths,
+    *,
+    filename: str = "improvement_vs_led.pdf",
+):
+    import matplotlib.pyplot as plt
+
+    fit_config = dict((manifest.get("config") or {}).get("fit") or {})
+    samples = int(fit_config.get("bootstrap_samples", 100))
+    base_seed = int(
+        ((manifest.get("config") or {}).get("validation") or {}).get("seed", 0)
+    )
+    available_methods = {row["method"] for row in test_rows}
+    models = [
+        method
+        for method in MODEL_ORDER
+        if method in available_methods and method not in {"led", "cfd"}
+    ]
+    voltages = sorted(
+        {_voltage(row) for row in test_rows if np.isfinite(_voltage(row))}
+    )
+    if not models or not voltages:
+        return
+
+    records = []
+    for voltage in voltages:
+        dataset_rows = [
+            row
+            for row in test_rows
+            if np.isfinite(_voltage(row))
+            and np.isclose(_voltage(row), voltage, rtol=0.0, atol=1e-9)
+        ]
+        dataset = next(
+            (row["dataset"] for row in dataset_rows if row["method"] == "led"),
+            None,
+        )
+        if dataset is None:
+            continue
+        reference = _residual(run, dataset, "led", "test")
+        if reference is None:
+            continue
+        for model in models:
+            residual = _residual(run, dataset, model, "test")
+            if residual is None:
+                continue
+            central, uncertainty, successful = _paired_absolute_improvement(
+                reference,
+                residual,
+                fit_config,
+                samples=samples,
+                seed=semantic_seed(
+                    base_seed,
+                    dataset,
+                    model,
+                    "paired_absolute_ctr_bootstrap",
+                ),
+            )
+            records.append(
+                {
+                    "dataset": dataset,
+                    "voltage_V": voltage,
+                    "method": model,
+                    "improvement_ps": central,
+                    "paired_bootstrap_uncertainty_ps": uncertainty,
+                    "bootstrap_successful": successful,
+                }
+            )
+    if not records:
+        return
+
+    csv_path = Path(run) / "csv" / "improvement_vs_led.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(records[0]))
+        writer.writeheader()
+        writer.writerows(records)
+
+    fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
+    for model_index, model in enumerate(models):
+        values, errors = [], []
+        for voltage in voltages:
+            row = next(
+                (
+                    item
+                    for item in records
+                    if item["method"] == model
+                    and np.isclose(
+                        item["voltage_V"],
+                        voltage,
+                        rtol=0.0,
+                        atol=1e-9,
+                    )
+                ),
+                None,
+            )
+            values.append(float(row["improvement_ps"]) if row else np.nan)
+            errors.append(
+                float(row["paired_bootstrap_uncertainty_ps"])
+                if row
+                else np.nan
+            )
+        values = np.asarray(values, dtype=float)
+        errors = np.asarray(errors, dtype=float)
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            continue
+        ax.errorbar(
+            np.asarray(voltages)[finite],
+            values[finite],
+            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
+            capsize=2.5,
+            label=LABELS.get(model, model),
+            **model_style(model, model_index),
+        )
+    ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
+    set_voltage_ticks(ax, voltages)
+    ax.set_xlabel("Voltage [V]")
+    ax.set_ylabel("Improvement [ps]")
+    ax.legend(loc="best", ncol=2)
+    clean_axis(ax, grid="y")
+    fig.tight_layout()
+    target = save_figure(fig, Path(output) / filename)
+    plt.close(fig)
+    paths.append(target)
 
 
 def _relative_improvement_plot(run, output, test_rows, manifest, paths):
@@ -622,9 +795,9 @@ def _relative_improvement_plot(run, output, test_rows, manifest, paths):
             **style,
         )
     ax.axhline(0.0, color="#7F7F7F", ls=":", lw=0.9)
-    ax.set_xticks(voltages)
-    ax.set_xlabel("Bias voltage [V]")
-    ax.set_ylabel("CTR improvement over LED [%]")
+    set_voltage_ticks(ax, voltages)
+    ax.set_xlabel("Voltage [V]")
+    ax.set_ylabel("Improvement [%]")
     ax.legend(loc="best", ncol=2)
     clean_axis(ax, grid="y")
     fig.tight_layout()
