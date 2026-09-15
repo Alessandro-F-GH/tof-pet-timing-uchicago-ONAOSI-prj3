@@ -21,8 +21,6 @@
       1,
       2
     ],
-    "adaptive_pool_length": 128,
-    "pooling": "avg_max",
     "dense_units": [
       32
     ]
