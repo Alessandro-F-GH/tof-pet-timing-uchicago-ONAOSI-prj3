@@ -183,7 +183,7 @@ def _xai_plot(output, artifact, mode, model, paths):
     clean_axis(bottom, grid="y")
 
     cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=colorbar_ax)
-    cbar.set_label("Relative importance")
+    cbar.set_label("Importance [a.u.]")
     target = save_figure(fig, output / f"xai_{artifact.parent.name}_{model}.pdf")
     plt.close(fig)
     paths.append(target)
