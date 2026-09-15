@@ -11,7 +11,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from .cnn import _device, _loader, _rmse
+from ._torch_common import device_from_config as _device, make_loader as _loader, rmse as _rmse
 from .spec import ModelSpec
 
 
