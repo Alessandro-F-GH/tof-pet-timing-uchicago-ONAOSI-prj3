@@ -19,11 +19,12 @@ from .plot_style import (
     MODEL_ORDER,
     SINGLE_COLUMN,
     clean_axis,
+    finish_voltage_axis,
     model_style,
     panel_label,
     paper_context,
+    plot_voltage_series,
     save_figure,
-    set_voltage_ticks,
     window_style,
 )
 from .splits import semantic_seed
@@ -474,7 +475,7 @@ def plot_ctr_vs_voltage(
 
     fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
     for method_index, method in enumerate(methods):
-        values, errors = [], []
+        values = []
         for voltage in voltages:
             row = next(
                 (
@@ -486,26 +487,14 @@ def plot_ctr_vs_voltage(
                 None,
             )
             values.append(_float(row.get("ctr_ps")) if row is not None else np.nan)
-            errors.append(_float(row.get("ctr_uncertainty_ps")) if row is not None else np.nan)
-        values = np.asarray(values, dtype=float)
-        errors = np.asarray(errors, dtype=float)
-        finite = np.isfinite(values)
-        if not np.any(finite):
-            continue
-        style = model_style(method, method_index)
-        ax.errorbar(
-            np.asarray(voltages)[finite],
-            values[finite],
-            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
-            capsize=2.5,
+        plot_voltage_series(
+            ax,
+            voltages,
+            values,
             label=LABELS.get(method, method),
-            **style,
+            style=model_style(method, method_index),
         )
-    set_voltage_ticks(ax, voltages)
-    ax.set_xlabel("Voltage [V]")
-    ax.set_ylabel("CTR [ps]")
-    ax.legend(loc="best", ncol=2)
-    clean_axis(ax, grid="y")
+    finish_voltage_axis(ax, voltages, ylabel="CTR [ps]")
     fig.tight_layout()
     target = save_figure(fig, output / filename)
     plt.close(fig)
@@ -687,25 +676,20 @@ def plot_improvement_vs_led(
                 if row
                 else np.nan
             )
-        values = np.asarray(values, dtype=float)
-        errors = np.asarray(errors, dtype=float)
-        finite = np.isfinite(values)
-        if not np.any(finite):
-            continue
-        ax.errorbar(
-            np.asarray(voltages)[finite],
-            values[finite],
-            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
-            capsize=2.5,
+        plot_voltage_series(
+            ax,
+            voltages,
+            values,
+            errors=errors,
             label=LABELS.get(model, model),
-            **model_style(model, model_index),
+            style=model_style(model, model_index),
         )
-    ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
-    set_voltage_ticks(ax, voltages)
-    ax.set_xlabel("Voltage [V]")
-    ax.set_ylabel("Improvement [ps]")
-    ax.legend(loc="best", ncol=2)
-    clean_axis(ax, grid="y")
+    finish_voltage_axis(
+        ax,
+        voltages,
+        ylabel="Improvement [ps]",
+        zero_line=True,
+    )
     fig.tight_layout()
     target = save_figure(fig, Path(output) / filename)
     plt.close(fig)
@@ -783,24 +767,20 @@ def _relative_improvement_plot(run, output, test_rows, manifest, paths):
             )
             values.append(float(row["relative_improvement_percent"]) if row else np.nan)
             errors.append(float(row["paired_bootstrap_uncertainty_percent"]) if row else np.nan)
-        values = np.asarray(values, dtype=float)
-        errors = np.asarray(errors, dtype=float)
-        finite = np.isfinite(values)
-        style = model_style(model, model_index)
-        ax.errorbar(
-            np.asarray(voltages)[finite],
-            values[finite],
-            yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
-            capsize=2.5,
+        plot_voltage_series(
+            ax,
+            voltages,
+            values,
+            errors=errors,
             label=LABELS.get(model, model),
-            **style,
+            style=model_style(model, model_index),
         )
-    ax.axhline(0.0, color="#7F7F7F", ls=":", lw=0.9)
-    set_voltage_ticks(ax, voltages)
-    ax.set_xlabel("Voltage [V]")
-    ax.set_ylabel("Improvement [%]")
-    ax.legend(loc="best", ncol=2)
-    clean_axis(ax, grid="y")
+    finish_voltage_axis(
+        ax,
+        voltages,
+        ylabel="Improvement [%]",
+        zero_line=True,
+    )
     fig.tight_layout()
     target = save_figure(fig, output / "relative_improvement_vs_voltage.pdf")
     plt.close(fig)
@@ -875,7 +855,7 @@ def plot_model_study_windows(
     with paper_context():
         fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
 
-        led_values, led_errors = [], []
+        led_values = []
         for voltage in voltages:
             row = next(
                 (
@@ -887,25 +867,19 @@ def plot_model_study_windows(
                 None,
             )
             led_values.append(_float(row.get("ctr_ps")) if row else np.nan)
-            led_errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
-        led_values = np.asarray(led_values, dtype=float)
-        led_errors = np.asarray(led_errors, dtype=float)
-        finite_led = np.isfinite(led_values)
-        if np.any(finite_led):
-            ax.errorbar(
-                np.asarray(voltages)[finite_led],
-                led_values[finite_led],
-                yerr=np.where(np.isfinite(led_errors[finite_led]), led_errors[finite_led], 0.0),
-                capsize=2.5,
-                label=LABELS["led"],
-                **model_style("led"),
-            )
+        plot_voltage_series(
+            ax,
+            voltages,
+            led_values,
+            label=LABELS["led"],
+            style=model_style("led"),
+        )
 
         for index, window in enumerate(windows):
             rows = window_rows.get(window)
             if not rows:
                 continue
-            values, errors = [], []
+            values = []
             for voltage in voltages:
                 row = next(
                     (
@@ -917,26 +891,15 @@ def plot_model_study_windows(
                     None,
                 )
                 values.append(_float(row.get("ctr_ps")) if row else np.nan)
-                errors.append(_float(row.get("ctr_uncertainty_ps")) if row else np.nan)
-            values = np.asarray(values, dtype=float)
-            errors = np.asarray(errors, dtype=float)
-            finite = np.isfinite(values)
-            if not np.any(finite):
-                continue
-            ax.errorbar(
-                np.asarray(voltages)[finite],
-                values[finite],
-                yerr=np.where(np.isfinite(errors[finite]), errors[finite], 0.0),
-                capsize=2.5,
+            plot_voltage_series(
+                ax,
+                voltages,
+                values,
                 label=str(window),
-                **window_style(model, index),
+                style=window_style(model, index),
             )
 
-        set_voltage_ticks(ax, voltages)
-        ax.set_xlabel("Voltage [V]")
-        ax.set_ylabel("CTR [ps]")
-        ax.legend(loc="best", ncol=2)
-        clean_axis(ax, grid="y")
+        finish_voltage_axis(ax, voltages, ylabel="CTR [ps]")
         fig.tight_layout()
         target = save_figure(fig, output / filename)
         plt.close(fig)
