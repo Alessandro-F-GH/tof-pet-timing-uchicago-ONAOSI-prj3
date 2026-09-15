@@ -561,10 +561,9 @@ def _evaluate_final_datasets(
                     )
                 else:
                     logger.info(
-                        "Result | %s | %s | resumed | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                        "Result | %s | %s | resumed | blind CTR=%.3f ± %.3f ps",
                         name,
                         LABELS.get(model_name, model_name),
-                        float(selection_row["selection_score"]),
                         float(test_row_existing["ctr_ps"]),
                         float(test_row_existing["ctr_uncertainty_ps"]),
                     )
