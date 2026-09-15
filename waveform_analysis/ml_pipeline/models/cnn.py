@@ -1,14 +1,21 @@
 from __future__ import annotations
-import copy,itertools,os
+import copy,itertools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-
 import numpy as np, torch
 from torch import nn
-from torch.utils.data import DataLoader,TensorDataset
+from ._torch_common import (
+    configure_reproducibility as _configure_reproducibility,
+    device_from_config as _device,
+    gradient_norm as _gradient_norm,
+    internal_early_stopping_split as _internal_early_stopping_split,
+    make_loader as _loader,
+    predict_tensor as _predict_tensor,
+    rmse as _rmse,
+    rmse_loss as _rmse_loss,
+)
 from .spec import ModelSpec
 
 def _dense_head(dense_units):
@@ -59,47 +66,6 @@ def candidates(config):
             p.get("batch_size",[training.get("batch_size",64)]),
         )
     ]
-def _configure_reproducibility(seed):
-    value=int(seed); np.random.seed(value); torch.manual_seed(value)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(value)
-    torch.use_deterministic_algorithms(True)
-    if torch.backends.cudnn.is_available():
-        torch.backends.cudnn.benchmark=False; torch.backends.cudnn.deterministic=True
-    return value
-
-def _device(config):
-    requested=str(config.get("training",{}).get("device","auto")).lower(); return torch.device("cuda" if torch.cuda.is_available() else "cpu") if requested=="auto" else torch.device(requested)
-def _loader(x,y,batch,*,shuffle,seed):
-    g=torch.Generator().manual_seed(int(seed)); return DataLoader(TensorDataset(torch.from_numpy(np.ascontiguousarray(x,dtype=np.float32)),torch.from_numpy(np.asarray(y,dtype=np.float32))),batch_size=int(batch),shuffle=shuffle,generator=g)
-def _predict_tensor(model,x,device,batch):
-    loader=DataLoader(torch.from_numpy(np.ascontiguousarray(x,dtype=np.float32)),batch_size=int(batch),shuffle=False); values=[]; model.eval()
-    with torch.no_grad():
-        for pair in loader: values.append(model(pair.to(device)).detach().cpu().numpy())
-    return np.concatenate(values).astype(np.float64,copy=False)
-def _rmse(residual):
-    values=np.asarray(residual,dtype=np.float64); return float(np.sqrt(np.mean(values**2)))
-def _rmse_loss(prediction,target):
-    return torch.sqrt(torch.mean((prediction-target)**2))
-
-def _gradient_norm(model):
-    total=0.0
-    for parameter in model.parameters():
-        if parameter.grad is not None:
-            value=parameter.grad.detach().norm(2).item()
-            total+=value*value
-    return float(total**0.5)
-
-def _internal_early_stopping_split(x,y,fraction,seed):
-    x=np.asarray(x,dtype=np.float32); y=np.asarray(y,dtype=np.float64)
-    if x.shape[0]!=y.shape[0]: raise ValueError("CNN train_x and train_target must contain the same number of events")
-    n=int(y.shape[0]); fraction=float(fraction)
-    if not 0.0<fraction<1.0: raise ValueError("training.early_stopping_fraction must lie in (0, 1)")
-    if n<2: raise ValueError("CNN training requires at least two training events")
-    n_early=max(1,min(n-1,int(round(n*fraction))))
-    order=np.random.default_rng(int(seed)).permutation(n)
-    early_idx=order[:n_early]; fit_idx=order[n_early:]
-    return x[fit_idx],y[fit_idx],x[early_idx],y[early_idx]
-
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None):
     training_seed=_configure_reproducibility(seed)
     training=config.get("training",{}); verbose=bool(config.get("verbose",False)); logger=config.get("_logger"); device=_device(config)
