@@ -1148,17 +1148,6 @@ def _run_model_comparison_experiment(
         sub["preprocessing"]["prepared_dir"] = str(
             base_prepared / "_model_comparison" / window_name
         )
-        sub["analyses"] = {
-            "led_threshold_scan": {
-                "enabled": False,
-                "selection_model": "mlp",
-            },
-            "window_scan": {
-                "enabled": False,
-                "right_limits_ns": [],
-                "models": [],
-            },
-        }
         sub["_config_fingerprint"] = canonical_hash(public_config(sub))
         subrun = _run_standard_study(
             sub,
