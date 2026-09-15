@@ -25,7 +25,8 @@
     "pooling": "avg_max",
     "dense_units": [
       32
-    ]
+    ],
+    "detector_fusion_layer": 1
   },
   "parameters": {
     "learning_rate": [
