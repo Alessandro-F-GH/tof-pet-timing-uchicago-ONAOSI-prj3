@@ -1,6 +1,6 @@
 # Waveform timing pipeline
 
-The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**. Every experiment has exactly one configured `mode`: `energy_to_energy` or `timing_to_timing`. Optional CFD evaluation is controlled by the experiment-level boolean `cfd`.
+The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**. Every experiment has exactly one configured `mode`: `energy_to_energy` or `timing_to_timing`. Optional CFD evaluation is controlled by the experiment-level boolean `cfd`. The active ML registry contains only `mlp` and `onishi_cnn`.
 
 ## 1. Event selection
 
@@ -201,7 +201,7 @@ Study outputs are type-separated from creation time:
 - `plots/corrections/<dataset>/`: top/worst correction figures;
 - `csv/corrections/<dataset>/`: corresponding correction ranking tables;
 - `plots/xai/<model>/`: model-grouped XAI plots; MLP and Onishi CNN importance is input-gradient importance aggregated onto the exact waveform time axis;
-- `csv/xai/<model>/`: tabular XAI/shapelet exports only when present;
+- `csv/xai/<model>/`: tabular XAI exports only when present;
 - `plots/model_output_diagnostics/`: publication-style prediction-vs-target and model-output correlation figures reconstructed from saved model-output/residual arrays.
 
 Reporting directories are created lazily, so absent diagnostics (for example XAI for a model without an explainer) do not leave empty folders behind.

@@ -1,8 +1,0 @@
-{
-  "model": "difference_knn",
-  "parameters": {
-    "n_neighbors": [3, 5, 10, 20, 50, 100],
-    "weights": ["uniform", "distance"]
-  },
-  "n_jobs": -1
-}

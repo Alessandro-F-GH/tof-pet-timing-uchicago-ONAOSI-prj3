@@ -24,7 +24,6 @@ from .plot_style import (
     paper_context,
     save_figure,
 )
-from .shapelet_reporting import plot_fixed_shapelets
 from .splits import semantic_seed
 from .view import inverse_pair, waveform_view
 
@@ -680,14 +679,6 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
                 key=lambda p: voltage_from_name(p.parent.name),
             ):
                 _xai_plot(xai_plot_dir, artifact, mode, model, paths)
-
-            if model == "difference_shapelet":
-                shapelet_plot_dir = xai_plot_dir / "shapelets"
-                shapelet_csv_dir = csv_categories["xai"] / model / "shapelets"
-                for dataset in datasets:
-                    plot_fixed_shapelets(
-                        run, shapelet_plot_dir, shapelet_csv_dir, dataset, paths
-                    )
 
             for dataset in datasets:
                 top, worst = _correction_rankings(run, model, dataset)
