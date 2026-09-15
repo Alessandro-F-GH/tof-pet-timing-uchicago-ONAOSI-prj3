@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _rmse_loss, candidates
+from .cnn import _configure_reproducibility, _device, _gradient_norm, _internal_early_stopping_split, _loader, _predict_tensor, _rmse, _training_loss, candidates
 from .spec import ModelSpec
 
 
@@ -148,12 +148,14 @@ def fit(
         lr=float(params["learning_rate"]),
         weight_decay=float(params["weight_decay"]),
     )
-    loss_fn = _rmse_loss
+    loss_name, loss_fn, huber_delta = _training_loss(params)
     loader = _loader(fit_x, fit_target, batch, shuffle=True, seed=training_seed)
     output_limit = config.get("_prediction_max_abs_ps")
     if verbose and logger is not None:
+        loss_label = loss_name.upper() if huber_delta is None else f"HUBER(delta={huber_delta:g} ps)"
         logger.info(
-            "cnn_2d training | loss=RMSE | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
+            "cnn_2d training | loss=%s | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
+            loss_label,
             float(params["learning_rate"]),
             float(params["weight_decay"]),
             batch,
@@ -226,7 +228,8 @@ def fit(
         device=str(device),
         metadata={
             "best_epoch": int(best_epoch),
-            "training_loss": "rmse",
+            "training_loss": loss_name,
+            "huber_delta_ps": huber_delta,
             "best_early_stopping_rmse_ps": float(best_score),
             "early_stopping_metric": "internal_train_holdout_rmse",
             "early_stopping_fraction": early_fraction,
