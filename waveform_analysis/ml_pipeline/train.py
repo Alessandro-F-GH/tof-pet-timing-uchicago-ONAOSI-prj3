@@ -114,6 +114,7 @@ def search_model(
         model_parameters = dict(parameters)
         runtime_model_config = copy.deepcopy(model_config)
         runtime_model_config["_fit_config"] = fit_config
+        runtime_model_config["_early_stopping_seed"] = int(seed)
         fitted = _fit_once(
             spec,
             runtime_model_config,
@@ -141,7 +142,6 @@ def search_model(
                 "input_samples_after_mask": int(np.count_nonzero(sample_mask)),
                 "input_samples_removed": int(sample_mask.size - np.count_nonzero(sample_mask)),
                 "training_events": int(train_target.size),
-                "training_uses_full_split": True,
             }
         )
         return fitted
@@ -241,7 +241,7 @@ def save_model(spec, fitted, directory: Path, parameters):
             "parameters": parameters,
             "training": fitted.metadata,
             "sample_mask_file": sample_mask_file,
-            "selection_protocol": "full_training_split_validation_ctr_selected_model_used_directly_without_refit",
+            "selection_protocol": "internal_train_holdout_early_stopping_validation_ctr_model_selection_selected_checkpoint_used_directly_without_refit",
             "prediction_definition": prediction_definition,
         },
     )
