@@ -15,7 +15,6 @@ from .common import voltage_from_name
 from .plot_style import (
     DOUBLE_COLUMN,
     LABELS,
-    clean_axis,
     finish_voltage_axis,
     model_style,
     paper_context,
