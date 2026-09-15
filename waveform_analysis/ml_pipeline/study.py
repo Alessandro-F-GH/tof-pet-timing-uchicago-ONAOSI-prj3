@@ -346,8 +346,11 @@ def _base_manifest(config, concatenate, roots, analyses):
         "mode": str(config["mode"]),
         "concatenate_datasets": concatenate,
         "test_used_for_model_selection": False,
-        "model_selection_metric": "validation_ctr",
-        "selected_model_policy": "validation-selected trained model used directly without refit",
+        "model_selection_metric": "validation_ctr_for_tuned_models_only",
+        "model_policies": {
+            "mlp": "grid search on validation CTR; selected trained checkpoint used directly without refit",
+            "onishi_cnn": "fixed Onishi reference configuration; train-only fit; validation not used; no refit",
+        },
         "sample_mask_policy": {
             "derived_from": "training_split_only",
             "constant_fraction": SAMPLE_CONSTANT_FRACTION,
