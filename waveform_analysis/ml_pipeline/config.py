@@ -4,7 +4,7 @@ import copy, json
 from pathlib import Path
 from typing import Any
 
-from .common import canonical_hash
+from .common import canonical_hash, voltage_from_name
 
 CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
 
@@ -380,8 +380,30 @@ def discover_root_files(config):
     data = config["data"]
     root = Path(data["root_folder"])
     pattern = str(data.get("root_glob", "*.root"))
-    files = sorted(root.rglob(pattern) if bool(data.get("recursive", False)) else root.glob(pattern))
-    return [p.resolve() for p in files if p.is_file()]
+    files = sorted(
+        root.rglob(pattern)
+        if bool(data.get("recursive", False))
+        else root.glob(pattern)
+    )
+    files = [p.resolve() for p in files if p.is_file()]
+    experiment = config.get("experiment") or {}
+    if str(experiment.get("type", "standard")).lower() == "threshold_scan":
+        target = float(experiment["voltage_V"])
+        files = [
+            path
+            for path in files
+            if np_isfinite_voltage_match(path.stem, target)
+        ]
+    return files
+
+
+def np_isfinite_voltage_match(name: str, target: float) -> bool:
+    import math
+    value = float(voltage_from_name(name))
+    return (
+        math.isfinite(value)
+        and math.isclose(value, float(target), rel_tol=0.0, abs_tol=1e-9)
+    )
 
 
 def public_config(config):
