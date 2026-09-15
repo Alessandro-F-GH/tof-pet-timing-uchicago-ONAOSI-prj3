@@ -24,7 +24,7 @@ LABELS = {
     "linear_svr": "Linear SVR",
     "cnn": "CNN",
     "mlp": "Antisymmetric MLP",
-    "onishi_cnn": "Onishi CNN",
+    "onishi_cnn": "Onishi paired CNN",
     "minirocket": "MiniRocket",
     "difference_knn": "Difference k-NN",
 }
