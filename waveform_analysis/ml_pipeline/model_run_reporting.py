@@ -16,10 +16,11 @@ from .plot_style import (
     DOUBLE_COLUMN,
     LABELS,
     clean_axis,
+    finish_voltage_axis,
     model_style,
     paper_context,
+    plot_voltage_series,
     save_figure,
-    set_voltage_ticks,
 )
 from .reporting import plot_ctr_vs_voltage, read_results
 from .splits import semantic_seed
@@ -151,20 +152,20 @@ def _plot_improvement(
         else:
             y = np.asarray([float(row["improvement_ps"]) for row in subset])
             e = np.asarray([float(row["uncertainty_ps"]) for row in subset])
-        ax.errorbar(
+        plot_voltage_series(
+            ax,
             x,
             y,
-            yerr=np.where(np.isfinite(e), e, 0.0),
-            capsize=2.5,
+            errors=e,
             label=LABELS.get(model, model),
-            **model_style(model, index),
+            style=model_style(model, index),
         )
-    ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
-    set_voltage_ticks(ax, all_voltage)
-    ax.set_xlabel("Voltage [V]")
-    ax.set_ylabel("Improvement [%]" if relative else "Improvement [ps]")
-    ax.legend(loc="best", ncol=2)
-    clean_axis(ax, grid="y")
+    finish_voltage_axis(
+        ax,
+        all_voltage,
+        ylabel="Improvement [%]" if relative else "Improvement [ps]",
+        zero_line=True,
+    )
     fig.tight_layout()
     target = save_figure(
         fig,
@@ -210,18 +211,20 @@ def _plot_pairwise_model_improvement(
             dtype=float,
         )
         fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
-        ax.errorbar(
+        plot_voltage_series(
+            ax,
             x,
             y,
-            yerr=np.where(np.isfinite(e), e, 0.0),
-            capsize=2.5,
-            **model_style(model_a),
+            errors=e,
+            style=model_style(model_a),
         )
-        ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
-        set_voltage_ticks(ax, x)
-        ax.set_xlabel("Voltage [V]")
-        ax.set_ylabel("Improvement [%]")
-        clean_axis(ax, grid="y")
+        finish_voltage_axis(
+            ax,
+            x,
+            ylabel="Improvement [%]",
+            legend=False,
+            zero_line=True,
+        )
         fig.tight_layout()
         target = save_figure(
             fig,
