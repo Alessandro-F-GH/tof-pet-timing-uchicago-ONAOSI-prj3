@@ -211,6 +211,7 @@ All report figures use one centralized publication style (`ml_pipeline/plot_styl
 The experiment persists the numerical data needed to redraw the figures: blind residuals, model outputs, XAI arrays, split/event identifiers and experiment-specific comparison CSV files. The first report render also caches the selected top/worst waveform examples inside the run artifacts. Therefore figure styling can be changed later without retraining models or rerunning the experiment.
 
 Plot generation is intentionally separated from training. The `--remake-plots` run option deletes and recreates only plot directories from persisted numerical artifacts; it does not rerun event selection, preprocessing, model selection, fitting, or blind evaluation. Model-comparison root CTR-vs-voltage figures use the same canonical paper style as ordinary studies and include LED as the reference curve alongside Antisymmetric MLP and Onishi paired CNN.
+Model-comparison roots also include `improvement_vs_led_onishi.pdf` and `improvement_vs_led_wide.pdf`, showing absolute CTR improvement `CTR_LED - CTR_model` in ps for both MLP and Onishi CNN with paired-event bootstrap uncertainties. Plot axes use concise paper-style labels with explicit units, and voltage axes show integer tick labels only.
 
 The paired relative improvement is computed as
 
