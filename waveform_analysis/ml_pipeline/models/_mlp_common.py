@@ -51,13 +51,17 @@ def _validate_architecture(architecture) -> list[int]:
 
 
 class DenseStack(nn.Module):
-    def __init__(self, input_dim: int, architecture, activation: str):
+    def __init__(self, input_dim: int, architecture, activation: str, batch_norm: bool = True):
         super().__init__()
         widths = _validate_architecture(architecture)
+        self.batch_norm = bool(batch_norm)
         layers: list[nn.Module] = []
         incoming = int(input_dim)
         for width in widths:
-            layers.extend([nn.Linear(incoming, width), _activation(activation)])
+            layers.append(nn.Linear(incoming, width))
+            if self.batch_norm:
+                layers.append(nn.BatchNorm1d(width))
+            layers.append(_activation(activation))
             incoming = width
         layers.append(nn.Linear(incoming, 1))
         self.network = nn.Sequential(*layers)
@@ -127,8 +131,9 @@ def fit_mlp(
 
     architecture = _validate_architecture(params["architecture"])
     activation = str(params["activation"]).strip().lower()
+    batch_norm = bool(config.get("batch_norm", True))
     model = model_factory(
-        int(train_x.shape[-1]), architecture, activation
+        int(train_x.shape[-1]), architecture, activation, batch_norm
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -142,12 +147,13 @@ def fit_mlp(
 
     if verbose and logger is not None:
         logger.info(
-            "%s training | loss=RMSE | architecture=%s | activation=%s | "
+            "%s training | loss=RMSE | architecture=%s | activation=%s | batch_norm=%s | "
             "lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | "
             "early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             model_name,
             architecture,
             activation,
+            batch_norm,
             float(params["learning_rate"]),
             float(params["weight_decay"]),
             batch,
@@ -241,6 +247,7 @@ def fit_mlp(
         "early_stopping_split_seed": split_seed,
         "architecture": architecture,
         "activation": activation,
+        "batch_norm": batch_norm,
         "learning_rate": float(params["learning_rate"]),
         "weight_decay": float(params["weight_decay"]),
         "batch_size": batch,
