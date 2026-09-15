@@ -11,7 +11,7 @@ from .ml_pipeline.data import preprocess_selected
 from .ml_pipeline.event_selection import select_events
 from .ml_pipeline.prepared_data import prepare_ml_dataset
 from .ml_pipeline.preflight import confirm_overwrite, inspect_preprocessing, study_overwrite_path
-from .ml_pipeline.plot_rebuild import rebuild_study_plots
+from .ml_pipeline.plot_rebuild import rebuild_experiment_plots
 from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
@@ -29,6 +29,11 @@ def _parser() -> argparse.ArgumentParser:
     mode = run.add_mutually_exclusive_group()
     mode.add_argument("--overwrite", action="store_true")
     mode.add_argument("--resume", action="store_true")
+    mode.add_argument(
+        "--remake-plots",
+        action="store_true",
+        help="recreate plots from existing run artifacts without rerunning preprocessing or training",
+    )
     run.add_argument("--rebuild-preprocessing", action="store_true")
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
@@ -68,7 +73,7 @@ def _prepare(config, rebuild: bool) -> int:
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "report":
-        for path in rebuild_study_plots(
+        for path in rebuild_experiment_plots(
             args.run_dir,
             args.output_dir,
             latex_tables=args.latex_tables,
@@ -76,6 +81,11 @@ def main() -> None:
             print(path)
         return
     config = load_config(args.config, PROJECT_ROOT)
+    if args.command == "run" and args.remake_plots:
+        run_dir = Path(config["experiment"]["output_dir"])
+        for path in rebuild_experiment_plots(run_dir):
+            print(path)
+        return
     if args.command == "check":
         print(json.dumps({"config": "OK", "root_files": [str(path) for path in discover_root_files(config)], "resolved": public_config(config)}, indent=2))
         return

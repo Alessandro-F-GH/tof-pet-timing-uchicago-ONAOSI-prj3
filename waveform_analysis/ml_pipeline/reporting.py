@@ -454,7 +454,13 @@ def _model_output_plot(output, run, mode, dataset, model, paths):
     paths.append(target)
 
 
-def _ctr_vs_voltage_plot(output: Path, test_rows: list[dict[str, Any]], paths: list[Path]) -> None:
+def plot_ctr_vs_voltage(
+    output: Path,
+    test_rows: list[dict[str, Any]],
+    paths: list[Path],
+    *,
+    filename: str = "ctr_vs_voltage.pdf",
+) -> None:
     import matplotlib.pyplot as plt
 
     available_methods = {r["method"] for r in test_rows}
@@ -499,7 +505,7 @@ def _ctr_vs_voltage_plot(output: Path, test_rows: list[dict[str, Any]], paths: l
     ax.legend(loc="best", ncol=2)
     clean_axis(ax, grid="y")
     fig.tight_layout()
-    target = save_figure(fig, output / "ctr_vs_voltage.pdf")
+    target = save_figure(fig, output / filename)
     plt.close(fig)
     paths.append(target)
 
@@ -649,7 +655,7 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
 
     with paper_context():
         if not concatenated:
-            _ctr_vs_voltage_plot(plot_root, test_rows, paths)
+            plot_ctr_vs_voltage(plot_root, test_rows, paths)
             _relative_improvement_plot(run, plot_root, test_rows, manifest, paths)
 
         for dataset in datasets:
