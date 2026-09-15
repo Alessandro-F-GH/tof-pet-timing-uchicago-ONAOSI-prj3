@@ -87,10 +87,7 @@ def main() -> None:
         print(f"Prepared {_prepare(config, args.rebuild)} source dataset(s)")
         return
     experiment_type = str(config["experiment"].get("type", "standard"))
-    include_prepared = (
-        experiment_type == "standard"
-        and not bool(config["analyses"]["led_threshold_scan"]["enabled"])
-    )
+    include_prepared = experiment_type == "standard"
     preflight = inspect_preprocessing(
         config,
         rebuild=args.rebuild_preprocessing,
