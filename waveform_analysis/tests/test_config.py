@@ -46,17 +46,19 @@ class ConfigTests(unittest.TestCase):
         validate_config(valid)
 
 
-    def test_model_comparison_requires_final_model_pair(self):
+    def test_model_study_requires_single_model(self):
         bad = copy.deepcopy(self.config)
-        bad["experiment"]["type"] = "model_comparison"
+        bad["experiment"]["type"] = "model_study"
         bad["experiment"]["fixed_led_threshold_mV"] = 15.0
-        bad["experiment"]["windows"] = {
-            "onishi": {"start": -1.5, "end": 2.0},
-            "wide": {"start": -2.0, "end": 30.0},
-        }
-        bad["models"] = {"mlp": self.config["models"]["mlp"]}
-        with self.assertRaisesRegex(ConfigError, "mlp.*onishi_cnn"):
+        with self.assertRaisesRegex(ConfigError, "exactly one"):
             validate_config(bad)
+
+    def test_model_study_uses_profile_windows(self):
+        valid = copy.deepcopy(self.config)
+        valid["experiment"]["type"] = "model_study"
+        valid["experiment"]["fixed_led_threshold_mV"] = 15.0
+        valid["models"] = {"mlp": self.config["models"]["mlp"]}
+        validate_config(valid)
 
     def test_threshold_scan_requires_voltage(self):
         bad = copy.deepcopy(self.config)
@@ -65,33 +67,13 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "voltage_V"):
             validate_config(bad)
 
-    def test_model_comparison_accepts_arbitrary_window_names(self):
-        valid = copy.deepcopy(self.config)
-        valid["experiment"].update(
-            {
-                "type": "model_comparison",
-                "fixed_led_threshold_mV": 15.0,
-                "windows": {
-                    "onishi_window": {"start": -1.5, "end": 2.0},
-                    "wide_window": {"start": -2.0, "end": 30.0},
-                },
-            }
-        )
-        validate_config(valid)
-
-    def test_model_comparison_requires_onishi_reference_bounds(self):
+    def test_model_study_requires_profile_windows(self):
         bad = copy.deepcopy(self.config)
-        bad["experiment"].update(
-            {
-                "type": "model_comparison",
-                "fixed_led_threshold_mV": 15.0,
-                "windows": {
-                    "short_window": {"start": -1.0, "end": 2.0},
-                    "wide_window": {"start": -2.0, "end": 30.0},
-                },
-            }
-        )
-        with self.assertRaisesRegex(ConfigError, "reference window"):
+        bad["experiment"]["type"] = "model_study"
+        bad["experiment"]["fixed_led_threshold_mV"] = 15.0
+        bad["models"] = {"mlp": self.config["models"]["mlp"]}
+        bad["ml_input"].pop("windows", None)
+        with self.assertRaisesRegex(ConfigError, "ml_input.windows"):
             validate_config(bad)
 
     def test_obsolete_analyses_section_is_rejected(self):
