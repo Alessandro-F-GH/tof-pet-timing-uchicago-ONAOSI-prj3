@@ -210,6 +210,8 @@ All report figures use one centralized publication style (`ml_pipeline/plot_styl
 
 The experiment persists the numerical data needed to redraw the figures: blind residuals, model outputs, XAI arrays, split/event identifiers and experiment-specific comparison CSV files. The first report render also caches the selected top/worst waveform examples inside the run artifacts. Therefore figure styling can be changed later without retraining models or rerunning the experiment.
 
+Plot generation is intentionally separated from training. The `--remake-plots` run option deletes and recreates only plot directories from persisted numerical artifacts; it does not rerun event selection, preprocessing, model selection, fitting, or blind evaluation. Model-comparison root CTR-vs-voltage figures use the same canonical paper style as ordinary studies and include LED as the reference curve alongside Antisymmetric MLP and Onishi paired CNN.
+
 The paired relative improvement is computed as
 
 `100 * (CTR_LED - CTR_model) / CTR_LED`
@@ -234,7 +236,16 @@ The reporting histograms are presentation views and use a compact display interv
 python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/timing.json
 python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/timing.json
 python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/timing.json --overwrite
-python -m waveform_analysis.cli report --run-dir waveform_analysis/results/studies/complete_timing
+
+# recreate figures only from saved CSV/NPY/model-output artifacts
+python -m waveform_analysis.cli run \
+  --config waveform_analysis/config/experiments/timing.json \
+  --remake-plots
+
+# equivalent run-directory interface; works for standard, model-comparison,
+# and threshold-scan experiment roots
+python -m waveform_analysis.cli report \
+  --run-dir waveform_analysis/results/studies/complete_timing
 
 # optionally render into a separate directory without changing the run data
 python -m waveform_analysis.cli report \
