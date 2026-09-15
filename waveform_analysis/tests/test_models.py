@@ -4,6 +4,7 @@ import numpy as np
 from waveform_analysis.ml_pipeline.models.cnn import (
     CNNArtifact,
     SharedScorerCNN,
+    _correlation_loss,
     fit as fit_cnn,
     predict as predict_cnn,
 )
@@ -174,6 +175,18 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertEqual(
             set(rows[0]),
             {"architecture", "activation", "learning_rate", "batch_size", "weight_decay"},
+        )
+
+
+    def test_correlation_loss_penalizes_collapsed_predictions(self):
+        import torch
+
+        target = torch.tensor([-2.0, -1.0, 1.0, 2.0])
+        perfect = target.clone()
+        collapsed = torch.zeros_like(target)
+        self.assertLess(
+            float(_correlation_loss(perfect, target)),
+            float(_correlation_loss(collapsed, target)),
         )
 
     def test_corrected_timing_is_slide_target_minus_prediction(self):
