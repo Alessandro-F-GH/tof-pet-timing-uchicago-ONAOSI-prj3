@@ -14,6 +14,16 @@ from waveform_analysis.ml_pipeline.models.cnn_2d import (
     predict as predict_cnn_2d,
 )
 from waveform_analysis.ml_pipeline.models.linear_svr import fit as fit_svr, predict as predict_svr
+from waveform_analysis.ml_pipeline.models.mlp import (
+    MLPArtifact,
+    SharedScorerMLP,
+    candidates as mlp_candidates,
+    predict as predict_mlp,
+)
+from waveform_analysis.ml_pipeline.models.mlp_2d import (
+    JointPairMLP,
+    predict as predict_mlp_2d,
+)
 from waveform_analysis.ml_pipeline.view import corrected_timing_residual
 
 
@@ -131,6 +141,39 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertEqual(importance.shape, (64,))
         self.assertTrue(np.all(np.isfinite(prediction)))
         self.assertTrue(np.all(np.isfinite(importance)))
+
+
+    def test_mlp_pair_antisymmetry(self):
+        rng = np.random.default_rng(16)
+        pair = rng.normal(size=(8, 2, 24)).astype(np.float32)
+        artifact = MLPArtifact(SharedScorerMLP(24, [8, 4], "silu"), "cpu", {})
+        forward = predict_mlp(artifact, pair)
+        reverse = predict_mlp(artifact, pair[:, ::-1, :])
+        np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
+
+    def test_mlp_2d_joint_pair_forward_shape(self):
+        rng = np.random.default_rng(17)
+        pair = rng.normal(size=(7, 2, 24)).astype(np.float32)
+        artifact = MLPArtifact(JointPairMLP(24, [8, 4], "relu"), "cpu", {})
+        prediction = predict_mlp_2d(artifact, pair)
+        self.assertEqual(prediction.shape, (7,))
+        self.assertTrue(np.all(np.isfinite(prediction)))
+
+    def test_mlp_candidate_grid_uses_requested_hyperparameters(self):
+        config = {
+            "parameters": {
+                "architecture": [[32], [64, 32]],
+                "activation": ["relu", "silu"],
+                "learning_rate": [1e-3, 5e-4],
+                "batch_size": [32, 64],
+            }
+        }
+        rows = mlp_candidates(config)
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(
+            set(rows[0]),
+            {"architecture", "activation", "learning_rate", "batch_size"},
+        )
 
     def test_corrected_timing_is_slide_target_minus_prediction(self):
         target = np.asarray([35.0, -20.0, 5.0])
