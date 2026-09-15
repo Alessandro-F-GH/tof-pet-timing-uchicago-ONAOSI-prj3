@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from .analyses import make_analysis_plots
 from .latex_tables import make_latex_tables
 from .model_output_reporting import make_model_output_reports
 from .plot_style import LABELS
@@ -41,7 +40,6 @@ def rebuild_study_plots(
             labels=LABELS,
         )
     )
-    paths.extend(make_analysis_plots(run, plot_root / "analyses"))
     if latex_tables:
         table_root = destination / "latex_tables"
         _reset(table_root)
