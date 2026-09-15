@@ -10,12 +10,11 @@ from typing import Any
 
 import numpy as np
 
-from waveform_analysis.ml_pipeline.plot_style import set_voltage_ticks
-
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from waveform_analysis.ml_pipeline.common import voltage_from_name
+from waveform_analysis.ml_pipeline.plot_style import set_voltage_ticks
 from waveform_analysis.ml_pipeline.reporting import LABELS, MODEL_ORDER
 
 
