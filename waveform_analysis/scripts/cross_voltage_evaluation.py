@@ -9,22 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import joblib
 import numpy as np
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from waveform_analysis.ml_pipeline.dataset import load_prepared_dataset
-from waveform_analysis.ml_pipeline.models import get_model
-from waveform_analysis.ml_pipeline.models.cnn import CNNArtifact, SharedScorerCNN
-from waveform_analysis.ml_pipeline.models.cnn_2d import CNN2DArtifact, JointPairCNN2D
-from waveform_analysis.ml_pipeline.models.difference_knn import DifferenceKNNArtifact
-from waveform_analysis.ml_pipeline.models.difference_shapelet import (
-    DifferenceShapeletArtifact,
-    DifferenceShapeletRegressor,
-)
-from waveform_analysis.ml_pipeline.models.linear_svr import LinearSVRArtifact
+from waveform_analysis.ml_pipeline.models import get_model, model_names
+from waveform_analysis.ml_pipeline.models.mlp import MLPArtifact, SharedScorerMLP
+from waveform_analysis.ml_pipeline.models.onishi_cnn import OnishiCNNArtifact, OnishiPairedCNN
 from waveform_analysis.ml_pipeline.reporting import LABELS, MODEL_ORDER
 from waveform_analysis.ml_pipeline.sample_mask import apply_sample_mask
 from waveform_analysis.ml_pipeline.splits import semantic_seed
@@ -125,7 +118,8 @@ def _study_layout(run: Path, requested_models: list[str] | None):
     available = {
         name
         for name in trained
-        if all((run / "models" / dataset / name).is_dir() for dataset in datasets)
+        if name in set(model_names())
+        and all((run / "models" / dataset / name).is_dir() for dataset in datasets)
     }
     if requested_models:
         missing = sorted(set(requested_models) - available)
@@ -177,55 +171,45 @@ def _load_model(run: Path, dataset: str, model_name: str, manifest: dict[str, An
     model_config = ((manifest.get("config") or {}).get("models") or {}).get(model_name) or {}
     training_metadata = dict(metadata.get("training") or {})
 
-    if model_name == "linear_svr":
-        artifact = LinearSVRArtifact(joblib.load(model_dir / "model.joblib"), training_metadata)
-    elif model_name == "difference_knn":
-        artifact = DifferenceKNNArtifact(joblib.load(model_dir / "model.joblib"), training_metadata)
-    elif model_name == "cnn":
-        checkpoint = _torch_checkpoint(model_dir / "model.pt")
-        model = SharedScorerCNN(model_config.get("architecture", {}))
+    checkpoint = _torch_checkpoint(model_dir / "model.pt")
+
+    input_samples = (
+        int(np.count_nonzero(sample_mask))
+        if sample_mask is not None
+        else int(training_metadata["input_samples_after_mask"])
+    )
+
+    if model_name == "mlp":
+        parameters = dict(metadata.get("parameters") or {})
+        architecture = parameters.get("architecture", training_metadata.get("architecture"))
+        activation = parameters.get("activation", training_metadata.get("activation", "silu"))
+        if architecture is None:
+            raise ValueError(f"{model_name}: missing saved MLP architecture")
+        model = SharedScorerMLP(input_samples, architecture, str(activation))
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
-        artifact = CNNArtifact(model, "cpu", dict(checkpoint.get("metadata") or training_metadata))
-    elif model_name == "cnn_2d":
-        checkpoint = _torch_checkpoint(model_dir / "model.pt")
-        model = JointPairCNN2D(model_config.get("architecture", {}))
-        model.load_state_dict(checkpoint["state_dict"])
-        model.eval()
-        artifact = CNN2DArtifact(model, "cpu", dict(checkpoint.get("metadata") or training_metadata))
-    elif model_name == "difference_shapelet":
-        checkpoint = _torch_checkpoint(model_dir / "model.pt")
-        archive = model_dir / "learned_shapelets.npz"
-        if not archive.is_file():
-            raise FileNotFoundError(f"Missing learned shapelet archive: {archive}")
-        initial_shapelets = []
-        starts = []
-        with np.load(archive) as data:
-            input_time_ps = np.asarray(data.get("input_time_ps", []), dtype=np.float64)
-            group = 0
-            while f"group_{group}_shapelets" in data:
-                initial_shapelets.append(np.asarray(data[f"group_{group}_shapelets"], dtype=np.float32))
-                starts.append(np.asarray(data[f"group_{group}_starts_samples"], dtype=np.int64))
-                group += 1
-        architecture = model_config.get("architecture", {})
-        model = DifferenceShapeletRegressor(
-            initial_shapelets,
-            starts,
-            dense_units=[int(value) for value in architecture.get("dense_units", [32, 16])],
-            dropout=float(architecture.get("dropout", 0.05)),
+        artifact = MLPArtifact(
+            model,
+            "cpu",
+            dict(checkpoint.get("metadata") or training_metadata),
         )
+    elif model_name == "onishi_cnn":
+        import torch
+
+        model = OnishiPairedCNN(model_config.get("architecture", {}))
+        with torch.no_grad():
+            model(torch.zeros((1, 2, input_samples), dtype=torch.float32))
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
-        artifact = DifferenceShapeletArtifact(
-            model=model,
-            input_time_ps=input_time_ps,
-            device="cpu",
-            metadata=dict(checkpoint.get("metadata") or training_metadata),
+        artifact = OnishiCNNArtifact(
+            model,
+            "cpu",
+            dict(checkpoint.get("metadata") or training_metadata),
         )
     else:
         raise ValueError(
-            f"Cross-voltage loader does not yet support model {model_name!r}. "
-            "Add a loader matching that model's persisted artifact format."
+            f"Cross-voltage loader supports only the active models: {list(model_names())}; "
+            f"got {model_name!r}"
         )
 
     return LoadedModel(

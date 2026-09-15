@@ -38,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--method",
-        default="cnn",
-        help="Method to compare against the reference. Default: cnn.",
+        default="mlp",
+        help="Method to compare against the reference. Default: mlp.",
     )
     parser.add_argument(
         "--stage",
