@@ -182,7 +182,6 @@ def search_model(
     validation_target = target[validation]
     output_limit = float(config["ml_output"]["max_abs_ps"])
     fit_config = dict(config.get("fit") or {})
-    dataset_label = str(dataset_name or dataset.directory.name)
 
     def fit_candidate(parameters, candidate_seed):
         model_parameters = dict(parameters)
