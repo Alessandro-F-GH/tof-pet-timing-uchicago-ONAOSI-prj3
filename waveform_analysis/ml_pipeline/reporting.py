@@ -448,7 +448,7 @@ def _model_output_plot(output, run, mode, dataset, model, paths):
         ax.set_ylabel("Events [count]")
         clean_axis(ax, grid="y")
         panel_label(ax, "(a)" if panel == 0 else "(b)")
-    axes[-1].set_xlabel(r"Model correction $y_\theta$ [ps]")
+    axes[-1].set_xlabel("Correction [ps]")
     fig.tight_layout(h_pad=0.2)
     target = save_figure(fig, output / f"model_output_{dataset}.pdf")
     plt.close(fig)
