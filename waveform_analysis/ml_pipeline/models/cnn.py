@@ -61,8 +61,10 @@ def _rmse(residual):
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None):
     if validation_x is None or validation_target is None: raise ValueError("CNN training requires a validation set for early stopping")
     training_seed=_configure_reproducibility(seed)
-    training=config.get("training",{}); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device)
+    training=config.get("training",{}); verbose=bool(config.get("verbose",False)); logger=config.get("_logger"); device=_device(config); model=SharedScorerCNN(config.get("architecture",{})).to(device)
     optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); batch=int(params.get("batch_size",training.get("batch_size",64))); max_epochs=int(training.get("epochs",350)); patience=int(training.get("patience",30)); min_delta=float(training.get("min_delta",.05)); loader=_loader(train_x,train_target,batch,shuffle=True,seed=training_seed); best_score=float("inf"); best_epoch=0; best_state=None; stale=0; output_limit=config.get('_prediction_max_abs_ps')
+    if verbose and logger is not None:
+        logger.info("cnn training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,device)
     for epoch in range(1,max_epochs+1):
         model.train()
         for pair,target in loader:
@@ -72,13 +74,18 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
         prediction=_predict_tensor(model,validation_x,device,batch)
         if output_limit is not None: prediction=np.clip(prediction,-float(output_limit),float(output_limit))
         residual=prediction-np.asarray(validation_target); score=_rmse(residual)
+        if verbose and logger is not None:
+            train_prediction=_predict_tensor(model,train_x,device,batch)
+            if output_limit is not None: train_prediction=np.clip(train_prediction,-float(output_limit),float(output_limit))
+            train_score=_rmse(train_prediction-np.asarray(train_target,dtype=np.float64))
+            logger.info("cnn epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",epoch,max_epochs,train_score,score,float(np.mean(prediction)),float(np.std(prediction)),float(np.min(prediction)),float(np.max(prediction)))
         if score<best_score-min_delta: best_score=score; best_epoch=epoch; best_state=copy.deepcopy(model.state_dict()); stale=0
         else:
             stale+=1
             if stale>=patience: break
     if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
     model.load_state_dict(best_state)
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"early_stopping_metric":"validation_rmse","batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_validation_rmse_ps":float(best_score),"early_stopping_metric":"validation_rmse","learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
