@@ -61,8 +61,6 @@ def _best_column(
     if total <= 0:
         raise RuntimeError(f"No development events available for {label} selection")
 
-    # Candidate selection uses the same CTR estimator as final reporting,
-    # but skips bootstrap because uncertainty is not part of threshold ranking.
     for i, candidate in enumerate(candidates):
         residual = pair_delta(np.asarray(grid[:, :, i], dtype=np.float64)) - float(true_tof)
         valid = np.isfinite(residual)
@@ -299,8 +297,6 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
                 np.asarray([cfd_choice[family]]),
             )[:, :, 0]
 
-    # Every experiment has exactly one active waveform family, because the
-    # configured mode is either energy_to_energy or timing_to_timing.
     family = next(iter(families))
     missing = led_missing_crossing[family]
     noncoincidence = led_noncoincidence[family]
