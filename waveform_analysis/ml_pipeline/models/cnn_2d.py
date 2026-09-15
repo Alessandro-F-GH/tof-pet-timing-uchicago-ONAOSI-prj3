@@ -32,14 +32,13 @@ class JointPairCNN2D(nn.Module):
 
         pool_length = int(architecture.get("adaptive_pool_length", 128))
         pooling = str(architecture.get("pooling", "avg_max")).lower()
-        self.batch_norm = bool(architecture.get("batch_norm", True))
         if pool_length < 1:
             raise ValueError("cnn_2d adaptive_pool_length must be >= 1")
         if pooling not in {"avg", "max", "avg_max"}:
             raise ValueError("cnn_2d pooling must be avg, max, or avg_max")
 
         first_padding = dilations[0] * (kernels[0] - 1) // 2
-        fusion_layers: list[nn.Module] = [
+        self.fusion = nn.Sequential(
             nn.Conv2d(
                 1,
                 channels[0],
@@ -47,12 +46,9 @@ class JointPairCNN2D(nn.Module):
                 stride=(1, strides[0]),
                 dilation=(1, dilations[0]),
                 padding=(0, first_padding),
-            )
-        ]
-        if self.batch_norm:
-            fusion_layers.append(nn.BatchNorm2d(channels[0]))
-        fusion_layers.append(nn.SiLU())
-        self.fusion = nn.Sequential(*fusion_layers)
+            ),
+            nn.SiLU(),
+        )
 
         temporal_layers: list[nn.Module] = []
         incoming = channels[0]
@@ -70,8 +66,6 @@ class JointPairCNN2D(nn.Module):
                     padding=temporal_padding,
                 )
             )
-            if self.batch_norm:
-                temporal_layers.append(nn.BatchNorm1d(outgoing))
             temporal_layers.append(nn.SiLU())
             incoming = outgoing
         self.features = nn.Sequential(*temporal_layers)
@@ -158,8 +152,7 @@ def fit(
     output_limit = config.get("_prediction_max_abs_ps")
     if verbose and logger is not None:
         logger.info(
-            "cnn_2d training | loss=RMSE | batch_norm=%s | first_layer_weight_norm=%.6g | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
-            model.batch_norm,
+            "cnn_2d training | loss=RMSE | first_layer_weight_norm=%.6g | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             first_layer_weight_norm,
             float(params["learning_rate"]),
             float(params["weight_decay"]),
@@ -234,7 +227,6 @@ def fit(
         metadata={
             "best_epoch": int(best_epoch),
             "training_loss": "rmse",
-            "batch_norm": model.batch_norm,
             "first_layer_weight_norm": first_layer_weight_norm,
             "best_early_stopping_rmse_ps": float(best_score),
             "early_stopping_metric": "internal_train_holdout_rmse",
