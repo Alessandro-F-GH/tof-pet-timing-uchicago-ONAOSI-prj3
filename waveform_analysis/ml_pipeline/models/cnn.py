@@ -58,6 +58,13 @@ def _predict_tensor(model,x,device,batch):
     return np.concatenate(values).astype(np.float64,copy=False)
 def _rmse(residual):
     values=np.asarray(residual,dtype=np.float64); return float(np.sqrt(np.mean(values**2)))
+def _gradient_norm(model):
+    total=0.0
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            value=parameter.grad.detach().norm(2).item()
+            total+=value*value
+    return float(total**0.5)
 def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_target=None):
     if validation_x is None or validation_target is None: raise ValueError("CNN training requires a validation set for early stopping")
     training_seed=_configure_reproducibility(seed)
@@ -66,9 +73,10 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     if verbose and logger is not None:
         logger.info("cnn training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,device)
     for epoch in range(1,max_epochs+1):
-        model.train()
+        model.train(); epoch_gradient_norms=[]
         for pair,target in loader:
             pair=pair.to(device); target=target.to(device); optimizer.zero_grad(set_to_none=True); loss=loss_fn(model(pair),target); loss.backward(); clip=float(training.get("gradient_clip_norm",10.0))
+            if verbose and logger is not None: epoch_gradient_norms.append(_gradient_norm(model))
             if clip>0: nn.utils.clip_grad_norm_(model.parameters(),clip)
             optimizer.step()
         prediction=_predict_tensor(model,validation_x,device,batch)
@@ -78,7 +86,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
             train_prediction=_predict_tensor(model,train_x,device,batch)
             if output_limit is not None: train_prediction=np.clip(train_prediction,-float(output_limit),float(output_limit))
             train_score=_rmse(train_prediction-np.asarray(train_target,dtype=np.float64))
-            logger.info("cnn epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",epoch,max_epochs,train_score,score,float(np.mean(prediction)),float(np.std(prediction)),float(np.min(prediction)),float(np.max(prediction)))
+            logger.info("cnn epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | grad norm=%.6g | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",epoch,max_epochs,train_score,score,float(np.mean(epoch_gradient_norms)) if epoch_gradient_norms else float("nan"),float(np.mean(prediction)),float(np.std(prediction)),float(np.min(prediction)),float(np.max(prediction)))
         if score<best_score-min_delta: best_score=score; best_epoch=epoch; best_state=copy.deepcopy(model.state_dict()); stale=0
         else:
             stale+=1
