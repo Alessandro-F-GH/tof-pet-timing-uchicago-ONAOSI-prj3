@@ -68,7 +68,7 @@ def plot_ml_window_exceeds_example(
     import matplotlib.pyplot as plt
 
     waves, _starts, intervals, _rising_start, _rising_stop = family_arrays(data, family)
-    anchor_index, _anchor_time = anchor_grid(data, family, float(threshold_mV))
+    anchor_index = anchor_grid(data, family, float(threshold_mV))
     event_index = int(np.asarray(data.event_index)[event_row])
     requested_start = float(window_ns["start"])
     requested_end = float(window_ns["end"])
