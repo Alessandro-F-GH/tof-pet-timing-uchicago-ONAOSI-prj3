@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ._mlp_common import DenseStack, candidates, explain, fit_mlp, predict, save
+from ._mlp_common import DenseStack, MLPArtifact, candidates, explain, fit_mlp, predict, save
 from .spec import ModelSpec
 
 
