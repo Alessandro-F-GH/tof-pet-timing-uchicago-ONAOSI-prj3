@@ -33,7 +33,7 @@ from .sample_mask import (
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
-from .train import predict_indices, save_model, search_model, selected_model
+from .train import fit_fixed_model, predict_indices, save_model, search_model, selected_model
 from .view import (
     calibrated_led,
     corrected_timing_residual,
@@ -146,10 +146,16 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
         for model_name in config["models"]:
             required.update(
                 {
-                    (dataset_name, model_name, "validation"),
                     (dataset_name, model_name, "train"),
                     (dataset_name, model_name, "test"),
                 }
+            )
+            required.add(
+                (
+                    dataset_name,
+                    model_name,
+                    "fixed_configuration" if model_name == "onishi_cnn" else "validation",
+                )
             )
         if not required.issubset(available):
             return False
@@ -250,6 +256,25 @@ def _selection_row(name, voltage, mode, method, score, parameters, metric):
         "selection_score": float(score),
         "selection_metric": metric,
         "ctr_ps": float(score) if metric in {"development_ctr", "validation_ctr"} else float("nan"),
+        "ctr_uncertainty_ps": float("nan"),
+        "center_ps": float("nan"),
+        "n": 0,
+        "population_n": 0,
+        "crossing_efficiency": float("nan"),
+        "parameters_json": json.dumps(parameters, sort_keys=True),
+    }
+
+
+def _fixed_configuration_row(name, voltage, mode, method, parameters):
+    return {
+        "dataset": name,
+        "voltage_V": voltage,
+        "mode": mode,
+        "method": method,
+        "stage": "fixed_configuration",
+        "selection_score": float("nan"),
+        "selection_metric": "fixed_reference_configuration",
+        "ctr_ps": float("nan"),
         "ctr_uncertainty_ps": float("nan"),
         "center_ps": float("nan"),
         "n": 0,
@@ -521,15 +546,15 @@ def _evaluate_final_datasets(
 
         for model_name, model_config in config["models"].items():
             label = f"final model | {name} | {LABELS.get(model_name, model_name)}"
-            search = None
-            fitted = None
-            validation_row = existing_row(name, model_name, "validation")
+            fixed_reference = model_name == "onishi_cnn"
+            selection_stage = "fixed_configuration" if fixed_reference else "validation"
+            selection_row = existing_row(name, model_name, selection_stage)
             train_row = existing_row(name, model_name, "train")
             test_row_existing = existing_row(name, model_name, "test")
             artifacts = store.root / "artifacts" / name
             completed = (
                 store.resume
-                and validation_row is not None
+                and selection_row is not None
                 and train_row is not None
                 and test_row_existing is not None
                 and (store.root / "models" / name / model_name).is_dir()
@@ -545,59 +570,111 @@ def _evaluate_final_datasets(
                     note="reused completed result",
                 )
                 final_metrics["models"][(name, model_name)] = {
-                    "validation_ctr_ps": float(validation_row["selection_score"]),
-                    "selected_parameters_json": str(validation_row.get("parameters_json") or "{}"),
+                    "selection_stage": selection_stage,
+                    "validation_ctr_ps": (
+                        float(selection_row["selection_score"])
+                        if not fixed_reference
+                        else float("nan")
+                    ),
+                    "selected_parameters_json": str(
+                        selection_row.get("parameters_json") or "{}"
+                    ),
                     "test_row": test_row_existing,
                 }
-                logger.info(
-                    "Final result reused | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
-                    name,
-                    LABELS.get(model_name, model_name),
-                    float(validation_row["selection_score"]),
-                    float(test_row_existing["ctr_ps"]),
-                    float(test_row_existing["ctr_uncertainty_ps"]),
-                )
-                continue
-            with progress.task(f"final_model:{model_name}", label):
-                spec = get_model(model_name)
-                search = prefit_searches.pop((name, model_name), None)
-                if search is not None:
+                if fixed_reference:
                     logger.info(
-                        "Final model | %s | %s | reusing fit from LED-threshold scan",
+                        "Final result reused | %s | %s | fixed paper configuration | blind CTR=%.3f ± %.3f ps",
                         name,
                         LABELS.get(model_name, model_name),
+                        float(test_row_existing["ctr_ps"]),
+                        float(test_row_existing["ctr_uncertainty_ps"]),
                     )
                 else:
-                    search = search_model(
+                    logger.info(
+                        "Final result reused | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                        name,
+                        LABELS.get(model_name, model_name),
+                        float(selection_row["selection_score"]),
+                        float(test_row_existing["ctr_ps"]),
+                        float(test_row_existing["ctr_uncertainty_ps"]),
+                    )
+                continue
+
+            search = None
+            fitted = None
+            with progress.task(f"final_model:{model_name}", label):
+                spec = get_model(model_name)
+                if fixed_reference:
+                    fitted, selected_parameters = fit_fixed_model(
                         spec,
                         model_config,
                         config,
                         dataset,
                         mode,
-                        seed=semantic_seed(seed, name, mode, model_name, "search"),
-                        dataset_name=name,
+                        seed=semantic_seed(seed, name, mode, model_name, "fixed_fit"),
                         sample_mask=sample_mask,
                         logger=logger,
                     )
-                fitted = selected_model(search)
-                selected_parameters = dict(search.best.candidate or {})
+                    rows.append(
+                        _fixed_configuration_row(
+                            name,
+                            voltage,
+                            mode,
+                            model_name,
+                            selected_parameters,
+                        )
+                    )
+                    store.save_search(
+                        name,
+                        model_name,
+                        {
+                            "policy": "fixed_reference_configuration",
+                            "validation_used_for_selection": False,
+                            "parameters": selected_parameters,
+                        },
+                    )
+                    validation_ctr = float("nan")
+                else:
+                    search = prefit_searches.pop((name, model_name), None)
+                    if search is not None:
+                        logger.info(
+                            "Final model | %s | %s | reusing validation-selected fit",
+                            name,
+                            LABELS.get(model_name, model_name),
+                        )
+                    else:
+                        search = search_model(
+                            spec,
+                            model_config,
+                            config,
+                            dataset,
+                            mode,
+                            seed=semantic_seed(seed, name, mode, model_name, "search"),
+                            dataset_name=name,
+                            sample_mask=sample_mask,
+                            logger=logger,
+                        )
+                    fitted = selected_model(search)
+                    selected_parameters = dict(search.best.candidate or {})
+                    validation_ctr = float(search.best.score)
+                    rows.append(
+                        _selection_row(
+                            name,
+                            voltage,
+                            mode,
+                            model_name,
+                            validation_ctr,
+                            selected_parameters,
+                            "validation_ctr",
+                        )
+                    )
+                    store.save_search(name, model_name, search.as_dict())
+
                 save_model(
                     spec,
                     fitted,
                     store.model_dir(name, model_name),
                     selected_parameters,
-                )
-                store.save_search(name, model_name, search.as_dict())
-                rows.append(
-                    _selection_row(
-                        name,
-                        voltage,
-                        mode,
-                        model_name,
-                        search.best.score,
-                        selected_parameters,
-                        "validation_ctr",
-                    )
                 )
 
                 xai = config.get("reporting", {}).get("xai", {}) or {}
@@ -667,19 +744,29 @@ def _evaluate_final_datasets(
                 if test_row is None:
                     raise RuntimeError(f"{name}/{model_name}: blind-test metric was not produced")
                 final_metrics["models"][(name, model_name)] = {
-                    "validation_ctr_ps": float(search.best.score),
+                    "selection_stage": selection_stage,
+                    "validation_ctr_ps": validation_ctr,
                     "selected_parameters_json": json.dumps(selected_parameters, sort_keys=True),
                     "test_row": test_row,
                 }
 
-            logger.info(
-                "Final result | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
-                name,
-                LABELS.get(model_name, model_name),
-                final_metrics["models"][(name, model_name)]["validation_ctr_ps"],
-                float(final_metrics["models"][(name, model_name)]["test_row"]["ctr_ps"]),
-                float(final_metrics["models"][(name, model_name)]["test_row"]["ctr_uncertainty_ps"]),
-            )
+            if fixed_reference:
+                logger.info(
+                    "Final result | %s | %s | fixed paper configuration | blind CTR=%.3f ± %.3f ps",
+                    name,
+                    LABELS.get(model_name, model_name),
+                    float(test_row["ctr_ps"]),
+                    float(test_row["ctr_uncertainty_ps"]),
+                )
+            else:
+                logger.info(
+                    "Final result | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                    name,
+                    LABELS.get(model_name, model_name),
+                    validation_ctr,
+                    float(test_row["ctr_ps"]),
+                    float(test_row["ctr_uncertainty_ps"]),
+                )
             if search is not None:
                 search.best.artifact = None
             del fitted
