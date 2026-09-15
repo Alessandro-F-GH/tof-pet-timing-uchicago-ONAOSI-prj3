@@ -76,6 +76,24 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "ml_input.windows"):
             validate_config(bad)
 
+    def test_model_study_config_files_load_shared_windows(self):
+        root = Path(__file__).resolve().parents[1]
+        for name, model in (
+            ("model_study_mlp.json", "mlp"),
+            ("model_study_onishi.json", "onishi_cnn"),
+        ):
+            config = load_config(root / "config" / "experiments" / name)
+            self.assertEqual(config["experiment"]["type"], "model_study")
+            self.assertEqual(set(config["models"]), {model})
+            self.assertEqual(
+                set(config["ml_input"]["windows"]),
+                {"onishi_window", "wide_window"},
+            )
+            self.assertEqual(
+                config["ml_input"]["window_ns"],
+                config["ml_input"]["windows"]["wide_window"],
+            )
+
     def test_obsolete_analyses_section_is_rejected(self):
         bad = copy.deepcopy(self.config)
         bad["analyses"] = {"led_threshold_scan": {"enabled": True}}
