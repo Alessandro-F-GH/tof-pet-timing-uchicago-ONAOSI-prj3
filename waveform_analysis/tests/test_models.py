@@ -4,7 +4,6 @@ import numpy as np
 from waveform_analysis.ml_pipeline.models.cnn import (
     CNNArtifact,
     SharedScorerCNN,
-    _correlation_loss,
     fit as fit_cnn,
     predict as predict_cnn,
 )
@@ -56,7 +55,7 @@ class AntisymmetryTests(unittest.TestCase):
         train_y = rng.normal(scale=20.0, size=32)
         validation_x = rng.normal(size=(12, 2, 32)).astype(np.float32)
         validation_y = rng.normal(scale=20.0, size=12)
-        params = {"learning_rate": 1e-3, "weight_decay": 0.0, "batch_size": 8}
+        params = {"learning_rate": 1e-3, "weight_decay": 0.0, "batch_size": 8, "first_layer_weight_norm": 1.0}
         config = {
             "architecture": {
                 "channels": [4],
@@ -105,6 +104,43 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertFalse(first.metadata["refit_on_full_training_split"])
         self.assertFalse(first.metadata["external_validation_used_for_early_stopping"])
 
+
+    def test_cnn_batch_norm_can_be_disabled(self):
+        import torch
+
+        model = SharedScorerCNN(
+            {
+                "channels": [4, 8],
+                "kernels": [5, 3],
+                "strides": [1, 1],
+                "dilations": [1, 1],
+                "adaptive_pool_length": 4,
+                "dense_units": [4],
+                "batch_norm": False,
+            }
+        )
+        self.assertFalse(any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.modules()))
+
+    def test_cnn_2d_batch_norm_can_be_disabled(self):
+        import torch
+
+        model = JointPairCNN2D(
+            {
+                "channels": [4, 8],
+                "kernels": [5, 3],
+                "strides": [1, 1],
+                "dilations": [1, 1],
+                "adaptive_pool_length": 4,
+                "dense_units": [4],
+                "batch_norm": False,
+            }
+        )
+        self.assertFalse(
+            any(
+                isinstance(layer, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d))
+                for layer in model.modules()
+            )
+        )
 
     def test_cnn_2d_fuses_detectors_in_first_layer_then_uses_conv1d(self):
         model = JointPairCNN2D(
@@ -177,17 +213,6 @@ class AntisymmetryTests(unittest.TestCase):
             {"architecture", "activation", "learning_rate", "batch_size", "weight_decay"},
         )
 
-
-    def test_correlation_loss_penalizes_collapsed_predictions(self):
-        import torch
-
-        target = torch.tensor([-2.0, -1.0, 1.0, 2.0])
-        perfect = target.clone()
-        collapsed = torch.zeros_like(target)
-        self.assertLess(
-            float(_correlation_loss(perfect, target)),
-            float(_correlation_loss(collapsed, target)),
-        )
 
     def test_corrected_timing_is_slide_target_minus_prediction(self):
         target = np.asarray([35.0, -20.0, 5.0])
