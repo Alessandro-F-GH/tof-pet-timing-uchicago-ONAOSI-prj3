@@ -1025,8 +1025,20 @@ def _paired_model_comparison_rows(
             raise ValueError(
                 f"{dataset}/{window_name}: fewer than two common blind events"
             )
-        mlp_ctr = fit_ctr_ps(mlp, fit_config, bootstrap=False).ctr_ps
-        onishi_ctr = fit_ctr_ps(onishi, fit_config, bootstrap=False).ctr_ps
+        mlp_fit = fit_ctr_ps(
+            mlp,
+            fit_config,
+            seed=semantic_seed(seed, dataset, window_name, "mlp_ctr"),
+            bootstrap=True,
+        )
+        onishi_fit = fit_ctr_ps(
+            onishi,
+            fit_config,
+            seed=semantic_seed(seed, dataset, window_name, "onishi_ctr"),
+            bootstrap=True,
+        )
+        mlp_ctr = float(mlp_fit.ctr_ps)
+        onishi_ctr = float(onishi_fit.ctr_ps)
         delta = float(onishi_ctr - mlp_ctr)
         relative = float(100.0 * delta / onishi_ctr)
         rng = np.random.default_rng(
@@ -1061,7 +1073,9 @@ def _paired_model_comparison_rows(
                 "voltage_V": voltage_from_name(dataset),
                 "blind_events": int(mlp.size),
                 "mlp_ctr_ps": float(mlp_ctr),
+                "mlp_ctr_uncertainty_ps": float(mlp_fit.ctr_error_ps),
                 "onishi_cnn_ctr_ps": float(onishi_ctr),
+                "onishi_cnn_ctr_uncertainty_ps": float(onishi_fit.ctr_error_ps),
                 "onishi_minus_mlp_ctr_ps": delta,
                 "paired_bootstrap_uncertainty_ps": (
                     float(np.std(boot_delta, ddof=1))
@@ -1097,31 +1111,73 @@ def _write_model_comparison_plot(
         )
         if not subset:
             continue
+
         x = np.asarray([float(row["voltage_V"]) for row in subset], dtype=float)
-        y = np.asarray(
+        mlp_ctr = np.asarray([float(row["mlp_ctr_ps"]) for row in subset], dtype=float)
+        mlp_err = np.asarray(
+            [float(row["mlp_ctr_uncertainty_ps"]) for row in subset], dtype=float
+        )
+        onishi_ctr = np.asarray(
+            [float(row["onishi_cnn_ctr_ps"]) for row in subset], dtype=float
+        )
+        onishi_err = np.asarray(
+            [float(row["onishi_cnn_ctr_uncertainty_ps"]) for row in subset],
+            dtype=float,
+        )
+
+        fig, ax = plt.subplots(figsize=(7.0, 3.35))
+        ax.errorbar(
+            x,
+            mlp_ctr,
+            yerr=np.where(np.isfinite(mlp_err), mlp_err, 0.0),
+            marker="o",
+            capsize=2.5,
+            label=LABELS.get("mlp", "Antisymmetric MLP"),
+        )
+        ax.errorbar(
+            x,
+            onishi_ctr,
+            yerr=np.where(np.isfinite(onishi_err), onishi_err, 0.0),
+            marker="s",
+            capsize=2.5,
+            label=LABELS.get("onishi_cnn", "Onishi paired CNN"),
+        )
+        ax.set_xlabel("Bias voltage [V]")
+        ax.set_ylabel("Blind CTR [ps]")
+        ax.legend(loc="best")
+        ax.grid(axis="y", linewidth=0.5, alpha=0.22)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        fig.tight_layout()
+        target = plot_dir / f"ctr_vs_voltage_{window}.pdf"
+        fig.savefig(target, bbox_inches="tight", pad_inches=0.03)
+        plt.close(fig)
+        generated.append(target)
+
+        improvement = np.asarray(
             [float(row["mlp_improvement_over_onishi_percent"]) for row in subset],
             dtype=float,
         )
-        err = np.asarray(
+        improvement_err = np.asarray(
             [float(row["paired_bootstrap_uncertainty_percent"]) for row in subset],
             dtype=float,
         )
         fig, ax = plt.subplots(figsize=(7.0, 3.35))
         ax.errorbar(
             x,
-            y,
-            yerr=np.where(np.isfinite(err), err, 0.0),
+            improvement,
+            yerr=np.where(np.isfinite(improvement_err), improvement_err, 0.0),
             marker="o",
             capsize=2.5,
         )
         ax.axhline(0.0, color="#7F7F7F", ls=":", lw=0.9)
         ax.set_xlabel("Bias voltage [V]")
-        ax.set_ylabel("MLP improvement over Onishi CNN [%]")
+        ax.set_ylabel("MLP improvement over Onishi paired CNN [%]")
         ax.grid(axis="y", linewidth=0.5, alpha=0.22)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         fig.tight_layout()
-        target = plot_dir / f"paired_model_comparison_{window}.pdf"
+        target = plot_dir / f"paired_model_improvement_{window}.pdf"
         fig.savefig(target, bbox_inches="tight", pad_inches=0.03)
         plt.close(fig)
         generated.append(target)
