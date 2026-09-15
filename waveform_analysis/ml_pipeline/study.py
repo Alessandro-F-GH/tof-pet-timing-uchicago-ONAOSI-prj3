@@ -1,15 +1,19 @@
+from utils_fit import fit_ctr_ps
+
 from __future__ import annotations
 
 import copy
+import csv
 import gc
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .analyses import run_led_threshold_scan, run_window_scan
+from .analyses import run_blind_led_threshold_scan, run_led_threshold_scan, run_window_scan
 from .common import canonical_hash, read_json, voltage_from_name
 from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
@@ -695,7 +699,7 @@ def _evaluate_final_datasets(
     return rows, final_metrics
 
 
-def run_study(
+def _run_standard_study(
     config_or_path: dict[str, Any] | str | Path,
     *,
     overwrite: bool = False,
@@ -871,3 +875,380 @@ def run_study(
     store.write_manifest(manifest)
     logger.info("Study complete | %s | elapsed=%s", store.root, progress.elapsed_text)
     return store.root
+
+
+def _prepare_experiment_root(
+    output_dir: str | Path,
+    *,
+    overwrite: bool,
+    resume: bool,
+) -> Path:
+    root = Path(output_dir).resolve()
+    if overwrite and resume:
+        raise ValueError("overwrite and resume are mutually exclusive")
+    if overwrite and root.exists():
+        shutil.rmtree(root)
+    if root.exists() and any(root.iterdir()) and not resume:
+        raise FileExistsError(
+            f"Run directory is not empty: {root}. "
+            "Use --resume to continue it or --overwrite to replace it."
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _paired_model_comparison_rows(
+    run_dir: Path,
+    window_name: str,
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    results_path = run_dir / "csv" / "results.csv"
+    if not results_path.is_file():
+        return []
+    with results_path.open(encoding="utf-8", newline="") as stream:
+        results = list(csv.DictReader(stream))
+    datasets = sorted(
+        {
+            str(row["dataset"])
+            for row in results
+            if row.get("stage") == "test"
+            and row.get("method") in {"mlp", "onishi_cnn"}
+        },
+        key=voltage_from_name,
+    )
+    fit_config = dict(config.get("fit") or {})
+    samples = int(fit_config.get("bootstrap_samples", 0))
+    seed = int(config["validation"]["seed"])
+    rows: list[dict[str, Any]] = []
+    for dataset in datasets:
+        mlp_path = run_dir / "artifacts" / dataset / "mlp_test_residuals_ps.npy"
+        onishi_path = run_dir / "artifacts" / dataset / "onishi_cnn_test_residuals_ps.npy"
+        if not (mlp_path.is_file() and onishi_path.is_file()):
+            continue
+        mlp = np.asarray(np.load(mlp_path), dtype=np.float64).reshape(-1)
+        onishi = np.asarray(np.load(onishi_path), dtype=np.float64).reshape(-1)
+        if mlp.shape != onishi.shape:
+            raise ValueError(
+                f"{dataset}/{window_name}: paired model residual shapes differ"
+            )
+        finite = np.isfinite(mlp) & np.isfinite(onishi)
+        mlp = mlp[finite]
+        onishi = onishi[finite]
+        if mlp.size < 2:
+            raise ValueError(
+                f"{dataset}/{window_name}: fewer than two common blind events"
+            )
+        mlp_ctr = fit_ctr_ps(mlp, fit_config, bootstrap=False).ctr_ps
+        onishi_ctr = fit_ctr_ps(onishi, fit_config, bootstrap=False).ctr_ps
+        delta = float(onishi_ctr - mlp_ctr)
+        relative = float(100.0 * delta / onishi_ctr)
+        rng = np.random.default_rng(
+            semantic_seed(seed, dataset, window_name, "mlp_vs_onishi_paired")
+        )
+        boot_delta = []
+        boot_relative = []
+        for _ in range(samples):
+            idx = rng.integers(0, mlp.size, size=mlp.size)
+            try:
+                mlp_b = fit_ctr_ps(
+                    mlp[idx], fit_config, bootstrap=False
+                ).ctr_ps
+                onishi_b = fit_ctr_ps(
+                    onishi[idx], fit_config, bootstrap=False
+                ).ctr_ps
+            except ValueError:
+                continue
+            if not (
+                np.isfinite(mlp_b)
+                and np.isfinite(onishi_b)
+                and onishi_b > 0
+            ):
+                continue
+            d = float(onishi_b - mlp_b)
+            boot_delta.append(d)
+            boot_relative.append(100.0 * d / onishi_b)
+        rows.append(
+            {
+                "window": window_name,
+                "dataset": dataset,
+                "voltage_V": voltage_from_name(dataset),
+                "blind_events": int(mlp.size),
+                "mlp_ctr_ps": float(mlp_ctr),
+                "onishi_cnn_ctr_ps": float(onishi_ctr),
+                "onishi_minus_mlp_ctr_ps": delta,
+                "paired_bootstrap_uncertainty_ps": (
+                    float(np.std(boot_delta, ddof=1))
+                    if len(boot_delta) > 1
+                    else float("nan")
+                ),
+                "mlp_improvement_over_onishi_percent": relative,
+                "paired_bootstrap_uncertainty_percent": (
+                    float(np.std(boot_relative, ddof=1))
+                    if len(boot_relative) > 1
+                    else float("nan")
+                ),
+                "paired_bootstrap_successful": len(boot_delta),
+                "comparison_population": "blind",
+            }
+        )
+    return rows
+
+
+def _write_model_comparison_plot(
+    root: Path,
+    rows: list[dict[str, Any]],
+) -> list[Path]:
+    import matplotlib.pyplot as plt
+
+    generated: list[Path] = []
+    plot_dir = root / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    for window in sorted({str(row["window"]) for row in rows}):
+        subset = sorted(
+            [row for row in rows if str(row["window"]) == window],
+            key=lambda row: float(row["voltage_V"]),
+        )
+        if not subset:
+            continue
+        x = np.asarray([float(row["voltage_V"]) for row in subset], dtype=float)
+        y = np.asarray(
+            [float(row["mlp_improvement_over_onishi_percent"]) for row in subset],
+            dtype=float,
+        )
+        err = np.asarray(
+            [float(row["paired_bootstrap_uncertainty_percent"]) for row in subset],
+            dtype=float,
+        )
+        fig, ax = plt.subplots(figsize=(7.0, 3.35))
+        ax.errorbar(
+            x,
+            y,
+            yerr=np.where(np.isfinite(err), err, 0.0),
+            marker="o",
+            capsize=2.5,
+        )
+        ax.axhline(0.0, color="#7F7F7F", ls=":", lw=0.9)
+        ax.set_xlabel("Bias voltage [V]")
+        ax.set_ylabel("MLP improvement over Onishi CNN [%]")
+        ax.grid(axis="y", linewidth=0.5, alpha=0.22)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        fig.tight_layout()
+        target = plot_dir / f"paired_model_comparison_{window}.pdf"
+        fig.savefig(target, bbox_inches="tight", pad_inches=0.03)
+        plt.close(fig)
+        generated.append(target)
+    return generated
+
+
+def _run_model_comparison_experiment(
+    config: dict[str, Any],
+    *,
+    overwrite: bool,
+    resume: bool,
+    rebuild_preprocessing: bool,
+) -> Path:
+    root = _prepare_experiment_root(
+        config["experiment"]["output_dir"],
+        overwrite=overwrite,
+        resume=resume,
+    )
+    fixed_led = float(config["experiment"]["fixed_led_threshold_mV"])
+    windows = dict(config["experiment"]["windows"])
+    base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
+
+    subruns: dict[str, str] = {}
+    paired_rows: list[dict[str, Any]] = []
+    for index, window_name in enumerate(("onishi", "wide")):
+        sub = copy.deepcopy(config)
+        sub["experiment"]["type"] = "standard"
+        sub["experiment"]["output_dir"] = str(root / window_name)
+        sub["experiment"]["name"] = (
+            f"{config['experiment'].get('name', 'model_comparison')}_{window_name}"
+        )
+        sub["standard_methods"]["led_thresholds_mV"] = [fixed_led]
+        sub["ml_input"]["window_ns"] = {
+            "start": float(windows[window_name]["start"]),
+            "end": float(windows[window_name]["end"]),
+        }
+        sub["preprocessing"]["prepared_dir"] = str(
+            base_prepared / "_model_comparison" / window_name
+        )
+        sub["analyses"] = {
+            "led_threshold_scan": {
+                "enabled": False,
+                "selection_model": "mlp",
+            },
+            "window_scan": {
+                "enabled": False,
+                "right_limits_ns": [],
+                "models": [],
+            },
+        }
+        sub["_config_fingerprint"] = canonical_hash(public_config(sub))
+        subrun = _run_standard_study(
+            sub,
+            overwrite=False,
+            resume=resume,
+            rebuild_preprocessing=(
+                rebuild_preprocessing if index == 0 else False
+            ),
+        )
+        subruns[window_name] = str(subrun)
+        paired_rows.extend(
+            _paired_model_comparison_rows(subrun, window_name, sub)
+        )
+
+    csv_dir = root / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    paired_csv = csv_dir / "paired_model_comparison.csv"
+    if paired_rows:
+        fields = list(dict.fromkeys(key for row in paired_rows for key in row))
+        with paired_csv.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(paired_rows)
+        _write_model_comparison_plot(root, paired_rows)
+
+    manifest = {
+        "schema_version": 1,
+        "status": "complete",
+        "experiment_type": "model_comparison",
+        "models": {
+            "proposed": "mlp",
+            "reference": "onishi_cnn",
+        },
+        "model_labels": {
+            "mlp": "Antisymmetric MLP",
+            "onishi_cnn": "Onishi CNN",
+        },
+        "windows_ns": windows,
+        "fixed_led_threshold_mV": fixed_led,
+        "hyperparameter_selection_population": "validation",
+        "hyperparameter_selection_metric": "validation_ctr",
+        "final_evaluation_population": "blind",
+        "refit_after_validation_selection": False,
+        "paired_model_comparison": "blind paired event bootstrap",
+        "subruns": subruns,
+        "config": public_config(config),
+    }
+    (root / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _run_threshold_scan_experiment(
+    config: dict[str, Any],
+    *,
+    overwrite: bool,
+    resume: bool,
+    rebuild_preprocessing: bool,
+) -> Path:
+    root = _prepare_experiment_root(
+        config["experiment"]["output_dir"],
+        overwrite=overwrite,
+        resume=resume,
+    )
+    logger = _logger(root)
+    roots = discover_root_files(config)
+    target_voltage = float(config["experiment"]["voltage_V"])
+    roots = [
+        path
+        for path in roots
+        if np.isfinite(voltage_from_name(path.stem))
+        and np.isclose(
+            voltage_from_name(path.stem),
+            target_voltage,
+            rtol=0.0,
+            atol=1e-9,
+        )
+    ]
+    if not roots:
+        raise FileNotFoundError(
+            f"No ROOT file matched threshold-scan voltage {target_voltage:g} V"
+        )
+
+    plan = {
+        "selection": len(roots),
+        "native_preprocess": len(roots),
+        "threshold_scan": len(roots)
+        * len(config["standard_methods"]["led_thresholds_mV"]),
+    }
+    progress = ProgressTracker(logger, plan)
+    preprocessed = []
+    for source in roots:
+        with progress.task("selection", f"event selection | {source.name}"):
+            selection = select_events(
+                source,
+                config,
+                rebuild=rebuild_preprocessing,
+                logger=logger,
+            )
+        with progress.task(
+            "native_preprocess",
+            f"native preprocessing | {source.name}",
+        ):
+            preprocessed.append(
+                preprocess_selected(
+                    source,
+                    selection,
+                    config,
+                    rebuild=rebuild_preprocessing,
+                    logger=logger,
+                )
+            )
+
+    run_blind_led_threshold_scan(
+        preprocessed,
+        config,
+        root,
+        logger,
+        progress,
+        rebuild=rebuild_preprocessing,
+        resume=resume,
+    )
+    logger.info(
+        "Threshold scan complete | voltage=%g V | %s",
+        target_voltage,
+        root,
+    )
+    return root
+
+
+def run_study(
+    config_or_path: dict[str, Any] | str | Path,
+    *,
+    overwrite: bool = False,
+    resume: bool = False,
+    rebuild_preprocessing: bool = False,
+) -> Path:
+    config = (
+        load_config(config_or_path)
+        if not isinstance(config_or_path, dict)
+        else config_or_path
+    )
+    experiment_type = str(
+        config.get("experiment", {}).get("type", "standard")
+    ).lower()
+    if experiment_type == "model_comparison":
+        return _run_model_comparison_experiment(
+            config,
+            overwrite=overwrite,
+            resume=resume,
+            rebuild_preprocessing=rebuild_preprocessing,
+        )
+    if experiment_type == "threshold_scan":
+        return _run_threshold_scan_experiment(
+            config,
+            overwrite=overwrite,
+            resume=resume,
+            rebuild_preprocessing=rebuild_preprocessing,
+        )
+    return _run_standard_study(
+        config,
+        overwrite=overwrite,
+        resume=resume,
+        rebuild_preprocessing=rebuild_preprocessing,
+    )
