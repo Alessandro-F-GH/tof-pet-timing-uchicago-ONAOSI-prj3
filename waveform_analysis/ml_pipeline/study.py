@@ -1067,6 +1067,7 @@ def _write_model_comparison_plot(
         model_style,
         paper_context,
         save_figure,
+        set_voltage_ticks,
     )
 
     generated: list[Path] = []
@@ -1143,7 +1144,6 @@ def _write_model_comparison_plot(
                 linestyle=":",
                 linewidth=0.9,
             )
-            from .plot_style import set_voltage_ticks
             set_voltage_ticks(ax, x)
             ax.set_xlabel("Voltage [V]")
             ax.set_ylabel("Improvement [%]")
