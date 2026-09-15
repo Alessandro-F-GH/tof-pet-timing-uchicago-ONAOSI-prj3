@@ -25,7 +25,8 @@
     "pooling": "avg_max",
     "dense_units": [
       32
-    ]
+    ],
+    "batch_norm": true
   },
   "parameters": {
     "learning_rate": [
@@ -36,21 +37,6 @@
     ],
     "weight_decay": [
       0.00001
-    ],
-    "loss": [
-      "rmse",
-      "huber"
-    ],
-    "huber_delta_ps": [
-      20,
-      30,
-      50
-    ],
-    "correlation_weight": [
-      0,
-      0.01,
-      0.05,
-      0.1
     ]
   },
   "training": {
