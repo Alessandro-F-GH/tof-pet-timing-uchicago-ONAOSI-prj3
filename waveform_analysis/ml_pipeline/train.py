@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -242,39 +243,46 @@ def search_model(
             ).ctr_ps
         )
 
+    context = str(dataset_name or "dataset")
+    model_label = "Antisymmetric MLP" if spec.name == "mlp" else spec.name
+
     def on_start(number, total, candidate):
-        if logger is not None and total > 1:
-            logger.debug(
-                "  %d/%d | starting | %s",
-                number,
-                total,
-                "default" if not candidate else candidate,
-            )
+        return None
 
     def on_result(number, total, result):
         if logger is None or total <= 1:
             return
-        parameters = "default" if not result.candidate else result.candidate
+        parameters = dict(result.candidate or {})
+        parameters_json = json.dumps(parameters, sort_keys=True)
         if result.error is None:
-            logger.debug(
-                "  %d/%d | CTR=%.6g ps | %s",
+            logger.info(
+                "Candidate | %s | %s | %d/%d | validation CTR=%.3f ps | params=%s",
+                context,
+                model_label,
                 number,
                 total,
                 result.score,
-                parameters,
+                parameters_json,
             )
         else:
             logger.warning(
-                "  %d/%d | FAILED | %s | %s",
+                "Candidate | %s | %s | %d/%d | FAILED | params=%s | %s",
+                context,
+                model_label,
                 number,
                 total,
-                parameters,
+                parameters_json,
                 result.error,
             )
 
     candidates = list(spec.candidates(model_config))
     if logger is not None and len(candidates) > 1:
-        logger.info("%s search | candidates=%d", spec.name, len(candidates))
+        logger.info(
+            "Model selection | %s | %s | candidates=%d",
+            context,
+            model_label,
+            len(candidates),
+        )
 
     return select_candidate(
         candidates,
