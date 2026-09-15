@@ -319,7 +319,7 @@ def run_blind_led_threshold_scan(
                         "threshold_scan",
                         f"{threshold:g}",
                     ),
-                    dataset_name=dataset_name,
+                    dataset_name=f"{dataset_name} | LED={threshold:g} mV",
                     sample_mask=sample_mask,
                     logger=logger,
                 )
@@ -452,11 +452,12 @@ def run_blind_led_threshold_scan(
                 gc.collect()
 
             logger.info(
-                "Threshold result | %s | %g mV | validation CTR=%.3f ps | "
-                "blind MLP CTR=%.3f ± %.3f ps | improvement=%.2f ± %.2f%%",
+                "Result | %s | LED=%g mV | LED CTR=%.3f ± %.3f ps | "
+                "MLP CTR=%.3f ± %.3f ps | improvement=%.2f ± %.2f%%",
                 dataset_name,
                 threshold,
-                float(search.best.score),
+                float(led_fit.ctr_ps),
+                float(led_fit.ctr_error_ps),
                 float(model_fit.ctr_ps),
                 float(model_fit.ctr_error_ps),
                 improvement,
