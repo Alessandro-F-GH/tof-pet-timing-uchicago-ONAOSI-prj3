@@ -148,11 +148,11 @@ def fit(
         lr=float(params["learning_rate"]),
         weight_decay=float(params["weight_decay"]),
     )
-    loss_name, loss_fn, huber_delta = _training_loss(params)
+    loss_name, loss_fn, huber_delta, correlation_weight = _training_loss(params)
     loader = _loader(fit_x, fit_target, batch, shuffle=True, seed=training_seed)
     output_limit = config.get("_prediction_max_abs_ps")
     if verbose and logger is not None:
-        loss_label = loss_name.upper() if huber_delta is None else f"HUBER(delta={huber_delta:g} ps)"
+        loss_label = loss_name.upper() if huber_delta is None else f"HUBER(delta={huber_delta:g} ps,corr={correlation_weight:g})"
         logger.info(
             "cnn_2d training | loss=%s | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             loss_label,
@@ -230,6 +230,7 @@ def fit(
             "best_epoch": int(best_epoch),
             "training_loss": loss_name,
             "huber_delta_ps": huber_delta,
+            "correlation_weight": correlation_weight,
             "best_early_stopping_rmse_ps": float(best_score),
             "early_stopping_metric": "internal_train_holdout_rmse",
             "early_stopping_fraction": early_fraction,
