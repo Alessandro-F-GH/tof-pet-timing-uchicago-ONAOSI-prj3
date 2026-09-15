@@ -58,6 +58,8 @@ def _predict_tensor(model,x,device,batch):
     return np.concatenate(values).astype(np.float64,copy=False)
 def _rmse(residual):
     values=np.asarray(residual,dtype=np.float64); return float(np.sqrt(np.mean(values**2)))
+def _rmse_loss(prediction,target):
+    return torch.sqrt(torch.mean((prediction-target)**2))
 def _gradient_norm(model):
     total=0.0
     for parameter in model.parameters():
@@ -84,9 +86,9 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     split_seed=int(config.get("_early_stopping_seed",seed))
     fit_x,fit_target,early_x,early_target=_internal_early_stopping_split(train_x,train_target,early_fraction,split_seed)
     model=SharedScorerCNN(config.get("architecture",{})).to(device)
-    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=nn.MSELoss(); loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
+    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=_rmse_loss; loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
     if verbose and logger is not None:
-        logger.info("cnn training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
+        logger.info("cnn training | loss=RMSE | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
     best_score=float("inf"); best_epoch=0; best_state=None; stale=0
     for epoch in range(1,max_epochs+1):
         model.train(); epoch_gradient_norms=[]
@@ -110,7 +112,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
     model.load_state_dict(best_state)
 
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"optimizer_training_events":int(fit_target.size),"training_events_available":int(len(train_target)),"training_uses_full_split":False,"refit_on_full_training_split":False,"external_validation_used_for_early_stopping":False,"early_stopping_split_seed":split_seed,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"training_loss":"rmse","best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"optimizer_training_events":int(fit_target.size),"training_events_available":int(len(train_target)),"training_uses_full_split":False,"refit_on_full_training_split":False,"external_validation_used_for_early_stopping":False,"early_stopping_split_seed":split_seed,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
