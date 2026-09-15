@@ -1,0 +1,27 @@
+{
+  "extends": "../profiles/ctr_default.json",
+  "data_config": "../data/converted_runs_07_13.json",
+  "preprocessing_config": "../preprocessing/default_ctr.json",
+  "experiment": {
+    "type": "model_comparison",
+    "name": "timing_model_comparison",
+    "output_dir": "results/studies/timing_model_comparison",
+    "fixed_led_threshold_mV": 15.0,
+    "windows": {
+      "onishi": {
+        "start": -1.5,
+        "end": 2.0
+      },
+      "wide": {
+        "start": -2.0,
+        "end": 30.0
+      }
+    }
+  },
+  "models": [
+    "mlp",
+    "onishi_cnn"
+  ],
+  "mode": "timing_to_timing",
+  "cfd": false
+}
