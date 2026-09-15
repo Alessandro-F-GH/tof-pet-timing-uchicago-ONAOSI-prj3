@@ -38,22 +38,16 @@ class CNNArtifact:
     metadata:dict[str,Any]
 def candidates(config):
     p=config.get("parameters",{}); training=config.get("training",{})
-    base=itertools.product(p.get("learning_rate",[1e-3]),p.get("weight_decay",[1e-5]),p.get("batch_size",[training.get("batch_size",64)]))
-    losses=[str(value).strip().lower() for value in p.get("loss",["rmse"])]
-    deltas=[float(value) for value in p.get("huber_delta_ps",[20.0])]
-    correlation_weights=[float(value) for value in p.get("correlation_weight",[0.0])]
-    if any(value<0 for value in correlation_weights): raise ValueError("correlation_weight must be non-negative")
     rows=[]
-    for lr,wd,batch in base:
-        for loss in losses:
-            if loss=="rmse":
-                rows.append({"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch),"loss":"rmse"})
-            elif loss=="huber":
-                for delta,correlation_weight in itertools.product(deltas,correlation_weights):
-                    if delta<=0: raise ValueError("huber_delta_ps must be positive")
-                    rows.append({"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch),"loss":"huber","huber_delta_ps":float(delta),"correlation_weight":float(correlation_weight)})
-            else:
-                raise ValueError(f"Unsupported CNN loss {loss!r}; available: ['huber', 'rmse']")
+    for lr,wd,batch,first_norm in itertools.product(
+        p.get("learning_rate",[1e-3]),
+        p.get("weight_decay",[1e-5]),
+        p.get("batch_size",[training.get("batch_size",64)]),
+        p.get("first_layer_weight_norm",[1.0]),
+    ):
+        first_norm=float(first_norm)
+        if first_norm<=0: raise ValueError("first_layer_weight_norm must be positive")
+        rows.append({"learning_rate":float(lr),"weight_decay":float(wd),"batch_size":int(batch),"first_layer_weight_norm":first_norm})
     return rows
 def _configure_reproducibility(seed):
     value=int(seed); np.random.seed(value); torch.manual_seed(value)
@@ -76,28 +70,19 @@ def _rmse(residual):
     values=np.asarray(residual,dtype=np.float64); return float(np.sqrt(np.mean(values**2)))
 def _rmse_loss(prediction,target):
     return torch.sqrt(torch.mean((prediction-target)**2))
-def _correlation_loss(prediction,target,std_floor_ps=1.0):
-    prediction_centered=prediction-prediction.mean()
-    target_centered=target-target.mean()
-    covariance=torch.mean(prediction_centered*target_centered)
-    floor2=float(std_floor_ps)**2
-    denominator=torch.sqrt((torch.mean(prediction_centered**2)+floor2)*(torch.mean(target_centered**2)+floor2))
-    return 1.0-covariance/denominator
 
-def _training_loss(params):
-    name=str(params.get("loss","rmse")).strip().lower()
-    if name=="rmse":
-        return name,_rmse_loss,None,0.0
-    if name=="huber":
-        delta=float(params.get("huber_delta_ps",20.0))
-        correlation_weight=float(params.get("correlation_weight",0.0))
-        if delta<=0: raise ValueError("huber_delta_ps must be positive")
-        if correlation_weight<0: raise ValueError("correlation_weight must be non-negative")
-        huber=nn.HuberLoss(delta=delta)
-        def loss_fn(prediction,target):
-            return huber(prediction,target)+correlation_weight*_correlation_loss(prediction,target)
-        return name,loss_fn,delta,correlation_weight
-    raise ValueError(f"Unsupported training loss {name!r}; available: ['huber', 'rmse']")
+def _set_first_layer_weight_norm(model,target_norm):
+    target=float(target_norm)
+    if target<=0: raise ValueError("first_layer_weight_norm must be positive")
+    first=next((module for module in model.modules() if isinstance(module,(nn.Conv1d,nn.Conv2d,nn.Linear))),None)
+    if first is None: raise ValueError("Model has no Conv1d, Conv2d, or Linear layer")
+    with torch.no_grad():
+        current=torch.linalg.vector_norm(first.weight)
+        if not torch.isfinite(current) or float(current)<=0: raise RuntimeError("First-layer weight norm is invalid")
+        first.weight.mul_(target/current)
+        actual=float(torch.linalg.vector_norm(first.weight).item())
+    return actual
+
 def _gradient_norm(model):
     total=0.0
     for parameter in model.parameters():
@@ -124,10 +109,10 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     split_seed=int(config.get("_early_stopping_seed",seed))
     fit_x,fit_target,early_x,early_target=_internal_early_stopping_split(train_x,train_target,early_fraction,split_seed)
     model=SharedScorerCNN(config.get("architecture",{})).to(device)
-    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_name,loss_fn,huber_delta,correlation_weight=_training_loss(params); loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
+    first_layer_weight_norm=_set_first_layer_weight_norm(model,params["first_layer_weight_norm"])
+    optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=_rmse_loss; loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
     if verbose and logger is not None:
-        loss_label=loss_name.upper() if huber_delta is None else f"HUBER(delta={huber_delta:g} ps,corr={correlation_weight:g})"
-        logger.info("cnn training | loss=%s | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",loss_label,float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
+        logger.info("cnn training | loss=RMSE | first_layer_weight_norm=%.6g | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",first_layer_weight_norm,float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
     best_score=float("inf"); best_epoch=0; best_state=None; stale=0
     for epoch in range(1,max_epochs+1):
         model.train(); epoch_gradient_norms=[]
@@ -151,7 +136,7 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     if best_state is None: raise RuntimeError("CNN early stopping did not produce a valid checkpoint")
     model.load_state_dict(best_state)
 
-    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"training_loss":loss_name,"huber_delta_ps":huber_delta,"correlation_weight":correlation_weight,"best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"optimizer_training_events":int(fit_target.size),"training_events_available":int(len(train_target)),"training_uses_full_split":False,"refit_on_full_training_split":False,"external_validation_used_for_early_stopping":False,"early_stopping_split_seed":split_seed,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
+    return CNNArtifact(model,str(device),{"best_epoch":int(best_epoch),"training_loss":"rmse","first_layer_weight_norm":first_layer_weight_norm,"best_early_stopping_rmse_ps":float(best_score),"early_stopping_metric":"internal_train_holdout_rmse","early_stopping_fraction":early_fraction,"early_stopping_events":int(early_target.size),"optimizer_training_events":int(fit_target.size),"training_events_available":int(len(train_target)),"training_uses_full_split":False,"refit_on_full_training_split":False,"external_validation_used_for_early_stopping":False,"early_stopping_split_seed":split_seed,"learning_rate":float(params["learning_rate"]),"weight_decay":float(params["weight_decay"]),"batch_size":batch,"output_max_abs_ps":None if output_limit is None else float(output_limit),"training_seed":training_seed,"deterministic_algorithms":True})
 def predict(artifact,normalized_pair): return _predict_tensor(artifact.model,normalized_pair,torch.device(artifact.device),512)
 def save(artifact,path:Path): path.mkdir(parents=True,exist_ok=True); torch.save({"state_dict":artifact.model.state_dict(),"metadata":artifact.metadata},path/"model.pt")
 def explain(artifact,normalized_pair):
