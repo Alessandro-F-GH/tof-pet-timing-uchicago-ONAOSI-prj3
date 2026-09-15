@@ -59,12 +59,15 @@ def rebuild_study_plots(
 
 
 def _subrun_path(root: Path, manifest: dict[str, Any], window: str) -> Path:
+    local = root / window
+    if local.is_dir():
+        return local.resolve()
     configured = (manifest.get("subruns") or {}).get(window)
     if configured:
         candidate = Path(str(configured)).expanduser()
         if candidate.is_dir():
             return candidate.resolve()
-    return (root / window).resolve()
+    return local.resolve()
 
 
 def rebuild_experiment_plots(
