@@ -829,6 +829,14 @@ def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> lis
     with paper_context():
         if not concatenated:
             plot_ctr_vs_voltage(plot_root, test_rows, paths)
+            plot_improvement_vs_led(
+                run,
+                plot_root,
+                test_rows,
+                manifest,
+                paths,
+                filename="improvement_vs_led.pdf",
+            )
             _relative_improvement_plot(run, plot_root, test_rows, manifest, paths)
 
         for dataset in datasets:
