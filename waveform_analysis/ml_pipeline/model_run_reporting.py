@@ -40,15 +40,15 @@ def _manifest(run: Path) -> dict[str, Any]:
 
 
 def _subrun(root: Path, manifest: dict[str, Any], window: str) -> Path:
+    local = root / window
+    if local.is_dir():
+        return local.resolve()
     configured = (manifest.get("subruns") or {}).get(window)
     if configured:
         candidate = Path(str(configured)).expanduser()
         if candidate.is_dir():
             return candidate.resolve()
-    candidate = root / window
-    if not candidate.is_dir():
-        raise FileNotFoundError(f"Missing window subrun {window!r}: {candidate}")
-    return candidate.resolve()
+    raise FileNotFoundError(f"Missing window subrun {window!r}: {local}")
 
 
 def _test_event_index(subrun: Path, dataset: str) -> np.ndarray:
