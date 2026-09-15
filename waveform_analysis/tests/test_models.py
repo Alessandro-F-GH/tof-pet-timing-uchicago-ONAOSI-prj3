@@ -180,6 +180,22 @@ class AntisymmetryTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(importance)))
 
 
+    def test_mlp_batch_norm_can_be_disabled(self):
+        import torch
+
+        model = SharedScorerMLP(24, [8, 4], "silu", batch_norm=False)
+        self.assertFalse(
+            any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.modules())
+        )
+
+    def test_mlp_2d_batch_norm_can_be_disabled(self):
+        import torch
+
+        model = JointPairMLP(24, [8, 4], "relu", batch_norm=False)
+        self.assertFalse(
+            any(isinstance(layer, torch.nn.BatchNorm1d) for layer in model.modules())
+        )
+
     def test_mlp_pair_antisymmetry(self):
         rng = np.random.default_rng(16)
         pair = rng.normal(size=(8, 2, 24)).astype(np.float32)
