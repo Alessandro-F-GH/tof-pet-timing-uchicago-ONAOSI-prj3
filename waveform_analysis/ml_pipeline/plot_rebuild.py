@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import matplotlib.pyplot as plt
 
 from .analyses import plot_threshold_scan
 from .latex_tables import make_latex_tables
@@ -136,9 +137,7 @@ def rebuild_model_comparison_root_plots(
                 ],
                 dtype=float,
             )
-            fig, ax = __import__("matplotlib.pyplot", fromlist=["plt"]).subplots(
-                figsize=DOUBLE_COLUMN
-            )
+            fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
             ax.errorbar(
                 x,
                 improvement,
@@ -156,7 +155,7 @@ def rebuild_model_comparison_root_plots(
                 fig,
                 plot_root / f"paired_model_improvement_{window}.pdf",
             )
-            __import__("matplotlib.pyplot", fromlist=["plt"]).close(fig)
+            plt.close(fig)
             generated.append(target)
 
     return generated
