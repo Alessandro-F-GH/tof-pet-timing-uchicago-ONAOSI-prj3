@@ -282,25 +282,57 @@ The reporting histograms are presentation views and use a compact display interv
 
 ## CLI
 
+Run the two expensive models independently:
+
 ```bash
-python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/timing.json
-python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/timing.json
-python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/timing.json --overwrite
+python -m waveform_analysis.cli check \
+  --config waveform_analysis/config/experiments/model_study_mlp.json
 
-# recreate figures only from saved CSV/NPY/model-output artifacts
 python -m waveform_analysis.cli run \
-  --config waveform_analysis/config/experiments/timing.json \
+  --config waveform_analysis/config/experiments/model_study_mlp.json \
+  --overwrite
+
+python -m waveform_analysis.cli run \
+  --config waveform_analysis/config/experiments/model_study_onishi.json \
+  --overwrite
+```
+
+They may be run on different machines. After copying both completed study
+directories onto one machine:
+
+```bash
+python -m waveform_analysis.cli compare-runs \
+  --runs waveform_analysis/results/studies/timing_mlp \
+         waveform_analysis/results/studies/timing_onishi_cnn \
+  --output-dir waveform_analysis/results/comparisons/timing_models
+```
+
+The standalone reporting entry point is equivalent:
+
+```bash
+python -m waveform_analysis.scripts.compare_model_runs \
+  --runs waveform_analysis/results/studies/timing_mlp \
+         waveform_analysis/results/studies/timing_onishi_cnn \
+  --output-dir waveform_analysis/results/comparisons/timing_models
+```
+
+Recreate a completed model study's figures without training:
+
+```bash
+python -m waveform_analysis.cli run \
+  --config waveform_analysis/config/experiments/model_study_mlp.json \
   --remake-plots
+```
 
-# equivalent run-directory interface; works for standard, model-comparison,
-# and threshold-scan experiment roots
-python -m waveform_analysis.cli report \
-  --run-dir waveform_analysis/results/studies/complete_timing
+Or rebuild from the run directory directly:
 
-# optionally render into a separate directory without changing the run data
+```bash
 python -m waveform_analysis.cli report \
-  --run-dir waveform_analysis/results/studies/complete_timing \
-  --output-dir waveform_analysis/results/paper_figures/complete_timing
+  --run-dir waveform_analysis/results/studies/timing_mlp
+
+python -m waveform_analysis.cli report \
+  --run-dir waveform_analysis/results/studies/timing_mlp \
+  --output-dir waveform_analysis/results/paper_figures/timing_mlp
 ```
 
 For the concatenated timing study:
