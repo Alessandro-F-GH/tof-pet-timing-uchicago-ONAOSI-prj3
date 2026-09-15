@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from waveform_analysis.ml_pipeline.common import voltage_from_name
+from waveform_analysis.ml_pipeline.plot_style import set_voltage_ticks
 from waveform_analysis.ml_pipeline.reporting import LABELS, MODEL_ORDER
 
 
@@ -264,8 +265,9 @@ def _summary_plot(path: Path, manifest: dict[str, Any], summary: list[dict[str, 
         )
 
     mode = str(manifest.get("mode") or (manifest.get("config") or {}).get("mode") or "")
-    ctr_ax.set_xlabel("Bias voltage [V]")
-    ctr_ax.set_ylabel("Blind-test CTR [ps]")
+    set_voltage_ticks(ctr_ax, voltages)
+    ctr_ax.set_xlabel("Voltage [V]")
+    ctr_ax.set_ylabel("CTR [ps]")
     ctr_ax.set_title(mode.replace("_", " "))
     ctr_ax.grid(True, alpha=0.2)
     ctr_ax.legend()

@@ -121,8 +121,8 @@ def plot_prediction_vs_target(
         ax.set_xlim(*limits)
         ax.set_ylim(*limits)
         ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("ML target [ps]")
-        ax.set_ylabel("Model prediction [ps]")
+        ax.set_xlabel("Target [ps]")
+        ax.set_ylabel("Prediction [ps]")
         clean_axis(ax, grid="both")
         panel_label(ax, f"({chr(97 + panel_index)})")
         ax.text(
@@ -249,7 +249,7 @@ def plot_model_output_correlations(
         ax.grid(False)
     if image is not None:
         cbar = fig.colorbar(image, ax=axes.ravel().tolist(), fraction=0.035, pad=0.04)
-        cbar.set_label("Pearson correlation")
+        cbar.set_label("Correlation [–]")
     target_path = save_figure(
         fig,
         plot_output / f"model_output_correlation_{dataset}.pdf",

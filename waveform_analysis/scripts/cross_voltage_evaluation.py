@@ -417,10 +417,16 @@ def _plot_matrix(path: Path, model: str, train_voltages, predict_voltages, ctr, 
     image = ax.imshow(ctr, aspect="equal", interpolation="nearest")
     ax.set_xticks(np.arange(len(predict_voltages)))
     ax.set_yticks(np.arange(len(train_voltages)))
-    ax.set_xticklabels([f"{value:g} V" for value in predict_voltages])
-    ax.set_yticklabels([f"{value:g} V" for value in train_voltages])
-    ax.set_xlabel("Prediction / blind-test voltage")
-    ax.set_ylabel("Training voltage")
+    ax.set_xticklabels([
+        str(int(round(value))) if np.isclose(value, round(value), rtol=0.0, atol=1e-9) else ""
+        for value in predict_voltages
+    ])
+    ax.set_yticklabels([
+        str(int(round(value))) if np.isclose(value, round(value), rtol=0.0, atol=1e-9) else ""
+        for value in train_voltages
+    ])
+    ax.set_xlabel("Prediction voltage [V]")
+    ax.set_ylabel("Training voltage [V]")
 
     midpoint = 0.5 * (float(np.nanmin(ctr)) + float(np.nanmax(ctr)))
     for i in range(len(train_voltages)):

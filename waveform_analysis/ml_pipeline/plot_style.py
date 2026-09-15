@@ -74,6 +74,22 @@ def model_style(name: str, index: int = 0) -> dict:
     return dict(style)
 
 
+def set_voltage_ticks(ax, values) -> None:
+    import numpy as np
+
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return
+    low = int(np.ceil(np.min(finite)))
+    high = int(np.floor(np.max(finite)))
+    if high < low:
+        return
+    ticks = np.arange(low, high + 1, dtype=int)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([str(int(value)) for value in ticks])
+
+
 def clean_axis(ax, *, grid: str | None = "y") -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

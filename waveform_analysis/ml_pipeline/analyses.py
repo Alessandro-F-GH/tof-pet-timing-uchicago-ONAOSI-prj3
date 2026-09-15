@@ -175,7 +175,7 @@ def plot_threshold_scan(
                 **model_style("mlp"),
             )
             ax.set_xlabel("LED threshold [mV]")
-            ax.set_ylabel("Blind CTR [ps]")
+            ax.set_ylabel("CTR [ps]")
             ax.legend(loc="best")
             clean_axis(ax, grid="y")
             fig.tight_layout()
@@ -198,7 +198,7 @@ def plot_threshold_scan(
             )
             ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
             ax.set_xlabel("LED threshold [mV]")
-            ax.set_ylabel("Blind CTR improvement [%]")
+            ax.set_ylabel("Improvement [%]")
             clean_axis(ax, grid="y")
             fig.tight_layout()
             target = save_figure(
