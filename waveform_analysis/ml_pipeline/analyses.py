@@ -821,13 +821,6 @@ def _plot_window_results(output_dir: Path, rows: list[dict[str, Any]]) -> list[P
     return generated
 
 
-def _read_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        return list(csv.DictReader(stream))
-
-
 def make_analysis_plots(
     run_dir: str | Path,
     plot_root: str | Path,
