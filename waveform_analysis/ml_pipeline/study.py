@@ -1187,6 +1187,20 @@ def _run_model_comparison_experiment(
 
     csv_dir = root / "csv"
     csv_dir.mkdir(parents=True, exist_ok=True)
+
+    correlation_rows: list[dict[str, Any]] = []
+    for window_name, subrun_path in subruns.items():
+        correlation_path = Path(subrun_path) / "csv" / "model_output_correlations.csv"
+        for row in _csv_rows(correlation_path):
+            correlation_rows.append({"window": window_name, **row})
+    if correlation_rows:
+        correlation_csv = csv_dir / "model_output_correlations.csv"
+        fields = list(dict.fromkeys(key for row in correlation_rows for key in row))
+        with correlation_csv.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(correlation_rows)
+
     paired_csv = csv_dir / "paired_model_comparison.csv"
     if paired_rows:
         fields = list(dict.fromkeys(key for row in paired_rows for key in row))
