@@ -11,27 +11,39 @@ from torch import nn
 from torch.utils.data import DataLoader,TensorDataset
 from .spec import ModelSpec
 
+def _dense_head(dense_units):
+    widths=[int(v) for v in dense_units]
+    layers=[nn.Flatten()]
+    if widths:
+        layers.extend([nn.LazyLinear(widths[0]),nn.SiLU()])
+        for incoming,outgoing in zip(widths,widths[1:]):
+            layers.extend([nn.Linear(incoming,outgoing),nn.SiLU()])
+        layers.append(nn.Linear(widths[-1],1))
+    else:
+        layers.append(nn.LazyLinear(1))
+    return nn.Sequential(*layers)
+
 class SharedScorerCNN(nn.Module):
     def __init__(self,architecture:dict[str,Any]):
-        super().__init__(); channels=[int(v) for v in architecture.get("channels",[16,32,64])]; kernels=[int(v) for v in architecture.get("kernels",[9,7,5])]; strides=[int(v) for v in architecture.get("strides",[2,2,2])]; dilations=[int(v) for v in architecture.get("dilations",[1,1,1])]
-        if not(len(channels)==len(kernels)==len(strides)==len(dilations)): raise ValueError("CNN channels/kernels/strides/dilations must have equal length")
-        pool_length=int(architecture.get("adaptive_pool_length",128)); pooling=str(architecture.get("pooling","avg_max")).lower()
-        if pool_length<1: raise ValueError("adaptive_pool_length must be >= 1")
-        if pooling not in {"avg","max","avg_max"}: raise ValueError("CNN pooling must be avg, max, or avg_max")
+        super().__init__()
+        channels=[int(v) for v in architecture.get("channels",[16,32,64])]
+        kernels=[int(v) for v in architecture.get("kernels",[9,7,5])]
+        strides=[int(v) for v in architecture.get("strides",[2,2,2])]
+        dilations=[int(v) for v in architecture.get("dilations",[1,1,1])]
+        if not channels or not(len(channels)==len(kernels)==len(strides)==len(dilations)):
+            raise ValueError("CNN channels/kernels/strides/dilations must be non-empty and have equal length")
         layers=[]; incoming=1
         for outgoing,kernel,stride,dilation in zip(channels,kernels,strides,dilations):
             padding=dilation*(kernel-1)//2
-            layers.extend([nn.Conv1d(incoming,outgoing,kernel,stride=stride,dilation=dilation,padding=padding),nn.SiLU()]); incoming=outgoing
-        self.features=nn.Sequential(*layers); self.avg_pool=nn.AdaptiveAvgPool1d(pool_length) if pooling in {"avg","avg_max"} else None; self.max_pool=nn.AdaptiveMaxPool1d(pool_length) if pooling in {"max","avg_max"} else None
-        incoming*=pool_length*(2 if pooling=="avg_max" else 1); head=[nn.Flatten()]
-        for width in [int(v) for v in architecture.get("dense_units",[32])]: head.extend([nn.Linear(incoming,width),nn.SiLU()]); incoming=width
-        head.append(nn.Linear(incoming,1)); self.head=nn.Sequential(*head)
+            layers.extend([nn.Conv1d(incoming,outgoing,kernel,stride=stride,dilation=dilation,padding=padding),nn.SiLU()])
+            incoming=outgoing
+        self.features=nn.Sequential(*layers)
+        self.head=_dense_head(architecture.get("dense_units",[32]))
     def score(self,waveform):
-        features=self.features(waveform[:,None,:]); pooled=[]
-        if self.avg_pool is not None: pooled.append(self.avg_pool(features))
-        if self.max_pool is not None: pooled.append(self.max_pool(features))
-        return self.head(torch.cat(pooled,dim=1) if len(pooled)>1 else pooled[0]).squeeze(1)
-    def forward(self,pair): return self.score(pair[:,0,:])-self.score(pair[:,1,:])
+        return self.head(self.features(waveform[:,None,:])).squeeze(1)
+    def forward(self,pair):
+        return self.score(pair[:,0,:])-self.score(pair[:,1,:])
+
 @dataclass
 class CNNArtifact:
     model:SharedScorerCNN
@@ -95,6 +107,8 @@ def fit(params,train_x,train_target,*,seed,config,validation_x=None,validation_t
     split_seed=int(config.get("_early_stopping_seed",seed))
     fit_x,fit_target,early_x,early_target=_internal_early_stopping_split(train_x,train_target,early_fraction,split_seed)
     model=SharedScorerCNN(config.get("architecture",{})).to(device)
+    with torch.no_grad():
+        model(torch.from_numpy(np.ascontiguousarray(fit_x[:1],dtype=np.float32)).to(device))
     optimizer=torch.optim.AdamW(model.parameters(),lr=float(params["learning_rate"]),weight_decay=float(params["weight_decay"])); loss_fn=_rmse_loss; loader=_loader(fit_x,fit_target,batch,shuffle=True,seed=training_seed)
     if verbose and logger is not None:
         logger.info("cnn training | loss=RMSE | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",float(params["learning_rate"]),float(params["weight_decay"]),batch,max_epochs,patience,min_delta,early_fraction,fit_target.size,early_target.size,device)
