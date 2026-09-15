@@ -18,6 +18,15 @@
     ],
     "weight_decay": [
       0.00001
+    ],
+    "loss": [
+      "rmse",
+      "huber"
+    ],
+    "huber_delta_ps": [
+      20,
+      30,
+      50
     ]
   },
   "training": {
