@@ -13,14 +13,13 @@ class ConfigTests(unittest.TestCase):
     def test_default_experiment_has_no_training_target_filter(self):
         self.assertNotIn("ml_training", self.config)
 
-    def test_optional_analyses_default_to_disabled(self):
-        self.assertFalse(self.config["analyses"]["led_threshold_scan"]["enabled"])
-        self.assertFalse(self.config["analyses"]["window_scan"]["enabled"])
+    def test_integrated_analyses_are_removed(self):
+        self.assertNotIn("analyses", self.config)
 
     def test_obsolete_ml_training_is_rejected(self):
         stale = copy.deepcopy(self.config)
         stale["ml_training"] = {"target_abs_max_ps": [100, 200]}
-        with self.assertRaisesRegex(ConfigError, "ml_training is obsolete"):
+        with self.assertRaisesRegex(ConfigError, "Obsolete configuration"):
             validate_config(stale)
 
     def test_removed_min_events_is_rejected(self):
@@ -81,27 +80,10 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "fixed to"):
             validate_config(bad)
 
-    def test_threshold_selection_model_must_be_configured(self):
+    def test_obsolete_analyses_section_is_rejected(self):
         bad = copy.deepcopy(self.config)
-        bad["analyses"] = {
-            "led_threshold_scan": {
-                "enabled": True,
-                "selection_model": "not_a_model",
-            }
-        }
-        with self.assertRaisesRegex(ConfigError, "selection_model"):
-            validate_config(bad)
-
-    def test_window_scan_must_fit_inside_base_window(self):
-        bad = copy.deepcopy(self.config)
-        bad["analyses"] = {
-            "window_scan": {
-                "enabled": True,
-                "right_limits_ns": [1, 1000],
-                "models": ["cnn"],
-            }
-        }
-        with self.assertRaisesRegex(ConfigError, "right_limits_ns"):
+        bad["analyses"] = {"led_threshold_scan": {"enabled": True}}
+        with self.assertRaisesRegex(ConfigError, "Obsolete configuration"):
             validate_config(bad)
 
 
