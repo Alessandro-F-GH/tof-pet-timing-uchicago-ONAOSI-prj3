@@ -19,8 +19,14 @@ from .plot_style import (
     model_style,
     paper_context,
     save_figure,
+    set_voltage_ticks,
 )
-from .reporting import make_plots, plot_ctr_vs_voltage, read_results
+from .reporting import (
+    make_plots,
+    plot_ctr_vs_voltage,
+    plot_improvement_vs_led,
+    read_results,
+)
 
 
 def _reset(directory: Path) -> None:
@@ -109,6 +115,17 @@ def rebuild_model_comparison_root_plots(
                     generated,
                     filename=f"ctr_vs_voltage_{window}.pdf",
                 )
+                sub_manifest = json.loads(
+                    (subrun / "manifest.json").read_text(encoding="utf-8")
+                )
+                plot_improvement_vs_led(
+                    subrun,
+                    plot_root,
+                    test_rows,
+                    sub_manifest,
+                    generated,
+                    filename=f"improvement_vs_led_{window}.pdf",
+                )
 
             subset = sorted(
                 [
@@ -146,9 +163,9 @@ def rebuild_model_comparison_root_plots(
                 **model_style("mlp"),
             )
             ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
-            ax.set_xticks(x)
-            ax.set_xlabel("Bias voltage [V]")
-            ax.set_ylabel("CTR improvement over Onishi CNN [%]")
+            set_voltage_ticks(ax, x)
+            ax.set_xlabel("Voltage [V]")
+            ax.set_ylabel("Improvement [%]")
             clean_axis(ax, grid="y")
             fig.tight_layout()
             target = save_figure(
