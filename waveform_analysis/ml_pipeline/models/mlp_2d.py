@@ -10,9 +10,10 @@ from .spec import ModelSpec
 class JointPairMLP(nn.Module):
     """Single MLP over the complete ordered detector pair [s1, s2]."""
 
-    def __init__(self, input_samples: int, architecture, activation: str):
+    def __init__(self, input_samples: int, architecture, activation: str, batch_norm: bool = True):
         super().__init__()
-        self.network = DenseStack(2 * input_samples, architecture, activation)
+        self.batch_norm = bool(batch_norm)
+        self.network = DenseStack(2 * input_samples, architecture, activation, self.batch_norm)
 
     def forward(self, pair: torch.Tensor) -> torch.Tensor:
         if pair.ndim != 3 or pair.shape[1] != 2:
