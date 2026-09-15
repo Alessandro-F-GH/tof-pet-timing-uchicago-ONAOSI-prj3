@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -191,10 +192,32 @@ def _stage_output_matrix(
     return names, corr, counts
 
 
+def _model_output_correlation_rows(
+    run: Path,
+    dataset: str,
+    models: list[str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for stage in ("train", "test"):
+        names, matrix, counts = _stage_output_matrix(run, dataset, models, stage)
+        for i, left in enumerate(names):
+            for j in range(i):
+                rows.append(
+                    {
+                        "dataset": dataset,
+                        "stage": stage,
+                        "model_a": names[j],
+                        "model_b": left,
+                        "pearson_r": float(matrix[i, j]),
+                        "n": int(counts[i, j]),
+                    }
+                )
+    return rows
+
+
 def plot_model_output_correlations(
     plot_output: Path,
     run: Path,
-    mode: str,
     dataset: str,
     models: list[str],
     labels: dict[str, str],
@@ -205,7 +228,7 @@ def plot_model_output_correlations(
     stages = []
     for stage in ("train", "test"):
         names, matrix, counts = _stage_output_matrix(run, dataset, models, stage)
-        if names:
+        if len(names) > 2:
             stages.append((stage, names, matrix, counts))
     if not stages:
         return
@@ -218,7 +241,7 @@ def plot_model_output_correlations(
         constrained_layout=True,
     )
     image = None
-    for panel_index, (ax, (_stage, names, matrix, counts)) in enumerate(zip(axes[0], stages)):
+    for panel_index, (ax, (_stage, names, matrix, _counts)) in enumerate(zip(axes[0], stages)):
         mask = np.triu(np.ones_like(matrix, dtype=bool), k=1)
         shown = np.ma.array(matrix, mask=mask)
         image = ax.imshow(
@@ -237,10 +260,16 @@ def plot_model_output_correlations(
         for i in range(len(names)):
             for j in range(i + 1):
                 value = matrix[i, j]
-                if not np.isfinite(value):
-                    continue
-                color = "white" if abs(value) >= 0.55 else "black"
-                ax.text(j, i, f"{value:.2f}", ha="center", va="center", fontsize=7, color=color)
+                if np.isfinite(value):
+                    ax.text(
+                        j,
+                        i,
+                        f"{value:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="white" if abs(value) >= 0.55 else "black",
+                    )
         panel_label(ax, f"({chr(97 + panel_index)})")
         ax.grid(False)
     if image is not None:
@@ -266,6 +295,7 @@ def make_model_output_reports(
     mode = str(manifest.get("mode") or manifest["config"]["mode"])
     labels = dict(labels or LABELS)
     paths: list[Path] = []
+    correlation_rows: list[dict[str, Any]] = []
 
     with paper_context():
         datasets = list((manifest.get("datasets") or {}).keys())
@@ -296,13 +326,29 @@ def make_model_output_reports(
                     paths,
                 )
             if len(models) > 1:
+                correlation_rows.extend(
+                    _model_output_correlation_rows(run, dataset, models)
+                )
+            if len(models) > 2:
                 plot_model_output_correlations(
                     plot_root / "correlations",
                     run,
-                    mode,
                     dataset,
                     models,
                     labels,
                     paths,
                 )
+
+    correlation_path = run / "csv" / "model_output_correlations.csv"
+    if correlation_rows:
+        correlation_path.parent.mkdir(parents=True, exist_ok=True)
+        with correlation_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(
+                stream,
+                fieldnames=["dataset", "stage", "model_a", "model_b", "pearson_r", "n"],
+            )
+            writer.writeheader()
+            writer.writerows(correlation_rows)
+    elif correlation_path.is_file():
+        correlation_path.unlink()
     return paths
