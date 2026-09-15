@@ -46,7 +46,7 @@
   "analyses": {
     "led_threshold_scan": {
       "enabled": false,
-      "selection_model": "cnn"
+      "selection_model": "mlp"
     },
     "window_scan": {
       "enabled": false,
@@ -58,8 +58,8 @@
         30
       ],
       "models": [
-        "cnn",
-        "cnn_2d"
+        "mlp",
+        "onishi_cnn"
       ]
     }
   }
