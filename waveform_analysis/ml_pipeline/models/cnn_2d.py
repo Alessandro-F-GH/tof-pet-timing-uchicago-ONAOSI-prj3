@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .cnn import _configure_reproducibility, _device, _loader, _predict_tensor, _rmse, candidates
+from .cnn import _configure_reproducibility, _device, _gradient_norm, _loader, _predict_tensor, _rmse, candidates
 from .spec import ModelSpec
 
 
@@ -169,12 +169,15 @@ def fit(
 
     for epoch in range(1, max_epochs + 1):
         model.train()
+        epoch_gradient_norms = []
         for pair, target in loader:
             pair = pair.to(device)
             target = target.to(device)
             optimizer.zero_grad(set_to_none=True)
             loss = loss_fn(model(pair), target)
             loss.backward()
+            if verbose and logger is not None:
+                epoch_gradient_norms.append(_gradient_norm(model))
             clip = float(training.get("gradient_clip_norm", 10.0))
             if clip > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), clip)
@@ -190,11 +193,12 @@ def fit(
                 train_prediction = np.clip(train_prediction, -float(output_limit), float(output_limit))
             train_score = _rmse(train_prediction - np.asarray(train_target, dtype=np.float64))
             logger.info(
-                "cnn_2d epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",
+                "cnn_2d epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | grad norm=%.6g | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",
                 epoch,
                 max_epochs,
                 train_score,
                 score,
+                float(np.mean(epoch_gradient_norms)) if epoch_gradient_norms else float("nan"),
                 float(np.mean(prediction)),
                 float(np.std(prediction)),
                 float(np.min(prediction)),
