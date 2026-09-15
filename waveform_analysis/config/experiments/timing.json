@@ -2,8 +2,14 @@
   "extends": "../profiles/ctr_default.json",
   "data_config": "../data/converted_runs_07_13.json",
   "preprocessing_config": "../preprocessing/default_ctr.json",
-  "experiment": {"name": "complete_timing", "output_dir": "results/studies/complete_timing_bigger_test_new_split"},
-  "models": ["linear_svr", "cnn", "cnn_2d"],
+  "experiment": {
+    "name": "complete_timing",
+    "output_dir": "results/studies/complete_timing_bigger_test_new_split"
+  },
+  "models": [
+    "mlp",
+    "onishi_cnn"
+  ],
   "mode": "timing_to_timing",
   "cfd": false
 }
