@@ -124,18 +124,24 @@ def fit(
     *,
     seed,
     config,
-    validation_x=None,
-    validation_target=None,
+    early_x=None,
+    early_target=None,
 ):
-    if validation_x is None or validation_target is None:
-        raise ValueError("cnn_2d training requires a validation set for early stopping")
-
     training_seed = _configure_reproducibility(seed)
 
     training = config.get("training", {})
     verbose = bool(config.get("verbose", False))
     logger = config.get("_logger")
     device = _device(config)
+    batch = int(params.get("batch_size", training.get("batch_size", 64)))
+    max_epochs = int(training.get("epochs", 350))
+    patience = int(training.get("patience", 30))
+    min_delta = float(training.get("min_delta", 0.05))
+    early_fraction = float(training.get("early_stopping_fraction", 0.20))
+    split_seed = int(config.get("_early_stopping_seed", seed))
+    fit_x, fit_target, early_x, early_target = _internal_early_stopping_split(
+        train_x, train_target, early_fraction, split_seed
+    )
     model = JointPairCNN2D(config.get("architecture", {})).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -143,21 +149,20 @@ def fit(
         weight_decay=float(params["weight_decay"]),
     )
     loss_fn = nn.MSELoss()
-    batch = int(params.get("batch_size", training.get("batch_size", 64)))
-    max_epochs = int(training.get("epochs", 350))
-    patience = int(training.get("patience", 30))
-    min_delta = float(training.get("min_delta", 0.05))
-    loader = _loader(train_x, train_target, batch, shuffle=True, seed=training_seed)
+    loader = _loader(fit_x, fit_target, batch, shuffle=True, seed=training_seed)
     output_limit = config.get("_prediction_max_abs_ps")
     if verbose and logger is not None:
         logger.info(
-            "cnn_2d training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | device=%s",
+            "cnn_2d training | lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             float(params["learning_rate"]),
             float(params["weight_decay"]),
             batch,
             max_epochs,
             patience,
             min_delta,
+            early_fraction,
+            fit_target.size,
+            early_target.size,
             device,
         )
 
@@ -165,8 +170,6 @@ def fit(
     best_epoch = 0
     best_state = None
     stale = 0
-    validation_target = np.asarray(validation_target, dtype=np.float64)
-
     for epoch in range(1, max_epochs + 1):
         model.train()
         epoch_gradient_norms = []
@@ -183,17 +186,17 @@ def fit(
                 nn.utils.clip_grad_norm_(model.parameters(), clip)
             optimizer.step()
 
-        prediction = _predict_tensor(model, validation_x, device, batch)
+        prediction = _predict_tensor(model, early_x, device, batch)
         if output_limit is not None:
             prediction = np.clip(prediction, -float(output_limit), float(output_limit))
-        score = _rmse(prediction - validation_target)
+        score = _rmse(prediction - early_target)
         if verbose and logger is not None:
-            train_prediction = _predict_tensor(model, train_x, device, batch)
+            train_prediction = _predict_tensor(model, fit_x, device, batch)
             if output_limit is not None:
                 train_prediction = np.clip(train_prediction, -float(output_limit), float(output_limit))
-            train_score = _rmse(train_prediction - np.asarray(train_target, dtype=np.float64))
+            train_score = _rmse(train_prediction - np.asarray(fit_target, dtype=np.float64))
             logger.info(
-                "cnn_2d epoch %d/%d | train RMSE=%.4f ps | val RMSE=%.4f ps | grad norm=%.6g | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",
+                "cnn_2d epoch %d/%d | fit RMSE=%.4f ps | early-stop RMSE=%.4f ps | grad norm=%.6g | pred mean=%.4f ps | pred std=%.4f ps | pred min=%.4f ps | pred max=%.4f ps",
                 epoch,
                 max_epochs,
                 train_score,
@@ -223,8 +226,16 @@ def fit(
         device=str(device),
         metadata={
             "best_epoch": int(best_epoch),
-            "best_validation_rmse_ps": float(best_score),
-            "early_stopping_metric": "validation_rmse",
+            "best_early_stopping_rmse_ps": float(best_score),
+            "early_stopping_metric": "internal_train_holdout_rmse",
+            "early_stopping_fraction": early_fraction,
+            "early_stopping_events": int(early_target.size),
+            "optimizer_training_events": int(fit_target.size),
+            "training_events_available": int(len(train_target)),
+            "training_uses_full_split": False,
+            "refit_on_full_training_split": False,
+            "external_validation_used_for_early_stopping": False,
+            "early_stopping_split_seed": split_seed,
             "learning_rate": float(params["learning_rate"]),
             "weight_decay": float(params["weight_decay"]),
             "batch_size": batch,
