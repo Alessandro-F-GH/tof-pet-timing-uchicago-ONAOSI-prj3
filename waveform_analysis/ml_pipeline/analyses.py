@@ -113,7 +113,7 @@ def _paired_blind_improvement(
     return float(central), uncertainty, len(bootstrap)
 
 
-def _plot_threshold_scan(
+def plot_threshold_scan(
     output_dir: Path,
     rows: list[dict[str, Any]],
 ) -> list[Path]:
@@ -478,7 +478,7 @@ def run_blind_led_threshold_scan(
     )
     _write_csv(csv_path, rows)
     _write_csv(selection_csv, selection_rows)
-    _plot_threshold_scan(output_dir, rows)
+    plot_threshold_scan(output_dir, rows)
     return {
         "experiment_type": "threshold_scan",
         "model": model_name,
