@@ -169,6 +169,64 @@ def validate_config(config):
         raise ConfigError("cfd must be true or false")
 
     experiment = config["experiment"]
+    experiment_type = str(experiment.get("type", "standard")).strip().lower()
+    if experiment_type not in {"standard", "model_comparison", "threshold_scan"}:
+        raise ConfigError(
+            "experiment.type must be one of: standard, model_comparison, threshold_scan"
+        )
+    experiment["type"] = experiment_type
+
+    if experiment_type == "model_comparison":
+        expected_models = {"mlp", "onishi_cnn"}
+        if set(config["models"]) != expected_models:
+            raise ConfigError(
+                "model_comparison requires exactly models=['mlp', 'onishi_cnn']"
+            )
+        if "fixed_led_threshold_mV" not in experiment:
+            raise ConfigError(
+                "model_comparison requires experiment.fixed_led_threshold_mV"
+            )
+        fixed_led = float(experiment["fixed_led_threshold_mV"])
+        if not np_isfinite_positive(fixed_led):
+            raise ConfigError(
+                "experiment.fixed_led_threshold_mV must be finite and positive"
+            )
+        windows = experiment.get("windows")
+        if not isinstance(windows, dict) or set(windows) != {"onishi", "wide"}:
+            raise ConfigError(
+                "model_comparison requires experiment.windows with exactly "
+                "'onishi' and 'wide'"
+            )
+        for label, value in windows.items():
+            if not isinstance(value, dict) or set(value) != {"start", "end"}:
+                raise ConfigError(
+                    f"experiment.windows.{label} must contain start and end"
+                )
+            start = float(value["start"])
+            end = float(value["end"])
+            if not (end > start):
+                raise ConfigError(
+                    f"experiment.windows.{label}.end must exceed start"
+                )
+        onishi = windows["onishi"]
+        if not (
+            abs(float(onishi["start"]) + 1.5) <= 1e-12
+            and abs(float(onishi["end"]) - 2.0) <= 1e-12
+        ):
+            raise ConfigError(
+                "experiment.windows.onishi is fixed to [-1.5, 2.0] ns"
+            )
+
+    if experiment_type == "threshold_scan":
+        if set(config["models"]) != {"mlp"}:
+            raise ConfigError("threshold_scan requires exactly models=['mlp']")
+        if "voltage_V" not in experiment:
+            raise ConfigError("threshold_scan requires experiment.voltage_V")
+        voltage = float(experiment["voltage_V"])
+        import math
+        if not math.isfinite(voltage):
+            raise ConfigError("experiment.voltage_V must be finite")
+
     concatenate = bool(experiment.get("concatenate_datasets", False))
     raw_analyses = config.get("analyses")
     led_scan_enabled = bool(
@@ -278,6 +336,16 @@ def validate_config(config):
     if unknown_models:
         raise ConfigError(f"Unregistered model(s): {sorted(unknown_models)}")
     _validate_analyses(config)
+    if experiment["type"] != "standard":
+        enabled = [
+            name
+            for name, value in config["analyses"].items()
+            if isinstance(value, dict) and bool(value.get("enabled", False))
+        ]
+        if enabled:
+            raise ConfigError(
+                f"{experiment['type']} cannot enable integrated analyses: {enabled}"
+            )
     for name, model in config["models"].items():
         if "verbose" in model and not isinstance(model["verbose"], bool):
             raise ConfigError(f"{name}: verbose must be a boolean")
