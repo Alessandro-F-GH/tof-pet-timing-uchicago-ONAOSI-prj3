@@ -13,8 +13,8 @@ MODEL_ORDER = (
     "led",
     "cfd",
     "linear_svr",
-    "cnn",
-    "cnn_2d",
+    "mlp",
+    "onishi_cnn",
     "minirocket",
     "difference_knn",
 )
@@ -23,7 +23,8 @@ LABELS = {
     "cfd": "CFD",
     "linear_svr": "Linear SVR",
     "cnn": "CNN",
-    "cnn_2d": "2-D CNN",
+    "mlp": "Antisymmetric MLP",
+    "onishi_cnn": "Onishi CNN",
     "minirocket": "MiniRocket",
     "difference_knn": "Difference k-NN",
 }
@@ -35,7 +36,8 @@ MODEL_STYLES = {
     "cfd": {"color": "#7F7F7F", "marker": "x", "linestyle": ":"},
     "linear_svr": {"color": "#0072B2", "marker": "^", "linestyle": "-."},
     "cnn": {"color": "#E69F00", "marker": "o", "linestyle": "-"},
-    "cnn_2d": {"color": "#009E73", "marker": "s", "linestyle": "-"},
+    "mlp": {"color": "#E69F00", "marker": "o", "linestyle": "-"},
+    "onishi_cnn": {"color": "#009E73", "marker": "s", "linestyle": "-"},
     "minirocket": {"color": "#CC79A7", "marker": "D", "linestyle": "-."},
     "difference_knn": {"color": "#D55E00", "marker": "v", "linestyle": ":"},
 }
