@@ -105,6 +105,65 @@ def set_voltage_ticks(ax, values) -> None:
     ax.set_xticklabels([str(int(value)) for value in ticks])
 
 
+def plot_voltage_series(
+    ax,
+    voltages,
+    values,
+    *,
+    label: str | None = None,
+    style: dict | None = None,
+    errors=None,
+    capsize: float = 2.5,
+) -> bool:
+    import numpy as np
+
+    x = np.asarray(voltages, dtype=float)
+    y = np.asarray(values, dtype=float)
+    if x.shape != y.shape:
+        raise ValueError("Voltage and value arrays must have the same shape")
+    finite = np.isfinite(x) & np.isfinite(y)
+    if not np.any(finite):
+        return False
+
+    kwargs = dict(style or {})
+    if label is not None:
+        kwargs["label"] = label
+
+    if errors is None:
+        ax.plot(x[finite], y[finite], **kwargs)
+    else:
+        err = np.asarray(errors, dtype=float)
+        if err.shape != y.shape:
+            raise ValueError("Error array must match the value array shape")
+        ax.errorbar(
+            x[finite],
+            y[finite],
+            yerr=np.where(np.isfinite(err[finite]), err[finite], 0.0),
+            capsize=float(capsize),
+            **kwargs,
+        )
+    return True
+
+
+def finish_voltage_axis(
+    ax,
+    voltages,
+    *,
+    ylabel: str,
+    legend: bool = True,
+    ncol: int = 2,
+    zero_line: bool = False,
+) -> None:
+    if zero_line:
+        ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
+    set_voltage_ticks(ax, voltages)
+    ax.set_xlabel("Voltage [V]")
+    ax.set_ylabel(ylabel)
+    if legend:
+        ax.legend(loc="best", ncol=ncol)
+    clean_axis(ax, grid="y")
+
+
 def clean_axis(ax, *, grid: str | None = "y") -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
