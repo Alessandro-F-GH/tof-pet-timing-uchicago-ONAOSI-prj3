@@ -65,19 +65,33 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "voltage_V"):
             validate_config(bad)
 
-    def test_onishi_window_is_fixed(self):
+    def test_model_comparison_accepts_arbitrary_window_names(self):
+        valid = copy.deepcopy(self.config)
+        valid["experiment"].update(
+            {
+                "type": "model_comparison",
+                "fixed_led_threshold_mV": 15.0,
+                "windows": {
+                    "onishi_window": {"start": -1.5, "end": 2.0},
+                    "wide_window": {"start": -2.0, "end": 30.0},
+                },
+            }
+        )
+        validate_config(valid)
+
+    def test_model_comparison_requires_onishi_reference_bounds(self):
         bad = copy.deepcopy(self.config)
         bad["experiment"].update(
             {
                 "type": "model_comparison",
                 "fixed_led_threshold_mV": 15.0,
                 "windows": {
-                    "onishi": {"start": -1.0, "end": 2.0},
-                    "wide": {"start": -2.0, "end": 30.0},
+                    "short_window": {"start": -1.0, "end": 2.0},
+                    "wide_window": {"start": -2.0, "end": 30.0},
                 },
             }
         )
-        with self.assertRaisesRegex(ConfigError, "fixed to"):
+        with self.assertRaisesRegex(ConfigError, "reference window"):
             validate_config(bad)
 
     def test_obsolete_analyses_section_is_rejected(self):

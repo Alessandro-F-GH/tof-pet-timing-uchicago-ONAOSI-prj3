@@ -101,7 +101,10 @@ def rebuild_model_comparison_root_plots(
     generated: list[Path] = []
 
     with paper_context():
-        for window in ("onishi", "wide"):
+        windows = list(
+            (manifest.get("windows_ns") or (manifest.get("subruns") or {})).keys()
+        )
+        for window in windows:
             subrun = _subrun_path(run, manifest, window)
             results_path = subrun / "csv" / "results.csv"
             if results_path.is_file():
@@ -199,7 +202,10 @@ def rebuild_experiment_plots(
         destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
         _reset(destination / "plots")
         paths: list[Path] = []
-        for window in ("onishi", "wide"):
+        windows = list(
+            (manifest.get("windows_ns") or (manifest.get("subruns") or {})).keys()
+        )
+        for window in windows:
             subrun = _subrun_path(run, manifest, window)
             sub_destination = (
                 subrun

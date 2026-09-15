@@ -127,12 +127,14 @@ def validate_config(config):
                 "experiment.fixed_led_threshold_mV must be finite and positive"
             )
         windows = experiment.get("windows")
-        if not isinstance(windows, dict) or set(windows) != {"onishi", "wide"}:
+        if not isinstance(windows, dict) or not windows:
             raise ConfigError(
-                "model_comparison requires experiment.windows with exactly "
-                "'onishi' and 'wide'"
+                "model_comparison requires a non-empty experiment.windows mapping"
             )
+        has_onishi_reference_window = False
         for label, value in windows.items():
+            if not str(label).strip():
+                raise ConfigError("experiment.windows names must not be empty")
             if not isinstance(value, dict) or set(value) != {"start", "end"}:
                 raise ConfigError(
                     f"experiment.windows.{label} must contain start and end"
@@ -143,13 +145,15 @@ def validate_config(config):
                 raise ConfigError(
                     f"experiment.windows.{label}.end must exceed start"
                 )
-        onishi = windows["onishi"]
-        if not (
-            abs(float(onishi["start"]) + 1.5) <= 1e-12
-            and abs(float(onishi["end"]) - 2.0) <= 1e-12
-        ):
+            if (
+                abs(start + 1.5) <= 1e-12
+                and abs(end - 2.0) <= 1e-12
+            ):
+                has_onishi_reference_window = True
+        if not has_onishi_reference_window:
             raise ConfigError(
-                "experiment.windows.onishi is fixed to [-1.5, 2.0] ns"
+                "model_comparison requires one reference window fixed to "
+                "[-1.5, 2.0] ns; the window name is arbitrary"
             )
 
     if experiment_type == "threshold_scan":
