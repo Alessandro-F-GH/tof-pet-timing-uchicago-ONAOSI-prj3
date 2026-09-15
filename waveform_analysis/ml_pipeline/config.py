@@ -96,7 +96,7 @@ def validate_config(config):
     if obsolete:
         raise ConfigError(
             f"Obsolete configuration section(s): {obsolete}. "
-            "Use experiment.type='model_comparison' or 'threshold_scan' instead."
+            "Use experiment.type='model_study' or 'threshold_scan' instead."
         )
     mode = str(config["mode"])
     family = mode_family(mode)
@@ -105,56 +105,27 @@ def validate_config(config):
 
     experiment = config["experiment"]
     experiment_type = str(experiment.get("type", "standard")).strip().lower()
-    if experiment_type not in {"standard", "model_comparison", "threshold_scan"}:
+    if experiment_type not in {"standard", "model_study", "threshold_scan"}:
         raise ConfigError(
-            "experiment.type must be one of: standard, model_comparison, threshold_scan"
+            "experiment.type must be one of: standard, model_study, threshold_scan"
         )
     experiment["type"] = experiment_type
 
-    if experiment_type == "model_comparison":
-        expected_models = {"mlp", "onishi_cnn"}
-        if set(config["models"]) != expected_models:
+    if experiment_type == "model_study":
+        if len(config["models"]) != 1:
             raise ConfigError(
-                "model_comparison requires exactly models=['mlp', 'onishi_cnn']"
+                "model_study requires exactly one configured model"
             )
         if "fixed_led_threshold_mV" not in experiment:
             raise ConfigError(
-                "model_comparison requires experiment.fixed_led_threshold_mV"
+                "model_study requires experiment.fixed_led_threshold_mV"
             )
         fixed_led = float(experiment["fixed_led_threshold_mV"])
         if not np_isfinite_positive(fixed_led):
             raise ConfigError(
                 "experiment.fixed_led_threshold_mV must be finite and positive"
             )
-        windows = experiment.get("windows")
-        if not isinstance(windows, dict) or not windows:
-            raise ConfigError(
-                "model_comparison requires a non-empty experiment.windows mapping"
-            )
-        has_onishi_reference_window = False
-        for label, value in windows.items():
-            if not str(label).strip():
-                raise ConfigError("experiment.windows names must not be empty")
-            if not isinstance(value, dict) or set(value) != {"start", "end"}:
-                raise ConfigError(
-                    f"experiment.windows.{label} must contain start and end"
-                )
-            start = float(value["start"])
-            end = float(value["end"])
-            if not (end > start):
-                raise ConfigError(
-                    f"experiment.windows.{label}.end must exceed start"
-                )
-            if (
-                abs(start + 1.5) <= 1e-12
-                and abs(end - 2.0) <= 1e-12
-            ):
-                has_onishi_reference_window = True
-        if not has_onishi_reference_window:
-            raise ConfigError(
-                "model_comparison requires one reference window fixed to "
-                "[-1.5, 2.0] ns; the window name is arbitrary"
-            )
+
 
     if experiment_type == "threshold_scan":
         if set(config["models"]) != {"mlp"}:
@@ -191,8 +162,36 @@ def validate_config(config):
             raise ConfigError(f"validation.{key} must be a fraction in (0, 1)")
 
     ml_input = config["ml_input"]
-    if set(ml_input) - {"window_ns", "subsampling"}:
-        raise ConfigError("ml_input accepts only window_ns and subsampling")
+    allowed_ml_input = {"window_ns", "windows", "default_window", "subsampling"}
+    extra_ml_input = sorted(set(ml_input) - allowed_ml_input)
+    if extra_ml_input:
+        raise ConfigError(f"Unknown ml_input option(s): {extra_ml_input}")
+    windows = ml_input.get("windows")
+    if windows is not None:
+        if not isinstance(windows, dict) or not windows:
+            raise ConfigError("ml_input.windows must be a non-empty mapping")
+        for label, value in windows.items():
+            if not str(label).strip():
+                raise ConfigError("ml_input.windows names must not be empty")
+            if not isinstance(value, dict) or set(value) != {"start", "end"}:
+                raise ConfigError(
+                    f"ml_input.windows.{label} must contain start and end"
+                )
+            if float(value["end"]) <= float(value["start"]):
+                raise ConfigError(
+                    f"ml_input.windows.{label}.end must exceed start"
+                )
+        default_window = str(ml_input.get("default_window", "")).strip()
+        if not default_window or default_window not in windows:
+            raise ConfigError(
+                "ml_input.default_window must name one entry in ml_input.windows"
+            )
+    if experiment_type == "model_study" and not windows:
+        raise ConfigError(
+            "model_study requires shared ml_input.windows in the profile/config"
+        )
+    if "window_ns" not in ml_input:
+        raise ConfigError("ml_input.window_ns must be resolved before validation")
     if float(ml_input["window_ns"]["end"]) <= float(ml_input["window_ns"]["start"]):
         raise ConfigError("ml_input.window_ns.end must exceed start")
     if int(ml_input.get("subsampling", 1)) <= 0:
@@ -284,6 +283,13 @@ def load_config(path: str | Path, project_root: str | Path | None = None):
     source = Path(path).expanduser().resolve()
     root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]
     config = _resolve(source)
+    ml_input = config.get("ml_input")
+    if isinstance(ml_input, dict) and isinstance(ml_input.get("windows"), dict):
+        default_window = str(ml_input.get("default_window", "")).strip()
+        if default_window and default_window in ml_input["windows"]:
+            ml_input["window_ns"] = copy.deepcopy(
+                ml_input["windows"][default_window]
+            )
     _load_models(config, root)
     validate_config(config)
     mode = str(config["mode"])

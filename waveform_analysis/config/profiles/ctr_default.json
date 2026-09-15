@@ -37,10 +37,17 @@
     "max_abs_ps": 2000
   },
   "ml_input": {
-    "window_ns": {
-      "start": -2,
-      "end": 30
+    "windows": {
+      "onishi_window": {
+        "start": -1.5,
+        "end": 2.0
+      },
+      "wide_window": {
+        "start": -2.0,
+        "end": 30.0
+      }
     },
+    "default_window": "wide_window",
     "subsampling": 1
   }
 }

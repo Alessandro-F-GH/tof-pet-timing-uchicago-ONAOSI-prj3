@@ -12,6 +12,7 @@ from .ml_pipeline.event_selection import select_events
 from .ml_pipeline.prepared_data import prepare_ml_dataset
 from .ml_pipeline.preflight import confirm_overwrite, inspect_preprocessing, study_overwrite_path
 from .ml_pipeline.plot_rebuild import rebuild_experiment_plots
+from .ml_pipeline.model_run_reporting import compare_model_runs
 from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
@@ -35,6 +36,15 @@ def _parser() -> argparse.ArgumentParser:
         help="recreate plots from existing run artifacts without rerunning preprocessing or training",
     )
     run.add_argument("--rebuild-preprocessing", action="store_true")
+    compare_runs = commands.add_parser("compare-runs")
+    compare_runs.add_argument(
+        "--runs",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="completed model-study directories copied from any machines",
+    )
+    compare_runs.add_argument("--output-dir", type=Path, required=True)
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
     report.add_argument("--output-dir", type=Path)
@@ -72,6 +82,10 @@ def _prepare(config, rebuild: bool) -> int:
 
 def main() -> None:
     args = _parser().parse_args()
+    if args.command == "compare-runs":
+        for path in compare_model_runs(args.runs, args.output_dir):
+            print(path)
+        return
     if args.command == "report":
         for path in rebuild_experiment_plots(
             args.run_dir,

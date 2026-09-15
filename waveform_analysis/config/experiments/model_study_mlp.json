@@ -1,0 +1,16 @@
+{
+  "extends": "../profiles/ctr_default.json",
+  "data_config": "../data/converted_runs_07_13.json",
+  "preprocessing_config": "../preprocessing/default_ctr.json",
+  "experiment": {
+    "type": "model_study",
+    "name": "timing_mlp",
+    "output_dir": "results/studies/timing_mlp",
+    "fixed_led_threshold_mV": 15.0
+  },
+  "models": [
+    "mlp"
+  ],
+  "mode": "timing_to_timing",
+  "cfd": false
+}

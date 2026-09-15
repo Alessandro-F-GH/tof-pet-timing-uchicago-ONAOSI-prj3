@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from utils_fit import fit_ctr_ps
-
 import copy
-import csv
 import gc
 import json
 import logging
@@ -23,12 +20,7 @@ from .plot_rebuild import rebuild_study_plots
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
-from .reporting import (
-    LABELS,
-    plot_ctr_vs_voltage,
-    plot_improvement_vs_led,
-    read_results,
-)
+from .reporting import LABELS
 from .sample_mask import (
     SAMPLE_CONSTANT_FRACTION,
     apply_sample_mask,
@@ -944,221 +936,48 @@ def _check_experiment_resume_config(
         )
 
 
-def _paired_model_comparison_rows(
-    run_dir: Path,
-    window_name: str,
+def _model_study_compatibility(
     config: dict[str, Any],
-) -> list[dict[str, Any]]:
-    results_path = run_dir / "csv" / "results.csv"
-    if not results_path.is_file():
-        return []
-    with results_path.open(encoding="utf-8", newline="") as stream:
-        results = list(csv.DictReader(stream))
-    datasets = sorted(
-        {
-            str(row["dataset"])
-            for row in results
-            if row.get("stage") == "test"
-            and row.get("method") in {"mlp", "onishi_cnn"}
+    windows: dict[str, Any],
+    fixed_led: float,
+) -> dict[str, Any]:
+    data = copy.deepcopy(config["data"])
+    data.pop("root_folder", None)
+    preprocessing = copy.deepcopy(config["preprocessing"])
+    for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir"):
+        preprocessing.pop(key, None)
+    payload = {
+        "mode": str(config["mode"]),
+        "data": data,
+        "preprocessing": preprocessing,
+        "validation": copy.deepcopy(config["validation"]),
+        "fit": copy.deepcopy(config["fit"]),
+        "standard_methods": {
+            "fixed_led_threshold_mV": float(fixed_led),
+            "led_minimum_crossing_efficiency": float(
+                config["standard_methods"].get(
+                    "led_minimum_crossing_efficiency", 0.95
+                )
+            ),
+            "led_coincidence_window_ns": float(
+                config["standard_methods"].get(
+                    "led_coincidence_window_ns", 2.0
+                )
+            ),
         },
-        key=voltage_from_name,
-    )
-    fit_config = dict(config.get("fit") or {})
-    samples = int(fit_config.get("bootstrap_samples", 0))
-    seed = int(config["validation"]["seed"])
-    rows: list[dict[str, Any]] = []
-    for dataset in datasets:
-        mlp_path = run_dir / "artifacts" / dataset / "mlp_test_residuals_ps.npy"
-        onishi_path = run_dir / "artifacts" / dataset / "onishi_cnn_test_residuals_ps.npy"
-        if not (mlp_path.is_file() and onishi_path.is_file()):
-            continue
-        mlp = np.asarray(np.load(mlp_path), dtype=np.float64).reshape(-1)
-        onishi = np.asarray(np.load(onishi_path), dtype=np.float64).reshape(-1)
-        if mlp.shape != onishi.shape:
-            raise ValueError(
-                f"{dataset}/{window_name}: paired model residual shapes differ"
-            )
-        finite = np.isfinite(mlp) & np.isfinite(onishi)
-        mlp = mlp[finite]
-        onishi = onishi[finite]
-        if mlp.size < 2:
-            raise ValueError(
-                f"{dataset}/{window_name}: fewer than two common blind events"
-            )
-        mlp_fit = fit_ctr_ps(
-            mlp,
-            fit_config,
-            seed=semantic_seed(seed, dataset, window_name, "mlp_ctr"),
-            bootstrap=True,
-        )
-        onishi_fit = fit_ctr_ps(
-            onishi,
-            fit_config,
-            seed=semantic_seed(seed, dataset, window_name, "onishi_ctr"),
-            bootstrap=True,
-        )
-        mlp_ctr = float(mlp_fit.ctr_ps)
-        onishi_ctr = float(onishi_fit.ctr_ps)
-        delta = float(onishi_ctr - mlp_ctr)
-        relative = float(100.0 * delta / onishi_ctr)
-        rng = np.random.default_rng(
-            semantic_seed(seed, dataset, window_name, "mlp_vs_onishi_paired")
-        )
-        boot_delta = []
-        boot_relative = []
-        for _ in range(samples):
-            idx = rng.integers(0, mlp.size, size=mlp.size)
-            try:
-                mlp_b = fit_ctr_ps(
-                    mlp[idx], fit_config, bootstrap=False
-                ).ctr_ps
-                onishi_b = fit_ctr_ps(
-                    onishi[idx], fit_config, bootstrap=False
-                ).ctr_ps
-            except ValueError:
-                continue
-            if not (
-                np.isfinite(mlp_b)
-                and np.isfinite(onishi_b)
-                and onishi_b > 0
-            ):
-                continue
-            d = float(onishi_b - mlp_b)
-            boot_delta.append(d)
-            boot_relative.append(100.0 * d / onishi_b)
-        rows.append(
-            {
-                "window": window_name,
-                "dataset": dataset,
-                "voltage_V": voltage_from_name(dataset),
-                "blind_events": int(mlp.size),
-                "mlp_ctr_ps": float(mlp_ctr),
-                "mlp_ctr_uncertainty_ps": float(mlp_fit.ctr_error_ps),
-                "onishi_cnn_ctr_ps": float(onishi_ctr),
-                "onishi_cnn_ctr_uncertainty_ps": float(onishi_fit.ctr_error_ps),
-                "onishi_minus_mlp_ctr_ps": delta,
-                "paired_bootstrap_uncertainty_ps": (
-                    float(np.std(boot_delta, ddof=1))
-                    if len(boot_delta) > 1
-                    else float("nan")
-                ),
-                "mlp_improvement_over_onishi_percent": relative,
-                "paired_bootstrap_uncertainty_percent": (
-                    float(np.std(boot_relative, ddof=1))
-                    if len(boot_relative) > 1
-                    else float("nan")
-                ),
-                "paired_bootstrap_successful": len(boot_delta),
-                "comparison_population": "blind",
-            }
-        )
-    return rows
+        "ml_input": {
+            "windows": copy.deepcopy(windows),
+            "subsampling": int(config["ml_input"].get("subsampling", 1)),
+        },
+        "ml_output": copy.deepcopy(config["ml_output"]),
+    }
+    return {
+        "signature": canonical_hash(payload),
+        "payload": payload,
+    }
 
 
-def _write_model_comparison_plot(
-    root: Path,
-    rows: list[dict[str, Any]],
-) -> list[Path]:
-    import matplotlib.pyplot as plt
-
-    from .plot_style import (
-        DOUBLE_COLUMN,
-        clean_axis,
-        model_style,
-        paper_context,
-        save_figure,
-        set_voltage_ticks,
-    )
-
-    generated: list[Path] = []
-    plot_dir = root / "plots"
-    plot_dir.mkdir(parents=True, exist_ok=True)
-
-    with paper_context():
-        for window in sorted({str(row["window"]) for row in rows}):
-            subrun = root / window
-            results_path = subrun / "csv" / "results.csv"
-            if results_path.is_file():
-                test_rows = [
-                    row for row in read_results(subrun)
-                    if row.get("stage") == "test"
-                ]
-                plot_ctr_vs_voltage(
-                    plot_dir,
-                    test_rows,
-                    generated,
-                    filename=f"ctr_vs_voltage_{window}.pdf",
-                )
-                sub_manifest = json.loads(
-                    (subrun / "manifest.json").read_text(encoding="utf-8")
-                )
-                plot_improvement_vs_led(
-                    subrun,
-                    plot_dir,
-                    test_rows,
-                    sub_manifest,
-                    generated,
-                    filename=f"improvement_vs_led_{window}.pdf",
-                )
-
-            subset = sorted(
-                [row for row in rows if str(row["window"]) == window],
-                key=lambda row: float(row["voltage_V"]),
-            )
-            if not subset:
-                continue
-
-            x = np.asarray(
-                [float(row["voltage_V"]) for row in subset],
-                dtype=float,
-            )
-            improvement = np.asarray(
-                [
-                    float(row["mlp_improvement_over_onishi_percent"])
-                    for row in subset
-                ],
-                dtype=float,
-            )
-            improvement_err = np.asarray(
-                [
-                    float(row["paired_bootstrap_uncertainty_percent"])
-                    for row in subset
-                ],
-                dtype=float,
-            )
-            fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
-            ax.errorbar(
-                x,
-                improvement,
-                yerr=np.where(
-                    np.isfinite(improvement_err),
-                    improvement_err,
-                    0.0,
-                ),
-                capsize=2.5,
-                **model_style("mlp"),
-            )
-            ax.axhline(
-                0.0,
-                color="#7F7F7F",
-                linestyle=":",
-                linewidth=0.9,
-            )
-            set_voltage_ticks(ax, x)
-            ax.set_xlabel("Voltage [V]")
-            ax.set_ylabel("Improvement [%]")
-            clean_axis(ax, grid="y")
-            fig.tight_layout()
-            target = save_figure(
-                fig,
-                plot_dir / f"paired_model_improvement_{window}.pdf",
-            )
-            plt.close(fig)
-            generated.append(target)
-    return generated
-
-
-def _run_model_comparison_experiment(
+def _run_model_study_experiment(
     config: dict[str, Any],
     *,
     overwrite: bool,
@@ -1172,21 +991,30 @@ def _run_model_comparison_experiment(
     )
     logger = _logger(root)
     _check_experiment_resume_config(config, root, resume=resume)
+
+    model_name = next(iter(config["models"]))
     fixed_led = float(config["experiment"]["fixed_led_threshold_mV"])
-    windows = dict(config["experiment"]["windows"])
+    windows = copy.deepcopy(config["ml_input"]["windows"])
+    compatibility = _model_study_compatibility(config, windows, fixed_led)
+
     logger.info(
-        "%s | model comparison | mode=%s | LED=%g mV | windows=%s",
+        "%s | model study | model=%s | mode=%s | LED=%g mV | windows=%s",
         "Resume" if resume else "Experiment",
+        LABELS.get(model_name, model_name),
         config["mode"],
         fixed_led,
         ",".join(windows),
     )
-    base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
 
     running_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "running",
-        "experiment_type": "model_comparison",
+        "experiment_type": "model_study",
+        "model": model_name,
+        "model_label": LABELS.get(model_name, model_name),
+        "windows_ns": windows,
+        "fixed_led_threshold_mV": fixed_led,
+        "compatibility": compatibility,
         "config_fingerprint": str(config.get("_config_fingerprint", "")),
         "config": public_config(config),
     }
@@ -1194,22 +1022,26 @@ def _run_model_comparison_experiment(
         json.dumps(running_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+    base_prepared = Path(config["preprocessing"]["prepared_dir"]).resolve()
     subruns: dict[str, str] = {}
-    paired_rows: list[dict[str, Any]] = []
-    for index, window_name in enumerate(windows):
+    for index, (window_name, window) in enumerate(windows.items()):
         sub = copy.deepcopy(config)
         sub["experiment"]["type"] = "standard"
         sub["experiment"]["output_dir"] = str(root / window_name)
         sub["experiment"]["name"] = (
-            f"{config['experiment'].get('name', 'model_comparison')}_{window_name}"
+            f"{config['experiment'].get('name', model_name)}_{window_name}"
         )
         sub["standard_methods"]["led_thresholds_mV"] = [fixed_led]
-        sub["ml_input"]["window_ns"] = {
-            "start": float(windows[window_name]["start"]),
-            "end": float(windows[window_name]["end"]),
+        sub["ml_input"] = {
+            "window_ns": {
+                "start": float(window["start"]),
+                "end": float(window["end"]),
+            },
+            "subsampling": int(config["ml_input"].get("subsampling", 1)),
         }
         sub["preprocessing"]["prepared_dir"] = str(
-            base_prepared / "_model_comparison" / window_name
+            base_prepared / "_model_study" / window_name
         )
         sub["_config_fingerprint"] = canonical_hash(public_config(sub))
         subrun = _run_standard_study(
@@ -1221,62 +1053,24 @@ def _run_model_comparison_experiment(
             ),
         )
         subruns[window_name] = str(subrun)
-        paired_rows.extend(
-            _paired_model_comparison_rows(subrun, window_name, sub)
-        )
-
-    csv_dir = root / "csv"
-    csv_dir.mkdir(parents=True, exist_ok=True)
-
-    correlation_rows: list[dict[str, Any]] = []
-    for window_name, subrun_path in subruns.items():
-        correlation_path = Path(subrun_path) / "csv" / "model_output_correlations.csv"
-        for row in _csv_rows(correlation_path):
-            correlation_rows.append({"window": window_name, **row})
-    if correlation_rows:
-        correlation_csv = csv_dir / "model_output_correlations.csv"
-        fields = list(dict.fromkeys(key for row in correlation_rows for key in row))
-        with correlation_csv.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(correlation_rows)
-
-    paired_csv = csv_dir / "paired_model_comparison.csv"
-    if paired_rows:
-        fields = list(dict.fromkeys(key for row in paired_rows for key in row))
-        with paired_csv.open("w", encoding="utf-8", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(paired_rows)
-        _write_model_comparison_plot(root, paired_rows)
 
     manifest = {
         **running_manifest,
         "status": "complete",
-        "models": {
-            "proposed": "mlp",
-            "reference": "onishi_cnn",
-        },
-        "model_labels": {
-            "mlp": "Antisymmetric MLP",
-            "onishi_cnn": "Onishi paired CNN",
-        },
-        "windows_ns": windows,
-        "fixed_led_threshold_mV": fixed_led,
-        "mlp_hyperparameter_selection_population": "validation",
-        "mlp_hyperparameter_selection_metric": "validation_ctr",
-        "onishi_cnn_configuration": "fixed_reference_fit_on_training_plus_validation_no_model_selection",
-        "final_evaluation_population": "blind",
-        "refit_after_selection": False,
-        "paired_model_comparison": "blind paired event bootstrap",
         "subruns": subruns,
+        "final_evaluation_population": "blind",
+        "model_selection": (
+            "validation_ctr"
+            if model_name == "mlp"
+            else "fixed_reference_configuration"
+        ),
         "config": public_config(config),
     }
     (root / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    logger.info("Model comparison complete | %s", root)
+    logger.info("Model study complete | model=%s | %s", model_name, root)
     return root
 
 
@@ -1396,8 +1190,8 @@ def run_study(
     experiment_type = str(
         config.get("experiment", {}).get("type", "standard")
     ).lower()
-    if experiment_type == "model_comparison":
-        return _run_model_comparison_experiment(
+    if experiment_type == "model_study":
+        return _run_model_study_experiment(
             config,
             overwrite=overwrite,
             resume=resume,
