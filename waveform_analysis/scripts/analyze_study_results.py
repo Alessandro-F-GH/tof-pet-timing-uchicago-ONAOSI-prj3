@@ -14,7 +14,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from waveform_analysis.ml_pipeline.common import voltage_from_name
-from waveform_analysis.ml_pipeline.plot_style import set_voltage_ticks
+from waveform_analysis.ml_pipeline.plot_style import (
+    finish_voltage_axis,
+    model_style,
+    plot_voltage_series,
+)
 from waveform_analysis.ml_pipeline.reporting import LABELS, MODEL_ORDER
 
 
@@ -235,42 +239,37 @@ def _summary_plot(path: Path, manifest: dict[str, Any], summary: list[dict[str, 
     fig, axes = plt.subplots(2, 1, figsize=(8.8, 7.0), sharex=True, height_ratios=(0.8, 2.0))
     threshold_ax, ctr_ax = axes
 
-    good_threshold = np.isfinite(thresholds)
-    if np.any(good_threshold):
-        threshold_ax.plot(voltages[good_threshold], thresholds[good_threshold], marker="o")
-    threshold_ax.set_ylabel("LED threshold [mV]")
-    threshold_ax.grid(True, alpha=0.2)
+    plot_voltage_series(
+        threshold_ax,
+        voltages,
+        thresholds,
+        style={"marker": "o", "linestyle": "-"},
+    )
+    finish_voltage_axis(
+        threshold_ax,
+        voltages,
+        ylabel="LED threshold [mV]",
+        legend=False,
+    )
+    threshold_ax.tick_params(labelbottom=False)
 
     methods = ["led", *models]
-    for method in methods:
+    for index, method in enumerate(methods):
         values = []
-        errors = []
         for item in finite:
             metric = item["led"] if method == "led" else item["models"].get(method)
             values.append(float("nan") if metric is None else metric["ctr_ps"])
-            errors.append(float("nan") if metric is None else metric["uncertainty_ps"])
-        values = np.asarray(values, dtype=float)
-        errors = np.asarray(errors, dtype=float)
-        mask = np.isfinite(values)
-        if not np.any(mask):
-            continue
-        safe_errors = np.where(np.isfinite(errors[mask]), errors[mask], 0.0)
-        ctr_ax.errorbar(
-            voltages[mask],
-            values[mask],
-            yerr=safe_errors,
-            marker="o",
-            capsize=3,
+        plot_voltage_series(
+            ctr_ax,
+            voltages,
+            values,
             label=LABELS.get(method, method),
+            style=model_style(method, index),
         )
 
     mode = str(manifest.get("mode") or (manifest.get("config") or {}).get("mode") or "")
-    set_voltage_ticks(ctr_ax, voltages)
-    ctr_ax.set_xlabel("Voltage [V]")
-    ctr_ax.set_ylabel("CTR [ps]")
+    finish_voltage_axis(ctr_ax, voltages, ylabel="CTR [ps]")
     ctr_ax.set_title(mode.replace("_", " "))
-    ctr_ax.grid(True, alpha=0.2)
-    ctr_ax.legend()
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, bbox_inches="tight")
