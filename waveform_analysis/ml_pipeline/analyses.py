@@ -1177,6 +1177,104 @@ def _paired_blind_improvement(
     return float(central), error, len(boot)
 
 
+def _plot_blind_threshold_scan(
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+) -> list[Path]:
+    import matplotlib.pyplot as plt
+
+    generated: list[Path] = []
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    with paper_context():
+        for dataset in sorted({str(row["dataset"]) for row in rows}):
+            subset = sorted(
+                [row for row in rows if str(row["dataset"]) == dataset],
+                key=lambda row: float(row["threshold_mV"]),
+            )
+            threshold = np.asarray(
+                [float(row["threshold_mV"]) for row in subset], dtype=float
+            )
+            led = np.asarray(
+                [float(row["led_blind_ctr_ps"]) for row in subset], dtype=float
+            )
+            led_err = np.asarray(
+                [float(row["led_blind_ctr_uncertainty_ps"]) for row in subset],
+                dtype=float,
+            )
+            mlp = np.asarray(
+                [float(row["mlp_blind_ctr_ps"]) for row in subset], dtype=float
+            )
+            mlp_err = np.asarray(
+                [float(row["mlp_blind_ctr_uncertainty_ps"]) for row in subset],
+                dtype=float,
+            )
+            improvement = np.asarray(
+                [float(row["relative_improvement_percent"]) for row in subset],
+                dtype=float,
+            )
+            improvement_err = np.asarray(
+                [
+                    float(row["paired_bootstrap_uncertainty_percent"])
+                    for row in subset
+                ],
+                dtype=float,
+            )
+
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
+            ax.errorbar(
+                threshold,
+                led,
+                yerr=np.where(np.isfinite(led_err), led_err, 0.0),
+                capsize=2.5,
+                label="LED",
+                **model_style("led"),
+            )
+            ax.errorbar(
+                threshold,
+                mlp,
+                yerr=np.where(np.isfinite(mlp_err), mlp_err, 0.0),
+                capsize=2.5,
+                label=LABELS.get("mlp", "MLP"),
+                **model_style("mlp"),
+            )
+            ax.set_xlabel("LED threshold [mV]")
+            ax.set_ylabel("Blind CTR [ps]")
+            ax.legend(loc="best")
+            clean_axis(ax, grid="y")
+            fig.tight_layout()
+            target = save_figure(
+                fig,
+                plot_dir / f"blind_ctr_vs_led_threshold_{dataset}.pdf",
+            )
+            plt.close(fig)
+            generated.append(target)
+
+            fig, ax = plt.subplots(figsize=SINGLE_COLUMN)
+            ax.errorbar(
+                threshold,
+                improvement,
+                yerr=np.where(
+                    np.isfinite(improvement_err), improvement_err, 0.0
+                ),
+                capsize=2.5,
+                **model_style("mlp"),
+            )
+            ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
+            ax.set_xlabel("LED threshold [mV]")
+            ax.set_ylabel("Blind CTR improvement [%]")
+            clean_axis(ax, grid="y")
+            fig.tight_layout()
+            target = save_figure(
+                fig,
+                plot_dir
+                / f"blind_relative_improvement_vs_led_threshold_{dataset}.pdf",
+            )
+            plt.close(fig)
+            generated.append(target)
+    return generated
+
+
 def run_blind_led_threshold_scan(
     preprocessed: list[Any],
     config: dict[str, Any],
@@ -1407,6 +1505,7 @@ def run_blind_led_threshold_scan(
         )
     )
     _write_csv(csv_path, rows)
+    _plot_blind_threshold_scan(output_dir, rows)
     manifest = {
         "experiment_type": "threshold_scan",
         "model": model_name,
