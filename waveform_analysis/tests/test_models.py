@@ -11,6 +11,7 @@ from waveform_analysis.ml_pipeline.models.mlp import (
 from waveform_analysis.ml_pipeline.models.onishi_cnn import (
     OnishiCNNArtifact,
     OnishiPairedCNN,
+    candidates as onishi_candidates,
     explain as explain_onishi_cnn,
     predict as predict_onishi_cnn,
 )
@@ -77,6 +78,23 @@ class ActiveModelTests(unittest.TestCase):
         )
         self.assertFalse(
             any(isinstance(layer, torch.nn.MaxPool2d) for layer in model.features)
+        )
+
+    def test_onishi_cnn_uses_paper_training_hyperparameters(self):
+        config = {
+            "parameters": {
+                "learning_rate": [1e-3],
+                "batch_size": [128],
+            },
+            "training": {
+                "epochs": 600,
+                "lr_decay_epochs": [180, 360],
+                "lr_decay_factor": 0.1,
+            },
+        }
+        self.assertEqual(
+            onishi_candidates(config),
+            [{"learning_rate": 1e-3, "batch_size": 128}],
         )
 
     def test_onishi_cnn_forward_and_xai_shape(self):
