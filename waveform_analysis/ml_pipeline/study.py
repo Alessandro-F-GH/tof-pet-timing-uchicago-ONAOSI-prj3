@@ -511,22 +511,32 @@ def _evaluate_final_datasets(
             train_row = existing_row(name, model_name, "train")
             test_row_existing = existing_row(name, model_name, "test")
             artifacts = store.root / "artifacts" / name
+            model_dir = store.root / "models" / name / model_name
+            xai_enabled = bool(
+                (config.get("reporting", {}).get("xai", {}) or {}).get("enabled", True)
+            )
             completed = (
                 store.resume
                 and selection_row is not None
                 and train_row is not None
                 and test_row_existing is not None
-                and (store.root / "models" / name / model_name).is_dir()
+                and (model_dir / "model.pt").is_file()
+                and (model_dir / "metadata.json").is_file()
+                and (store.root / "search" / name / f"{model_name}.json").is_file()
                 and (artifacts / f"{model_name}_train_model_output_ps.npy").is_file()
                 and (artifacts / f"{model_name}_test_model_output_ps.npy").is_file()
                 and (artifacts / f"{model_name}_train_residuals_ps.npy").is_file()
                 and (artifacts / f"{model_name}_test_residuals_ps.npy").is_file()
+                and (
+                    not xai_enabled
+                    or (artifacts / f"{model_name}_xai.npz").is_file()
+                )
             )
             if completed:
                 progress.complete(
                     f"final_model:{model_name}",
                     label,
-                    note="reused completed result",
+                    note="resume",
                 )
                 final_metrics["models"][(name, model_name)] = {
                     "selection_stage": selection_stage,
@@ -542,7 +552,7 @@ def _evaluate_final_datasets(
                 }
                 if fixed_reference:
                     logger.info(
-                        "Final result reused | %s | %s | fixed paper configuration | blind CTR=%.3f ± %.3f ps",
+                        "Resume result | %s | %s | blind CTR=%.3f ± %.3f ps",
                         name,
                         LABELS.get(model_name, model_name),
                         float(test_row_existing["ctr_ps"]),
@@ -550,7 +560,7 @@ def _evaluate_final_datasets(
                     )
                 else:
                     logger.info(
-                        "Final result reused | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
+                        "Resume result | %s | %s | validation CTR=%.3f ps | blind CTR=%.3f ± %.3f ps",
                         name,
                         LABELS.get(model_name, model_name),
                         float(selection_row["selection_score"]),
@@ -564,6 +574,12 @@ def _evaluate_final_datasets(
             with progress.task(f"final_model:{model_name}", label):
                 spec = get_model(model_name)
                 if fixed_reference:
+                    logger.info(
+                        "Fit | %s | %s | fixed paper configuration | fit=train+validation (%d events)",
+                        name,
+                        LABELS.get(model_name, model_name),
+                        int(dataset.development.size),
+                    )
                     fitted, selected_parameters = fit_fixed_model(
                         spec,
                         model_config,
@@ -616,6 +632,13 @@ def _evaluate_final_datasets(
                     fitted = selected_model(search)
                     selected_parameters = dict(search.best.candidate or {})
                     validation_ctr = float(search.best.score)
+                    logger.info(
+                        "Selected | %s | %s | validation CTR=%.3f ps | params=%s",
+                        name,
+                        LABELS.get(model_name, model_name),
+                        validation_ctr,
+                        json.dumps(selected_parameters, sort_keys=True),
+                    )
                     rows.append(
                         _selection_row(
                             name,
@@ -711,7 +734,7 @@ def _evaluate_final_datasets(
 
             if fixed_reference:
                 logger.info(
-                    "Final result | %s | %s | fixed paper configuration | blind CTR=%.3f ± %.3f ps",
+                    "Final result | %s | %s | fit=train+validation | blind CTR=%.3f ± %.3f ps",
                     name,
                     LABELS.get(model_name, model_name),
                     float(test_row["ctr_ps"]),
@@ -1199,6 +1222,7 @@ def _run_model_comparison_experiment(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    logger.info("Model comparison complete | %s", root)
     return root
 
 
