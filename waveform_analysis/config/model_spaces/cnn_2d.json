@@ -46,5 +46,6 @@
     "patience": 10,
     "min_delta": 0.01,
     "gradient_clip_norm": 10
-  }
+  },
+  "verbose": false
 }
