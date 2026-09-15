@@ -1071,8 +1071,7 @@ def _run_model_study_experiment(
         encoding="utf-8",
     )
     summary_paths: list[Path] = []
-    with __import__("contextlib").nullcontext():
-        plot_model_study_windows(root, manifest, summary_paths)
+    plot_model_study_windows(root, manifest, summary_paths)
     logger.info(
         "Model study summary plots | generated=%d",
         len(summary_paths),
