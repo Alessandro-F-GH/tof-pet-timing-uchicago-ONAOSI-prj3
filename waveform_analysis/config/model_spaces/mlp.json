@@ -3,20 +3,31 @@
   "parameters": {
     "architecture": [
       [
+        64
+      ],
+      [
         128,
         64
+      ],
+      [
+        256,
+        128
       ]
     ],
     "activation": [
+      "relu",
       "silu"
     ],
     "learning_rate": [
-      0.001
+      0.001,
+      0.0003
     ],
     "batch_size": [
+      64,
       128
     ],
     "weight_decay": [
+      0,
       0.00001
     ]
   },
