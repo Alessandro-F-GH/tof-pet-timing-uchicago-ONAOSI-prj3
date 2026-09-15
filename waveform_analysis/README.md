@@ -51,51 +51,142 @@ Example:
 
 A ready timing configuration is available at `config/experiments/timing_concatenated.json`.
 
-## 4. ML and final test
+## 4. Final ML protocol
 
-CNN training is reproducible for a fixed candidate seed: NumPy, PyTorch CPU/CUDA RNGs, DataLoader shuffling, deterministic PyTorch algorithms, deterministic cuDNN, and deterministic cuBLAS workspace configuration are fixed before model initialization. The exact training seed is saved in model metadata. This may reduce GPU throughput slightly but prevents run-to-run kernel nondeterminism.
+The final study compares two deliberately different paired-waveform models.
 
-The standard CNN comparison uses two paired-input architectures. `cnn` is the shared 1-D scorer: the same 1-D network scores each detector waveform and the correction is `score(s1)-score(s2)`, enforcing detector-swap antisymmetry. `cnn_2d` is one joint network over the stacked `[2,time]` detector pair. Its first temporal block preserves the two detector rows with a height-1 kernel; a configurable later convolution spans both rows once and fuses the detector axis before the remaining temporal blocks. The network then predicts one correction directly. The two model-space configs use the same temporal channels, kernels, strides, dilations, pooling and dense head so the comparison isolates the shared-1-D versus joint-2-D structure. Their exact prediction definition is recorded in per-model metadata. Candidate hyperparameters are trained on the **entire training split** and ranked **only by validation CTR** of `y_target - y_theta`. No events are removed according to the magnitude of `y_target`. Model-internal early stopping may still use validation RMSE where appropriate. **There is no final refit:** the validation-selected trained model is used directly for final evaluation. Predictions are limited to the configured physical range; the default is `±2000 ps`.
+### Proposed model: antisymmetric MLP
 
-The permanent test population is evaluated once after model selection. The LED reference residual is
+The proposed model is `mlp`: one shared dense scorer `g_theta` is applied independently to the two aligned detector waveforms and the timing correction is
 
-`Delta t_LED - TOF - C_hat_12`,
+`y_theta = g_theta(s1) - g_theta(s2)`.
 
-while the ML residual used for CTR is
+This enforces exact detector-swap antisymmetry. A dense model is used intentionally because the waveforms are aligned to the LED crossing and absolute temporal position is physically meaningful; translation equivariance is therefore not treated as a useful prior for the proposed model.
 
-`y_target - y_theta`.
+The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. Every candidate is trained using training data only and ranked by CTR on the validation split. The validation-selected trained checkpoint is used directly: **there is no refit**.
 
-CTR is the **Gaussian-equivalent shortest empirical coverage interval**. With coverage fraction `p`, the sorted residuals are scanned for the narrowest interval containing `ceil(p*N)` finite events; the interval width is multiplied by the Gaussian conversion factor that maps the corresponding central Gaussian coverage width to FWHM. The default is `p = 0.90`, configured with `fit.coverage_fraction`. CTR uncertainty is the event-bootstrap standard deviation of this estimator; the default is `500` resamples configured with `fit.bootstrap_samples`. No configurable minimum event count is imposed: CTR only requires the mathematical minimum of two finite residuals.
+### Reference model: Onishi CNN
 
-All finite residuals are included in the CTR calculation. There is no internal residual-magnitude rejection and there is no second FWHM-based timing metric.
+The paired CNN reference is registered as `onishi_cnn` and labelled **Onishi CNN**. It follows the paired-waveform architecture used for LED timing correction by Onishi et al. (Phys. Med. Biol. 67 (2022) 04NT01, DOI 10.1088/1361-6560/ac508f): the first convolution spans both detector rows and the network predicts one joint correction.
 
-Before a rebuild or result overwrite, the CLI preflights every ROOT file and every relevant cache. All overwrite targets are shown once and a single terminal confirmation is requested before the batch begins. Stale caches are reported before processing starts.
+The fixed reference configuration is stored in `config/model_spaces/onishi_cnn.json`:
 
-### Optional integrated analyses
+- Conv2D 2x5, 32 channels, ReLU, max-pool 1x3;
+- Conv2D 1x3, 64 channels, ReLU, max-pool 1x3;
+- Conv2D 1x3, 64 channels, ReLU, max-pool 1x3;
+- flatten, dense 256, ReLU, scalar output;
+- Adam, MSE, batch size 32, initial learning rate 1e-4;
+- 100 epochs, learning-rate factor 0.1 at epochs 30 and 60.
 
-Long-running analyses are configured in the experiment JSON and executed by the normal `run` command; separate threshold/window sweep scripts are not required.
+The Onishi CNN has one fixed candidate. Validation is therefore not used to tune its architecture; it only passes through the same model-selection interface. The trained checkpoint is not refitted.
 
-Example:
+### Validation and blind-test policy
+
+For every model with tunable hyperparameters:
+
+1. fit candidate models using training data only;
+2. select the candidate with the best **validation CTR**;
+3. freeze that exact trained checkpoint;
+4. evaluate final performance on the permanent blind/test split.
+
+Validation metrics are selection diagnostics, not final performance results. Final CTR values and uncertainties are computed only on blind data. CTR uncertainty is the event-bootstrap standard deviation of the canonical Gaussian-equivalent shortest-coverage-interval estimator.
+
+No target-magnitude filtering is used and no model is refitted after validation selection.
+
+## 5. Experiment types
+
+The experiment JSON explicitly declares `experiment.type`. Final analyses no longer require combining LED-threshold and window scans inside one ordinary study.
+
+### `model_comparison`
+
+This is the main final experiment. It requires exactly:
+
+`models: ["mlp", "onishi_cnn"]`.
+
+It also requires:
+
+- one fixed LED threshold;
+- an `onishi` window fixed to `[-1.5, 2.0]` ns relative to the LED crossing;
+- one configured `wide` window.
+
+The runner creates two complete sub-runs:
+
+`<output>/onishi/`
+
+and
+
+`<output>/wide/`.
+
+Each sub-run iterates over every configured bias-voltage ROOT dataset and produces the normal study outputs: blind CTR versus voltage, paired-bootstrap improvement over LED, residual distributions, model outputs, prediction-target correlations, model-output correlations, correction examples, XAI, saved searches, models, splits and numerical artifacts.
+
+After both sub-runs finish, the experiment root additionally compares **Antisymmetric MLP vs Onishi CNN directly on the blind population**. The same event indices are resampled for the two models in every bootstrap replicate. The numerical comparison is stored in:
+
+`csv/paired_model_comparison.csv`.
+
+The experiment is intended to be run separately for each board dataset configuration and for each channel mode (`energy_to_energy` and `timing_to_timing`), keeping the board-specific input source explicit in `data_config`.
+
+Minimal experiment-specific section:
 
 ```json
-"analyses": {
-  "led_threshold_scan": {
-    "enabled": true,
-    "selection_model": "cnn"
+{
+  "experiment": {
+    "type": "model_comparison",
+    "name": "BOARD_MODE_model_comparison",
+    "output_dir": "results/studies/BOARD_MODE_model_comparison",
+    "fixed_led_threshold_mV": 15.0,
+    "windows": {
+      "onishi": {"start": -1.5, "end": 2.0},
+      "wide": {"start": -2.0, "end": 30.0}
+    }
   },
-  "window_scan": {
-    "enabled": true,
-    "right_limits_ns": [1, 5, 10, 20, 30],
-    "models": ["cnn", "cnn_2d"]
-  }
+  "models": ["mlp", "onishi_cnn"],
+  "mode": "timing_to_timing",
+  "cfd": false
 }
 ```
 
-When the LED-threshold scan is enabled, each candidate in `standard_methods.led_thresholds_mV` is prepared in an isolated cache and only the configured selection model is trained. Threshold ranking uses the intersection of validation events retained by all successful candidates, and blind data are not used. The selected threshold is then frozen for the full model comparison.
+The threshold and wide-window values in a real experiment must be set deliberately for that dataset; the example above is only a configuration example.
 
-The optional ML-window scan runs only after the final LED threshold has been selected. It reuses that exact prepared dataset, target, calibration, event population and split. Each configured right limit is implemented by intersecting the normal training-derived constant-sample mask with a temporal mask, then retraining the requested model. Window-scan plots report blind CTR with bootstrap uncertainty as a post-selection sensitivity analysis.
+### `threshold_scan`
 
-Integrated analysis outputs are written below `<run>/analyses/led_threshold/` and `<run>/analyses/window/`, with CSV and plot files kept in separate subdirectories. The study log reports stage/task progress, elapsed time and a running completion-time projection.
+This experiment studies LED-threshold dependence for the antisymmetric MLP only. It requires:
+
+- `models: ["mlp"]`;
+- one explicit `experiment.voltage_V`;
+- the threshold candidates in `standard_methods.led_thresholds_mV`.
+
+For every threshold independently, the MLP hyperparameter grid is selected using validation CTR. The selected checkpoint is then evaluated on blind data without refitting. The scan **does not select a winning LED threshold** and never uses blind data for hyperparameter selection.
+
+Reported scan quantities are blind-only:
+
+- LED CTR with bootstrap uncertainty;
+- MLP CTR with bootstrap uncertainty;
+- relative MLP improvement over LED;
+- paired-bootstrap uncertainty of that improvement.
+
+Outputs are written to `csv/threshold_scan.csv`, threshold-specific artifacts, and blind-only threshold plots.
+
+Minimal experiment-specific section:
+
+```json
+{
+  "experiment": {
+    "type": "threshold_scan",
+    "name": "BOARD_MODE_threshold_scan",
+    "output_dir": "results/studies/BOARD_MODE_threshold_scan",
+    "voltage_V": 46
+  },
+  "models": ["mlp"],
+  "mode": "timing_to_timing",
+  "cfd": false
+}
+```
+
+Run separate threshold-scan configs for UC/FBK and energy/timing as required.
+
+## 6. Ordinary/legacy study runner
+
+`experiment.type: "standard"` remains the low-level single-window study runner used internally by the model-comparison experiment. It still supports the existing study/report artifacts, but final paper comparisons should use the explicit experiment types above rather than mixing several questions in one run.
 
 ## Results
 
