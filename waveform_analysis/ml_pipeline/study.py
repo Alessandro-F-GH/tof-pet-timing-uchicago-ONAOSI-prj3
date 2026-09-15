@@ -20,7 +20,7 @@ from .plot_rebuild import rebuild_study_plots
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
-from .reporting import LABELS
+from .reporting import LABELS, plot_model_study_windows
 from .sample_mask import (
     SAMPLE_CONSTANT_FRACTION,
     apply_sample_mask,
@@ -1069,6 +1069,13 @@ def _run_model_study_experiment(
     (root / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+    summary_paths: list[Path] = []
+    with __import__("contextlib").nullcontext():
+        plot_model_study_windows(root, manifest, summary_paths)
+    logger.info(
+        "Model study summary plots | generated=%d",
+        len(summary_paths),
     )
     logger.info("Model study complete | model=%s | %s", model_name, root)
     return root
