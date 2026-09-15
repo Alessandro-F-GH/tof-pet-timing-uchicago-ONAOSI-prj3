@@ -210,7 +210,6 @@ def fit(
             "training_events": int(target.size),
             "training_uses_full_split": True,
             "refit_on_full_training_split": False,
-            "external_validation_used_for_training": False,
             "learning_rate": learning_rate,
             "lr_decay_epochs": decay_epochs,
             "lr_decay_factor": decay_factor,
