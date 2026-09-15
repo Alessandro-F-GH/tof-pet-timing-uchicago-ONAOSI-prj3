@@ -79,42 +79,20 @@ def candidates(config):
     architectures = parameters.get("architecture", [[128, 64]])
     activations = parameters.get("activation", ["silu"])
     learning_rates = parameters.get("learning_rate", [1e-3])
-    batch_sizes = parameters.get(
-        "batch_size", [training.get("batch_size", 128)]
-    )
+    batch_sizes = parameters.get("batch_size", [training.get("batch_size", 128)])
     weight_decays = parameters.get("weight_decay", [1e-5])
-    losses = [str(value).strip().lower() for value in parameters.get("loss", ["rmse"])]
-    huber_deltas = [float(value) for value in parameters.get("huber_delta_ps", [20.0])]
-    correlation_weights = [float(value) for value in parameters.get("correlation_weight", [0.0])]
-    if any(value < 0 for value in correlation_weights):
-        raise ValueError("correlation_weight must be non-negative")
-    rows = []
-    for architecture, activation, learning_rate, batch_size, weight_decay in itertools.product(
-        architectures, activations, learning_rates, batch_sizes, weight_decays
-    ):
-        base = {
+    return [
+        {
             "architecture": _validate_architecture(architecture),
             "activation": str(activation).strip().lower(),
             "learning_rate": float(learning_rate),
             "batch_size": int(batch_size),
             "weight_decay": float(weight_decay),
         }
-        for loss in losses:
-            if loss == "rmse":
-                rows.append({**base, "loss": "rmse"})
-            elif loss == "huber":
-                for delta, correlation_weight in itertools.product(huber_deltas, correlation_weights):
-                    if delta <= 0:
-                        raise ValueError("huber_delta_ps must be positive")
-                    rows.append({
-                        **base,
-                        "loss": "huber",
-                        "huber_delta_ps": float(delta),
-                        "correlation_weight": float(correlation_weight),
-                    })
-            else:
-                raise ValueError(f"Unsupported MLP loss {loss!r}; available: ['huber', 'rmse']")
-    return rows
+        for architecture, activation, learning_rate, batch_size, weight_decay in itertools.product(
+            architectures, activations, learning_rates, batch_sizes, weight_decays
+        )
+    ]
 
 
 def fit_mlp(
@@ -157,43 +135,17 @@ def fit_mlp(
         lr=float(params["learning_rate"]),
         weight_decay=float(params["weight_decay"]),
     )
-    loss_name = str(params.get("loss", "rmse")).strip().lower()
-    if loss_name == "rmse":
-        loss_fn = _rmse_loss
-        huber_delta = None
-        correlation_weight = 0.0
-    elif loss_name == "huber":
-        huber_delta = float(params.get("huber_delta_ps", 20.0))
-        correlation_weight = float(params.get("correlation_weight", 0.0))
-        if huber_delta <= 0:
-            raise ValueError("huber_delta_ps must be positive")
-        if correlation_weight < 0:
-            raise ValueError("correlation_weight must be non-negative")
-        huber = nn.HuberLoss(delta=huber_delta)
-        def loss_fn(prediction, target):
-            prediction_centered = prediction - prediction.mean()
-            target_centered = target - target.mean()
-            covariance = torch.mean(prediction_centered * target_centered)
-            floor2 = 1.0
-            denominator = torch.sqrt(
-                (torch.mean(prediction_centered ** 2) + floor2)
-                * (torch.mean(target_centered ** 2) + floor2)
-            )
-            correlation_loss = 1.0 - covariance / denominator
-            return huber(prediction, target) + correlation_weight * correlation_loss
-    else:
-        raise ValueError(f"Unsupported MLP loss {loss_name!r}; available: ['huber', 'rmse']")
+    loss_fn = _rmse_loss
     loader = _loader(
         fit_x, fit_target, batch, shuffle=True, seed=training_seed
     )
 
     if verbose and logger is not None:
         logger.info(
-            "%s training | loss=%s | architecture=%s | activation=%s | "
+            "%s training | loss=RMSE | architecture=%s | activation=%s | "
             "lr=%.6g | weight_decay=%.6g | batch=%d | epochs=%d | patience=%d | min_delta=%.6g | "
             "early_stop_fraction=%.3f | fit=%d | early_stop=%d | device=%s",
             model_name,
-            loss_name.upper() if huber_delta is None else f"HUBER(delta={huber_delta:g} ps,corr={correlation_weight:g})",
             architecture,
             activation,
             float(params["learning_rate"]),
@@ -276,9 +228,7 @@ def fit_mlp(
 
     metadata = {
         "best_epoch": int(best_epoch),
-        "training_loss": loss_name,
-        "huber_delta_ps": huber_delta,
-        "correlation_weight": correlation_weight,
+        "training_loss": "rmse",
         "best_early_stopping_rmse_ps": float(best_score),
         "early_stopping_metric": "internal_train_holdout_rmse",
         "early_stopping_fraction": early_fraction,
