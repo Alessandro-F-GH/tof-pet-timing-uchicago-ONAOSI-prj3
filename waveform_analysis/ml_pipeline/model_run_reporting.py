@@ -178,6 +178,60 @@ def _plot_improvement(
     return target
 
 
+def _plot_pairwise_model_improvement(
+    output: Path,
+    window: str,
+    rows: list[dict[str, Any]],
+) -> list[Path]:
+    generated: list[Path] = []
+    pairs = list(
+        dict.fromkeys((str(row["model_a"]), str(row["model_b"])) for row in rows)
+    )
+    for model_a, model_b in pairs:
+        subset = sorted(
+            [
+                row
+                for row in rows
+                if row["window"] == window
+                and row["model_a"] == model_a
+                and row["model_b"] == model_b
+            ],
+            key=lambda row: float(row["voltage_V"]),
+        )
+        if not subset:
+            continue
+        x = np.asarray([float(row["voltage_V"]) for row in subset], dtype=float)
+        y = np.asarray(
+            [float(row["model_a_improvement_over_model_b_percent"]) for row in subset],
+            dtype=float,
+        )
+        e = np.asarray(
+            [float(row["uncertainty_percent"]) for row in subset],
+            dtype=float,
+        )
+        fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
+        ax.errorbar(
+            x,
+            y,
+            yerr=np.where(np.isfinite(e), e, 0.0),
+            capsize=2.5,
+            **model_style(model_a),
+        )
+        ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
+        set_voltage_ticks(ax, x)
+        ax.set_xlabel("Voltage [V]")
+        ax.set_ylabel("Improvement [%]")
+        clean_axis(ax, grid="y")
+        fig.tight_layout()
+        target = save_figure(
+            fig,
+            output / f"{model_a}_vs_{model_b}_{window}.pdf",
+        )
+        plt.close(fig)
+        generated.append(target)
+    return generated
+
+
 def compare_model_runs(
     run_dirs: list[str | Path],
     output_dir: str | Path,
@@ -365,6 +419,13 @@ def compare_model_runs(
                 generated.append(absolute_path)
             if relative_path is not None:
                 generated.append(relative_path)
+            generated.extend(
+                _plot_pairwise_model_improvement(
+                    plot_dir,
+                    window,
+                    pairwise_rows,
+                )
+            )
 
     _write_csv(csv_dir / "improvement_vs_led.csv", all_improvement_rows)
     _write_csv(csv_dir / "pairwise_model_comparison.csv", pairwise_rows)
