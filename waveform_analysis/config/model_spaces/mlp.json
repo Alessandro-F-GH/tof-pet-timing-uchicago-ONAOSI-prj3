@@ -15,6 +15,9 @@
     ],
     "batch_size": [
       128
+    ],
+    "weight_decay": [
+      0.00001
     ]
   },
   "training": {
