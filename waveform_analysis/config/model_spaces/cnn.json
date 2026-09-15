@@ -44,7 +44,8 @@
     "batch_size": 64,
     "patience": 10,
     "min_delta": 0.01,
-    "gradient_clip_norm": 10
+    "gradient_clip_norm": 10,
+    "early_stopping_fraction": 0.2
   },
   "verbose": false
 }
