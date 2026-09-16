@@ -809,7 +809,8 @@ def plot_model_study_windows(
         return
 
     window_rows: dict[str, list[dict[str, Any]]] = {}
-    led_rows: list[dict[str, Any]] | None = None
+    led_rows_by_window: dict[str, list[dict[str, Any]]] = {}
+    reference_datasets: list[str] | None = None
     all_voltages: set[float] = set()
 
     for window in windows:
@@ -823,79 +824,106 @@ def plot_model_study_windows(
         results_path = subrun / "csv" / "results.csv"
         if not results_path.is_file():
             continue
+
         rows = [row for row in read_results(subrun) if row.get("stage") == "test"]
-        model_rows = [row for row in rows if row.get("method") == model]
-        current_led = [row for row in rows if row.get("method") == "led"]
+        model_rows = sorted(
+            [row for row in rows if row.get("method") == model],
+            key=_voltage,
+        )
+        current_led = sorted(
+            [row for row in rows if row.get("method") == "led"],
+            key=_voltage,
+        )
         if not model_rows or not current_led:
             continue
-        current_led = sorted(current_led, key=_voltage)
-        if led_rows is None:
-            led_rows = current_led
-        else:
-            if [row["dataset"] for row in current_led] != [row["dataset"] for row in led_rows]:
-                raise ValueError("Model-study windows contain different LED datasets")
-            for reference, current in zip(led_rows, current_led):
-                if not np.isclose(
-                    _float(reference.get("ctr_ps")),
-                    _float(current.get("ctr_ps")),
-                    rtol=0.0,
-                    atol=1e-9,
-                ):
-                    raise ValueError(
-                        "LED CTR differs across model-study windows for "
-                        f"{reference['dataset']}"
-                    )
-        window_rows[window] = model_rows
-        all_voltages.update(_voltage(row) for row in model_rows if np.isfinite(_voltage(row)))
 
-    if led_rows is None or not window_rows or not all_voltages:
+        current_datasets = [str(row["dataset"]) for row in current_led]
+        if reference_datasets is None:
+            reference_datasets = current_datasets
+        elif current_datasets != reference_datasets:
+            raise ValueError("Model-study windows contain different LED datasets")
+
+        # The ML input window can exclude a different subset of events. Because
+        # the prepared split is then remapped and the LED calibration mean is
+        # recomputed from the retained training events, the blind LED CTR is not
+        # required to be identical across windows. Keep the matching LED
+        # baseline for each window instead of forcing a single shared curve.
+        window_rows[window] = model_rows
+        led_rows_by_window[window] = current_led
+        all_voltages.update(
+            _voltage(row)
+            for row in model_rows
+            if np.isfinite(_voltage(row))
+        )
+        all_voltages.update(
+            _voltage(row)
+            for row in current_led
+            if np.isfinite(_voltage(row))
+        )
+
+    if not window_rows or not led_rows_by_window or not all_voltages:
         return
 
     voltages = sorted(all_voltages)
     with paper_context():
         fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
 
-        led_values = []
-        for voltage in voltages:
-            row = next(
-                (
-                    item
-                    for item in led_rows
-                    if np.isfinite(_voltage(item))
-                    and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
-                ),
-                None,
-            )
-            led_values.append(_float(row.get("ctr_ps")) if row else np.nan)
-        plot_voltage_series(
-            ax,
-            voltages,
-            led_values,
-            label=LABELS["led"],
-            style=model_style("led"),
-        )
-
         for index, window in enumerate(windows):
-            rows = window_rows.get(window)
-            if not rows:
+            model_rows = window_rows.get(window)
+            led_rows = led_rows_by_window.get(window)
+            if not model_rows or not led_rows:
                 continue
-            values = []
+
+            led_values = []
+            model_values = []
             for voltage in voltages:
-                row = next(
+                led_row = next(
                     (
                         item
-                        for item in rows
+                        for item in led_rows
                         if np.isfinite(_voltage(item))
-                        and np.isclose(_voltage(item), voltage, rtol=0.0, atol=1e-9)
+                        and np.isclose(
+                            _voltage(item),
+                            voltage,
+                            rtol=0.0,
+                            atol=1e-9,
+                        )
                     ),
                     None,
                 )
-                values.append(_float(row.get("ctr_ps")) if row else np.nan)
+                model_row = next(
+                    (
+                        item
+                        for item in model_rows
+                        if np.isfinite(_voltage(item))
+                        and np.isclose(
+                            _voltage(item),
+                            voltage,
+                            rtol=0.0,
+                            atol=1e-9,
+                        )
+                    ),
+                    None,
+                )
+                led_values.append(
+                    _float(led_row.get("ctr_ps")) if led_row else np.nan
+                )
+                model_values.append(
+                    _float(model_row.get("ctr_ps")) if model_row else np.nan
+                )
+
             plot_voltage_series(
                 ax,
                 voltages,
-                values,
-                label=str(window),
+                led_values,
+                label=f"{LABELS['led']} — {window}",
+                style=window_style("led", index),
+            )
+            plot_voltage_series(
+                ax,
+                voltages,
+                model_values,
+                label=f"{LABELS.get(model, model)} — {window}",
                 style=window_style(model, index),
             )
 
@@ -904,7 +932,6 @@ def plot_model_study_windows(
         target = save_figure(fig, output / filename)
         plt.close(fig)
     paths.append(target)
-
 
 def make_plots(run_dir: str | Path, output_dir: str | Path | None = None) -> list[Path]:
     run = Path(run_dir).resolve()
