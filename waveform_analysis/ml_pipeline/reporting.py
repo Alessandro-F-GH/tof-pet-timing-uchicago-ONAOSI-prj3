@@ -868,29 +868,48 @@ def plot_model_study_windows(
     with paper_context():
         fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
 
+        default_window = next(
+            (window for window in windows if window in led_rows_by_window),
+            None,
+        )
+        if default_window is None:
+            return
+
+        default_led_rows = led_rows_by_window[default_window]
+        led_values = []
+        for voltage in voltages:
+            led_row = next(
+                (
+                    item
+                    for item in default_led_rows
+                    if np.isfinite(_voltage(item))
+                    and np.isclose(
+                        _voltage(item),
+                        voltage,
+                        rtol=0.0,
+                        atol=1e-9,
+                    )
+                ),
+                None,
+            )
+            led_values.append(
+                _float(led_row.get("ctr_ps")) if led_row else np.nan
+            )
+        plot_voltage_series(
+            ax,
+            voltages,
+            led_values,
+            label=LABELS["led"],
+            style=model_style("led"),
+        )
+
         for index, window in enumerate(windows):
             model_rows = window_rows.get(window)
-            led_rows = led_rows_by_window.get(window)
-            if not model_rows or not led_rows:
+            if not model_rows:
                 continue
 
-            led_values = []
             model_values = []
             for voltage in voltages:
-                led_row = next(
-                    (
-                        item
-                        for item in led_rows
-                        if np.isfinite(_voltage(item))
-                        and np.isclose(
-                            _voltage(item),
-                            voltage,
-                            rtol=0.0,
-                            atol=1e-9,
-                        )
-                    ),
-                    None,
-                )
                 model_row = next(
                     (
                         item
@@ -905,20 +924,10 @@ def plot_model_study_windows(
                     ),
                     None,
                 )
-                led_values.append(
-                    _float(led_row.get("ctr_ps")) if led_row else np.nan
-                )
                 model_values.append(
                     _float(model_row.get("ctr_ps")) if model_row else np.nan
                 )
 
-            plot_voltage_series(
-                ax,
-                voltages,
-                led_values,
-                label=f"{LABELS['led']} — {window}",
-                style=window_style("led", index),
-            )
             plot_voltage_series(
                 ax,
                 voltages,
