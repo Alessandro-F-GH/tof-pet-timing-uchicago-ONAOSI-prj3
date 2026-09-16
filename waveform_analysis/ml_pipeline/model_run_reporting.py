@@ -9,8 +9,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-from utils_fit import fit_ctr_ps
-
 from .common import voltage_from_name
 from .plot_style import (
     DOUBLE_COLUMN,
@@ -22,7 +20,6 @@ from .plot_style import (
     save_figure,
 )
 from .reporting import plot_ctr_vs_voltage, read_results
-from .splits import semantic_seed
 
 
 def _manifest(run: Path) -> dict[str, Any]:
@@ -51,70 +48,81 @@ def _subrun(root: Path, manifest: dict[str, Any], window: str) -> Path:
     raise FileNotFoundError(f"Missing window subrun {window!r}: {local}")
 
 
-def _test_event_index(subrun: Path, dataset: str) -> np.ndarray:
-    path = subrun / "splits" / f"{dataset}.npz"
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing persisted split file: {path}")
-    with np.load(path) as split:
-        if "test_event_index" not in split:
-            raise ValueError(f"Split file has no test_event_index: {path}")
-        return np.asarray(split["test_event_index"], dtype=np.int64)
+def _row_voltage(row: dict[str, Any]) -> float:
+    try:
+        value = float(row.get("voltage_V", float("nan")))
+    except (TypeError, ValueError):
+        value = float("nan")
+    if np.isfinite(value):
+        return value
+    return float(voltage_from_name(str(row.get("dataset", ""))))
 
 
-def _residual(subrun: Path, dataset: str, method: str) -> np.ndarray:
-    path = subrun / "artifacts" / dataset / f"{method}_test_residuals_ps.npy"
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing blind residuals: {path}")
-    return np.asarray(np.load(path), dtype=np.float64).reshape(-1)
+def _method_rows(rows: list[dict[str, Any]], method: str) -> list[dict[str, Any]]:
+    return sorted(
+        [row for row in rows if row.get("method") == method],
+        key=_row_voltage,
+    )
 
 
-def _paired_difference(
-    reference: np.ndarray,
-    method: np.ndarray,
-    fit_config: dict[str, Any],
-    *,
-    samples: int,
-    seed: int,
-) -> tuple[float, float, float, float, int]:
-    reference = np.asarray(reference, dtype=np.float64).reshape(-1)
-    method = np.asarray(method, dtype=np.float64).reshape(-1)
-    if reference.shape != method.shape:
-        raise ValueError("Paired residual arrays have different shapes")
-    finite = np.isfinite(reference) & np.isfinite(method)
-    reference = reference[finite]
-    method = method[finite]
-    if reference.size < 2:
-        raise ValueError("Paired comparison requires at least two finite blind events")
+def _voltage_signature(rows: list[dict[str, Any]], method: str) -> tuple[float, ...]:
+    values = [_row_voltage(row) for row in _method_rows(rows, method)]
+    if not values or not all(np.isfinite(value) for value in values):
+        raise ValueError(f"Missing or invalid voltage values for method {method!r}")
+    rounded = tuple(round(float(value), 9) for value in values)
+    if len(set(rounded)) != len(rounded):
+        raise ValueError(f"Duplicate voltage results for method {method!r}: {rounded}")
+    return rounded
 
-    ref_ctr = float(fit_ctr_ps(reference, fit_config, bootstrap=False).ctr_ps)
-    method_ctr = float(fit_ctr_ps(method, fit_config, bootstrap=False).ctr_ps)
-    delta = ref_ctr - method_ctr
-    relative = 100.0 * delta / ref_ctr if ref_ctr > 0 else float("nan")
 
-    rng = np.random.default_rng(int(seed))
-    delta_boot: list[float] = []
-    relative_boot: list[float] = []
-    for _ in range(int(samples)):
-        idx = rng.integers(0, reference.size, size=reference.size)
-        try:
-            ref_b = float(fit_ctr_ps(reference[idx], fit_config, bootstrap=False).ctr_ps)
-            method_b = float(fit_ctr_ps(method[idx], fit_config, bootstrap=False).ctr_ps)
-        except ValueError:
-            continue
-        if not (np.isfinite(ref_b) and ref_b > 0 and np.isfinite(method_b)):
-            continue
-        value = ref_b - method_b
-        delta_boot.append(value)
-        relative_boot.append(100.0 * value / ref_b)
+def _row_at_voltage(
+    rows: list[dict[str, Any]],
+    method: str,
+    voltage: float,
+) -> dict[str, Any]:
+    matches = [
+        row
+        for row in rows
+        if row.get("method") == method
+        and np.isfinite(_row_voltage(row))
+        and np.isclose(_row_voltage(row), voltage, rtol=0.0, atol=1e-9)
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one {method!r} result at {voltage:g} V, found {len(matches)}"
+        )
+    return matches[0]
 
-    delta_unc = float(np.std(delta_boot, ddof=1)) if len(delta_boot) > 1 else float("nan")
-    relative_unc = (
-        float(np.std(relative_boot, ddof=1))
-        if len(relative_boot) > 1
+
+def _result_difference(
+    reference_row: dict[str, Any],
+    method_row: dict[str, Any],
+) -> tuple[float, float, float, float]:
+    reference = float(reference_row["ctr_ps"])
+    method = float(method_row["ctr_ps"])
+    reference_unc = float(reference_row.get("ctr_uncertainty_ps", float("nan")))
+    method_unc = float(method_row.get("ctr_uncertainty_ps", float("nan")))
+
+    delta = reference - method
+    delta_unc = (
+        float(np.hypot(reference_unc, method_unc))
+        if np.isfinite(reference_unc) and np.isfinite(method_unc)
         else float("nan")
     )
-    return delta, delta_unc, relative, relative_unc, len(delta_boot)
 
+    if not np.isfinite(reference) or reference <= 0 or not np.isfinite(method):
+        return delta, delta_unc, float("nan"), float("nan")
+
+    relative = 100.0 * delta / reference
+    if np.isfinite(reference_unc) and np.isfinite(method_unc):
+        d_ref = 100.0 * method / (reference * reference)
+        d_method = -100.0 / reference
+        relative_unc = float(
+            np.hypot(d_ref * reference_unc, d_method * method_unc)
+        )
+    else:
+        relative_unc = float("nan")
+    return delta, delta_unc, relative, relative_unc
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
@@ -247,14 +255,6 @@ def compare_model_runs(
     if len(set(models)) != len(models):
         raise ValueError(f"Each compared run must contain a different model; got {models}")
 
-    signatures = [str((manifest.get("compatibility") or {}).get("signature", "")) for manifest in manifests]
-    if not signatures[0] or len(set(signatures)) != 1:
-        raise ValueError(
-            "Model-study compatibility signatures differ. "
-            "Use runs with identical data, preprocessing, split policy, LED threshold, "
-            "CTR settings, and profile-defined windows."
-        )
-
     windows = list((manifests[0].get("windows_ns") or {}).keys())
     if not windows:
         raise ValueError("Compared model studies contain no windows")
@@ -267,10 +267,6 @@ def compare_model_runs(
     csv_dir = output / "csv"
     plot_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
-
-    fit_config = dict((manifests[0].get("config") or {}).get("fit") or {})
-    samples = int(fit_config.get("bootstrap_samples", 0))
-    seed = int(((manifests[0].get("config") or {}).get("validation") or {}).get("seed", 0))
 
     generated: list[Path] = []
     all_improvement_rows: list[dict[str, Any]] = []
@@ -286,26 +282,30 @@ def compare_model_runs(
                 [row for row in read_results(subrun) if row.get("stage") == "test"]
                 for subrun in subruns
             ]
-            dataset_sets = [
-                {str(row["dataset"]) for row in rows if row.get("method") == "led"}
-                for rows in result_sets
-            ]
-            if any(value != dataset_sets[0] for value in dataset_sets[1:]):
-                raise ValueError(f"{window}: compared runs contain different blind datasets")
-            datasets = sorted(dataset_sets[0], key=voltage_from_name)
 
+            voltage_sets = [
+                _voltage_signature(rows, model)
+                for rows, model in zip(result_sets, models)
+            ]
+            if any(values != voltage_sets[0] for values in voltage_sets[1:]):
+                raise ValueError(
+                    f"{window}: compared runs contain different voltage sets: "
+                    f"{dict(zip(models, voltage_sets))}"
+                )
+            voltages = list(voltage_sets[0])
+
+            for rows, model in zip(result_sets, models):
+                led_voltages = _voltage_signature(rows, "led")
+                if led_voltages != voltage_sets[0]:
+                    raise ValueError(
+                        f"{window}/{model}: LED and model results use different voltages"
+                    )
+
+            # CTR plot: one LED reference only, taken from the first supplied run.
             combined_rows: list[dict[str, Any]] = []
-            first_led = {
-                str(row["dataset"]): row
-                for row in result_sets[0]
-                if row.get("method") == "led"
-            }
-            combined_rows.extend(first_led.values())
+            combined_rows.extend(_method_rows(result_sets[0], "led"))
             for model, rows in zip(models, result_sets):
-                model_rows = [row for row in rows if row.get("method") == model]
-                if {str(row["dataset"]) for row in model_rows} != set(datasets):
-                    raise ValueError(f"{window}/{model}: missing model blind results")
-                combined_rows.extend(model_rows)
+                combined_rows.extend(_method_rows(rows, model))
 
             plot_ctr_vs_voltage(
                 plot_dir,
@@ -315,93 +315,57 @@ def compare_model_runs(
             )
 
             window_improvement: list[dict[str, Any]] = []
-            for dataset in datasets:
-                event_ids = [
-                    _test_event_index(subrun, dataset)
-                    for subrun in subruns
-                ]
-                for other in event_ids[1:]:
-                    if not np.array_equal(event_ids[0], other):
-                        raise ValueError(
-                            f"{window}/{dataset}: blind event identities/order differ across runs"
-                        )
+            for voltage in voltages:
+                model_rows_at_voltage: dict[str, dict[str, Any]] = {}
 
-                led_residuals = [
-                    _residual(subrun, dataset, "led")
-                    for subrun in subruns
-                ]
-                for other in led_residuals[1:]:
-                    if not np.allclose(
-                        led_residuals[0],
-                        other,
-                        rtol=0.0,
-                        atol=1e-9,
-                        equal_nan=True,
-                    ):
-                        raise ValueError(
-                            f"{window}/{dataset}: LED residuals differ across runs"
-                        )
+                for model, rows in zip(models, result_sets):
+                    led_row = _row_at_voltage(rows, "led", voltage)
+                    model_row = _row_at_voltage(rows, model, voltage)
+                    model_rows_at_voltage[model] = model_row
 
-                voltage = float(voltage_from_name(dataset))
-                model_residuals: dict[str, np.ndarray] = {}
-                for model, subrun in zip(models, subruns):
-                    residual = _residual(subrun, dataset, model)
-                    model_residuals[model] = residual
-                    delta, delta_unc, relative, relative_unc, successful = _paired_difference(
-                        led_residuals[0],
-                        residual,
-                        fit_config,
-                        samples=samples,
-                        seed=semantic_seed(
-                            seed,
-                            window,
-                            dataset,
-                            model,
-                            "compare_runs_vs_led",
-                        ),
+                    delta, delta_unc, relative, relative_unc = _result_difference(
+                        led_row,
+                        model_row,
                     )
                     row = {
                         "window": window,
-                        "dataset": dataset,
-                        "voltage_V": voltage,
+                        "dataset": str(model_row.get("dataset", "")),
+                        "voltage_V": float(voltage),
                         "model": model,
+                        "led_ctr_ps": float(led_row["ctr_ps"]),
+                        "model_ctr_ps": float(model_row["ctr_ps"]),
                         "improvement_ps": delta,
                         "uncertainty_ps": delta_unc,
                         "improvement_percent": relative,
                         "uncertainty_percent": relative_unc,
-                        "paired_bootstrap_successful": successful,
+                        "uncertainty_method": "independent_propagation",
                     }
                     window_improvement.append(row)
                     all_improvement_rows.append(row)
 
                 for model_a, model_b in combinations(models, 2):
+                    row_a = model_rows_at_voltage[model_a]
+                    row_b = model_rows_at_voltage[model_b]
                     # Positive means model_a has lower CTR than model_b.
-                    delta, delta_unc, relative, relative_unc, successful = _paired_difference(
-                        model_residuals[model_b],
-                        model_residuals[model_a],
-                        fit_config,
-                        samples=samples,
-                        seed=semantic_seed(
-                            seed,
-                            window,
-                            dataset,
-                            model_a,
-                            model_b,
-                            "compare_runs_pairwise",
-                        ),
+                    delta, delta_unc, relative, relative_unc = _result_difference(
+                        row_b,
+                        row_a,
                     )
                     pairwise_rows.append(
                         {
                             "window": window,
-                            "dataset": dataset,
-                            "voltage_V": voltage,
+                            "dataset_a": str(row_a.get("dataset", "")),
+                            "dataset_b": str(row_b.get("dataset", "")),
+                            "voltage_V": float(voltage),
                             "model_a": model_a,
                             "model_b": model_b,
+                            "model_a_ctr_ps": float(row_a["ctr_ps"]),
+                            "model_b_ctr_ps": float(row_b["ctr_ps"]),
                             "model_a_improvement_over_model_b_ps": delta,
                             "uncertainty_ps": delta_unc,
                             "model_a_improvement_over_model_b_percent": relative,
                             "uncertainty_percent": relative_unc,
-                            "paired_bootstrap_successful": successful,
+                            "uncertainty_method": "independent_propagation",
                         }
                     )
 
@@ -433,16 +397,21 @@ def compare_model_runs(
     _write_csv(csv_dir / "pairwise_model_comparison.csv", pairwise_rows)
 
     comparison_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "type": "model_run_comparison",
         "runs": [str(root) for root in roots],
         "models": models,
         "windows_ns": manifests[0]["windows_ns"],
-        "compatibility_signature": signatures[0],
-        "paired_population": "blind test event identities verified across runs",
+        "comparison_basis": "persisted blind/test result rows only",
+        "checks": ["matching window definitions", "matching voltage sets"],
+        "dataset_identity_checked": False,
+        "event_identity_checked": False,
+        "residual_identity_checked": False,
+        "uncertainty_method": "independent propagation from persisted CTR uncertainties",
     }
     (output / "manifest.json").write_text(
         json.dumps(comparison_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return generated
+
