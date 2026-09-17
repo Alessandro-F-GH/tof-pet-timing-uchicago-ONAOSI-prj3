@@ -91,7 +91,8 @@ def candidates(config):
             "weight_decay": float(weight_decay),
             "input_group_lasso": float(input_group_lasso),
         }
-        for architecture, activation, learning_rate, batch_size, weight_decay, input_group_lasso in itertools.product(
+        for architecture, activation, learning_rate, batch_size, weight_decay, input_group_lasso
+        in itertools.product(
             architectures,
             activations,
             learning_rates,
@@ -105,8 +106,10 @@ def candidates(config):
 def _first_layer_weight(model: nn.Module) -> torch.Tensor:
     scorer = getattr(model, "scorer", None)
     network = getattr(scorer, "network", None)
-    if not isinstance(network, nn.Sequential) or not network:
-        raise TypeError("Input group lasso requires an MLP scorer with a Sequential first layer")
+    if not isinstance(network, nn.Sequential) or len(network) == 0:
+        raise TypeError(
+            "Input group lasso requires an MLP scorer with a Sequential first layer"
+        )
     first = network[0]
     if not isinstance(first, nn.Linear):
         raise TypeError("Input group lasso requires the first MLP scorer layer to be Linear")
@@ -114,18 +117,34 @@ def _first_layer_weight(model: nn.Module) -> torch.Tensor:
 
 
 def _input_group_lasso_penalty(model: nn.Module) -> torch.Tensor:
-    """Group lasso over temporal inputs: one group is one first-layer weight column."""
+    """One group per temporal input sample: sum_t ||W_first[:, t]||_2."""
     weight = _first_layer_weight(model)
     return torch.linalg.vector_norm(weight, ord=2, dim=0).sum()
 
 
+def _input_group_norms(model: nn.Module) -> np.ndarray:
+    with torch.no_grad():
+        return (
+            torch.linalg.vector_norm(_first_layer_weight(model), ord=2, dim=0)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+        )
+
+
 def _restart_seeds(seed: int, count: int) -> list[int]:
-    if count <= 0:
+    if count < 1:
         raise ValueError("training.random_restarts must be >= 1")
     if count == 1:
         return [int(seed)]
     rng = np.random.default_rng(int(seed))
-    extra = rng.integers(0, np.iinfo(np.int32).max, size=count - 1, dtype=np.int64)
+    extra = rng.integers(
+        0,
+        np.iinfo(np.int32).max,
+        size=count - 1,
+        dtype=np.int64,
+    )
     return [int(seed), *[int(value) for value in extra]]
 
 
@@ -152,15 +171,29 @@ def fit_mlp(
     early_fraction = float(training.get("early_stopping_fraction", 0.20))
     clip = float(training.get("gradient_clip_norm", 10.0))
     random_restarts = int(training.get("random_restarts", 1))
+
+    gradient_early_stop = bool(training.get("gradient_early_stop", False))
+    gradient_min_norm = float(training.get("gradient_min_norm", 0.0))
+    gradient_patience = int(training.get("gradient_patience", 4))
+    if gradient_min_norm < 0:
+        raise ValueError("training.gradient_min_norm must be non-negative")
+    if gradient_patience < 1:
+        raise ValueError("training.gradient_patience must be >= 1")
+
     group_lambda = float(params.get("input_group_lasso", 0.0))
     if group_lambda < 0:
         raise ValueError("input_group_lasso must be non-negative")
+
     output_limit = config.get("_prediction_max_abs_ps")
     split_seed = int(config.get("_early_stopping_seed", seed))
 
-    # Keep the internal early-stopping population identical for every restart.
+    # This split is fixed across restarts. Restarts differ only in initialization
+    # and minibatch order, so restart selection cannot exploit a different holdout.
     fit_x, fit_target, early_x, early_target = _internal_early_stopping_split(
-        train_x, train_target, early_fraction, split_seed
+        train_x,
+        train_target,
+        early_fraction,
+        split_seed,
     )
 
     architecture = _validate_architecture(params["architecture"])
@@ -169,7 +202,9 @@ def fit_mlp(
     def run_restart(restart_seed: int) -> MLPArtifact:
         training_seed = _configure_reproducibility(restart_seed)
         model = model_factory(
-            int(train_x.shape[-1]), architecture, activation
+            int(train_x.shape[-1]),
+            architecture,
+            activation,
         ).to(device)
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -177,14 +212,19 @@ def fit_mlp(
             weight_decay=float(params["weight_decay"]),
         )
         loader = _loader(
-            fit_x, fit_target, batch, shuffle=True, seed=training_seed
+            fit_x,
+            fit_target,
+            batch,
+            shuffle=True,
+            seed=training_seed,
         )
 
         if verbose and logger is not None:
             logger.info(
                 "%s training | loss=RMSE+input_group_lasso | architecture=%s | activation=%s | "
                 "lr=%.6g | weight_decay=%.6g | input_group_lasso=%.6g | batch=%d | "
-                "epochs=%d | patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | "
+                "epochs=%d | rmse_patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | "
+                "gradient_stop=%s | gradient_min_norm=%.6g | gradient_patience=%d | "
                 "fit=%d | early_stop=%d | device=%s | seed=%d",
                 model_name,
                 architecture,
@@ -197,6 +237,9 @@ def fit_mlp(
                 patience,
                 min_delta,
                 early_fraction,
+                gradient_early_stop,
+                gradient_min_norm,
+                gradient_patience,
                 fit_target.size,
                 early_target.size,
                 device,
@@ -206,44 +249,71 @@ def fit_mlp(
         best_score = float("inf")
         best_epoch = 0
         best_state = None
-        stale = 0
+        rmse_stale_epochs = 0
+        low_gradient_epochs = 0
+        stop_reason = "max_epochs"
+        stop_epoch = max_epochs
+        last_gradient_norm = float("nan")
 
         for epoch in range(1, max_epochs + 1):
             model.train()
-            epoch_gradient_norms = []
+            epoch_gradient_norms: list[float] = []
+
             for pair, target in loader:
                 pair = pair.to(device)
                 target = target.to(device)
                 optimizer.zero_grad(set_to_none=True)
+
                 prediction = model(pair)
                 rmse_loss = _rmse_loss(prediction, target)
+                loss = rmse_loss
                 if group_lambda > 0:
-                    loss = rmse_loss + group_lambda * _input_group_lasso_penalty(model)
-                else:
-                    loss = rmse_loss
+                    loss = loss + group_lambda * _input_group_lasso_penalty(model)
+
                 loss.backward()
-                if verbose and logger is not None:
-                    epoch_gradient_norms.append(_gradient_norm(model))
+
+                # Always compute the pre-clipping gradient norm because it is a
+                # training stop criterion, not merely a verbose diagnostic.
+                epoch_gradient_norms.append(float(_gradient_norm(model)))
+
                 if clip > 0:
                     nn.utils.clip_grad_norm_(model.parameters(), clip)
                 optimizer.step()
 
+            if not epoch_gradient_norms:
+                raise RuntimeError(f"{model_name} produced no optimizer batches")
+            last_gradient_norm = float(np.mean(epoch_gradient_norms))
+            if not np.isfinite(last_gradient_norm):
+                raise RuntimeError(
+                    f"{model_name} produced a non-finite gradient norm at epoch {epoch}"
+                )
+
             prediction = _predict_tensor(model, early_x, device, batch)
             if output_limit is not None:
                 prediction = np.clip(
-                    prediction, -float(output_limit), float(output_limit)
+                    prediction,
+                    -float(output_limit),
+                    float(output_limit),
                 )
             score = _rmse(prediction - early_target)
+
+            if not np.isfinite(score):
+                raise RuntimeError(
+                    f"{model_name} produced a non-finite early-stopping RMSE at epoch {epoch}"
+                )
 
             if verbose and logger is not None:
                 fit_prediction = _predict_tensor(model, fit_x, device, batch)
                 if output_limit is not None:
                     fit_prediction = np.clip(
-                        fit_prediction, -float(output_limit), float(output_limit)
+                        fit_prediction,
+                        -float(output_limit),
+                        float(output_limit),
                     )
                 fit_score = _rmse(fit_prediction - fit_target)
-                with torch.no_grad():
-                    group_penalty = float(_input_group_lasso_penalty(model).detach().cpu())
+                group_penalty = float(
+                    _input_group_lasso_penalty(model).detach().cpu()
+                )
                 logger.info(
                     "%s epoch %d/%d | fit RMSE=%.4f ps | early-stop RMSE=%.4f ps | "
                     "input-group norm sum=%.6g | grad norm=%.6g | pred mean=%.4f ps | "
@@ -254,45 +324,64 @@ def fit_mlp(
                     fit_score,
                     score,
                     group_penalty,
-                    float(np.mean(epoch_gradient_norms))
-                    if epoch_gradient_norms
-                    else float("nan"),
+                    last_gradient_norm,
                     float(np.mean(prediction)),
                     float(np.std(prediction)),
                     float(np.min(prediction)),
                     float(np.max(prediction)),
                 )
 
+            # Existing RMSE early stopping remains the checkpoint-selection rule.
             if score < best_score - min_delta:
                 best_score = score
                 best_epoch = epoch
                 best_state = copy.deepcopy(model.state_dict())
-                stale = 0
+                rmse_stale_epochs = 0
             else:
-                stale += 1
-                if stale >= patience:
-                    break
+                rmse_stale_epochs += 1
+
+            # Independent stop condition: sustained vanishing optimization signal.
+            if gradient_early_stop and last_gradient_norm < gradient_min_norm:
+                low_gradient_epochs += 1
+            else:
+                low_gradient_epochs = 0
+
+            if rmse_stale_epochs >= patience:
+                stop_reason = "rmse_patience"
+                stop_epoch = epoch
+                break
+
+            if gradient_early_stop and low_gradient_epochs >= gradient_patience:
+                stop_reason = "gradient_norm"
+                stop_epoch = epoch
+                break
 
         if best_state is None:
-            raise RuntimeError(f"{model_name} early stopping did not produce a valid checkpoint")
-        model.load_state_dict(best_state)
-
-        with torch.no_grad():
-            group_norms = (
-                torch.linalg.vector_norm(_first_layer_weight(model), ord=2, dim=0)
-                .detach()
-                .cpu()
-                .numpy()
-                .astype(np.float64)
+            raise RuntimeError(
+                f"{model_name} early stopping did not produce a valid checkpoint"
             )
+
+        # Restore the best RMSE checkpoint regardless of which stop condition fired.
+        model.load_state_dict(best_state)
+        group_norms = _input_group_norms(model)
 
         metadata = {
             "best_epoch": int(best_epoch),
+            "stop_epoch": int(stop_epoch),
+            "stop_reason": stop_reason,
             "training_loss": "rmse_plus_input_group_lasso",
             "best_early_stopping_rmse_ps": float(best_score),
             "early_stopping_metric": "internal_train_holdout_rmse",
             "early_stopping_fraction": early_fraction,
             "early_stopping_events": int(early_target.size),
+            "rmse_early_stopping_patience": patience,
+            "rmse_early_stopping_min_delta_ps": min_delta,
+            "gradient_early_stop_enabled": gradient_early_stop,
+            "gradient_min_norm": gradient_min_norm,
+            "gradient_patience": gradient_patience,
+            "gradient_low_epochs_at_stop": int(low_gradient_epochs),
+            "last_epoch_mean_gradient_norm": float(last_gradient_norm),
+            "gradient_norm_definition": "mean pre-clipping global parameter gradient L2 norm across optimizer batches in the epoch",
             "optimizer_training_events": int(fit_target.size),
             "training_events_available": int(len(train_target)),
             "training_uses_full_split": False,
@@ -310,9 +399,9 @@ def fit_mlp(
             "input_group_norm_median": float(np.median(group_norms)),
             "input_group_near_zero_fraction": float(np.mean(group_norms <= 1e-6)),
             "batch_size": batch,
-            "output_max_abs_ps": None
-            if output_limit is None
-            else float(output_limit),
+            "output_max_abs_ps": (
+                None if output_limit is None else float(output_limit)
+            ),
             "training_seed": training_seed,
             "deterministic_algorithms": True,
             "parameter_count": int(
@@ -325,6 +414,7 @@ def fit_mlp(
     restart_seeds = _restart_seeds(int(seed), random_restarts)
     restart_artifacts: list[MLPArtifact] = []
     restart_records: list[dict[str, Any]] = []
+
     for restart_index, restart_seed in enumerate(restart_seeds, start=1):
         artifact = run_restart(restart_seed)
         restart_artifacts.append(artifact)
@@ -332,26 +422,42 @@ def fit_mlp(
             "restart": restart_index,
             "seed": int(restart_seed),
             "best_epoch": int(artifact.metadata["best_epoch"]),
+            "stop_epoch": int(artifact.metadata["stop_epoch"]),
+            "stop_reason": str(artifact.metadata["stop_reason"]),
             "early_stopping_rmse_ps": float(
                 artifact.metadata["best_early_stopping_rmse_ps"]
             ),
+            "last_epoch_mean_gradient_norm": float(
+                artifact.metadata["last_epoch_mean_gradient_norm"]
+            ),
         }
         restart_records.append(record)
+
         if logger is not None and random_restarts > 1:
             logger.info(
-                "Restart | %s | %d/%d | seed=%d | best epoch=%d | early-stop RMSE=%.4f ps",
+                "Restart | %s | %d/%d | seed=%d | best epoch=%d | stop epoch=%d | "
+                "stop=%s | early-stop RMSE=%.4f ps | grad norm=%.6g",
                 model_name,
                 restart_index,
                 random_restarts,
                 restart_seed,
                 record["best_epoch"],
+                record["stop_epoch"],
+                record["stop_reason"],
                 record["early_stopping_rmse_ps"],
+                record["last_epoch_mean_gradient_norm"],
             )
 
+    # Restart selection stays strictly inside the training split. External
+    # validation remains reserved for hyperparameter selection in train.py.
     selected_index = min(
         range(len(restart_artifacts)),
         key=lambda index: (
-            float(restart_artifacts[index].metadata["best_early_stopping_rmse_ps"]),
+            float(
+                restart_artifacts[index].metadata[
+                    "best_early_stopping_rmse_ps"
+                ]
+            ),
             index,
         ),
     )
@@ -364,6 +470,7 @@ def fit_mlp(
             "restart_results": restart_records,
         }
     )
+
     if logger is not None and random_restarts > 1:
         logger.info(
             "Selected restart | %s | %d/%d | seed=%d | early-stop RMSE=%.4f ps",
@@ -373,6 +480,7 @@ def fit_mlp(
             restart_seeds[selected_index],
             float(selected.metadata["best_early_stopping_rmse_ps"]),
         )
+
     return selected
 
 
