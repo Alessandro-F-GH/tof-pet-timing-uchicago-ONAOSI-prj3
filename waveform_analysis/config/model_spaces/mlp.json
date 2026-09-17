@@ -33,7 +33,7 @@
     "random_restarts": 3,
     "gradient_early_stop": true,
     "gradient_min_norm": 0.00001,
-    "gradient_patience": 3
+    "gradient_patience": 4
   },
   "verbose": false
 }
