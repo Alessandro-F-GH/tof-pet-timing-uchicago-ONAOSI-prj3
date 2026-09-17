@@ -2,20 +2,9 @@
   "model": "mlp",
   "parameters": {
     "architecture": [
-      [
-        64
-      ],
-      [
-        128,
-        64
-      ],
-      [
-        256,
-        128
-      ]
+      [128, 64]
     ],
     "activation": [
-      "relu",
       "silu"
     ],
     "learning_rate": [
@@ -23,21 +12,28 @@
       0.0003
     ],
     "batch_size": [
-      64,
       128
     ],
     "weight_decay": [
+      0
+    ],
+    "input_group_lasso": [
       0,
+      0.000001,
       0.00001
     ]
   },
   "training": {
     "device": "auto",
-    "epochs": 300,
-    "patience": 10,
+    "epochs": 600,
+    "patience": 20,
     "min_delta": 0.01,
     "gradient_clip_norm": 10,
-    "early_stopping_fraction": 0.2
+    "early_stopping_fraction": 0.2,
+    "random_restarts": 3,
+    "gradient_early_stop": true,
+    "gradient_min_norm": 0.00001,
+    "gradient_patience": 3
   },
   "verbose": false
 }
