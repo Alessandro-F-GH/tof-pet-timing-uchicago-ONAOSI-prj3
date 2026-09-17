@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .common import voltage_from_name
+from .model_output_reporting import _model_output, _pearson
 from .plot_style import (
     DOUBLE_COLUMN,
     LABELS,
@@ -123,6 +124,61 @@ def _result_difference(
     else:
         relative_unc = float("nan")
     return delta, delta_unc, relative, relative_unc
+
+
+def _test_event_index(run: Path, dataset: str) -> np.ndarray:
+    path = run / "splits" / f"{dataset}.npz"
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing split file required for output correlation: {path}")
+    with np.load(path) as split:
+        if "test_event_index" not in split:
+            raise ValueError(f"Split file has no test_event_index: {path}")
+        values = np.asarray(split["test_event_index"], dtype=np.int64).reshape(-1)
+    if np.unique(values).size != values.size:
+        raise ValueError(f"Blind event IDs are not unique: {path}")
+    return values
+
+
+def _aligned_model_outputs(
+    run_a: Path,
+    dataset_a: str,
+    model_a: str,
+    run_b: Path,
+    dataset_b: str,
+    model_b: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    output_a = _model_output(run_a, dataset_a, model_a, "test")
+    output_b = _model_output(run_b, dataset_b, model_b, "test")
+    if output_a is None or output_b is None:
+        missing = []
+        if output_a is None:
+            missing.append(f"{model_a}:{run_a / 'artifacts' / dataset_a}")
+        if output_b is None:
+            missing.append(f"{model_b}:{run_b / 'artifacts' / dataset_b}")
+        raise FileNotFoundError(
+            "Missing blind model-output artifact(s): " + ", ".join(missing)
+        )
+
+    ids_a = _test_event_index(run_a, dataset_a)
+    ids_b = _test_event_index(run_b, dataset_b)
+    if output_a.size != ids_a.size or output_b.size != ids_b.size:
+        raise ValueError(
+            "Model-output length does not match persisted blind event IDs: "
+            f"{model_a}={output_a.size}/{ids_a.size}, "
+            f"{model_b}={output_b.size}/{ids_b.size}"
+        )
+    if ids_a.size != ids_b.size or set(ids_a.tolist()) != set(ids_b.tolist()):
+        raise ValueError(
+            f"Blind event identities differ for {model_a} and {model_b}; "
+            "model-output correlation would not be paired"
+        )
+    if np.array_equal(ids_a, ids_b):
+        return output_a, output_b
+
+    position_b = {int(event_id): index for index, event_id in enumerate(ids_b)}
+    reorder_b = np.asarray([position_b[int(event_id)] for event_id in ids_a], dtype=np.int64)
+    return output_a, output_b[reorder_b]
+
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
@@ -242,6 +298,46 @@ def _plot_pairwise_model_improvement(
     return generated
 
 
+def _plot_model_output_correlation(
+    output: Path,
+    window: str,
+    rows: list[dict[str, Any]],
+) -> Path | None:
+    subset_window = [row for row in rows if row["window"] == window]
+    if not subset_window:
+        return None
+    fig, ax = plt.subplots(figsize=DOUBLE_COLUMN)
+    pairs = list(
+        dict.fromkeys(
+            (str(row["model_a"]), str(row["model_b"]))
+            for row in subset_window
+        )
+    )
+    all_voltages = sorted({float(row["voltage_V"]) for row in subset_window})
+    for index, (model_a, model_b) in enumerate(pairs):
+        pair_rows = sorted(
+            [
+                row
+                for row in subset_window
+                if row["model_a"] == model_a and row["model_b"] == model_b
+            ],
+            key=lambda row: float(row["voltage_V"]),
+        )
+        plot_voltage_series(
+            ax,
+            [float(row["voltage_V"]) for row in pair_rows],
+            [float(row["pearson_r"]) for row in pair_rows],
+            label=f"{LABELS.get(model_a, model_a)} vs {LABELS.get(model_b, model_b)}",
+            style=model_style(model_a, index),
+        )
+    finish_voltage_axis(ax, all_voltages, ylabel="Correlation [–]")
+    ax.set_ylim(-1.02, 1.02)
+    fig.tight_layout()
+    target = save_figure(fig, output / f"model_output_correlation_{window}.pdf")
+    plt.close(fig)
+    return target
+
+
 def compare_model_runs(
     run_dirs: list[str | Path],
     output_dir: str | Path,
@@ -271,6 +367,7 @@ def compare_model_runs(
     generated: list[Path] = []
     all_improvement_rows: list[dict[str, Any]] = []
     pairwise_rows: list[dict[str, Any]] = []
+    correlation_rows: list[dict[str, Any]] = []
 
     with paper_context():
         for window in windows:
@@ -278,6 +375,7 @@ def compare_model_runs(
                 _subrun(root, manifest, window)
                 for root, manifest in zip(roots, manifests)
             ]
+            subrun_by_model = dict(zip(models, subruns))
             result_sets = [
                 [row for row in read_results(subrun) if row.get("stage") == "test"]
                 for subrun in subruns
@@ -301,7 +399,6 @@ def compare_model_runs(
                         f"{window}/{model}: LED and model results use different voltages"
                     )
 
-            # CTR plot: one LED reference only, taken from the first supplied run.
             combined_rows: list[dict[str, Any]] = []
             combined_rows.extend(_method_rows(result_sets[0], "led"))
             for model, rows in zip(models, result_sets):
@@ -346,7 +443,6 @@ def compare_model_runs(
                 for model_a, model_b in combinations(models, 2):
                     row_a = model_rows_at_voltage[model_a]
                     row_b = model_rows_at_voltage[model_b]
-                    # Positive means model_a has lower CTR than model_b.
                     delta, delta_unc, relative, relative_unc = _result_difference(
                         row_b,
                         row_a,
@@ -369,6 +465,32 @@ def compare_model_runs(
                         }
                     )
 
+                    dataset_a = str(row_a.get("dataset", ""))
+                    dataset_b = str(row_b.get("dataset", ""))
+                    output_a, output_b = _aligned_model_outputs(
+                        subrun_by_model[model_a],
+                        dataset_a,
+                        model_a,
+                        subrun_by_model[model_b],
+                        dataset_b,
+                        model_b,
+                    )
+                    correlation, n = _pearson(output_a, output_b)
+                    correlation_rows.append(
+                        {
+                            "window": window,
+                            "dataset_a": dataset_a,
+                            "dataset_b": dataset_b,
+                            "voltage_V": float(voltage),
+                            "model_a": model_a,
+                            "model_b": model_b,
+                            "pearson_r": correlation,
+                            "n": n,
+                            "population": "blind/test",
+                            "alignment": "test_event_index",
+                        }
+                    )
+
             absolute_path = _plot_improvement(
                 plot_dir,
                 window,
@@ -381,10 +503,17 @@ def compare_model_runs(
                 window_improvement,
                 relative=True,
             )
+            correlation_path = _plot_model_output_correlation(
+                plot_dir,
+                window,
+                correlation_rows,
+            )
             if absolute_path is not None:
                 generated.append(absolute_path)
             if relative_path is not None:
                 generated.append(relative_path)
+            if correlation_path is not None:
+                generated.append(correlation_path)
             generated.extend(
                 _plot_pairwise_model_improvement(
                     plot_dir,
@@ -395,9 +524,10 @@ def compare_model_runs(
 
     _write_csv(csv_dir / "improvement_vs_led.csv", all_improvement_rows)
     _write_csv(csv_dir / "pairwise_model_comparison.csv", pairwise_rows)
+    _write_csv(csv_dir / "model_output_correlations.csv", correlation_rows)
 
     comparison_manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "type": "model_run_comparison",
         "runs": [str(root) for root in roots],
         "models": models,
@@ -407,6 +537,12 @@ def compare_model_runs(
         "dataset_identity_checked": False,
         "event_identity_checked": False,
         "residual_identity_checked": False,
+        "model_output_correlation": {
+            "metric": "Pearson r",
+            "population": "blind/test",
+            "event_identity_checked": True,
+            "alignment": "test_event_index",
+        },
         "uncertainty_method": "independent propagation from persisted CTR uncertainties",
     }
     (output / "manifest.json").write_text(
@@ -414,4 +550,3 @@ def compare_model_runs(
         encoding="utf-8",
     )
     return generated
-
