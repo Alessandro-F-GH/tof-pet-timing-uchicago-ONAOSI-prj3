@@ -21,6 +21,7 @@ from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
 from .reporting import LABELS, plot_model_study_windows
+from .selection_outputs import ensure_selection_outputs
 from .sample_mask import (
     SAMPLE_CONSTANT_FRACTION,
     apply_sample_mask,
@@ -837,6 +838,7 @@ def _run_standard_study(
                 rebuild=rebuild_preprocessing,
                 logger=logger,
             )
+            ensure_selection_outputs(root, selection, config, logger)
         with progress.task("native_preprocess", f"native preprocessing | {root.name}"):
             preprocessed.append(
                 preprocess_selected(
@@ -1139,6 +1141,7 @@ def _run_threshold_scan_experiment(
                 rebuild=rebuild_preprocessing,
                 logger=logger,
             )
+            ensure_selection_outputs(source, selection, config, logger)
         with progress.task(
             "native_preprocess",
             f"native preprocessing | {source.name}",
