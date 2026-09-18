@@ -803,7 +803,15 @@ def _run_standard_study(
     if resume:
         _assert_resume_config_matches(config, store.root)
     if resume and _completed_run_matches(config, store.root):
-        logger.info("Study already complete | %s | nothing to resume", store.root)
+        for root in discover_root_files(config):
+            selection = select_events(
+                root,
+                config,
+                rebuild=False,
+                logger=logger,
+            )
+            ensure_selection_outputs(root, selection, config, logger)
+        logger.info("Study already complete | %s | selection diagnostics ensured", store.root)
         return store.root
 
     roots = discover_root_files(config)
