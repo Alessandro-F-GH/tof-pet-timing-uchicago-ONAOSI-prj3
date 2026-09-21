@@ -80,22 +80,19 @@ def candidates(config):
     activations = parameters.get("activation", ["silu"])
     learning_rates = parameters.get("learning_rate", [1e-3])
     batch_sizes = parameters.get("batch_size", [training.get("batch_size", 128)])
-    weight_decays = parameters.get("weight_decay", [0.0])
     return [
         {
             "architecture": _validate_architecture(architecture),
             "activation": str(activation).strip().lower(),
             "learning_rate": float(learning_rate),
             "batch_size": int(batch_size),
-            "weight_decay": float(weight_decay),
         }
-        for architecture, activation, learning_rate, batch_size, weight_decay
+        for architecture, activation, learning_rate, batch_size
         in itertools.product(
             architectures,
             activations,
             learning_rates,
             batch_sizes,
-            weight_decays,
         )
     ]
 
@@ -169,10 +166,9 @@ def fit_mlp(
             architecture,
             activation,
         ).to(device)
-        optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.Adam(
             model.parameters(),
             lr=float(params["learning_rate"]),
-            weight_decay=float(params["weight_decay"]),
         )
         loader = _loader(
             fit_x,
@@ -185,7 +181,7 @@ def fit_mlp(
         if verbose and logger is not None:
             logger.info(
                 "%s training | loss=RMSE | architecture=%s | activation=%s | "
-                "lr=%.6g | weight_decay=%.6g | batch=%d | "
+                "lr=%.6g | batch=%d | "
                 "epochs=%d | rmse_patience=%d | min_delta=%.6g | early_stop_fraction=%.3f | "
                 "gradient_stop=%s | gradient_min_norm=%.6g | gradient_patience=%d | "
                 "fit=%d | early_stop=%d | device=%s | seed=%d",
@@ -193,7 +189,6 @@ def fit_mlp(
                 architecture,
                 activation,
                 float(params["learning_rate"]),
-                float(params["weight_decay"]),
                 batch,
                 max_epochs,
                 patience,
@@ -341,7 +336,6 @@ def fit_mlp(
             "architecture": architecture,
             "activation": activation,
             "learning_rate": float(params["learning_rate"]),
-            "weight_decay": float(params["weight_decay"]),
             "batch_size": batch,
             "output_max_abs_ps": (
                 None if output_limit is None else float(output_limit)
