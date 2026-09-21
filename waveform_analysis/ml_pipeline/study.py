@@ -315,7 +315,11 @@ def _base_manifest(config, concatenate, roots):
                 "normalized float32 value in at least 99% of training events"
             ),
             "shared_across_input_channels": True,
-            "shared_across_models_within_dataset": True,
+            "shared_across_models_within_dataset": False,
+            "model_exception": (
+                "locally_connected_mlp retains the full configured temporal grid "
+                "so receptive fields remain contiguous"
+            ),
             "validation_and_test_do_not_define_mask": True,
         },
         "training_data_policy": {
