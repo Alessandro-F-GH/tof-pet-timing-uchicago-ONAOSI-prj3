@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
@@ -91,3 +92,34 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"Expected a JSON object in {path}")
     return value
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = list(dict.fromkeys(key for row in rows for key in row))
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def load_artifact_array(
+    run: Path,
+    dataset: str,
+    method: str,
+    stage: str,
+    kind: str,
+) -> np.ndarray | None:
+    path = run / "artifacts" / dataset / f"{method}_{stage}_{kind}.npy"
+    if not path.is_file():
+        return None
+    return np.asarray(np.load(path), dtype=np.float64).reshape(-1)
