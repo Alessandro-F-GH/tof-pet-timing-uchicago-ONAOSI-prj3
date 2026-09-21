@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 from itertools import combinations
 from pathlib import Path
@@ -9,7 +8,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .common import voltage_from_name
+from .common import voltage_from_name, write_csv
 from .model_output_reporting import _model_output, _pearson
 from .plot_style import (
     DOUBLE_COLUMN,
@@ -178,17 +177,6 @@ def _aligned_model_outputs(
     position_b = {int(event_id): index for index, event_id in enumerate(ids_b)}
     reorder_b = np.asarray([position_b[int(event_id)] for event_id in ids_a], dtype=np.int64)
     return output_a, output_b[reorder_b]
-
-
-def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fields = list(dict.fromkeys(key for row in rows for key in row))
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _plot_improvement(
@@ -522,9 +510,9 @@ def compare_model_runs(
                 )
             )
 
-    _write_csv(csv_dir / "improvement_vs_led.csv", all_improvement_rows)
-    _write_csv(csv_dir / "pairwise_model_comparison.csv", pairwise_rows)
-    _write_csv(csv_dir / "model_output_correlations.csv", correlation_rows)
+    write_csv(csv_dir / "improvement_vs_led.csv", all_improvement_rows)
+    write_csv(csv_dir / "pairwise_model_comparison.csv", pairwise_rows)
+    write_csv(csv_dir / "model_output_correlations.csv", correlation_rows)
 
     comparison_manifest = {
         "schema_version": 3,
