@@ -155,7 +155,7 @@ def plot_threshold_scan(
                 label=LABELS.get("mlp", "MLP"),
                 **model_style("mlp"),
             )
-            ax.set_xlabel("LED threshold [mV]")
+            ax.set_xlabel("LED threshold above baseline [mV]")
             ax.set_ylabel("CTR [ps]")
             ax.legend(loc="best")
             clean_axis(ax, grid="y")
@@ -178,7 +178,7 @@ def plot_threshold_scan(
                 **model_style("mlp"),
             )
             ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
-            ax.set_xlabel("LED threshold [mV]")
+            ax.set_xlabel("LED threshold above baseline [mV]")
             ax.set_ylabel("Improvement [%]")
             clean_axis(ax, grid="y")
             fig.tight_layout()
@@ -518,7 +518,8 @@ def run_blind_led_threshold_scan(
         "model": model_name,
         "voltage_V": target_voltage,
         "mode": mode,
-        "candidate_thresholds_mV": thresholds,
+        "candidate_threshold_offsets_mV": thresholds,
+        "led_threshold_reference": "event_baseline_plus_configured_offset",
         "hyperparameter_selection_population": "validation_when_multiple_candidates",
         "hyperparameter_selection_metric": "validation_ctr_when_multiple_candidates",
         "final_evaluation_population": "blind",
