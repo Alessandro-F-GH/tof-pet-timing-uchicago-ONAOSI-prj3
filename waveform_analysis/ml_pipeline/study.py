@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from .analyses import run_blind_led_threshold_scan
-from .common import canonical_hash, read_json, voltage_from_name
+from .common import canonical_hash, read_csv, read_json, voltage_from_name
 from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
@@ -57,15 +57,6 @@ def _logger(run_dir: Path):
         logger.addHandler(handler)
     return logger
 
-
-
-def _csv_rows(path: Path) -> list[dict[str, str]]:
-    import csv
-
-    if not path.is_file():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        return list(csv.DictReader(stream))
 
 
 def _assert_resume_config_matches(config: dict[str, Any], run_dir: Path) -> None:
@@ -120,7 +111,7 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
     if not isinstance(datasets, dict) or len(datasets) != expected_datasets:
         return False
 
-    rows = _csv_rows(results_path)
+    rows = read_csv(results_path)
     if not rows:
         return False
     available = {
