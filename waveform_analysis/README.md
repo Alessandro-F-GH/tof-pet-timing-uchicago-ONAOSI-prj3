@@ -63,7 +63,7 @@ The proposed model is `mlp`: one shared dense scorer `g_theta` is applied indepe
 
 This enforces exact detector-swap antisymmetry. A dense model is used intentionally because the waveforms are aligned to the LED crossing and absolute temporal position is physically meaningful; translation equivariance is therefore not treated as a useful prior for the proposed model.
 
-The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. Every candidate is trained using training data only and ranked by CTR on the validation split. The validation-selected trained checkpoint is used directly: **there is no refit**.
+The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. When multiple candidates are configured, each candidate is trained on the training split and ranked by CTR on the validation split. After the parameters are selected, a fresh final MLP is trained on the full development population; the MLP itself reserves its configured internal holdout from that development population for early stopping. If the model space contains only one candidate, validation-based model selection is skipped and the final development fit starts immediately.
 
 ### Reference model: Onishi CNN
 
@@ -85,14 +85,7 @@ The Onishi CNN has one fixed candidate. Validation is therefore not used to tune
 
 For every model with tunable hyperparameters:
 
-1. fit candidate models using training data only;
-2. select the candidate with the best **validation CTR**;
-3. freeze that exact trained checkpoint;
-4. evaluate final performance on the permanent blind/test split.
-
-Validation metrics are selection diagnostics, not final performance results. Final CTR values and uncertainties are computed only on blind data. CTR uncertainty is the event-bootstrap standard deviation of the canonical Gaussian-equivalent shortest-coverage-interval estimator.
-
-No target-magnitude filtering is used and no model is refitted after validation selection.
+When more than one candidate is configured, candidate models are fitted on the training split and the best hyperparameters are selected by validation CTR. The search checkpoints are then discarded. A fresh final model is trained on the full development population and evaluated on the permanent blind/test split. If only one candidate exists, the validation-selection stage is skipped and the final development fit is performed directly. Validation metrics are selection diagnostics, not final performance results. Final CTR values and uncertainties are computed only on blind data. CTR uncertainty is the event-bootstrap standard deviation of the canonical Gaussian-equivalent shortest-coverage-interval estimator.
 
 ## 5. Experiment types
 
@@ -205,7 +198,7 @@ This experiment studies LED-threshold dependence for the antisymmetric MLP only.
 - one explicit `experiment.voltage_V`;
 - the threshold candidates in `standard_methods.led_thresholds_mV`.
 
-For every threshold independently, the MLP hyperparameter grid is selected using validation CTR. The selected checkpoint is then evaluated on blind data without refitting. The scan **does not select a winning LED threshold** and never uses blind data for hyperparameter selection.
+For every threshold independently, the MLP hyperparameter grid is selected using validation CTR when more than one candidate is configured. The selected parameters are then used for a fresh final fit on the full development population before blind evaluation. If only one candidate exists, selection is skipped and the final development fit is performed directly. The scan **does not select a winning LED threshold** and never uses blind data for hyperparameter selection.
 
 Reported scan quantities are blind-only:
 
