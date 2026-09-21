@@ -27,6 +27,7 @@
   },
   "training": {
     "device": "auto",
+    "optimizer": "adam",
     "epochs": 600,
     "patience": 20,
     "min_delta": 0.01,
