@@ -48,7 +48,7 @@ The first convolution spans both detector rows and therefore fuses the detector 
 The current reference training configuration uses Adam, MSE loss, batch size 128, an initial learning rate of \(10^{-3}\), and 600 epochs. The learning rate is reduced by a factor of ten at epochs 180 and 360. Because this is a fixed reference configuration, no architecture or optimizer hyperparameter is selected from the validation CTR.
 
 \reportfigure
-    {figures/2D-cnn-architecture.png}
+    {figures/onishi-cnn-architecture.png}
     {Paired Onishi CNN reference. The first two-dimensional convolution spans the detector axis and the network directly predicts one pair-level correction.}
     {fig:onishi-architecture}
 
