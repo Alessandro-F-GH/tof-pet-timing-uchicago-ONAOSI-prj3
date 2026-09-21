@@ -92,12 +92,9 @@ def validate_config(config):
     missing = sorted(required - set(config))
     if missing:
         raise ConfigError(f"Missing configuration section(s): {missing}")
-    obsolete = sorted(set(config) & {"ml_training", "analyses"})
-    if obsolete:
-        raise ConfigError(
-            f"Obsolete configuration section(s): {obsolete}. "
-            "Use experiment.type='model_study' or 'threshold_scan' instead."
-        )
+    extra = sorted(set(config) - required)
+    if extra:
+        raise ConfigError(f"Unknown configuration section(s): {extra}")
     mode = str(config["mode"])
     family = mode_family(mode)
     if not isinstance(config["cfd"], bool):
@@ -203,12 +200,9 @@ def validate_config(config):
 
     fit = config["fit"]
     allowed_fit = {"coverage_fraction", "bootstrap_samples"}
-    obsolete_fit = set(fit) - allowed_fit
-    if obsolete_fit:
-        raise ConfigError(
-            f"Unknown/obsolete fit option(s): {sorted(obsolete_fit)}. "
-            "CTR is the Gaussian-equivalent shortest coverage interval."
-        )
+    extra_fit = sorted(set(fit) - allowed_fit)
+    if extra_fit:
+        raise ConfigError(f"Unknown fit option(s): {extra_fit}")
     coverage = float(fit.get("coverage_fraction", 0.90))
     if not 0.0 < coverage < 1.0:
         raise ConfigError("fit.coverage_fraction must be a fraction in (0, 1)")
@@ -230,11 +224,11 @@ def validate_config(config):
             if key not in preprocessing[required_family]:
                 raise ConfigError(f"preprocessing.{required_family}.{key} is required")
     if "rising_edge_before_trigger_ns" in preprocessing["energy"]:
-        raise ConfigError("preprocessing.energy.rising_edge_before_trigger_ns is obsolete; energy uses the materialized window start to peak")
+        raise ConfigError("Unknown preprocessing.energy option: rising_edge_before_trigger_ns")
     if family == "timing" and "rising_edge_before_trigger_ns" not in preprocessing["timing"]:
         raise ConfigError("preprocessing.timing.rising_edge_before_trigger_ns is required")
     if "pulse_duration_mad" in preprocessing["selection"]:
-        raise ConfigError("preprocessing.selection.pulse_duration_mad is obsolete; use preprocessing.tot_peak")
+        raise ConfigError("Unknown preprocessing.selection option: pulse_duration_mad")
     if family == "timing":
         if "tot_peak" not in preprocessing:
             raise ConfigError("preprocessing.tot_peak is required for timing_to_timing")
