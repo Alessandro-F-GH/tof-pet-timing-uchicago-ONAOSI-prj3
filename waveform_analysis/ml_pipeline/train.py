@@ -208,6 +208,13 @@ def search_model(
     sample_mask: np.ndarray | None = None,
     logger=None,
 ) -> SearchResult:
+    candidates = list(spec.candidates(model_config))
+    if len(candidates) < 2:
+        raise ValueError(
+            f"search_model requires at least two candidates for {spec.name!r}; "
+            "fit the single candidate directly on development data"
+        )
+
     training = np.asarray(dataset.training, dtype=np.int64)
     validation = np.asarray(dataset.validation, dtype=np.int64)
     train_view = waveform_view(dataset, mode, training)
@@ -314,8 +321,7 @@ def search_model(
                 result.error,
             )
 
-    candidates = list(spec.candidates(model_config))
-    if logger is not None and len(candidates) > 1:
+    if logger is not None:
         logger.info(
             "Model selection | %s | %s | candidates=%d",
             context,
