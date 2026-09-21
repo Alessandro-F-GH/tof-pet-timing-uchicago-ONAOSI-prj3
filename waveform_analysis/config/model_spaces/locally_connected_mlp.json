@@ -3,8 +3,7 @@
   "parameters": {
     "architecture": [
       [
-        64,
-        32
+        64
       ]
     ],
     "activation": [
