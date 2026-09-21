@@ -176,7 +176,8 @@ def _ensure_diagnostics(preprocessed, config, manifest):
             str(missing["family"]),
             int(missing["event_row"]),
             float(missing["threshold_mV"]),
-            directory,
+            baseline_window_ns=config["preprocessing"]["selection"]["baseline_noise"]["window_ns"],
+            directory=directory,
         )
     window = examples.get("ml_window_exceeds_materialized")
     if window:
@@ -186,7 +187,8 @@ def _ensure_diagnostics(preprocessed, config, manifest):
             int(window["event_row"]),
             float(window["threshold_mV"]),
             config["ml_input"]["window_ns"],
-            directory,
+            baseline_window_ns=config["preprocessing"]["selection"]["baseline_noise"]["window_ns"],
+            directory=directory,
         )
 
 
@@ -218,6 +220,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
     fractions = np.asarray(config["standard_methods"]["cfd_fractions"], dtype=float)
     led_min_eff = float(config["standard_methods"].get("led_minimum_crossing_efficiency", 0.95))
     coincidence_window_ps = 1000.0 * float(config["standard_methods"].get("led_coincidence_window_ns", 2.0))
+    baseline_window_ns = config["preprocessing"]["selection"]["baseline_noise"]["window_ns"]
     if not 0.0 < led_min_eff <= 1.0:
         raise ValueError("standard_methods.led_minimum_crossing_efficiency must be in (0, 1]")
     if coincidence_window_ps <= 0:
@@ -238,7 +241,13 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
     diagnostic_examples = {}
 
     for family in families:
-        dev_led = led_grid(preprocessed, family, development, thresholds)
+        dev_led = led_grid(
+            preprocessed,
+            family,
+            development,
+            thresholds,
+            baseline_window_ns=baseline_window_ns,
+        )
         (
             led_choice[family],
             led_score[family],
@@ -271,6 +280,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
             family,
             np.arange(preprocessed.n_events),
             np.asarray([led_choice[family]]),
+            baseline_window_ns=baseline_window_ns,
         )[:, :, 0]
         finite_pair = np.all(np.isfinite(led_times[family]), axis=1)
         residual_pair = pair_delta(led_times[family]) - true_tof
@@ -278,7 +288,12 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         led_missing_crossing[family] = ~finite_pair
         led_noncoincidence[family] = finite_pair & ~in_coincidence
         led_coverage[family] = in_coincidence
-        anchor_idx[family] = anchor_grid(preprocessed, family, led_choice[family])
+        anchor_idx[family] = anchor_grid(
+            preprocessed,
+            family,
+            led_choice[family],
+            baseline_window_ns=baseline_window_ns,
+        )
 
         if config["cfd"] and family in targets:
             dev_cfd = cfd_grid(preprocessed, family, development, fractions)
@@ -414,6 +429,8 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         "excluded_ml_window_event_index_file": "excluded_ml_window_event_index.npy",
         "split": {"training": int(training_new.size), "validation": int(validation_new.size), "test": int(test_new.size)},
         "led_threshold_mV": led_choice,
+        "led_threshold_reference": "event_baseline_plus_configured_offset",
+        "led_baseline_window_ns": [float(baseline_window_ns[0]), float(baseline_window_ns[1])],
         "led_minimum_crossing_efficiency": led_min_eff,
         "led_coincidence_window_ns": coincidence_window_ps / 1000.0,
         "led_development_ctr_ps": led_score,
@@ -429,7 +446,7 @@ def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bo
         "normalization": transforms,
         "diagnostic_examples": diagnostic_examples,
         "target_definition": "delta_t_led - true_tof - calibration_bias",
-        "anchor_definition": "native sample nearest in time to interpolated selected LED crossing",
+        "anchor_definition": "native sample nearest in time to interpolated baseline-relative selected LED crossing",
         "corrected_definition": "target - paired_model_prediction",
         "time_reference": "native_grid_anchor_nearest_interpolated_led",
     }
