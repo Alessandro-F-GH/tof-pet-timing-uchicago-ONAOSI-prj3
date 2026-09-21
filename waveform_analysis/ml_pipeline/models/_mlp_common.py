@@ -120,8 +120,9 @@ def fit_mlp(
     min_delta = float(training.get("min_delta", 0.01))
     early_fraction = float(training.get("early_stopping_fraction", 0.20))
     clip = float(training.get("gradient_clip_norm", 10.0))
+    optimizer_name = str(training.get("optimizer", "sgd_nesterov")).strip().lower()
     momentum = float(training.get("momentum", 0.9))
-    if not 0.0 < momentum < 1.0:
+    if optimizer_name == "sgd_nesterov" and not 0.0 < momentum < 1.0:
         raise ValueError("training.momentum must lie in (0, 1) for Nesterov SGD")
 
     gradient_early_stop = bool(training.get("gradient_early_stop", False))
@@ -151,12 +152,22 @@ def fit_mlp(
         activation,
         **dict(model_factory_kwargs or {}),
     ).to(device)
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=float(params["learning_rate"]),
-        momentum=momentum,
-        nesterov=True,
-    )
+    if optimizer_name == "sgd_nesterov":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=float(params["learning_rate"]),
+            momentum=momentum,
+            nesterov=True,
+        )
+    elif optimizer_name == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=float(params["learning_rate"]),
+        )
+    else:
+        raise ValueError(
+            "training.optimizer must be one of: 'sgd_nesterov', 'adam'"
+        )
     loader = _loader(
         fit_x,
         fit_target,
@@ -167,17 +178,18 @@ def fit_mlp(
 
     if verbose and logger is not None:
         logger.info(
-            "%s training | optimizer=SGD-Nesterov | loss=RMSE | "
-            "architecture=%s | activation=%s | lr=%.6g | momentum=%.3f | "
+            "%s training | optimizer=%s | loss=RMSE | "
+            "architecture=%s | activation=%s | lr=%.6g | momentum=%s | "
             "batch=%d | epochs=%d | rmse_patience=%d | "
             "min_delta=%.6g | early_stop_fraction=%.3f | gradient_stop=%s | "
             "gradient_min_norm=%.6g | gradient_patience=%d | fit=%d | "
             "early_stop=%d | device=%s | seed=%d",
             model_name,
+            "SGD-Nesterov" if optimizer_name == "sgd_nesterov" else "Adam",
             architecture,
             activation,
             float(params["learning_rate"]),
-            momentum,
+            f"{momentum:.3f}" if optimizer_name == "sgd_nesterov" else "n/a",
             batch,
             max_epochs,
             patience,
@@ -302,9 +314,9 @@ def fit_mlp(
         "stop_epoch": int(stop_epoch),
         "stop_reason": stop_reason,
         "training_loss": "rmse",
-        "optimizer": "sgd",
-        "nesterov": True,
-        "momentum": momentum,
+        "optimizer": optimizer_name,
+        "nesterov": optimizer_name == "sgd_nesterov",
+        "momentum": momentum if optimizer_name == "sgd_nesterov" else None,
         "best_early_stopping_rmse_ps": float(best_score),
         "early_stopping_metric": "internal_fit_holdout_rmse",
         "early_stopping_fraction": early_fraction,
