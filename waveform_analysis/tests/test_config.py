@@ -74,6 +74,7 @@ class ConfigTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         for name, model in (
             ("model_study_mlp.json", "mlp"),
+            ("model_study_locally_connected_mlp.json", "locally_connected_mlp"),
             ("model_study_onishi.json", "onishi_cnn"),
         ):
             config = load_config(root / "config" / "experiments" / name)
@@ -87,6 +88,16 @@ class ConfigTests(unittest.TestCase):
                 config["ml_input"]["window_ns"],
                 config["ml_input"]["windows"]["wide_window"],
             )
+
+    def test_locally_connected_model_uses_adam_without_momentum(self):
+        root = Path(__file__).resolve().parents[1]
+        config = load_config(
+            root / "config" / "experiments" / "model_study_locally_connected_mlp.json"
+        )
+        training = config["models"]["locally_connected_mlp"]["training"]
+        self.assertEqual(training["optimizer"], "adam")
+        self.assertNotIn("momentum", training)
+
     def test_unknown_top_level_section_is_rejected(self):
         bad = copy.deepcopy(self.config)
         bad["extra_section"] = {}
