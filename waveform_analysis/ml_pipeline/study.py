@@ -244,7 +244,15 @@ def _dataset_voltage(dataset, name):
     return float(np.median(finite)) if finite.size else voltage_from_name(name)
 
 
-def _prepare_datasets(preprocessed, config, rebuild, logger, progress):
+def _prepare_datasets(
+    preprocessed,
+    config,
+    rebuild,
+    logger,
+    progress,
+    *,
+    rebuild_stale: bool = False,
+):
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     prep_config = copy.deepcopy(config)
     if concatenate:
@@ -262,6 +270,7 @@ def _prepare_datasets(preprocessed, config, rebuild, logger, progress):
                     prep_config,
                     rebuild=rebuild,
                     logger=logger,
+                    rebuild_stale=rebuild_stale,
                 )
             )
 
@@ -842,6 +851,7 @@ def _run_standard_study(
     resume: bool = False,
     rebuild_preprocessing: bool = False,
     rebuild_prepared: bool | None = None,
+    rebuild_stale_prepared: bool = False,
 ) -> Path:
     config = load_config(config_or_path) if not isinstance(config_or_path, dict) else config_or_path
     if rebuild_prepared is None:
@@ -916,6 +926,7 @@ def _run_standard_study(
         bool(rebuild_prepared),
         logger,
         progress,
+        rebuild_stale=rebuild_stale_prepared,
     )
     prefit_searches: dict[tuple[str, str], Any] = {}
 
@@ -1114,6 +1125,7 @@ def _run_model_study_experiment(
                 rebuild_preprocessing if index == 0 else False
             ),
             rebuild_prepared=rebuild_preprocessing,
+            rebuild_stale_prepared=True,
         )
         subruns[window_name] = str(subrun)
 
