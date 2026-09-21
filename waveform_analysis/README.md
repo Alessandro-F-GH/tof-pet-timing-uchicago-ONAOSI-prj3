@@ -246,7 +246,7 @@ Study outputs are type-separated from creation time:
 
 - `csv/results.csv`: canonical study results table;
 - `csv/relative_improvement.csv`: numerical values used in the paired-improvement plot;
-- `plots/ctr_vs_voltage.pdf`: publication-style CTR curves versus bias voltage with bootstrap error bars;
+- `plots/ctr_vs_voltage.pdf`: publication-style CTR curves versus bias voltage;
 - `plots/relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
 - `plots/corrections/<dataset>/`: top/worst correction figures;
 - `csv/corrections/<dataset>/`: corresponding correction ranking tables;
@@ -308,15 +308,6 @@ python -m waveform_analysis.cli compare-runs \
   --output-dir waveform_analysis/results/comparisons/timing_models
 ```
 
-The standalone reporting entry point is equivalent:
-
-```bash
-python -m waveform_analysis.scripts.compare_model_runs \
-  --runs waveform_analysis/results/studies/timing_mlp \
-         waveform_analysis/results/studies/timing_onishi_cnn \
-  --output-dir waveform_analysis/results/comparisons/timing_models
-```
-
 Recreate a completed model study's figures without training:
 
 ```bash
@@ -343,22 +334,6 @@ python -m waveform_analysis.cli run \
   --config waveform_analysis/config/experiments/timing_concatenated.json \
   --overwrite
 ```
-
-### Study summary analysis
-
-A completed per-voltage study can be summarized with:
-
-```bash
-python -m waveform_analysis.scripts.analyze_study_results \
-  --run-dir waveform_analysis/results/studies/complete_energy
-```
-
-By default this writes two files under `<run-dir>/analysis_summary/`:
-
-- `study_summary.tex`: ready-to-include LaTeX table with selected LED threshold, blind-test LED CTR, and blind-test CTR for every ML model at each voltage;
-- `study_summary_vs_voltage.pdf`: selected LED threshold and blind-test CTR versus bias voltage, including bootstrap CTR error bars.
-
-Use `--plot-format png` for raster plots or `--output-dir <path>` to redirect the report.
 
 ### Cross-voltage generalization
 
