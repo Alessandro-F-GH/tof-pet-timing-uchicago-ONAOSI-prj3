@@ -1,6 +1,6 @@
 # Waveform timing pipeline
 
-The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**. Every experiment has exactly one configured `mode`: `energy_to_energy` or `timing_to_timing`. Optional CFD evaluation is controlled by the experiment-level boolean `cfd`. The active ML registry contains only `mlp` and `onishi_cnn`.
+The waveform pipeline separates **selection**, **physical preprocessing**, **ML dataset construction**, and **model fitting**. Every experiment has exactly one configured `mode`: `energy_to_energy` or `timing_to_timing`. Optional CFD evaluation is controlled by the experiment-level boolean `cfd`. The active ML registry contains `mlp`, `locally_connected_mlp`, and `onishi_cnn`.
 
 ## 1. Event selection
 
@@ -64,6 +64,14 @@ The proposed model is `mlp`: one shared dense scorer `g_theta` is applied indepe
 This enforces exact detector-swap antisymmetry. A dense model is used intentionally because the waveforms are aligned to the LED crossing and absolute temporal position is physically meaningful; translation equivariance is therefore not treated as a useful prior for the proposed model.
 
 The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. Weight optimization uses stochastic gradient descent with Nesterov momentum (momentum 0.9 by default) and RMSE loss. When multiple candidates are configured, each candidate is trained on the training split and ranked by CTR on the validation split. After the parameters are selected, a fresh final MLP is trained on the full development population; the MLP itself reserves its configured internal holdout from that development population for early stopping. If the model space contains only one candidate, validation-based model selection is skipped and the final development fit starts immediately.
+
+### Locally connected MLP
+
+The parallel model `locally_connected_mlp` keeps the same detector-shared antisymmetric form but replaces the fully connected first stage with a 1-D locally connected layer. Each node receives one contiguous receptive field of waveform samples and produces one scalar local representation. Neighboring fields may overlap. Unlike a CNN, weights and biases are not shared across temporal positions, so absolute position remains explicit.
+
+For receptive-field width `K` and overlap `O`, the stride is `K - O`. There is exactly one learned node per receptive field: no bank of multiple kernels is applied to the same window. The local outputs are activated and then passed to a conventional dense stack. PyTorch's standard `Tensor.unfold` operation extracts the overlapping windows; the per-position weights are ordinary `nn.Parameter` tensors.
+
+Because local receptive fields require consecutive samples, this model retains the complete configured ML time grid instead of applying the training-derived constant-sample mask. Receptive-field width and overlap are selected on validation CTR together with the other configured hyperparameters. The ready configuration is `config/experiments/model_study_locally_connected_mlp.json`.
 
 ### Reference model: Onishi CNN
 
