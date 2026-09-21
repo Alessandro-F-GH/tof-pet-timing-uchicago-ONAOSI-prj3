@@ -33,8 +33,6 @@ def _fit_once(
     train_target,
     *,
     seed,
-    validation_x=None,
-    validation_target=None,
     output_max_abs_ps=None,
     input_time_ps=None,
     sample_mask=None,
@@ -52,8 +50,6 @@ def _fit_once(
         np.asarray(train_target, dtype=np.float64),
         seed=seed,
         config=runtime_config,
-        validation_x=None if validation_x is None else np.asarray(validation_x, dtype=np.float32),
-        validation_target=None if validation_target is None else np.asarray(validation_target, dtype=np.float64),
     )
     metadata = dict(getattr(artifact, "metadata", {}) or {})
     metadata["output_max_abs_ps"] = None if output_max_abs_ps is None else float(output_max_abs_ps)
@@ -123,8 +119,6 @@ def fit_fixed_model(
         train_x,
         train_target,
         seed=seed,
-        validation_x=None,
-        validation_target=None,
         output_max_abs_ps=float(config["ml_output"]["max_abs_ps"]),
         input_time_ps=masked_time_ps,
         sample_mask=sample_mask,
@@ -193,7 +187,6 @@ def search_model(
     def fit_candidate(parameters, candidate_seed):
         model_parameters = dict(parameters)
         runtime_model_config = copy.deepcopy(model_config)
-        runtime_model_config["_fit_config"] = fit_config
         runtime_model_config["_early_stopping_seed"] = int(seed)
         fitted = _fit_once(
             spec,
@@ -202,8 +195,6 @@ def search_model(
             train_x,
             train_target,
             seed=candidate_seed,
-            validation_x=validation_x,
-            validation_target=validation_target,
             output_max_abs_ps=output_limit,
             input_time_ps=masked_time_ps,
             sample_mask=sample_mask,
