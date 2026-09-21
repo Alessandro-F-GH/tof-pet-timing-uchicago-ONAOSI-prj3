@@ -13,12 +13,14 @@ MODEL_ORDER = (
     "led",
     "cfd",
     "mlp",
+    "locally_connected_mlp",
     "onishi_cnn",
 )
 LABELS = {
     "led": "LED",
     "cfd": "CFD",
     "mlp": "Antisymmetric MLP",
+    "locally_connected_mlp": "Locally connected MLP",
     "onishi_cnn": "Onishi paired CNN",
 }
 
@@ -28,6 +30,7 @@ MODEL_STYLES = {
     "led": {"color": "#000000", "marker": "o", "linestyle": "--"},
     "cfd": {"color": "#7F7F7F", "marker": "x", "linestyle": ":"},
     "mlp": {"color": "#E69F00", "marker": "o", "linestyle": "-"},
+    "locally_connected_mlp": {"color": "#56B4E9", "marker": "^", "linestyle": "-"},
     "onishi_cnn": {"color": "#009E73", "marker": "s", "linestyle": "-"},
 }
 _FALLBACK_STYLES = (
