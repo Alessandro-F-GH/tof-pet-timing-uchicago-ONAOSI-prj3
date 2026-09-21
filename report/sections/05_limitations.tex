@@ -1,44 +1,51 @@
 \section{Discussion, limitations, and future work}
 
-\subsection{Interpretation of the constrained model}
+\subsection{Interpretation of the two-model comparison}
 
-\todo{Discuss the observed CTR difference between the detector-shared and joint CNN. If their performance is statistically compatible, explain what this suggests about the need for arbitrary pair-specific interactions. If the joint model is better, quantify the performance cost of the physical constraint. If the shared model is better, discuss the possibility of regularization from the imposed symmetry.}
+\todo{Discuss the observed blind-test CTR difference between the antisymmetric MLP and the Onishi CNN separately for the Onishi and wide windows. Distinguish a reproducible architecture effect from differences comparable with statistical uncertainty.}
+
+The scientific interpretation should remain tied to the actual architectural constraints. The MLP enforces detector-swap antisymmetry and uses the same detector-level scorer for both waveforms. The Onishi CNN instead fuses the detector pair in its first convolution and directly predicts one pair-level correction. Similar performance would therefore indicate that the paired convolutional representation is not required for the measured datasets; a consistent Onishi advantage would quantify the performance cost of the imposed factorization.
+
+\subsection{Effect of temporal context}
+
+\todo{Compare the model ranking and absolute CTR between the Onishi window and the wide window. State whether later waveform samples provide measurable held-out benefit for either architecture.}
+
+The two-window comparison is intentionally more limited than a dense window sweep. It establishes whether extending the input from the short reference region to a substantially wider region changes final performance, but it does not identify a unique optimal endpoint.
 
 \subsection{Energy versus timing waveform}
 
-\todo{Compare absolute CTR and relative ML gain between the energy and timing channels. Distinguish room for correction from absolute timing quality: a dedicated timing signal may show a smaller relative ML gain while still giving the best final CTR.}
+\todo{Compare absolute CTR and relative improvement over LED between the energy and timing channels. Separate room for correction from absolute timing quality.}
 
-\subsection{What does XAI establish?}
+\subsection{What do XAI and output correlation establish?}
 
-Gradient- or coefficient-based importance identifies regions to which the trained model is sensitive; it does not by itself prove that a waveform region carries causal timing information. Claims about information localization should therefore be supported by performance ablations or window studies in addition to XAI.
+Gradient-based importance identifies samples to which a trained model is locally sensitive; it does not prove that a waveform region is causally required. The model-output Pearson correlation measures agreement between two fitted correction functions on the same blind events, but high correlation does not imply identical internal representations.
 
-\todo{Discuss agreement or disagreement between window-performance studies and temporal XAI profiles.}
+The strongest interpretation therefore combines three observations: held-out CTR, change in performance between the two waveform windows, and agreement or disagreement between model-output correlation and temporal sensitivity.
 
-\subsection{Limitations to assess}
+\subsection{Protocol limitations}
 
-Retain only limitations supported by the final study:
+The final discussion should consider the following limitations where relevant:
 \begin{itemize}
-    \item \textbf{Dataset and detector scope:} whether conclusions generalize beyond the measured detectors, board sources, bias voltages, and acquisition conditions.
-    \item \textbf{Single holdout protocol:} sensitivity of model selection to the chosen train and validation split.
-    \item \textbf{Validation reuse inside neural training:} neural early stopping uses validation RMSE while candidate ranking uses validation CTR on the same validation population.
-    \item \textbf{Training-target filtering:} sensitivity to the selected target-range candidate and the fraction of training events retained.
-    \item \textbf{Train-derived sample mask:} sensitivity to the 99\% constant-value threshold.
-    \item \textbf{No final refit:} the validation-selected trained model is evaluated directly instead of being refitted on training plus validation.
-    \item \textbf{Architecture matching:} any residual parameter-count or receptive-field differences between the shared and joint CNNs.
-    \item \textbf{CTR statistics:} bootstrap stability and non-Gaussian or multimodal residual structure.
-    \item \textbf{Interpretability:} temporal importance is model-dependent and should not be interpreted causally without ablation evidence.
+    \item \textbf{Different fitting policies:} MLP hyperparameters are selected using validation CTR and the selected checkpoint is not refitted, whereas the fixed Onishi reference is trained on the full development population because it has no validation-selected hyperparameters.
+    \item \textbf{Single split realization:} the reported comparison uses one persisted development/validation/blind partition.
+    \item \textbf{MLP selection hierarchy:} an internal training holdout controls epoch-level stopping and random-restart choice, while the external validation split ranks hyperparameter candidates.
+    \item \textbf{Two-window scope:} the final model study compares two predefined waveform windows rather than performing an exhaustive temporal ablation.
+    \item \textbf{Train-derived sample mask:} the temporal mask uses the current 99\% constant-value criterion and may affect the exact retained input dimension.
+    \item \textbf{Model-comparison uncertainty:} the current cross-run comparison propagates the persisted model CTR uncertainties independently; it does not recompute a paired bootstrap of the MLP-minus-Onishi CTR difference.
+    \item \textbf{Dataset and detector scope:} conclusions may depend on the measured crystals, SiPMs, boards, voltages, and acquisition conditions.
+    \item \textbf{Interpretability:} gradient sensitivity is model-dependent and should not be interpreted as causal waveform information without additional ablation evidence.
 \end{itemize}
 
 \subsection{Possible next experiments}
 
 \begin{enumerate}
-    \item \textbf{Window ablation as primary information test:} systematically truncate or mask temporal regions and measure held-out timing performance.
-    \item \textbf{Repeated-split robustness:} repeat model development across several development splits while preserving a final untouched test population.
-    \item \textbf{Cross-board transfer, if compatible:} train on one front-end source and evaluate on the other to directly test domain robustness.
-    \item \textbf{Detector-network scalability:} evaluate whether one shared detector scorer can be reused across more than one detector pair.
-    \item \textbf{XAI stability:} quantify importance-profile variability across seeds, bias voltages, boards, and architectures.
+    \item \textbf{Paired bootstrap for the direct model difference:} use the persisted common blind-event identities to bootstrap the MLP-minus-Onishi CTR difference directly.
+    \item \textbf{Repeated-split robustness:} repeat the full MLP-versus-Onishi development protocol across several split seeds while preserving a final untouched evaluation population.
+    \item \textbf{Denser temporal ablation:} progressively truncate or mask the wide waveform to localize where any extra timing benefit appears.
+    \item \textbf{Cross-board transfer:} when acquisition definitions are compatible, train on one front-end source and evaluate on the other.
+    \item \textbf{Detector-network scalability:} test whether one learned MLP detector scorer can be reused across more than one detector pair without retraining pair-specific functions.
 \end{enumerate}
 
 \subsection{Concluding perspective}
 
-\todo{Conclude with what is demonstrated about physical structure, timing-information localization, and dedicated timing-channel performance, followed by the most important remaining uncertainty.}
+\todo{Conclude with the main blind-test MLP-versus-Onishi result, the role of the waveform window, and the difference between energy- and timing-channel behavior. Keep XAI and threshold scans as supporting evidence rather than separate headline results.}
