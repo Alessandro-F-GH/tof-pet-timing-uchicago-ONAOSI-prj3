@@ -295,6 +295,7 @@ def _base_manifest(config, concatenate, roots):
         "model_selection_metric": "validation_ctr_for_tuned_models_only",
         "model_policies": {
             "mlp": "validation CTR selects hyperparameters only when multiple candidates exist; final model is freshly fit on the full development population with an internal early-stopping holdout",
+            "locally_connected_mlp": "unshared local receptive-field scorer; validation CTR selects receptive-field and training hyperparameters; full temporal grid retained; final fit on development with internal early stopping",
             "onishi_cnn": "fixed Onishi reference configuration; fit on training+validation; no model selection; blind held out",
         },
         "sample_mask_policy": {
@@ -308,7 +309,11 @@ def _base_manifest(config, concatenate, roots):
             "shared_across_models_within_dataset": True,
             "validation_and_test_do_not_define_mask": True,
         },
-        "training_data_policy": {"mlp": "final fit on development with internal early-stopping holdout", "onishi_cnn": "development"},
+        "training_data_policy": {
+            "mlp": "final fit on development with internal early-stopping holdout",
+            "locally_connected_mlp": "final fit on development with internal early-stopping holdout",
+            "onishi_cnn": "development",
+        },
         "ml_target": "delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
@@ -1114,9 +1119,9 @@ def _run_model_study_experiment(
         "subruns": subruns,
         "final_evaluation_population": "blind",
         "model_selection": (
-            "validation_ctr"
-            if model_name == "mlp"
-            else "fixed_reference_configuration"
+            "fixed_reference_configuration"
+            if model_name == "onishi_cnn"
+            else "validation_ctr"
         ),
         "config": public_config(config),
     }
