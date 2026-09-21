@@ -281,6 +281,24 @@ Detailed reporting is grouped under:
 
 The reporting histograms are presentation views and use a compact display interval with about 20 bins. CTR itself is bin-free and does not depend on the presentation histogram.
 
+## Dataset-table export from existing preprocessing caches
+
+Dataset tables for the report can be generated directly from the frozen event-selection caches. This export does **not** read waveform ROOT contents, rerun event selection, rebuild preprocessing, prepare ML data, or train a model. It only uses the configured source filenames to locate the corresponding cache directories and reads each cache's `manifest.json` and `selection_summary.csv`.
+
+Example:
+
+```bash
+python -m waveform_analysis.cli dataset-table \
+  --config waveform_analysis/config/experiments/model_study_mlp.json \
+  --output-file report/tables/uc_board_dataset.tex \
+  --caption "UC-board waveform dataset." \
+  --label tab:uc-board-dataset
+```
+
+The generated rows contain bias voltage, collected events, two-detector photopeak events, and final selected events. Bias voltage is parsed with the repository-wide `voltage_from_name()` helper; cache locations are resolved with `dataset_cache_dir()`; persisted JSON/CSV files are read with the common I/O helpers. If any required selection cache is missing or inconsistent, the command fails rather than rebuilding it.
+
+Use the corresponding configuration for each board/source dataset to create its report table.
+
 ## CLI
 
 Run the two expensive models independently:
