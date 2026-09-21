@@ -29,6 +29,48 @@ def family_arrays(data: PreprocessedData, family: str):
     return values
 
 
+def _baseline_level_mV(
+    signal,
+    interval_s: float,
+    materialized_before_ns: float,
+    baseline_window_ns,
+) -> float:
+    y = np.asarray(signal, dtype=np.float64)
+    dt_ns = float(interval_s) * 1.0e9
+    window = np.asarray(baseline_window_ns, dtype=np.float64).reshape(-1)
+    if (
+        y.size == 0
+        or not np.isfinite(dt_ns)
+        or dt_ns <= 0.0
+        or window.size != 2
+        or not np.all(np.isfinite(window))
+        or float(window[1]) <= float(window[0])
+    ):
+        return float("nan")
+
+    trigger_index = int(np.ceil(float(materialized_before_ns) / dt_ns))
+    start = max(0, trigger_index + int(np.floor(float(window[0]) / dt_ns)))
+    stop = min(
+        y.size,
+        trigger_index + int(np.ceil(float(window[1]) / dt_ns)) + 1,
+    )
+    if stop <= start:
+        return float("nan")
+    values = y[start:stop]
+    values = values[np.isfinite(values)]
+    return float(np.mean(values)) if values.size else float("nan")
+
+
+def _materialized_before_ns(data: PreprocessedData) -> float:
+    window = data.manifest.get("materialized_window_ns") or {}
+    value = float(window.get("before", np.nan))
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            "Preprocessed manifest does not provide a valid materialized_window_ns.before"
+        )
+    return value
+
+
 def _crossing_ps(signal, start_time_s, interval_s, rising_start, rising_stop, level_mV) -> float:
     y = np.asarray(signal, dtype=np.float64)
     a, b = int(rising_start), int(rising_stop)
@@ -61,13 +103,27 @@ def led_grid(
     family: str,
     indices: np.ndarray,
     thresholds_mV: np.ndarray,
+    *,
+    baseline_window_ns=None,
 ) -> np.ndarray:
+    """Return LED crossings; configured thresholds are offsets above event baseline."""
     waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
     idx = np.asarray(indices, dtype=np.int64)
     thresholds = np.asarray(thresholds_mV, dtype=np.float64).reshape(-1)
     output = np.full((idx.size, 2, thresholds.size), np.nan, dtype=np.float64)
+    before_ns = _materialized_before_ns(data) if baseline_window_ns is not None else None
     for row, event in enumerate(idx):
         for detector in range(2):
+            baseline = 0.0
+            if baseline_window_ns is not None:
+                baseline = _baseline_level_mV(
+                    waves[event, detector],
+                    intervals[event, detector],
+                    float(before_ns),
+                    baseline_window_ns,
+                )
+                if not np.isfinite(baseline):
+                    continue
             for column, threshold in enumerate(thresholds):
                 output[row, detector, column] = _crossing_ps(
                     waves[event, detector],
@@ -75,7 +131,7 @@ def led_grid(
                     intervals[event, detector],
                     rising_start[event, detector],
                     rising_stop[event, detector],
-                    float(threshold),
+                    baseline + float(threshold),
                 )
     return output
 
@@ -115,22 +171,35 @@ def anchor_grid(
     data: PreprocessedData,
     family: str,
     threshold_mV: float,
+    *,
+    baseline_window_ns=None,
 ) -> np.ndarray:
     """Return native-grid anchor indices nearest to the interpolated LED crossing."""
     waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
     indices = np.full((data.n_events, 2), -1, dtype=np.int32)
+    before_ns = _materialized_before_ns(data) if baseline_window_ns is not None else None
     for event in range(data.n_events):
         for detector in range(2):
             start = float(starts[event, detector])
             interval = float(intervals[event, detector])
             a, b = int(rising_start[event, detector]), int(rising_stop[event, detector])
+            baseline = 0.0
+            if baseline_window_ns is not None:
+                baseline = _baseline_level_mV(
+                    waves[event, detector],
+                    interval,
+                    float(before_ns),
+                    baseline_window_ns,
+                )
+                if not np.isfinite(baseline):
+                    continue
             led_ps = _crossing_ps(
                 waves[event, detector],
                 start,
                 interval,
                 a,
                 b,
-                float(threshold_mV),
+                baseline + float(threshold_mV),
             )
             if not np.isfinite(led_ps) or interval <= 0.0 or b <= a:
                 continue
