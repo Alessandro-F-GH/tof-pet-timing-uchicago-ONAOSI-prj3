@@ -285,7 +285,7 @@ def _prepare_datasets(preprocessed, config, rebuild, logger, progress):
 def _base_manifest(config, concatenate, roots):
     coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 13,
+        "schema_version": 14,
         "status": "running",
         "config_fingerprint": str(config.get("_config_fingerprint", "")),
         "protocol": "single_mode_holdout",
