@@ -79,7 +79,7 @@ The fixed reference configuration is stored in `config/model_spaces/onishi_cnn.j
 - Adam, MSE, batch size 128, initial learning rate 1e-3;
 - 600 epochs, learning rate reduced to 1e-4 and 1e-5 at epochs 180 and 360 (30% and 60% of training).
 
-The Onishi CNN has one fixed candidate. Validation is therefore not used to tune its architecture; it only passes through the same model-selection interface. The trained checkpoint is not refitted.
+The Onishi CNN has one fixed reference configuration. Model selection is therefore skipped entirely and the reference model is fitted directly on the development population before blind evaluation.
 
 ### Validation and blind-test policy
 
