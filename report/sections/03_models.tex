@@ -49,14 +49,14 @@ The current reference training configuration uses Adam, MSE loss, batch size 128
 
 \subsection{Controlled comparison across waveform windows}
 
-The two models are executed as independent \texttt{model\_study} runs. Each run evaluates the same configured waveform windows and persists the blind residuals, model outputs, split identities, XAI arrays, and result tables.
+The models are executed as independent \texttt{model\_study} runs. Each run evaluates the same configured waveform windows and persists the blind residuals, model outputs, split identities, XAI arrays, and result tables.
 
-The completed MLP and Onishi runs are then combined with the repository's \texttt{compare-runs} workflow. Before comparison, the workflow checks compatible window definitions and voltage sets. Model-output correlation is computed only after aligning the persisted blind-test event identities.
+The completed model-study runs are then combined with the repository's \texttt{compare-runs} workflow. Before comparison, the workflow checks compatible window definitions and voltage sets. Model-output correlation is computed only after aligning the persisted blind-test event identities.
 
-This separation is useful operationally because the expensive Onishi CNN and the lighter MLP can be trained independently, while the final comparison still operates on compatible persisted blind-test results.
+This separation is useful operationally because the dense MLP, locally connected MLP, and Onishi CNN can be trained independently, while the final comparison still operates on compatible persisted blind-test results.
 
 \subsection{Interpretability and model-output agreement}
 
-Both final models expose the same gradient-based temporal sensitivity measure: the absolute input gradient is averaged over the evaluated events and detector rows and projected onto the retained waveform time axis~\cite{simonyan2014}. The resulting profile identifies where a fitted model is most sensitive, but it is not interpreted by itself as proof of causal timing information.
+All three implemented models expose the same gradient-based temporal sensitivity measure: the absolute input gradient is averaged over the evaluated events and detector rows and projected onto the retained waveform time axis~\cite{simonyan2014}. The resulting profile identifies where a fitted model is most sensitive, but it is not interpreted by itself as proof of causal timing information.
 
-The run comparison additionally computes the Pearson correlation between the MLP and Onishi blind-test outputs after event-ID alignment. This quantity answers a complementary question: whether two models with different representations are learning similar event-by-event corrections even when their final CTR values are close.
+The run comparison additionally computes pairwise Pearson correlations between model blind-test outputs after event-ID alignment. This quantity answers a complementary question: whether two models with different representations are learning similar event-by-event corrections even when their final CTR values are close.
