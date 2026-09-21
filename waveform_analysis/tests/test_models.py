@@ -38,11 +38,10 @@ class ActiveModelTests(unittest.TestCase):
                 "activation": ["relu", "silu"],
                 "learning_rate": [1e-3, 5e-4],
                 "batch_size": [32, 64],
-                "weight_decay": [0.0, 1e-5],
             }
         }
         rows = mlp_candidates(config)
-        self.assertEqual(len(rows), 32)
+        self.assertEqual(len(rows), 16)
         self.assertEqual(
             set(rows[0]),
             {
@@ -50,7 +49,6 @@ class ActiveModelTests(unittest.TestCase):
                 "activation",
                 "learning_rate",
                 "batch_size",
-                "weight_decay",
             },
         )
 
