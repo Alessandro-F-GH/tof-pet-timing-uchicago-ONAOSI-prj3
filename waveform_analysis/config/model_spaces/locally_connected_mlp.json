@@ -35,8 +35,7 @@
     "early_stopping_fraction": 0.2,
     "gradient_early_stop": true,
     "gradient_min_norm": 0.00001,
-    "gradient_patience": 4,
-    "momentum": 0.9
+    "gradient_patience": 4
   },
   "verbose": false
 }
