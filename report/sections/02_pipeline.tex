@@ -1,12 +1,12 @@
 \section{Waveform analysis framework}
 
-This section summarizes the analysis path shared by the two final machine-learning models. The objective is to keep event definition, preprocessing, timing target, waveform windows, and blind-test evaluation fixed so that the main experimental variable is the model representation.
+This section summarizes the analysis path shared by the waveform-based machine-learning models. The objective is to keep event definition, preprocessing, timing target, waveform windows, and blind-test evaluation fixed so that the main experimental variable is the model representation.
 
 \subsection{Data partitioning}
 
 The ROOT event population is split before any fitted event selection into a permanent development population and a permanent blind-test population. In the current default profile, \(40\%\) of the events are assigned to the blind-test split and \(60\%\) to development. The development population is then split with a validation fraction of \(20\%\), corresponding approximately to \(48\%\) training, \(12\%\) validation, and \(40\%\) blind test of the original population.
 
-Fitted selection quantities are determined without using the blind-test population. The same persisted split identities are reused by the MLP and Onishi model studies, and the run-comparison utility checks the blind event identities before model-output correlations are computed.
+Fitted selection quantities are determined without using the blind-test population. The same persisted split identities are reused by the dense MLP, locally connected MLP, and Onishi model studies, and the run-comparison utility checks the blind event identities before model-output correlations are computed.
 
 \reportfigure
     {figures/data_split.pdf}
@@ -74,14 +74,14 @@ For final \texttt{model\_study} runs, the LED threshold offset above baseline is
 
 \subsection{Machine-learning input and waveform windows}
 
-The two detector waveforms are synchronized to the selected LED reference and materialized on the native sampling grid. A temporal mask derived from the training split removes samples that are effectively constant in both detector channels. The mask is shared between the models for a given dataset and is then applied unchanged to validation and blind-test inputs.
+The two detector waveforms are synchronized to the selected LED reference and materialized on the native sampling grid. For the dense MLP and Onishi CNN, a temporal mask derived from the training split removes samples that are effectively constant in both detector channels and is then applied unchanged to validation and blind-test inputs. The locally connected MLP intentionally bypasses this mask and retains the complete configured temporal grid so every receptive field contains consecutive native samples.
 
 The final profile defines two input windows:
 \begin{align}
     \text{Onishi window:}\quad &[-1.5,\ 2.0]\ \mathrm{ns},\\
     \text{wide window:}\quad &[-2.0,\ 30.0]\ \mathrm{ns}.
 \end{align}
-The default temporal subsampling is one, so the retained samples remain on the native acquisition grid apart from the train-derived constant-sample mask.
+The default temporal subsampling is one. Dense-MLP and Onishi inputs remain on the native acquisition grid apart from the train-derived constant-sample mask, while the locally connected model keeps the full configured grid.
 
 \reportfigure
     {figures/ml_input_and_sample_mask.pdf}
@@ -90,13 +90,13 @@ The default temporal subsampling is one, so the retained samples remain on the n
 
 \subsection{Final model-development protocol}
 
-The two final models deliberately use different development policies because one is a proposed tunable model and the other is a fixed literature reference.
+The final models use two development policies: the dense and locally connected MLPs are tunable models, while the Onishi CNN is a fixed literature reference.
 
-For the antisymmetric MLP, candidate hyperparameters are fitted using the training split only when more than one candidate is configured. An internal holdout carved from the training split is used for epoch-level early stopping, while the externally persisted validation split ranks the candidate configurations by validation CTR. After selection, the search checkpoint is discarded and a fresh final model is fitted on the complete development population. During this final fit, the MLP reserves the configured internal holdout from the development population for early stopping. If only one candidate is configured, validation-based model selection is skipped and the final development fit is performed directly.
+For the antisymmetric MLP variants, candidate hyperparameters are fitted using the training split only when more than one candidate is configured. An internal holdout carved from the training split is used for epoch-level early stopping, while the externally persisted validation split ranks the candidate configurations by validation CTR. After selection, the search checkpoint is discarded and a fresh final model is fitted on the complete development population. During this final fit, the MLP reserves the configured internal holdout from the development population for early stopping. If only one candidate is configured, validation-based model selection is skipped and the final development fit is performed directly.
 
-The Onishi CNN exposes one fixed reference configuration and therefore performs no validation-based hyperparameter selection. Its final reference network is fitted once on the complete development population, i.e. training plus validation, and is then evaluated on the blind-test split. The temporal sample mask remains derived from the training split only.
+The Onishi CNN exposes one fixed reference configuration and therefore performs no validation-based hyperparameter selection. Its final reference network is fitted once on the complete development population, i.e. training plus validation, and is then evaluated on the blind-test split. For models that use the temporal sample mask, it remains derived from the training split only.
 
-This asymmetry in the fitting protocol must be stated explicitly when interpreting the model comparison: the Onishi model is treated as a fixed reference architecture, while the MLP uses validation only for hyperparameter selection when selection is actually required. Both final models are fitted on the development population before blind-test evaluation.
+This asymmetry in the fitting protocol must be stated explicitly when interpreting the model comparison: the Onishi model is treated as a fixed reference architecture, while the MLP variants use validation only for hyperparameter selection when selection is actually required. Both final models are fitted on the development population before blind-test evaluation.
 
 \subsection{CTR estimator}\label{sec:ctr-estimator}
 
