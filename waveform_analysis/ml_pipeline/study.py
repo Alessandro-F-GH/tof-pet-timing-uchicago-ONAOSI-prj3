@@ -742,22 +742,13 @@ def _evaluate_final_datasets(
                     "test_row": test_row,
                 }
 
-            if fixed_reference:
-                logger.info(
-                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
-                    name,
-                    LABELS.get(model_name, model_name),
-                    float(test_row["ctr_ps"]),
-                    float(test_row["ctr_uncertainty_ps"]),
-                )
-            else:
-                logger.info(
-                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
-                    name,
-                    LABELS.get(model_name, model_name),
-                    float(test_row["ctr_ps"]),
-                    float(test_row["ctr_uncertainty_ps"]),
-                )
+            logger.info(
+                "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
+                name,
+                LABELS.get(model_name, model_name),
+                float(test_row["ctr_ps"]),
+                float(test_row["ctr_uncertainty_ps"]),
+            )
             if search is not None:
                 search.best.artifact = None
             del fitted
@@ -1108,17 +1099,6 @@ def _run_threshold_scan_experiment(
     )
     roots = discover_root_files(config)
     target_voltage = float(config["experiment"]["voltage_V"])
-    roots = [
-        path
-        for path in roots
-        if np.isfinite(voltage_from_name(path.stem))
-        and np.isclose(
-            voltage_from_name(path.stem),
-            target_voltage,
-            rtol=0.0,
-            atol=1e-9,
-        )
-    ]
     if not roots:
         raise FileNotFoundError(
             f"No ROOT file matched threshold-scan voltage {target_voltage:g} V"
