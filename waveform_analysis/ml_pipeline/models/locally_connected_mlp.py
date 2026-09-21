@@ -42,18 +42,24 @@ class LocallyConnected1D(nn.Module):
                 "overlap_samples must satisfy 0 <= overlap_samples < receptive_field_samples"
             )
         stride = width - overlap
-        fields = 1 + (input_samples - width) // stride
-        if fields < 1:
-            raise ValueError("Locally connected layer has no valid receptive fields")
+        starts = list(range(0, input_samples - width + 1, stride))
+        final_start = input_samples - width
+        if starts[-1] != final_start:
+            starts.append(final_start)
 
         self.input_samples = input_samples
         self.receptive_field_samples = width
         self.overlap_samples = overlap
         self.stride_samples = stride
-        self.n_fields = fields
+        self.register_buffer(
+            "field_starts",
+            torch.tensor(starts, dtype=torch.long),
+            persistent=False,
+        )
+        self.n_fields = len(starts)
 
-        self.weight = nn.Parameter(torch.empty(fields, width))
-        self.bias = nn.Parameter(torch.empty(fields))
+        self.weight = nn.Parameter(torch.empty(self.n_fields, width))
+        self.bias = nn.Parameter(torch.empty(self.n_fields))
         nn.init.kaiming_uniform_(self.weight, a=5**0.5)
         bound = 1.0 / width**0.5
         nn.init.uniform_(self.bias, -bound, bound)
@@ -64,10 +70,12 @@ class LocallyConnected1D(nn.Module):
                 "LocallyConnected1D expects [event, time] with "
                 f"{self.input_samples} samples, got {tuple(values.shape)}"
             )
-        windows = values.unfold(
-            dimension=1,
-            size=self.receptive_field_samples,
-            step=self.stride_samples,
+        windows = torch.stack(
+            [
+                values[:, int(start) : int(start) + self.receptive_field_samples]
+                for start in self.field_starts
+            ],
+            dim=1,
         )
         return (windows * self.weight.unsqueeze(0)).sum(dim=-1) + self.bias
 
@@ -165,7 +173,11 @@ def fit(
     width = int(params["receptive_field_samples"])
     overlap = int(params["overlap_samples"])
     stride = width - overlap
-    fields = 1 + (int(train_x.shape[-1]) - width) // stride
+    starts = list(range(0, int(train_x.shape[-1]) - width + 1, stride))
+    final_start = int(train_x.shape[-1]) - width
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    fields = len(starts)
     return fit_mlp(
         model_name="locally_connected_mlp",
         model_factory=SharedLocallyConnectedScorer,
@@ -194,7 +206,7 @@ def fit(
                 "local_nodes": fields,
                 "nodes_per_receptive_field": 1,
                 "weight_sharing": False,
-                "padding": "valid",
+                "edge_policy": "final receptive field anchored to waveform end when needed",
             },
         },
     )
