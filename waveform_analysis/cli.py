@@ -20,6 +20,15 @@ from .ml_pipeline.study import run_study
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+def _config_path(path: str | Path) -> Path:
+    """Resolve CLI config paths from either the working directory or waveform_analysis/."""
+    candidate = Path(path).expanduser()
+    if candidate.is_file():
+        return candidate
+    project_candidate = PROJECT_ROOT / candidate
+    return project_candidate if project_candidate.is_file() else candidate
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m waveform_analysis.cli", description="TOF-PET waveform pipeline: single-mode selection, native-time preprocessing, holdout ML")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -104,7 +113,7 @@ def main() -> None:
             print(path)
         return
     if args.command == "dataset-table":
-        config = load_config(args.config, PROJECT_ROOT)
+        config = load_config(_config_path(args.config), PROJECT_ROOT)
         print(
             make_dataset_latex_table(
                 config,
@@ -114,7 +123,7 @@ def main() -> None:
             )
         )
         return
-    config = load_config(args.config, PROJECT_ROOT)
+    config = load_config(_config_path(args.config), PROJECT_ROOT)
     if args.command == "run" and args.remake_plots:
         run_dir = Path(config["experiment"]["output_dir"])
         for path in rebuild_experiment_plots(run_dir):
