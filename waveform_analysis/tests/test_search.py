@@ -1,6 +1,7 @@
 import unittest
 
 from waveform_analysis.ml_pipeline.search import select_candidate
+from waveform_analysis.ml_pipeline.train import search_model
 
 
 class SearchTests(unittest.TestCase):
@@ -9,6 +10,25 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(result.best.candidate,2); self.assertEqual(len(result.candidates),3)
         self.assertIsNotNone(result.best.artifact)
         self.assertEqual(sum(row.artifact is not None for row in result.candidates),1)
+
+
+    def test_search_model_rejects_single_candidate(self):
+        class SingleCandidateSpec:
+            name = "single"
+
+            @staticmethod
+            def candidates(_config):
+                return [{"learning_rate": 1e-3}]
+
+        with self.assertRaisesRegex(ValueError, "at least two candidates"):
+            search_model(
+                SingleCandidateSpec(),
+                {},
+                {},
+                None,
+                "timing_to_timing",
+                seed=1,
+            )
 
     def test_failed_candidate_does_not_abort_search(self):
         def fit(candidate,_seed):
