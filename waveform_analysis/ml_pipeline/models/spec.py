@@ -21,3 +21,4 @@ class ModelSpec:
     predict: ModelPredict
     save: ModelSave
     explain: ModelExplain | None = None
+    preserve_temporal_grid: bool = False
