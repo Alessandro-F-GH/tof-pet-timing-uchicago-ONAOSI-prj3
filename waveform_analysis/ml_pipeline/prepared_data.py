@@ -192,15 +192,30 @@ def _ensure_diagnostics(preprocessed, config, manifest):
         )
 
 
-def prepare_ml_dataset(preprocessed, config, *, rebuild, logger, log_summary: bool = True, write_diagnostics: bool = True):
+def prepare_ml_dataset(
+    preprocessed,
+    config,
+    *,
+    rebuild,
+    logger,
+    log_summary: bool = True,
+    write_diagnostics: bool = True,
+    rebuild_stale: bool = False,
+):
     base = dataset_cache_dir(config, "prepared_dir", preprocessed.manifest["source"])
     if base.is_dir() and not rebuild:
         manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("fingerprint") != dataset_fingerprint(preprocessed, config):
-            raise ValueError(f"Prepared dataset cache is stale: {base}")
-        if write_diagnostics:
-            _ensure_diagnostics(preprocessed, config, manifest)
-        return load_prepared_dataset(base)
+            if rebuild_stale:
+                if logger is not None:
+                    logger.info("Refreshing stale prepared dataset cache | %s", base)
+                rebuild = True
+            else:
+                raise ValueError(f"Prepared dataset cache is stale: {base}")
+        else:
+            if write_diagnostics:
+                _ensure_diagnostics(preprocessed, config, manifest)
+            return load_prepared_dataset(base)
     if base.exists():
         shutil.rmtree(base)
     base.mkdir(parents=True)
