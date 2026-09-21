@@ -107,6 +107,7 @@ def fit_mlp(
     seed,
     config,
     metadata_extra: dict[str, Any],
+    model_factory_kwargs: dict[str, Any] | None = None,
 ):
     training = config.get("training", {})
     verbose = bool(config.get("verbose", False))
@@ -148,6 +149,7 @@ def fit_mlp(
         int(train_x.shape[-1]),
         architecture,
         activation,
+        **dict(model_factory_kwargs or {}),
     ).to(device)
     optimizer = torch.optim.SGD(
         model.parameters(),
