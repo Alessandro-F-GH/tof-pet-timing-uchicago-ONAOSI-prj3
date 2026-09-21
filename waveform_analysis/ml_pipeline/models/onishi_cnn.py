@@ -107,8 +107,6 @@ def fit(
     *,
     seed,
     config,
-    validation_x=None,
-    validation_target=None,
 ):
     training_seed = _configure_reproducibility(seed)
     training = config.get("training", {})

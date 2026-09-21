@@ -2,7 +2,10 @@
   "model": "mlp",
   "parameters": {
     "architecture": [
-      [128, 64]
+      [
+        128,
+        64
+      ]
     ],
     "activation": [
       "silu"
@@ -13,14 +16,6 @@
     ],
     "batch_size": [
       128
-    ],
-    "weight_decay": [
-      0
-    ],
-    "input_group_lasso": [
-      0,
-      0.000001,
-      0.00001
     ]
   },
   "training": {

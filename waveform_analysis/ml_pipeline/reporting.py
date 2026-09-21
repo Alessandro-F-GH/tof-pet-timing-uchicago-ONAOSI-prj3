@@ -9,7 +9,7 @@ import numpy as np
 
 from utils_fit import fit_ctr_ps
 
-from .common import voltage_from_name
+from .common import load_artifact_array, voltage_from_name
 from .dataset import load_prepared_dataset
 from .plot_style import (
     DETECTOR_STYLES,
@@ -49,13 +49,11 @@ def _voltage(row):
 
 
 def _residual(run, dataset, method, stage="test"):
-    path = run / "artifacts" / dataset / f"{method}_{stage}_residuals_ps.npy"
-    return np.asarray(np.load(path), dtype=float) if path.is_file() else None
+    return load_artifact_array(run, dataset, method, stage, "residuals_ps")
 
 
 def _model_output(run, dataset, model, stage):
-    path = run / "artifacts" / dataset / f"{model}_{stage}_model_output_ps.npy"
-    return np.asarray(np.load(path), dtype=float) if path.is_file() else None
+    return load_artifact_array(run, dataset, model, stage, "model_output_ps")
 
 
 def _robust_display_range(samples, *, quantiles=(0.02, 0.98), margin_fraction=0.06):

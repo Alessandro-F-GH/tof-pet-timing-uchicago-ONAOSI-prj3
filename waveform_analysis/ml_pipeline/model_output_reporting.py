@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .common import load_artifact_array
 from .plot_style import (
     DOUBLE_COLUMN,
     LABELS,
@@ -18,13 +19,11 @@ from .plot_style import (
 
 
 def _model_output(run: Path, dataset: str, model: str, stage: str) -> np.ndarray | None:
-    path = run / "artifacts" / dataset / f"{model}_{stage}_model_output_ps.npy"
-    return np.asarray(np.load(path), dtype=np.float64).reshape(-1) if path.is_file() else None
+    return load_artifact_array(run, dataset, model, stage, "model_output_ps")
 
 
 def _residual(run: Path, dataset: str, model: str, stage: str) -> np.ndarray | None:
-    path = run / "artifacts" / dataset / f"{model}_{stage}_residuals_ps.npy"
-    return np.asarray(np.load(path), dtype=np.float64).reshape(-1) if path.is_file() else None
+    return load_artifact_array(run, dataset, model, stage, "residuals_ps")
 
 
 def _target_from_artifacts(

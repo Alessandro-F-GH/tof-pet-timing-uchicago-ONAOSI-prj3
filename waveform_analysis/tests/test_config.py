@@ -10,28 +10,16 @@ class ConfigTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         self.config = load_config(root / "config" / "experiments" / "timing.json")
 
-    def test_default_experiment_has_no_training_target_filter(self):
-        self.assertNotIn("ml_training", self.config)
-
-    def test_integrated_analyses_are_removed(self):
-        self.assertNotIn("analyses", self.config)
-
-    def test_obsolete_ml_training_is_rejected(self):
-        stale = copy.deepcopy(self.config)
-        stale["ml_training"] = {"target_abs_max_ps": [100, 200]}
-        with self.assertRaisesRegex(ConfigError, "Obsolete configuration"):
-            validate_config(stale)
-
     def test_removed_min_events_is_rejected(self):
         bad = copy.deepcopy(self.config)
         bad["fit"]["min_events"] = 100
-        with self.assertRaisesRegex(ConfigError, "Unknown/obsolete fit option"):
+        with self.assertRaisesRegex(ConfigError, "Unknown fit option"):
             validate_config(bad)
 
     def test_removed_bin_width_is_rejected(self):
         bad = copy.deepcopy(self.config)
         bad["fit"]["bin_width_ps"] = 5.0
-        with self.assertRaisesRegex(ConfigError, "Unknown/obsolete fit option"):
+        with self.assertRaisesRegex(ConfigError, "Unknown fit option"):
             validate_config(bad)
 
     def test_validation_fraction_above_half_is_valid(self):
@@ -93,11 +81,10 @@ class ConfigTests(unittest.TestCase):
                 config["ml_input"]["window_ns"],
                 config["ml_input"]["windows"]["wide_window"],
             )
-
-    def test_obsolete_analyses_section_is_rejected(self):
+    def test_unknown_top_level_section_is_rejected(self):
         bad = copy.deepcopy(self.config)
-        bad["analyses"] = {"led_threshold_scan": {"enabled": True}}
-        with self.assertRaisesRegex(ConfigError, "Obsolete configuration"):
+        bad["extra_section"] = {}
+        with self.assertRaisesRegex(ConfigError, "Unknown configuration section"):
             validate_config(bad)
 
 

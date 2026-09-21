@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import csv
 import json
 import shutil
 from pathlib import Path
 from typing import Any
 
 from .analyses import plot_threshold_scan
+from .common import read_csv
 from .latex_tables import make_latex_tables
 from .model_output_reporting import make_model_output_reports
 from .plot_style import LABELS
@@ -16,13 +16,6 @@ from .reporting import make_plots, plot_model_study_windows
 def _reset(directory: Path) -> None:
     if directory.is_dir():
         shutil.rmtree(directory)
-
-
-def _read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        return list(csv.DictReader(stream))
 
 
 def rebuild_study_plots(
@@ -114,7 +107,7 @@ def rebuild_experiment_plots(
     if experiment_type == "threshold_scan":
         destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
         _reset(destination / "plots")
-        rows = _read_csv(run / "csv" / "threshold_scan.csv")
+        rows = read_csv(run / "csv" / "threshold_scan.csv")
         if not rows:
             raise FileNotFoundError(
                 f"Threshold-scan results not found: {run / 'csv' / 'threshold_scan.csv'}"

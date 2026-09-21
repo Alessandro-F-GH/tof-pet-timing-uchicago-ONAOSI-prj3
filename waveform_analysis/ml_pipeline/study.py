@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from .analyses import run_blind_led_threshold_scan
-from .common import canonical_hash, read_json, voltage_from_name
+from .common import canonical_hash, read_csv, read_json, voltage_from_name
 from .concatenate import concatenate_prepared_datasets
 from .config import discover_root_files, load_config, public_config
 from .data import preprocess_selected
@@ -57,15 +57,6 @@ def _logger(run_dir: Path):
         logger.addHandler(handler)
     return logger
 
-
-
-def _csv_rows(path: Path) -> list[dict[str, str]]:
-    import csv
-
-    if not path.is_file():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        return list(csv.DictReader(stream))
 
 
 def _assert_resume_config_matches(config: dict[str, Any], run_dir: Path) -> None:
@@ -120,7 +111,7 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
     if not isinstance(datasets, dict) or len(datasets) != expected_datasets:
         return False
 
-    rows = _csv_rows(results_path)
+    rows = read_csv(results_path)
     if not rows:
         return False
     available = {
@@ -751,22 +742,13 @@ def _evaluate_final_datasets(
                     "test_row": test_row,
                 }
 
-            if fixed_reference:
-                logger.info(
-                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
-                    name,
-                    LABELS.get(model_name, model_name),
-                    float(test_row["ctr_ps"]),
-                    float(test_row["ctr_uncertainty_ps"]),
-                )
-            else:
-                logger.info(
-                    "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
-                    name,
-                    LABELS.get(model_name, model_name),
-                    float(test_row["ctr_ps"]),
-                    float(test_row["ctr_uncertainty_ps"]),
-                )
+            logger.info(
+                "Result | %s | %s | blind CTR=%.3f ± %.3f ps",
+                name,
+                LABELS.get(model_name, model_name),
+                float(test_row["ctr_ps"]),
+                float(test_row["ctr_uncertainty_ps"]),
+            )
             if search is not None:
                 search.best.artifact = None
             del fitted
@@ -1117,17 +1099,6 @@ def _run_threshold_scan_experiment(
     )
     roots = discover_root_files(config)
     target_voltage = float(config["experiment"]["voltage_V"])
-    roots = [
-        path
-        for path in roots
-        if np.isfinite(voltage_from_name(path.stem))
-        and np.isclose(
-            voltage_from_name(path.stem),
-            target_voltage,
-            rtol=0.0,
-            atol=1e-9,
-        )
-    ]
     if not roots:
         raise FileNotFoundError(
             f"No ROOT file matched threshold-scan voltage {target_voltage:g} V"

@@ -29,8 +29,6 @@ def fit(
     *,
     seed,
     config,
-    validation_x=None,
-    validation_target=None,
 ):
     return fit_mlp(
         model_name="mlp",

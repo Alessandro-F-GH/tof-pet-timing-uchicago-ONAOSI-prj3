@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import csv
 import gc
 from pathlib import Path
 from typing import Any
@@ -10,7 +9,7 @@ import numpy as np
 
 from utils_fit import fit_ctr_ps
 
-from .common import canonical_json, voltage_from_name
+from .common import canonical_json, read_csv, voltage_from_name, write_csv
 from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .plot_style import (
@@ -25,24 +24,6 @@ from .sample_mask import dataset_training_sample_mask
 from .splits import semantic_seed
 from .train import predict_indices, search_model, selected_model
 from .view import calibrated_led, corrected_timing_residual, model_target
-
-
-def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        return
-    fields = list(dict.fromkeys(key for row in rows for key in row))
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        return list(csv.DictReader(stream))
 
 
 def _threshold_label(value: float) -> str:
@@ -246,8 +227,8 @@ def run_blind_led_threshold_scan(
 
     csv_path = output_dir / "csv" / "threshold_scan.csv"
     selection_csv = output_dir / "csv" / "hyperparameter_selection.csv"
-    rows = _read_csv(csv_path) if resume else []
-    selection_rows = _read_csv(selection_csv) if resume else []
+    rows = read_csv(csv_path) if resume else []
+    selection_rows = read_csv(selection_csv) if resume else []
     completed = {
         (str(row.get("dataset")), float(row.get("threshold_mV")))
         for row in rows
@@ -445,8 +426,8 @@ def run_blind_led_threshold_scan(
                         "paired_bootstrap_successful": paired_successful,
                     }
                 )
-                _write_csv(selection_csv, selection_rows)
-                _write_csv(csv_path, rows)
+                write_csv(selection_csv, selection_rows)
+                write_csv(csv_path, rows)
                 search.best.artifact = None
                 del fitted
                 gc.collect()
@@ -476,8 +457,8 @@ def run_blind_led_threshold_scan(
             float(row.get("threshold_mV", 0.0)),
         )
     )
-    _write_csv(csv_path, rows)
-    _write_csv(selection_csv, selection_rows)
+    write_csv(csv_path, rows)
+    write_csv(selection_csv, selection_rows)
     plot_threshold_scan(output_dir, rows)
     return {
         "experiment_type": "threshold_scan",
