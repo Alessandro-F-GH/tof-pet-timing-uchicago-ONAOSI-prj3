@@ -17,6 +17,8 @@ def plot_missing_led_example(
     family: str,
     event_row: int,
     threshold_mV: float,
+    *,
+    baseline_window_ns,
     directory: Path,
 ) -> Path:
     """Plot one event that lacks an LED crossing on at least one detector."""
@@ -28,6 +30,7 @@ def plot_missing_led_example(
         family,
         np.asarray([event_row], dtype=np.int64),
         np.asarray([threshold_mV], dtype=np.float64),
+        baseline_window_ns=baseline_window_ns,
     )[0, :, 0]
     event_index = int(np.asarray(data.event_index)[event_row])
     fig, axes = plt.subplots(2, 1, figsize=(9.0, 6.2), squeeze=False)
@@ -39,7 +42,20 @@ def plot_missing_led_example(
         dt_ns = float(intervals[event_row, detector]) * 1e9
         time_ns = (np.arange(signal.size, dtype=np.float64) - a) * dt_ns
         ax.plot(time_ns, signal)
-        ax.axhline(float(threshold_mV), linestyle="--", label=f"LED {threshold_mV:g} mV")
+        dt_ns = float(intervals[event_row, detector]) * 1e9
+        before_ns = float((data.manifest.get("materialized_window_ns") or {})["before"])
+        trigger_index = int(np.ceil(before_ns / dt_ns))
+        start = max(0, trigger_index + int(np.floor(float(baseline_window_ns[0]) / dt_ns)))
+        stop = min(signal.size, trigger_index + int(np.ceil(float(baseline_window_ns[1]) / dt_ns)) + 1)
+        baseline_values = signal[start:stop]
+        baseline_values = baseline_values[np.isfinite(baseline_values)]
+        baseline = float(np.mean(baseline_values)) if baseline_values.size else np.nan
+        effective_threshold = baseline + float(threshold_mV)
+        ax.axhline(
+            effective_threshold,
+            linestyle="--",
+            label=f"LED baseline + {threshold_mV:g} mV",
+        )
         if 0 <= a < b < signal.size:
             ax.axvspan(0.0, (b - a) * dt_ns, alpha=0.12, label="LED search interval")
         status = "crossing found" if np.isfinite(crossings[detector]) else "NO LED CROSSING"
@@ -62,13 +78,20 @@ def plot_ml_window_exceeds_example(
     event_row: int,
     threshold_mV: float,
     window_ns: dict,
+    *,
+    baseline_window_ns,
     directory: Path,
 ) -> Path:
     """Plot one source waveform whose requested ML window exceeds stored samples."""
     import matplotlib.pyplot as plt
 
     waves, _starts, intervals, _rising_start, _rising_stop = family_arrays(data, family)
-    anchor_index = anchor_grid(data, family, float(threshold_mV))
+    anchor_index = anchor_grid(
+        data,
+        family,
+        float(threshold_mV),
+        baseline_window_ns=baseline_window_ns,
+    )
     event_index = int(np.asarray(data.event_index)[event_row])
     requested_start = float(window_ns["start"])
     requested_end = float(window_ns["end"])
