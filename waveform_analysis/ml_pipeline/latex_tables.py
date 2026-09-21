@@ -6,14 +6,13 @@ from typing import Any
 
 import numpy as np
 
+from .common import dataset_cache_dir, read_csv, read_json, voltage_from_name
+from .config import discover_root_files
 from .plot_style import LABELS
 
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        return []
-    with path.open(encoding="utf-8", newline="") as stream:
-        return list(csv.DictReader(stream))
+    return read_csv(path)
 
 
 def _float(value, default=float("nan")) -> float:
@@ -94,6 +93,121 @@ def _write_table(
     )
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+
+def _selection_stage_total(rows: list[dict[str, Any]], criterion: str) -> int:
+    matches = [row for row in rows if str(row.get("criterion", "")) == criterion]
+    if not matches:
+        raise ValueError(f"Selection summary has no {criterion!r} stage")
+    total = 0
+    for row in matches:
+        try:
+            total += int(row["remaining"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid remaining count for selection stage {criterion!r}"
+            ) from exc
+    return total
+
+
+def selection_dataset_rows(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read dataset counts from existing frozen selection caches only.
+
+    This function never opens ROOT data and never creates or rebuilds preprocessing
+    artifacts. Source ROOT paths are used only to identify the corresponding cache
+    directories through the repository's standard cache helper.
+    """
+    roots = discover_root_files(config)
+    if not roots:
+        raise FileNotFoundError("No source ROOT files match the configured data selection")
+
+    rows: list[dict[str, Any]] = []
+    for root in roots:
+        cache = dataset_cache_dir(config, "selection_store_dir", root)
+        manifest_path = cache / "manifest.json"
+        summary_path = cache / "selection_summary.csv"
+        if not manifest_path.is_file() or not summary_path.is_file():
+            raise FileNotFoundError(
+                "Missing existing selection cache for "
+                f"{root.name}: expected {manifest_path} and {summary_path}. "
+                "Dataset-table export never rebuilds preprocessing."
+            )
+
+        manifest = read_json(manifest_path)
+        summary = read_csv(summary_path)
+        if not summary:
+            raise ValueError(f"Empty selection summary: {summary_path}")
+
+        n_raw = int(manifest["n_raw"])
+        n_selected = int(manifest["n_selected"])
+        n_photopeak = _selection_stage_total(summary, "photopeak")
+
+        criteria = list(
+            dict.fromkeys(str(row.get("criterion", "")) for row in summary)
+        )
+        final_criterion = next(
+            (criterion for criterion in reversed(criteria) if criterion),
+            None,
+        )
+        if final_criterion is None:
+            raise ValueError(f"Selection summary has no criteria: {summary_path}")
+        summary_selected = _selection_stage_total(summary, final_criterion)
+        if summary_selected != n_selected:
+            raise ValueError(
+                f"Selection cache is inconsistent for {root.name}: "
+                f"manifest n_selected={n_selected}, "
+                f"{final_criterion} summary total={summary_selected}"
+            )
+
+        voltage = float(voltage_from_name(root))
+        if not np.isfinite(voltage):
+            raise ValueError(f"Cannot determine bias voltage from dataset name {root.name!r}")
+
+        rows.append(
+            {
+                "dataset": root.stem,
+                "voltage_V": voltage,
+                "collected_events": n_raw,
+                "photopeak_events": n_photopeak,
+                "selected_events": n_selected,
+            }
+        )
+
+    rows.sort(key=lambda row: (float(row["voltage_V"]), str(row["dataset"])))
+    return rows
+
+
+def make_dataset_latex_table(
+    config: dict[str, Any],
+    output_file: str | Path,
+    *,
+    caption: str,
+    label: str,
+) -> Path:
+    """Export one report-ready dataset table from existing selection caches."""
+    body = [
+        [
+            _number(row["voltage_V"], 1),
+            str(int(row["collected_events"])),
+            str(int(row["photopeak_events"])),
+            str(int(row["selected_events"])),
+        ]
+        for row in selection_dataset_rows(config)
+    ]
+    return _write_table(
+        Path(output_file).resolve(),
+        caption=caption,
+        label=label,
+        columns=[
+            "Bias voltage [V]",
+            "Collected events",
+            "Photopeak events",
+            "Final selected events",
+        ],
+        rows=body,
+        alignment="rrrr",
+    )
 
 
 def _final_ctr_table(run: Path, output: Path) -> Path | None:
