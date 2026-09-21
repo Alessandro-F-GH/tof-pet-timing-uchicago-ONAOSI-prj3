@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
 
 from waveform_analysis.ml_pipeline.dataset import load_prepared_dataset
 from waveform_analysis.ml_pipeline.models import get_model, model_names
+from waveform_analysis.ml_pipeline.models.locally_connected_mlp import SharedLocallyConnectedScorer
 from waveform_analysis.ml_pipeline.models.mlp import MLPArtifact, SharedScorerMLP
 from waveform_analysis.ml_pipeline.models.onishi_cnn import OnishiCNNArtifact, OnishiPairedCNN
 from waveform_analysis.ml_pipeline.reporting import LABELS, MODEL_ORDER
@@ -179,13 +180,24 @@ def _load_model(run: Path, dataset: str, model_name: str, manifest: dict[str, An
         else int(training_metadata["input_samples_after_mask"])
     )
 
-    if model_name == "mlp":
+    if model_name in {"mlp", "locally_connected_mlp"}:
         parameters = dict(metadata.get("parameters") or {})
         architecture = parameters.get("architecture", training_metadata.get("architecture"))
         activation = parameters.get("activation", training_metadata.get("activation", "silu"))
         if architecture is None:
             raise ValueError(f"{model_name}: missing saved MLP architecture")
-        model = SharedScorerMLP(input_samples, architecture, str(activation))
+        if model_name == "locally_connected_mlp":
+            width = int(parameters["receptive_field_samples"])
+            overlap = int(parameters["overlap_samples"])
+            model = SharedLocallyConnectedScorer(
+                input_samples,
+                architecture,
+                str(activation),
+                receptive_field_samples=width,
+                overlap_samples=overlap,
+            )
+        else:
+            model = SharedScorerMLP(input_samples, architecture, str(activation))
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
         artifact = MLPArtifact(
