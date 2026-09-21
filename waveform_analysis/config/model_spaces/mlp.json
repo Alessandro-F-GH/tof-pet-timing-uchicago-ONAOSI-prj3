@@ -25,7 +25,6 @@
     "min_delta": 0.01,
     "gradient_clip_norm": 10,
     "early_stopping_fraction": 0.2,
-    "random_restarts": 3,
     "gradient_early_stop": true,
     "gradient_min_norm": 0.00001,
     "gradient_patience": 4
