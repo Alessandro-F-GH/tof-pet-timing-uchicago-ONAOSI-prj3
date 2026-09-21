@@ -92,7 +92,8 @@ def validate_config(config):
     missing = sorted(required - set(config))
     if missing:
         raise ConfigError(f"Missing configuration section(s): {missing}")
-    extra = sorted(set(config) - required)
+    allowed = required | {"reporting"}
+    extra = sorted(set(config) - allowed)
     if extra:
         raise ConfigError(f"Unknown configuration section(s): {extra}")
     mode = str(config["mode"])
