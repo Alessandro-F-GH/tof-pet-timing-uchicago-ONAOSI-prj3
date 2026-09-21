@@ -52,6 +52,29 @@ class ActiveModelTests(unittest.TestCase):
             },
         )
 
+    def test_mlp_uses_nesterov_sgd_configuration(self):
+        config = {
+            "parameters": {
+                "architecture": [[8]],
+                "activation": ["silu"],
+                "learning_rate": [1e-3],
+                "batch_size": [4],
+            },
+            "training": {
+                "epochs": 1,
+                "patience": 1,
+                "min_delta": 0.0,
+                "early_stopping_fraction": 0.25,
+                "gradient_clip_norm": 10.0,
+                "momentum": 0.9,
+                "gradient_early_stop": False,
+                "gradient_min_norm": 0.0,
+                "gradient_patience": 1,
+                "device": "cpu",
+            },
+        }
+        self.assertEqual(config["training"]["momentum"], 0.9)
+
     def test_onishi_cnn_matches_reference_architecture(self):
         import torch
 
