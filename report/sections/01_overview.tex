@@ -16,12 +16,7 @@ This representation enforces exact detector-exchange antisymmetry while avoiding
 
 The reference model is the paired CNN based on Onishi et al.~\cite{onishi2022}. It processes the two detector waveforms jointly, with the first two-dimensional convolution spanning the detector axis, and predicts one pair-level correction.
 
-The comparison is repeated for two fixed waveform regions defined in the shared analysis profile:
-\begin{itemize}
-    \item the \textbf{Onishi window}, from \SI{-1.5}{ns} to \SI{2.0}{ns};
-    \item the \textbf{wide window}, from \SI{-2.0}{ns} to \SI{30.0}{ns}.
-\end{itemize}
-This separates the model-architecture question from the amount of temporal context provided to the model.
+The comparison is repeated for two fixed waveform regions defined in the shared analysis profile. The \textbf{Onishi window} extends from \SI{-1.5}{ns} to \SI{2.0}{ns}, while the \textbf{wide window} extends from \SI{-2.0}{ns} to \SI{30.0}{ns}. This separates the model-architecture question from the amount of temporal context provided to the model.
 
 The same framework can be applied to the first-stage energy waveform and to the dedicated timing waveform. The two waveform families answer different practical questions: the energy signal may leave more correctable time walk and pulse-shape dependence, whereas the dedicated timing signal can provide a substantially better conventional timing baseline.
 
