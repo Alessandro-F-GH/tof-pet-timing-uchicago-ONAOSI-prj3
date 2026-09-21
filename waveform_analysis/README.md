@@ -63,7 +63,7 @@ The proposed model is `mlp`: one shared dense scorer `g_theta` is applied indepe
 
 This enforces exact detector-swap antisymmetry. A dense model is used intentionally because the waveforms are aligned to the LED crossing and absolute temporal position is physically meaningful; translation equivariance is therefore not treated as a useful prior for the proposed model.
 
-The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. When multiple candidates are configured, each candidate is trained on the training split and ranked by CTR on the validation split. After the parameters are selected, a fresh final MLP is trained on the full development population; the MLP itself reserves its configured internal holdout from that development population for early stopping. If the model space contains only one candidate, validation-based model selection is skipped and the final development fit starts immediately.
+The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. Weight optimization uses stochastic gradient descent with Nesterov momentum (momentum 0.9 by default) and RMSE loss. When multiple candidates are configured, each candidate is trained on the training split and ranked by CTR on the validation split. After the parameters are selected, a fresh final MLP is trained on the full development population; the MLP itself reserves its configured internal holdout from that development population for early stopping. If the model space contains only one candidate, validation-based model selection is skipped and the final development fit starts immediately.
 
 ### Reference model: Onishi CNN
 
