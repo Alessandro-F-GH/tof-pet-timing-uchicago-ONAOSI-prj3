@@ -575,8 +575,13 @@ def _evaluate_final_datasets(
                 announce_finish=False,
             ):
                 if fixed_reference:
+                    logger.info(
+                        "Model selection skipped | %s | %s | fixed single candidate",
+                        name,
+                        LABELS.get(model_name, model_name),
+                    )
                     fixed_log_parameters = {
-                        **dict(spec.candidates(model_config)[0] or {}),
+                        **dict(candidates[0] or {}),
                         "epochs": int((model_config.get("training") or {}).get("epochs", 100)),
                         "lr_decay_epochs": list(
                             (model_config.get("training") or {}).get(
