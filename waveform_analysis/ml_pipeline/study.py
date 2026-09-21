@@ -31,7 +31,7 @@ from .sample_mask import (
 from .splits import semantic_seed
 from .stats import ctr_estimate, format_residual_summary, residual_summary
 from .storage import RunStore
-from .train import fit_fixed_model, predict_indices, save_model, search_model, selected_model
+from .train import fit_development_model, fit_fixed_model, predict_indices, save_model, search_model
 from .view import (
     calibrated_led,
     corrected_timing_residual,
@@ -132,20 +132,20 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
                     (dataset_name, "cfd", "test"),
                 }
             )
-        for model_name in config["models"]:
+        for model_name, model_config in config["models"].items():
             required.update(
                 {
                     (dataset_name, model_name, "train"),
                     (dataset_name, model_name, "test"),
                 }
             )
-            required.add(
-                (
-                    dataset_name,
-                    model_name,
-                    "fixed_configuration" if model_name == "onishi_cnn" else "validation",
-                )
+            candidates = list(get_model(model_name).candidates(model_config))
+            selection_stage = (
+                "fixed_configuration"
+                if model_name == "onishi_cnn" or len(candidates) == 1
+                else "validation"
             )
+            required.add((dataset_name, model_name, selection_stage))
         if not required.issubset(available):
             return False
 
@@ -294,7 +294,7 @@ def _base_manifest(config, concatenate, roots):
         "test_used_for_model_selection": False,
         "model_selection_metric": "validation_ctr_for_tuned_models_only",
         "model_policies": {
-            "mlp": "grid search on validation CTR; selected trained checkpoint used directly without refit",
+            "mlp": "validation CTR selects hyperparameters only when multiple candidates exist; final model is freshly fit on the full development population with an internal early-stopping holdout",
             "onishi_cnn": "fixed Onishi reference configuration; fit on training+validation; no model selection; blind held out",
         },
         "sample_mask_policy": {
@@ -308,7 +308,7 @@ def _base_manifest(config, concatenate, roots):
             "shared_across_models_within_dataset": True,
             "validation_and_test_do_not_define_mask": True,
         },
-        "training_data_policy": {"mlp": "training only", "onishi_cnn": "training plus validation"},
+        "training_data_policy": {"mlp": "final fit on development with internal early-stopping holdout", "onishi_cnn": "development"},
         "ml_target": "delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
@@ -494,8 +494,16 @@ def _evaluate_final_datasets(
 
         for model_name, model_config in config["models"].items():
             label = f"{name} | {LABELS.get(model_name, model_name)}"
+            spec = get_model(model_name)
+            candidates = list(spec.candidates(model_config))
+            if not candidates:
+                raise ValueError(f"{model_name} exposes no candidate configurations")
             fixed_reference = model_name == "onishi_cnn"
-            selection_stage = "fixed_configuration" if fixed_reference else "validation"
+            selection_stage = (
+                "fixed_configuration"
+                if fixed_reference or len(candidates) == 1
+                else "validation"
+            )
             selection_row = existing_row(name, model_name, selection_stage)
             train_row = existing_row(name, model_name, "train")
             test_row_existing = existing_row(name, model_name, "test")
@@ -532,7 +540,7 @@ def _evaluate_final_datasets(
                     "selection_stage": selection_stage,
                     "validation_ctr_ps": (
                         float(selection_row["selection_score"])
-                        if not fixed_reference
+                        if selection_stage == "validation"
                         else float("nan")
                     ),
                     "selected_parameters_json": str(
@@ -566,7 +574,6 @@ def _evaluate_final_datasets(
                 announce_start=False,
                 announce_finish=False,
             ):
-                spec = get_model(model_name)
                 if fixed_reference:
                     fixed_log_parameters = {
                         **dict(spec.candidates(model_config)[0] or {}),
@@ -620,47 +627,99 @@ def _evaluate_final_datasets(
                     )
                     validation_ctr = float("nan")
                 else:
-                    search = prefit_searches.pop((name, model_name), None)
-                    if search is not None:
+                    selection_performed = len(candidates) > 1
+                    if selection_performed:
+                        search = prefit_searches.pop((name, model_name), None)
+                        if search is not None:
+                            logger.info(
+                                "Model selection | %s | %s | reusing saved validation result",
+                                name,
+                                LABELS.get(model_name, model_name),
+                            )
+                        else:
+                            search = search_model(
+                                spec,
+                                model_config,
+                                config,
+                                dataset,
+                                mode,
+                                seed=semantic_seed(seed, name, mode, model_name, "search"),
+                                dataset_name=name,
+                                sample_mask=sample_mask,
+                                logger=logger,
+                            )
+                        selected_parameters = dict(search.best.candidate or {})
+                        validation_ctr = float(search.best.score)
                         logger.info(
-                            "Model selection | %s | %s | reusing saved validation-selected fit",
+                            "Selected | %s | %s | validation CTR=%.3f ps | params=%s",
                             name,
                             LABELS.get(model_name, model_name),
+                            validation_ctr,
+                            json.dumps(selected_parameters, sort_keys=True),
                         )
+                        rows.append(
+                            _selection_row(
+                                name,
+                                voltage,
+                                mode,
+                                model_name,
+                                validation_ctr,
+                                selected_parameters,
+                                "validation_ctr",
+                            )
+                        )
+                        store.save_search(name, model_name, search.as_dict())
+                        search.best.artifact = None
                     else:
-                        search = search_model(
-                            spec,
-                            model_config,
-                            config,
-                            dataset,
-                            mode,
-                            seed=semantic_seed(seed, name, mode, model_name, "search"),
-                            dataset_name=name,
-                            sample_mask=sample_mask,
-                            logger=logger,
+                        selected_parameters = dict(candidates[0] or {})
+                        validation_ctr = float("nan")
+                        logger.info(
+                            "Model selection skipped | %s | %s | single candidate | params=%s",
+                            name,
+                            LABELS.get(model_name, model_name),
+                            json.dumps(selected_parameters, sort_keys=True),
                         )
-                    fitted = selected_model(search)
-                    selected_parameters = dict(search.best.candidate or {})
-                    validation_ctr = float(search.best.score)
+                        rows.append(
+                            {
+                                **_fixed_configuration_row(
+                                    name,
+                                    voltage,
+                                    mode,
+                                    model_name,
+                                    selected_parameters,
+                                ),
+                                "selection_metric": "single_candidate_no_model_selection",
+                            }
+                        )
+                        store.save_search(
+                            name,
+                            model_name,
+                            {
+                                "policy": "single_candidate_no_model_selection",
+                                "validation_used_for_selection": False,
+                                "parameters": selected_parameters,
+                            },
+                        )
+
                     logger.info(
-                        "Selected | %s | %s | validation CTR=%.3f ps | params=%s",
+                        "Final fit | %s | %s | development=%d | params=%s",
                         name,
                         LABELS.get(model_name, model_name),
-                        validation_ctr,
+                        int(dataset.development.size),
                         json.dumps(selected_parameters, sort_keys=True),
                     )
-                    rows.append(
-                        _selection_row(
-                            name,
-                            voltage,
-                            mode,
-                            model_name,
-                            validation_ctr,
-                            selected_parameters,
-                            "validation_ctr",
-                        )
+                    fitted = fit_development_model(
+                        spec,
+                        model_config,
+                        config,
+                        dataset,
+                        mode,
+                        selected_parameters,
+                        seed=semantic_seed(seed, name, mode, model_name, "final_fit"),
+                        sample_mask=sample_mask,
+                        logger=logger,
+                        selection_performed=selection_performed,
                     )
-                    store.save_search(name, model_name, search.as_dict())
 
                 save_model(
                     spec,
@@ -749,8 +808,6 @@ def _evaluate_final_datasets(
                 float(test_row["ctr_ps"]),
                 float(test_row["ctr_uncertainty_ps"]),
             )
-            if search is not None:
-                search.best.artifact = None
             del fitted
             gc.collect()
             store.write_results(rows)
