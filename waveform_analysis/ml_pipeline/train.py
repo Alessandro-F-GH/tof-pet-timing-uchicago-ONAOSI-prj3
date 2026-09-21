@@ -94,7 +94,9 @@ def fit_development_model(
     fit_view = waveform_view(dataset, mode, fit_indices)
     fit_x_full = fit_view.materialize()
     training_indices = np.asarray(dataset.training, dtype=np.int64)
-    if sample_mask is None:
+    if spec.preserve_temporal_grid:
+        sample_mask = np.ones(fit_x_full.shape[-1], dtype=bool)
+    elif sample_mask is None:
         mask_view = waveform_view(dataset, mode, training_indices)
         sample_mask = training_sample_mask(mask_view.materialize())
     sample_mask = np.asarray(sample_mask, dtype=bool).reshape(-1)
@@ -127,9 +129,13 @@ def fit_development_model(
     fitted.metadata.update(
         {
             "sample_mask_definition": (
-                "shared temporal mask derived from the full training split; discard a sample "
-                "when both detector channels independently have one exact normalized float32 "
-                "value in at least 99% of training events"
+                "full configured temporal grid retained for local receptive fields"
+                if spec.preserve_temporal_grid
+                else (
+                    "shared temporal mask derived from the full training split; discard a sample "
+                    "when both detector channels independently have one exact normalized float32 "
+                    "value in at least 99% of training events"
+                )
             ),
             "sample_mask_constant_fraction": 0.99,
             "sample_mask_training_events": int(training_indices.size),
@@ -221,7 +227,9 @@ def search_model(
     validation_view = waveform_view(dataset, mode, validation)
     train_x_full = train_view.materialize()
     validation_x_full = validation_view.materialize()
-    if sample_mask is None:
+    if spec.preserve_temporal_grid:
+        sample_mask = np.ones(train_x_full.shape[-1], dtype=bool)
+    elif sample_mask is None:
         sample_mask = training_sample_mask(train_x_full)
     sample_mask = np.asarray(sample_mask, dtype=bool).reshape(-1)
     if sample_mask.size != train_x_full.shape[-1]:
@@ -258,9 +266,13 @@ def search_model(
         fitted.metadata.update(
             {
                 "sample_mask_definition": (
-                    "shared temporal mask derived from the full training split; discard a sample "
-                    "when both detector channels independently have one exact normalized float32 "
-                    "value in at least 99% of training events"
+                    "full configured temporal grid retained for local receptive fields"
+                    if spec.preserve_temporal_grid
+                    else (
+                        "shared temporal mask derived from the full training split; discard a sample "
+                        "when both detector channels independently have one exact normalized float32 "
+                        "value in at least 99% of training events"
+                    )
                 ),
                 "sample_mask_constant_fraction": 0.99,
                 "sample_mask_training_events": int(train_x_full.shape[0]),
@@ -290,7 +302,10 @@ def search_model(
         )
 
     context = str(dataset_name or "dataset")
-    model_label = "Antisymmetric MLP" if spec.name == "mlp" else spec.name
+    model_label = {
+        "mlp": "Antisymmetric MLP",
+        "locally_connected_mlp": "Locally connected MLP",
+    }.get(spec.name, spec.name)
 
     def on_start(number, total, candidate):
         return None
