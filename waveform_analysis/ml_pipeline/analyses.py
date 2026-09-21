@@ -22,7 +22,7 @@ from .plot_style import (
 )
 from .sample_mask import dataset_training_sample_mask
 from .splits import semantic_seed
-from .train import predict_indices, search_model, selected_model
+from .train import fit_development_model, predict_indices, search_model
 from .view import calibrated_led, corrected_timing_residual, model_target
 
 
@@ -286,25 +286,73 @@ def run_blind_led_threshold_scan(
                 )
                 sample_mask = dataset_training_sample_mask(dataset, mode)
                 spec = get_model(model_name)
-                search = search_model(
+                model_config = config["models"][model_name]
+                candidates = list(spec.candidates(model_config))
+                if not candidates:
+                    raise ValueError(f"{model_name} exposes no candidate configurations")
+                selection_performed = len(candidates) > 1
+                if selection_performed:
+                    search = search_model(
+                        spec,
+                        model_config,
+                        candidate_config,
+                        dataset,
+                        mode,
+                        seed=semantic_seed(
+                            seed,
+                            dataset_name,
+                            mode,
+                            model_name,
+                            "threshold_scan",
+                            f"{threshold:g}",
+                        ),
+                        dataset_name=f"{dataset_name} | LED={threshold:g} mV",
+                        sample_mask=sample_mask,
+                        logger=logger,
+                    )
+                    selected_parameters = dict(search.best.candidate or {})
+                    validation_ctr = float(search.best.score)
+                    search.best.artifact = None
+                else:
+                    search = None
+                    selected_parameters = dict(candidates[0] or {})
+                    validation_ctr = float("nan")
+                    logger.info(
+                        "Model selection skipped | %s | %s | LED=%g mV | "
+                        "single candidate | params=%s",
+                        dataset_name,
+                        LABELS.get(model_name, model_name),
+                        threshold,
+                        canonical_json(selected_parameters),
+                    )
+
+                logger.info(
+                    "Final fit | %s | %s | LED=%g mV | development=%d | params=%s",
+                    dataset_name,
+                    LABELS.get(model_name, model_name),
+                    threshold,
+                    int(dataset.development.size),
+                    canonical_json(selected_parameters),
+                )
+                fitted = fit_development_model(
                     spec,
-                    config["models"][model_name],
+                    model_config,
                     candidate_config,
                     dataset,
                     mode,
+                    selected_parameters,
                     seed=semantic_seed(
                         seed,
                         dataset_name,
                         mode,
                         model_name,
-                        "threshold_scan",
+                        "threshold_scan_final_fit",
                         f"{threshold:g}",
                     ),
-                    dataset_name=f"{dataset_name} | LED={threshold:g} mV",
                     sample_mask=sample_mask,
                     logger=logger,
+                    selection_performed=selection_performed,
                 )
-                fitted = selected_model(search)
                 blind = np.asarray(dataset.test, dtype=np.int64)
                 prediction, _time, _pair = predict_indices(
                     spec, fitted, dataset, mode, blind
@@ -395,13 +443,19 @@ def run_blind_led_threshold_scan(
                         "mode": mode,
                         "threshold_mV": threshold,
                         "model": model_name,
-                        "selection_population": "validation",
-                        "selection_metric": "validation_ctr",
-                        "validation_ctr_ps": float(search.best.score),
-                        "selected_parameters_json": canonical_json(
-                            search.best.candidate
+                        "selection_population": (
+                            "validation" if selection_performed else "none"
                         ),
-                        "refit_after_selection": False,
+                        "selection_metric": (
+                            "validation_ctr"
+                            if selection_performed
+                            else "single_candidate_no_model_selection"
+                        ),
+                        "validation_ctr_ps": validation_ctr,
+                        "selected_parameters_json": canonical_json(
+                            selected_parameters
+                        ),
+                        "refit_after_selection": selection_performed,
                     }
                 )
                 rows.append(
@@ -428,7 +482,6 @@ def run_blind_led_threshold_scan(
                 )
                 write_csv(selection_csv, selection_rows)
                 write_csv(csv_path, rows)
-                search.best.artifact = None
                 del fitted
                 gc.collect()
 
@@ -466,11 +519,11 @@ def run_blind_led_threshold_scan(
         "voltage_V": target_voltage,
         "mode": mode,
         "candidate_thresholds_mV": thresholds,
-        "hyperparameter_selection_population": "validation",
-        "hyperparameter_selection_metric": "validation_ctr",
+        "hyperparameter_selection_population": "validation_when_multiple_candidates",
+        "hyperparameter_selection_metric": "validation_ctr_when_multiple_candidates",
         "final_evaluation_population": "blind",
         "threshold_selected_from_scan": False,
-        "refit_after_validation_selection": False,
+        "refit_after_validation_selection": True,
         "ctr_uncertainty": "event_bootstrap",
         "relative_improvement_uncertainty": "paired_event_bootstrap",
         "output_dir": str(output_dir.resolve()),
