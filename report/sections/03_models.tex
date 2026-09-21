@@ -1,6 +1,6 @@
 \section{Machine-learning timing correction}
 
-The final waveform pipeline contains only two machine-learning models. The comparison is intentionally narrow: a proposed detector-shared antisymmetric MLP is evaluated against the fixed paired CNN reference based on Onishi et al.~\cite{onishi2022}.
+The primary comparison evaluates the detector-shared antisymmetric dense MLP against the fixed paired CNN reference based on Onishi et al.~\cite{onishi2022}. A parallel locally connected MLP is also implemented to test a stronger temporal inductive bias without imposing convolutional weight sharing.
 
 \input{tables/model_summary}
 
@@ -23,6 +23,13 @@ so detector-swap antisymmetry is enforced exactly by construction.
 In the current model space, \(g_\theta\) is a fully connected network with hidden widths \(128\) and \(64\), SiLU activations, and one scalar output. The candidate grid varies the learning rate between \(10^{-3}\) and \(3\times10^{-4}\) with batch size 128. Training uses stochastic gradient descent with Nesterov momentum (momentum coefficient 0.9), RMSE loss, up to 600 epochs, RMSE-based early stopping on an internal holdout, gradient clipping, and an additional low-gradient stopping condition. When several hyperparameter candidates are available, validation CTR selects the configuration and a fresh final model is then trained on the full development population using the same internal early-stopping mechanism.
 
 A dense scorer is used intentionally. Once each waveform has been aligned to the LED crossing, absolute temporal position within the retained window is physically meaningful, so translation equivariance is not imposed as a prior on the proposed detector-level model.
+
+\subsection{Locally connected antisymmetric MLP}
+The locally connected variant preserves the same paired prediction
+\[
+    y_{\theta}(s_1,s_2)=g_{\theta}(s_1)-g_{\theta}(s_2),
+\]
+but restricts the first layer to contiguous temporal receptive fields. Each receptive field produces one scalar node with its own weight vector and bias. Consecutive fields may overlap, with stride equal to the receptive-field width minus the configured overlap. The weights are position specific rather than shared, distinguishing the layer from a convolution while still encoding the prior that early representations should depend only on local waveform structure. The local outputs are followed by an ordinary dense stack. The complete configured temporal grid is retained for this model so that receptive fields always contain consecutive native samples.
 
 \reportfigure
     {figures/mlp-architecture.pdf}
