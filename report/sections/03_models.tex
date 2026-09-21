@@ -20,7 +20,7 @@ The two branches share all parameters. Exchanging the detector inputs therefore 
 \end{equation}
 so detector-swap antisymmetry is enforced exactly by construction.
 
-In the current model space, \(g_\theta\) is a fully connected network with hidden widths \(128\) and \(64\), SiLU activations, and one scalar output. The candidate grid varies the learning rate between \(10^{-3}\) and \(3\times10^{-4}\) with batch size 128. Training uses RMSE loss, up to 600 epochs, three random restarts, RMSE-based early stopping on an internal training holdout, gradient clipping, and an additional low-gradient stopping condition.
+In the current model space, \(g_\theta\) is a fully connected network with hidden widths \(128\) and \(64\), SiLU activations, and one scalar output. The candidate grid varies the learning rate between \(10^{-3}\) and \(3\times10^{-4}\) with batch size 128. Training uses RMSE loss, up to 600 epochs, RMSE-based early stopping on an internal holdout, gradient clipping, and an additional low-gradient stopping condition. When several hyperparameter candidates are available, validation CTR selects the configuration and a fresh final model is then trained on the full development population using the same internal early-stopping mechanism.
 
 A dense scorer is used intentionally. Once each waveform has been aligned to the LED crossing, absolute temporal position within the retained window is physically meaningful, so translation equivariance is not imposed as a prior on the proposed detector-level model.
 
