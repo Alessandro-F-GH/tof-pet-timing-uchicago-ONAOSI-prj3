@@ -1,34 +1,42 @@
 \begin{table}[H]
     \centering
-    \caption{Blind-test CTR summary for the four waveform studies.  Populate from the frozen \texttt{results.csv} files generated with the canonical CTR estimator.  The relative change is computed with respect to the LED result on the same board, waveform family, bias voltage and blind-test population.}
+    \caption{Blind-test CTR summary for the final MLP-versus-Onishi studies. Populate from the frozen model-study and comparison outputs. Improvements are computed with respect to LED on the same board, waveform family, bias voltage, window, and blind-test population.}
     \label{tab:ctr-results}
     \small
-    \begin{tabular}{lllrrrr}
+    \begin{tabular}{llllrrrr}
         \toprule
-        Board & Waveform & Bias [V] & Method & CTR [ps] & Unc. [ps] & Improvement vs.\ LED [\%] \\
+        Board & Waveform & Window & Bias [V] & Method & CTR [ps] & Unc. [ps] & Improvement vs. LED [\%] \\
         \midrule
-        UC  & Energy & TODO & LED            & TODO & TODO & -- \\
-        UC  & Energy & TODO & Linear SVR     & TODO & TODO & TODO \\
-        UC  & Energy & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
-        UC  & Energy & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        UC  & Energy & Onishi & TODO & LED        & TODO & TODO & -- \\
+        UC  & Energy & Onishi & TODO & MLP        & TODO & TODO & TODO \\
+        UC  & Energy & Onishi & TODO & Onishi CNN & TODO & TODO & TODO \\
+        UC  & Energy & Wide   & TODO & LED        & TODO & TODO & -- \\
+        UC  & Energy & Wide   & TODO & MLP        & TODO & TODO & TODO \\
+        UC  & Energy & Wide   & TODO & Onishi CNN & TODO & TODO & TODO \\
         \addlinespace
-        UC  & Timing & TODO & LED            & TODO & TODO & -- \\
-        UC  & Timing & TODO & Linear SVR     & TODO & TODO & TODO \\
-        UC  & Timing & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
-        UC  & Timing & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        UC  & Timing & Onishi & TODO & LED        & TODO & TODO & -- \\
+        UC  & Timing & Onishi & TODO & MLP        & TODO & TODO & TODO \\
+        UC  & Timing & Onishi & TODO & Onishi CNN & TODO & TODO & TODO \\
+        UC  & Timing & Wide   & TODO & LED        & TODO & TODO & -- \\
+        UC  & Timing & Wide   & TODO & MLP        & TODO & TODO & TODO \\
+        UC  & Timing & Wide   & TODO & Onishi CNN & TODO & TODO & TODO \\
         \addlinespace
-        FBK & Energy & TODO & LED            & TODO & TODO & -- \\
-        FBK & Energy & TODO & Linear SVR     & TODO & TODO & TODO \\
-        FBK & Energy & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
-        FBK & Energy & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        FBK & Energy & Onishi & TODO & LED        & TODO & TODO & -- \\
+        FBK & Energy & Onishi & TODO & MLP        & TODO & TODO & TODO \\
+        FBK & Energy & Onishi & TODO & Onishi CNN & TODO & TODO & TODO \\
+        FBK & Energy & Wide   & TODO & LED        & TODO & TODO & -- \\
+        FBK & Energy & Wide   & TODO & MLP        & TODO & TODO & TODO \\
+        FBK & Energy & Wide   & TODO & Onishi CNN & TODO & TODO & TODO \\
         \addlinespace
-        FBK & Timing & TODO & LED            & TODO & TODO & -- \\
-        FBK & Timing & TODO & Linear SVR     & TODO & TODO & TODO \\
-        FBK & Timing & TODO & Shared 1-D CNN & TODO & TODO & TODO \\
-        FBK & Timing & TODO & Joint 2-D CNN  & TODO & TODO & TODO \\
+        FBK & Timing & Onishi & TODO & LED        & TODO & TODO & -- \\
+        FBK & Timing & Onishi & TODO & MLP        & TODO & TODO & TODO \\
+        FBK & Timing & Onishi & TODO & Onishi CNN & TODO & TODO & TODO \\
+        FBK & Timing & Wide   & TODO & LED        & TODO & TODO & -- \\
+        FBK & Timing & Wide   & TODO & MLP        & TODO & TODO & TODO \\
+        FBK & Timing & Wide   & TODO & Onishi CNN & TODO & TODO & TODO \\
         \bottomrule
     \end{tabular}
 \end{table}
 
 \noindent
-The compact table above is intended for the principal operating points or best/representative bias values.  Complete voltage-by-voltage results should be retained in the generated LaTeX tables and CTR-versus-voltage figures rather than expanding the main-text table excessively.
+The compact table is intended for representative operating points. Complete voltage-by-voltage results for both windows should remain in the generated comparison CSV files and CTR-versus-voltage figures rather than expanding the main-text table excessively.
