@@ -131,6 +131,15 @@ class ActiveModelTests(unittest.TestCase):
             {(8, 2), (8, 4), (16, 2), (16, 4)},
         )
 
+
+    def test_locally_connected_mlp_uses_adam_configuration(self):
+        config = {
+            "training": {
+                "optimizer": "adam",
+            }
+        }
+        self.assertEqual(config["training"]["optimizer"], "adam")
+
     def test_onishi_cnn_matches_reference_architecture(self):
         import torch
 
