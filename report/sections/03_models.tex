@@ -36,14 +36,7 @@ The reference model follows the paired-waveform CNN used by Onishi et al.~\cite{
     y_\theta=f_\theta(s_1,s_2).
 \end{equation}
 
-The implemented reference architecture is fixed:
-\begin{itemize}
-    \item Conv2D \(2\times5\), 32 channels, ReLU;
-    \item Conv2D \(1\times3\), 32 channels, ReLU;
-    \item Conv2D \(1\times3\), 64 channels, ReLU;
-    \item flatten, dense 256, ReLU, scalar output.
-\end{itemize}
-The first convolution spans both detector rows and therefore fuses the detector pair immediately. Unlike Eq.~\eqref{eq:mlp-correction}, detector-swap antisymmetry is not enforced by the architecture.
+The implemented reference architecture is fixed. It uses a \(2\times5\) Conv2D layer with 32 channels and ReLU, followed by two \(1\times3\) Conv2D layers with 32 and 64 channels, respectively, also with ReLU. The resulting features are flattened and passed through a dense layer with 256 units and ReLU before the scalar output. The first convolution spans both detector rows and therefore fuses the detector pair immediately. Unlike Eq.~\eqref{eq:mlp-correction}, detector-swap antisymmetry is not enforced by the architecture.
 
 The current reference training configuration uses Adam, MSE loss, batch size 128, an initial learning rate of \(10^{-3}\), and 600 epochs. The learning rate is reduced by a factor of ten at epochs 180 and 360. Because this is a fixed reference configuration, no architecture or optimizer hyperparameter is selected from the validation CTR.
 
