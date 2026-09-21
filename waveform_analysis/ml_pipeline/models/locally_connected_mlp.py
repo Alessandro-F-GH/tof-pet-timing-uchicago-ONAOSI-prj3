@@ -115,7 +115,7 @@ class SharedLocallyConnectedScorer(nn.Module):
 def candidates(config):
     parameters = config.get("parameters", {})
     training = config.get("training", {})
-    architectures = parameters.get("architecture", [[64, 32]])
+    architectures = parameters.get("architecture", [[64]])
     activations = parameters.get("activation", ["silu"])
     learning_rates = parameters.get("learning_rate", [1e-3])
     batch_sizes = parameters.get(
