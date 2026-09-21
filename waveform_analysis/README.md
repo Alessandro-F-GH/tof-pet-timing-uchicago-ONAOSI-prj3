@@ -12,11 +12,11 @@ Selection, native-preprocessing and ML-prepared caches are mode-scoped, so two s
 
 Only selected events and the waveform family required by the experiment mode are materialized. For each waveform the pipeline decodes/orients native samples, clamps them to detector-specific `vertical_scale_limit_mV`, crops around the selected main trigger, preserves native acquisition timing, and stores the rising-edge interval used by LED/CFD.
 
-There is **no denoising** and no event-wise baseline subtraction.
+There is **no denoising** and no event-wise baseline subtraction. LED thresholds are nevertheless baseline-relative: for each event and detector, the configured LED value is added to the mean pre-trigger baseline measured in `preprocessing.selection.baseline_noise.window_ns`; the waveform itself is left unchanged.
 
 ## 3. ML dataset preparation
 
-LED thresholds are scanned on development and ranked by the common CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is still the native sample nearest in time to the interpolated selected LED crossing for window materialization only.
+LED thresholds are scanned on development and ranked by the common CTR estimator from `utils_fit`; CFD is treated the same way when `cfd: true`. The canonical metric is the Gaussian-equivalent shortest interval containing the configured fraction of finite residuals, with 90% coverage by default. Bootstrap is skipped during candidate ranking because uncertainty is not part of threshold selection. LED crossing times are linearly interpolated at the event-specific level `baseline + configured LED threshold`. Waveforms remain on the native acquisition grid, so the ML anchor `t_a` is still the native sample nearest in time to the interpolated selected LED crossing for window materialization only.
 
 The fixed channel calibration is estimated from training only as
 
