@@ -1,15 +1,14 @@
 \begin{table}[H]
     \centering
-    \caption{Core models used to test the representation of the waveform timing correction. Exploratory models in the software registry are intentionally omitted from the main paper comparison.}
+    \caption{The two machine-learning models retained in the final waveform pipeline.}
     \label{tab:model-summary}
     \small
     \begin{tabular}{llll}
         \toprule
         Model & Input representation & Prediction structure & Scientific role \\
         \midrule
-        Linear support vector regressor (SVR) & \(s_1-s_2\) & Linear temporal correction & Linear control \\
-        Shared 1-D CNN & \(s_1,s_2\) & \(g_\theta(s_1)-g_\theta(s_2)\) & Physics-constrained proposal \\
-        Joint CNN & stacked \([2,\mathrm{time}]\) & \(f_\theta(s_1,s_2)\) & General pair-model comparator \\
+        Antisymmetric MLP & \(s_1,s_2\) & \(g_\theta(s_1)-g_\theta(s_2)\) & Proposed detector-shared model \\
+        Onishi CNN & stacked \([2,\mathrm{time}]\) & \(f_\theta(s_1,s_2)\) & Fixed paired-CNN reference \\
         \bottomrule
     \end{tabular}
 \end{table}
