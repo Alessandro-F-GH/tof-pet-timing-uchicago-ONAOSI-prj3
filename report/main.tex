@@ -34,7 +34,7 @@
   \end{figure}
 }
 
-\title{Physics-Constrained and Interpretable Waveform-Based Timing Correction for Time-of-Flight Positron Emission Tomography Detectors}
+\title{Physics-Constrained Waveform-Based Timing Correction for Time-of-Flight Positron Emission Tomography Detectors}
 \author{\todo{Author, affiliation}}
 \date{\todo{Date / project period}}
 
@@ -43,9 +43,9 @@
 \maketitle
 
 \begin{abstract}
-Machine-learning methods applied to detector waveforms can improve timing in time-of-flight positron emission tomography. This report investigates a detector-shared timing correction, compares it with a general joint convolutional neural network, and studies where useful timing information is located in the waveform. The framework is evaluated first on the energy channel and then on the dedicated timing channel, using blind-test coincidence timing resolution as the main quantitative metric.
+Machine-learning methods applied to detector waveforms can improve timing in time-of-flight positron emission tomography. This report evaluates the two waveform models retained in the final analysis pipeline: a proposed detector-shared antisymmetric multilayer perceptron (MLP) and the paired convolutional neural network (CNN) reference based on Onishi et al. Both models learn an event-by-event correction to a calibrated leading-edge-discrimination timing residual from the same pair of aligned detector waveforms. The comparison is performed on a short input window reproducing the Onishi timing region and on a wider waveform window, with final performance evaluated only on the permanent blind-test population. Energy- and timing-channel studies separate relative correction gain from absolute timing performance, while model-output correlation and gradient-based temporal sensitivity provide complementary information about the learned correction.
 
-\todo{Add a concise numerical summary of the main results.}
+\todo{Add a concise numerical summary of the final MLP-versus-Onishi results.}
 \end{abstract}
 
 \tableofcontents

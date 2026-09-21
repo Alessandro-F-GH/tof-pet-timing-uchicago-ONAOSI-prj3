@@ -1,84 +1,67 @@
 \section{Machine-learning timing correction}
 
-The model comparison is designed as a controlled test of representation and physical structure rather than a broad model benchmark. The analysis focuses on three models: a linear difference baseline, the proposed detector-shared CNN, and a more general joint CNN.
+The final waveform pipeline contains only two machine-learning models. The comparison is intentionally narrow: a proposed detector-shared antisymmetric MLP is evaluated against the fixed paired CNN reference based on Onishi et al.~\cite{onishi2022}.
 
 \input{tables/model_summary}
 
-\subsection{Linear difference baseline}
+\subsection{Detector-shared antisymmetric MLP}\label{sec:mlp-model}
 
-The linear support vector regressor (SVR), introduced in Table~\ref{tab:model-summary}, receives the synchronized waveform difference
+The proposed model applies the same dense detector scorer \(g_\theta\) independently to the two aligned waveforms:
+\begin{equation}\label{eq:mlp-correction}
+    y_\theta(s_1,s_2)
+    =
+    g_\theta(s_1)-g_\theta(s_2).
+\end{equation}
+The two branches share all parameters. Exchanging the detector inputs therefore gives
 \begin{equation}
-    d(t)=s_1(t)-s_2(t)
+    y_\theta(s_2,s_1)
+    =
+    -y_\theta(s_1,s_2),
 \end{equation}
-and predicts the timing correction from a linear combination of temporal samples. It provides a compact control for determining how much of the correction can be represented without nonlinear feature extraction.
+so detector-swap antisymmetry is enforced exactly by construction.
+
+In the current model space, \(g_\theta\) is a fully connected network with hidden widths \(128\) and \(64\), SiLU activations, and one scalar output. The candidate grid varies the learning rate between \(10^{-3}\) and \(3\times10^{-4}\) with batch size 128. Training uses RMSE loss, up to 600 epochs, three random restarts, RMSE-based early stopping on an internal training holdout, gradient clipping, and an additional low-gradient stopping condition.
+
+A dense scorer is used intentionally. Once each waveform has been aligned to the LED crossing, absolute temporal position within the retained window is physically meaningful, so translation equivariance is not imposed as a prior on the proposed detector-level model.
 
 \reportfigure
-    {figures/linear_svr_importance.pdf}
-    {Optional magnitude of the Linear-SVR temporal coefficients.}
-    {fig:svr-importance}
+    {figures/mlp-architecture.pdf}
+    {Proposed antisymmetric MLP. The same dense scorer is applied independently to \(s_1\) and \(s_2\), and the two scalar detector scores are subtracted.}
+    {fig:mlp-architecture}
 
-\subsection{Detector-shared 1-D CNN: physically constrained model}\label{sec:shared-model}
+\subsection{Onishi paired CNN reference}\label{sec:onishi-model}
 
-The proposed shared CNN applies the same detector-level function \(g_\theta\) to both input waveforms:
-\begin{equation}\label{eq:shared-correction}
-    y_\theta = g_\theta(s_1)-g_\theta(s_2).
-\end{equation}
-
-Using one shared scorer imposes two structural constraints:
-\begin{enumerate}
-    \item the same learned detector response model is used for both signals;
-    \item exchanging the two detector inputs changes only the sign of the prediction,
-    \begin{equation}
-        y_\theta(s_2,s_1)=-y_\theta(s_1,s_2).
-    \end{equation}
-\end{enumerate}
-
-This factorized form is the primary physics-motivated model studied in the paper. It also provides a representation that is naturally compatible with reuse across detector pairs, although system-level scalability should only be claimed if separately demonstrated.
-
-\reportfigure
-    {figures/1D-cnn-architecture.png}
-    {Detector-shared CNN: the same temporal scorer is applied to each detector waveform before subtraction of the two scalar outputs.}
-    {fig:cnn-architecture}
-
-\subsection{Joint CNN: general pair-model comparator}\label{sec:joint-model}
-
-The joint model receives the two detector waveforms together as a stacked \([2,\mathrm{time}]\) input and directly predicts one correction:
-\begin{equation}\label{eq:joint-correction}
+The reference model follows the paired-waveform CNN used by Onishi et al.~\cite{onishi2022}. It receives the detector pair as a stacked \([2,\mathrm{time}]\) input and predicts one pair-level correction,
+\begin{equation}\label{eq:onishi-correction}
     y_\theta=f_\theta(s_1,s_2).
 \end{equation}
 
-In the current implementation, the first temporal block preserves the two detector rows. A configurable later convolution spans both rows once, fusing the detector axis before the remaining temporal blocks. Unlike the shared model, detector-swap antisymmetry is not enforced.
+The implemented reference architecture is fixed:
+\begin{itemize}
+    \item Conv2D \(2\times5\), 32 channels, ReLU;
+    \item Conv2D \(1\times3\), 32 channels, ReLU;
+    \item Conv2D \(1\times3\), 64 channels, ReLU;
+    \item flatten, dense 256, ReLU, scalar output.
+\end{itemize}
+The first convolution spans both detector rows and therefore fuses the detector pair immediately. Unlike Eq.~\eqref{eq:mlp-correction}, detector-swap antisymmetry is not enforced by the architecture.
 
-The joint CNN is used as the flexible comparator: if the shared model reaches comparable CTR, the result supports the hypothesis that arbitrary pair-specific interactions are not required to obtain the timing correction.
+The current reference training configuration uses Adam, MSE loss, batch size 128, an initial learning rate of \(10^{-3}\), and 600 epochs. The learning rate is reduced by a factor of ten at epochs 180 and 360. Because this is a fixed reference configuration, no architecture or optimizer hyperparameter is selected from the validation CTR.
 
 \reportfigure
     {figures/2D-cnn-architecture.png}
-    {Joint detector-pair CNN with delayed detector fusion.}
-    {fig:cnn2d-architecture}
+    {Paired Onishi CNN reference. The first two-dimensional convolution spans the detector axis and the network directly predicts one pair-level correction.}
+    {fig:onishi-architecture}
 
-\subsection{Controlled architecture comparison}
+\subsection{Controlled comparison across waveform windows}
 
-Where possible, the shared and joint CNNs should be compared with matched temporal channels, kernels, strides, dilations, pooling, dense head, optimizer, waveform window, training population, and validation criterion. The intended experimental variable is the pair representation:
-\[
-g_\theta(s_1)-g_\theta(s_2)
-\quad\text{versus}\quad
-f_\theta(s_1,s_2).
-\]
+The two models are executed as independent \texttt{model\_study} runs. Each run evaluates the same configured waveform windows and persists the blind residuals, model outputs, split identities, XAI arrays, and result tables.
 
-\todo{Verify and tabulate every matched architectural and training setting used in the frozen comparison. If one model differs for numerical or architectural reasons, state the difference explicitly rather than describing the comparison as fully matched.}
+The completed MLP and Onishi runs are then combined with the repository's \texttt{compare-runs} workflow. Before comparison, the workflow checks compatible window definitions and voltage sets. Model-output correlation is computed only after aligning the persisted blind-test event identities.
 
-\subsection{Information-localization tools}
+This separation is useful operationally because the expensive Onishi CNN and the lighter MLP can be trained independently, while the final comparison still operates on compatible persisted blind-test results.
 
-Model interpretation is used to support, not replace, performance-based evidence. The CNN XAI output is based on mean absolute input gradients projected onto the retained waveform time axis~\cite{simonyan2014}; the Linear SVR exposes the magnitude of its learned temporal coefficients.
+\subsection{Interpretability and model-output agreement}
 
-The stronger information-localization test should combine:
-\begin{enumerate}
-    \item performance as the available waveform window is varied or ablated;
-    \item XAI sensitivity as a function of time;
-    \item consistency of the highlighted regions across bias voltage, board source, architecture, and waveform family where data permit.
-\end{enumerate}
+Both final models expose the same gradient-based temporal sensitivity measure: the absolute input gradient is averaged over the evaluated events and detector rows and projected onto the retained waveform time axis~\cite{simonyan2014}. The resulting profile identifies where a fitted model is most sensitive, but it is not interpreted by itself as proof of causal timing information.
 
-\reportfigure
-    {figures/xai_summary.pdf}
-    {Representative waveform-plus-importance visualization. XAI should be interpreted as model sensitivity, not by itself as proof of causal timing information.}
-    {fig:xai-summary}
+The run comparison additionally computes the Pearson correlation between the MLP and Onishi blind-test outputs after event-ID alignment. This quantity answers a complementary question: whether two models with different representations are learning similar event-by-event corrections even when their final CTR values are close.

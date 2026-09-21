@@ -2,33 +2,44 @@
 
 \subsection{Motivation}
 
-Previous waveform-based machine-learning studies have shown that learned models can improve timing in time-of-flight positron emission tomography (TOF-PET), including convolutional neural network (CNN)-based TOF estimation, hybrid Transformer--CNN approaches, and explicit machine-learning timing-correction methods~\cite{berg2018,feng2024,naunheim2025}. This project builds on that result by asking what structure and what waveform information are responsible for the improvement.
+Previous waveform-based machine-learning studies have shown that learned models can improve timing in time-of-flight positron emission tomography (TOF-PET), including convolutional neural network (CNN)-based TOF estimation and explicit timing-correction approaches~\cite{berg2018,onishi2022,feng2024,naunheim2025}. The present study focuses on a narrower question: whether the useful event-by-event correction requires a paired convolutional representation, or whether it can be captured by a detector-level function shared between the two channels.
 
-Rather than just focusing on improving coincidence timing resolution (CTR), defined in Sec.~\ref{sec:ctr-estimator}, the study combines performance with physical constraints and interpretability. A detector-shared model is compared with a more general joint CNN, larger waveform windows are used to study where timing information is concentrated, and the same framework is tested on both the energy and dedicated timing signals.
+The final analysis therefore does not present a broad model benchmark. It compares only the two models retained in the waveform pipeline: the proposed antisymmetric multilayer perceptron (MLP) and the paired Onishi CNN reference. Both receive the same synchronized detector-pair waveforms and predict a correction to the calibrated leading-edge-discrimination (LED) timing residual.
 
 \subsection{Project scope}
 
-The first objective is to test a physically constrained representation of the detector pair. The proposed model applies the same function to both detector waveforms and forms the correction from the difference of the two outputs. This enforces detector-exchange antisymmetry and provides a natural detector-level representation. Its performance is compared with a joint CNN that processes the two waveforms together without this constraint.
+The proposed model applies one shared detector scorer \(g_\theta\) independently to the two detector waveforms and forms the pair correction as
+\begin{equation}
+    y_\theta(s_1,s_2)=g_\theta(s_1)-g_\theta(s_2).
+\end{equation}
+This representation enforces exact detector-exchange antisymmetry while avoiding a convolutional prior inside the detector scorer.
 
-The second objective is to investigate where useful timing information is located in the waveform. The analysis therefore considers larger input windows than the previous project baseline and combines timing performance with explainable AI (XAI) and, where possible, controlled window or ablation studies.
+The reference model is the paired CNN based on Onishi et al.~\cite{onishi2022}. It processes the two detector waveforms jointly, with the first two-dimensional convolution spanning the detector axis, and predicts one pair-level correction.
 
-Finally, the method is evaluated on the two available analog signals. The energy channel is used as the main test bed for the architecture comparison and information-localization study. The same approach is then applied to the second-stage timing channel, which is specifically designed for timing and is expected to provide the best absolute CTR.
+The comparison is repeated for two fixed waveform regions defined in the shared analysis profile:
+\begin{itemize}
+    \item the \textbf{Onishi window}, from \SI{-1.5}{ns} to \SI{2.0}{ns};
+    \item the \textbf{wide window}, from \SI{-2.0}{ns} to \SI{30.0}{ns}.
+\end{itemize}
+This separates the model-architecture question from the amount of temporal context provided to the model.
 
-CTR remains the primary quantitative metric, considered together with model structure, temporal sensitivity, and consistency across the available datasets.
+The same framework can be applied to the first-stage energy waveform and to the dedicated timing waveform. The two waveform families answer different practical questions: the energy signal may leave more correctable time walk and pulse-shape dependence, whereas the dedicated timing signal can provide a substantially better conventional timing baseline.
 
 \subsection{Research questions}
 
-The study is organized around three questions:
+The report is organized around three primary questions:
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}]
-    \item \textbf{Physical structure:} can the detector-shared correction introduced in Sec.~\ref{sec:shared-model} retain the timing performance of the more general joint model described in Sec.~\ref{sec:joint-model}?
+    \item \textbf{Model representation:} how does the detector-shared antisymmetric MLP compare with the paired Onishi CNN on the same blind-test events?
 
-    \item \textbf{Information localization:} which temporal regions of the waveform contribute useful information for timing correction?
+    \item \textbf{Temporal context:} does the relative behavior of the two models change when the input is restricted to the Onishi window or extended to the wider waveform region?
 
-    \item \textbf{Timing channel:} how does the same correction framework perform when applied to the dedicated timing waveform instead of the energy waveform?
+    \item \textbf{Signal and hardware dependence:} are the same conclusions reproduced for energy- and timing-channel waveforms and, where available, across the UC and FBK front-end boards?
 \end{enumerate}
+
+LED-threshold scans, model-output correlation, and gradient-based explainability are treated as supporting analyses. They help interpret the two-model comparison but do not introduce additional competing models.
 
 \reportfigure
     {figures/paper_scope.pdf}
-    {Scientific scope of the study: constrained-versus-joint waveform correction, timing-information localization, and extension from the energy waveform to the dedicated timing waveform.}
+    {Scientific scope of the final study: antisymmetric MLP versus paired Onishi CNN, evaluated with two waveform windows and repeated across the available waveform families and front-end datasets.}
     {fig:paper-scope}
