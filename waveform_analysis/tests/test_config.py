@@ -34,6 +34,12 @@ class ConfigTests(unittest.TestCase):
         validate_config(valid)
 
 
+    def test_mlp_training_has_no_random_restart_configuration(self):
+        self.assertNotIn(
+            "random_restarts",
+            self.config["models"]["mlp"]["training"],
+        )
+
     def test_model_study_requires_single_model(self):
         bad = copy.deepcopy(self.config)
         bad["experiment"]["type"] = "model_study"
