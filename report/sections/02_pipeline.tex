@@ -44,7 +44,7 @@ For machine learning, amplitudes are mapped globally to \([0,1]\) using the conf
 
 \subsection{LED reference, calibration, and learning target}
 
-Leading-edge discrimination (LED) provides the common timing reference. The threshold-crossing time is obtained by linear interpolation on the rising edge. A fixed inter-channel timing offset is estimated from the training population:
+Leading-edge discrimination (LED) provides the common timing reference. The waveform itself is not baseline-subtracted. Instead, for each event and detector, the configured LED threshold is interpreted as an offset above the mean pre-trigger baseline level measured in the configured baseline window. The threshold-crossing time is then obtained by linear interpolation on the rising edge. A fixed inter-channel timing offset is estimated from the training population:
 \begin{equation}
     \widehat{C}_{12}
     =
@@ -65,7 +65,7 @@ The supervised target is the calibrated LED residual,
 \end{equation}
 The models therefore learn an event-by-event correction to the conventional timing estimate rather than predicting the physical TOF directly.
 
-For final \texttt{model\_study} runs, the LED threshold is fixed in the experiment configuration and is shared by the MLP and Onishi studies being compared. LED-threshold dependence is investigated separately with the MLP-only \texttt{threshold\_scan} experiment; it is not folded into the architecture comparison.
+For final \texttt{model\_study} runs, the LED threshold offset above baseline is fixed in the experiment configuration and is shared by the MLP and Onishi studies being compared. LED-threshold dependence is investigated separately with the MLP-only \texttt{threshold\_scan} experiment; it is not folded into the architecture comparison.
 
 \reportfigure
     {figures/led_threshold_selection.pdf}
