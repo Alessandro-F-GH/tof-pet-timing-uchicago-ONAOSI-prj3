@@ -53,7 +53,7 @@ A ready timing configuration is available at `config/experiments/timing_concaten
 
 ## 4. Final ML protocol
 
-The final study compares two deliberately different paired-waveform models.
+The final pipeline supports three paired-waveform models: the dense antisymmetric MLP, the locally connected antisymmetric MLP, and the fixed Onishi CNN reference.
 
 ### Proposed model: antisymmetric MLP
 
@@ -69,7 +69,7 @@ The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. Weight
 
 The parallel model `locally_connected_mlp` keeps the same detector-shared antisymmetric form but replaces the fully connected first stage with a 1-D locally connected layer. Each node receives one contiguous receptive field of waveform samples and produces one scalar local representation. Neighboring fields may overlap. Unlike a CNN, weights and biases are not shared across temporal positions, so absolute position remains explicit.
 
-For receptive-field width `K` and overlap `O`, the stride is `K - O`. There is exactly one learned node per receptive field: no bank of multiple kernels is applied to the same window. The local outputs are activated and then passed to a conventional dense stack. PyTorch's standard `Tensor.unfold` operation extracts the overlapping windows; the per-position weights are ordinary `nn.Parameter` tensors.
+For receptive-field width `K` and overlap `O`, the stride is `K - O`. There is exactly one learned node per receptive field: no bank of multiple kernels is applied to the same window. The local outputs are activated and then passed to a conventional dense stack. The implementation uses standard PyTorch tensor slicing/stacking to build contiguous receptive fields and ordinary `nn.Parameter` tensors for the position-specific weights. If the nominal stride would leave a tail uncovered, the final receptive field is anchored to the waveform end.
 
 Because local receptive fields require consecutive samples, this model retains the complete configured ML time grid instead of applying the training-derived constant-sample mask. Receptive-field width and overlap are selected on validation CTR together with the other configured hyperparameters. The ready configuration is `config/experiments/model_study_locally_connected_mlp.json`.
 
@@ -138,7 +138,7 @@ XAI and publication plots. In particular each window produces:
   improvement in percent;
 - XAI and the ordinary correction/distribution/model-output diagnostics.
 
-This makes expensive models independent: MLP and Onishi CNN can be trained on
+This makes expensive models independent: dense MLP, locally connected MLP, and Onishi CNN can be trained on
 different computers, operating systems or GPUs. The complete result directory
 is the portable analysis unit; no preprocessing cache or checkpoint from the
 other machine is required.
@@ -251,7 +251,7 @@ Study outputs are type-separated from creation time:
 - `plots/relative_improvement_vs_voltage.pdf`: relative CTR improvement over LED, with uncertainty obtained from a **paired bootstrap** using the same resampled event indices for LED and each ML model;
 - `plots/corrections/<dataset>/`: top/worst correction figures;
 - `csv/corrections/<dataset>/`: corresponding correction ranking tables;
-- `plots/xai/<model>/`: model-grouped XAI plots; MLP and Onishi CNN importance is input-gradient importance aggregated onto the exact waveform time axis;
+- `plots/xai/<model>/`: model-grouped XAI plots; dense MLP, locally connected MLP, and Onishi CNN use input-gradient importance aggregated onto the exact waveform time axis;
 - `csv/xai/<model>/`: tabular XAI exports only when present;
 - `plots/model_output_diagnostics/`: publication-style prediction-vs-target and model-output correlation figures reconstructed from saved model-output/residual arrays.
 
@@ -302,7 +302,7 @@ Use the corresponding configuration for each board/source dataset to create its 
 
 ## CLI
 
-Run the two expensive models independently:
+Run model studies independently:
 
 ```bash
 python -m waveform_analysis.cli check \
@@ -371,4 +371,4 @@ Outputs are written under `<run-dir>/cross_voltage/`:
 - `cross_voltage_<model>.csv`: matrix with rows = training voltage, columns = prediction/blind-test voltage, and cells = `CTR ± bootstrap uncertainty`;
 - `cross_voltage_<model>.pdf`: annotated CTR heatmap for the same matrix.
 
-Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models mlp onishi_cnn` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
+Diagonal cells use the CTR and uncertainty already stored in the original study after first reloading the saved model and verifying that its recomputed diagonal CTR agrees within 0.1 ps. Off-diagonal cells are newly evaluated on the destination blind/test set using the study's configured CTR estimator and bootstrap settings. Use `--models mlp locally_connected_mlp onishi_cnn` to restrict the analysis or `--diagonal-tolerance-ps <value>` to change the consistency tolerance.
