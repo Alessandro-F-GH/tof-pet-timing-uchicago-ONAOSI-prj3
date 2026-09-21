@@ -3,6 +3,7 @@
     \caption{Blind-test CTR summary for the final MLP-versus-Onishi studies. Populate from the frozen model-study and comparison outputs. Improvements are computed with respect to LED on the same board, waveform family, bias voltage, window, and blind-test population.}
     \label{tab:ctr-results}
     \small
+    \resizebox{\textwidth}{!}{%
     \begin{tabular}{llllrrrr}
         \toprule
         Board & Waveform & Window & Bias [V] & Method & CTR [ps] & Unc. [ps] & Improvement vs. LED [\%] \\
@@ -35,7 +36,8 @@
         FBK & Timing & Wide   & TODO & MLP        & TODO & TODO & TODO \\
         FBK & Timing & Wide   & TODO & Onishi CNN & TODO & TODO & TODO \\
         \bottomrule
-    \end{tabular}
+    \end{tabular}%
+    }
 \end{table}
 
 \noindent
