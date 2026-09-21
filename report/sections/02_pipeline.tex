@@ -92,11 +92,11 @@ The default temporal subsampling is one, so the retained samples remain on the n
 
 The two final models deliberately use different development policies because one is a proposed tunable model and the other is a fixed literature reference.
 
-For the antisymmetric MLP, candidate hyperparameters are fitted using the training split only. An internal holdout carved from the training split is used for epoch-level early stopping and random-restart selection. The externally persisted validation split is then used only to rank the candidate hyperparameter configurations by validation CTR. The selected trained checkpoint is frozen and evaluated directly on blind data; there is no refit after model selection.
+For the antisymmetric MLP, candidate hyperparameters are fitted using the training split only when more than one candidate is configured. An internal holdout carved from the training split is used for epoch-level early stopping, while the externally persisted validation split ranks the candidate configurations by validation CTR. After selection, the search checkpoint is discarded and a fresh final model is fitted on the complete development population. During this final fit, the MLP reserves the configured internal holdout from the development population for early stopping. If only one candidate is configured, validation-based model selection is skipped and the final development fit is performed directly.
 
 The Onishi CNN exposes one fixed reference configuration and therefore performs no validation-based hyperparameter selection. Its final reference network is fitted once on the complete development population, i.e. training plus validation, and is then evaluated on the blind-test split. The temporal sample mask remains derived from the training split only.
 
-This asymmetry in the fitting protocol must be stated explicitly when interpreting the model comparison: the Onishi model is treated as a fixed reference architecture, while the MLP is a validation-selected proposed model.
+This asymmetry in the fitting protocol must be stated explicitly when interpreting the model comparison: the Onishi model is treated as a fixed reference architecture, while the MLP uses validation only for hyperparameter selection when selection is actually required. Both final models are fitted on the development population before blind-test evaluation.
 
 \subsection{CTR estimator}\label{sec:ctr-estimator}
 
