@@ -841,8 +841,11 @@ def _run_standard_study(
     overwrite: bool = False,
     resume: bool = False,
     rebuild_preprocessing: bool = False,
+    rebuild_prepared: bool | None = None,
 ) -> Path:
     config = load_config(config_or_path) if not isinstance(config_or_path, dict) else config_or_path
+    if rebuild_prepared is None:
+        rebuild_prepared = bool(rebuild_preprocessing)
     store = RunStore(
         config["experiment"]["output_dir"],
         overwrite=overwrite,
@@ -910,7 +913,7 @@ def _run_standard_study(
     datasets = _prepare_datasets(
         preprocessed,
         config,
-        rebuild_preprocessing,
+        bool(rebuild_prepared),
         logger,
         progress,
     )
@@ -1110,6 +1113,7 @@ def _run_model_study_experiment(
             rebuild_preprocessing=(
                 rebuild_preprocessing if index == 0 else False
             ),
+            rebuild_prepared=rebuild_preprocessing,
         )
         subruns[window_name] = str(subrun)
 
