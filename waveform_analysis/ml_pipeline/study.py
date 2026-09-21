@@ -353,12 +353,15 @@ def _dataset_manifest(dataset, sample_count, retained_samples, threshold, mode):
         "cfd_fraction": dataset.manifest["cfd_fraction"],
         "subsampling": int(dataset.manifest["ml_input"]["subsampling"]),
         "sample_mask": {
+            "definition": "training-derived candidate mask for models that use temporal masking",
             "derived_from": "training_split_only",
             "constant_fraction": SAMPLE_CONSTANT_FRACTION,
             "shared_across_input_channels": True,
             "input_samples_before": sample_count,
             "input_samples_after": retained_samples,
             "input_samples_removed": sample_count - retained_samples,
+            "used_by": ["mlp", "onishi_cnn"],
+            "bypassed_by": ["locally_connected_mlp"],
         },
         "target_definition": dataset.manifest.get(
             "target_definition",
