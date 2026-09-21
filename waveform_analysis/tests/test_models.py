@@ -95,6 +95,19 @@ class ActiveModelTests(unittest.TestCase):
         self.assertEqual(tuple(layer.bias.shape), (5,))
         self.assertIsInstance(layer.weight, torch.nn.Parameter)
 
+
+    def test_locally_connected_layer_covers_waveform_tail(self):
+        layer = LocallyConnected1D(
+            input_samples=13,
+            receptive_field_samples=4,
+            overlap_samples=2,
+        )
+        self.assertEqual(layer.field_starts.tolist(), [0, 2, 4, 6, 8, 9])
+        self.assertEqual(
+            int(layer.field_starts[-1]) + layer.receptive_field_samples,
+            layer.input_samples,
+        )
+
     def test_locally_connected_mlp_pair_antisymmetry(self):
         rng = np.random.default_rng(17)
         pair = rng.normal(size=(8, 2, 32)).astype(np.float32)
@@ -130,15 +143,6 @@ class ActiveModelTests(unittest.TestCase):
             {(row["receptive_field_samples"], row["overlap_samples"]) for row in rows},
             {(8, 2), (8, 4), (16, 2), (16, 4)},
         )
-
-
-    def test_locally_connected_mlp_uses_adam_configuration(self):
-        config = {
-            "training": {
-                "optimizer": "adam",
-            }
-        }
-        self.assertEqual(config["training"]["optimizer"], "adam")
 
     def test_onishi_cnn_matches_reference_architecture(self):
         import torch
