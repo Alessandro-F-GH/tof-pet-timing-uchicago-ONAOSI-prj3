@@ -13,6 +13,7 @@ from .ml_pipeline.prepared_data import prepare_ml_dataset
 from .ml_pipeline.preflight import confirm_overwrite, inspect_preprocessing, study_overwrite_path
 from .ml_pipeline.plot_rebuild import rebuild_experiment_plots
 from .ml_pipeline.model_run_reporting import compare_model_runs
+from .ml_pipeline.latex_tables import make_dataset_latex_table
 from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
@@ -45,6 +46,14 @@ def _parser() -> argparse.ArgumentParser:
         help="completed model-study directories copied from any machines",
     )
     compare_runs.add_argument("--output-dir", type=Path, required=True)
+    dataset_table = commands.add_parser(
+        "dataset-table",
+        help="export a LaTeX dataset table from existing selection caches only",
+    )
+    dataset_table.add_argument("--config", type=Path, required=True)
+    dataset_table.add_argument("--output-file", type=Path, required=True)
+    dataset_table.add_argument("--caption", required=True)
+    dataset_table.add_argument("--label", required=True)
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
     report.add_argument("--output-dir", type=Path)
@@ -93,6 +102,17 @@ def main() -> None:
             latex_tables=args.latex_tables,
         ):
             print(path)
+        return
+    if args.command == "dataset-table":
+        config = load_config(args.config, PROJECT_ROOT)
+        print(
+            make_dataset_latex_table(
+                config,
+                args.output_file,
+                caption=args.caption,
+                label=args.label,
+            )
+        )
         return
     config = load_config(args.config, PROJECT_ROOT)
     if args.command == "run" and args.remake_plots:
