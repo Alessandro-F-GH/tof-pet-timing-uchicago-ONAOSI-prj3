@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-DATASET_FORMAT_VERSION = 16
+DATASET_FORMAT_VERSION = 17
 
 
 @dataclass(frozen=True)
