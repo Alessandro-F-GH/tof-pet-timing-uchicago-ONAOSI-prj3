@@ -2,6 +2,11 @@ import unittest
 
 import numpy as np
 
+from waveform_analysis.ml_pipeline.models.locally_connected_mlp import (
+    LocallyConnected1D,
+    SharedLocallyConnectedScorer,
+    candidates as locally_connected_candidates,
+)
 from waveform_analysis.ml_pipeline.models.mlp import (
     MLPArtifact,
     SharedScorerMLP,
@@ -74,6 +79,57 @@ class ActiveModelTests(unittest.TestCase):
             },
         }
         self.assertEqual(config["training"]["momentum"], 0.9)
+
+
+    def test_locally_connected_layer_has_one_unshared_node_per_field(self):
+        import torch
+
+        layer = LocallyConnected1D(
+            input_samples=12,
+            receptive_field_samples=4,
+            overlap_samples=2,
+        )
+        self.assertEqual(layer.stride_samples, 2)
+        self.assertEqual(layer.n_fields, 5)
+        self.assertEqual(tuple(layer.weight.shape), (5, 4))
+        self.assertEqual(tuple(layer.bias.shape), (5,))
+        self.assertIsInstance(layer.weight, torch.nn.Parameter)
+
+    def test_locally_connected_mlp_pair_antisymmetry(self):
+        rng = np.random.default_rng(17)
+        pair = rng.normal(size=(8, 2, 32)).astype(np.float32)
+        artifact = MLPArtifact(
+            SharedLocallyConnectedScorer(
+                32,
+                [8],
+                "silu",
+                receptive_field_samples=8,
+                overlap_samples=4,
+            ),
+            "cpu",
+            {},
+        )
+        forward = predict_mlp(artifact, pair)
+        reverse = predict_mlp(artifact, pair[:, ::-1, :])
+        np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
+
+    def test_locally_connected_candidate_grid_includes_overlap(self):
+        config = {
+            "parameters": {
+                "architecture": [[16]],
+                "activation": ["silu"],
+                "learning_rate": [1e-3],
+                "batch_size": [32],
+                "receptive_field_samples": [8, 16],
+                "overlap_samples": [2, 4],
+            }
+        }
+        rows = locally_connected_candidates(config)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(
+            {(row["receptive_field_samples"], row["overlap_samples"]) for row in rows},
+            {(8, 2), (8, 4), (16, 2), (16, 4)},
+        )
 
     def test_onishi_cnn_matches_reference_architecture(self):
         import torch
