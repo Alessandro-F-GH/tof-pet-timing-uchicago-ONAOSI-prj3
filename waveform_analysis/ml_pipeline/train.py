@@ -71,53 +71,53 @@ def predict_model(spec: ModelSpec, fitted: FittedModel, pair: np.ndarray) -> np.
 
 
 
-def fit_fixed_model(
+def fit_development_model(
     spec,
     model_config,
     config,
     dataset,
     mode: str,
+    parameters,
     *,
     seed: int,
     sample_mask: np.ndarray | None = None,
     logger=None,
-) -> tuple[FittedModel, dict[str, Any]]:
-    """Fit one fixed-reference candidate on training+validation without model selection."""
-    candidates = list(spec.candidates(model_config))
-    if len(candidates) != 1:
-        raise ValueError(
-            f"Fixed-reference model {spec.name!r} must expose exactly one candidate, "
-            f"got {len(candidates)}"
-        )
-    parameters = dict(candidates[0] or {})
+    selection_performed: bool,
+) -> FittedModel:
+    """Fit the final model on the full development population.
+
+    Models that implement internal early stopping may carve their configured
+    holdout from this development population. The permanent blind/test split is
+    never used for fitting or early stopping.
+    """
     fit_indices = np.asarray(dataset.development, dtype=np.int64)
-    train_view = waveform_view(dataset, mode, fit_indices)
-    train_x_full = train_view.materialize()
-    mask_training_events = int(np.asarray(dataset.training, dtype=np.int64).size)
+    fit_view = waveform_view(dataset, mode, fit_indices)
+    fit_x_full = fit_view.materialize()
+    training_indices = np.asarray(dataset.training, dtype=np.int64)
     if sample_mask is None:
-        mask_view = waveform_view(
-            dataset,
-            mode,
-            np.asarray(dataset.training, dtype=np.int64),
-        )
+        mask_view = waveform_view(dataset, mode, training_indices)
         sample_mask = training_sample_mask(mask_view.materialize())
     sample_mask = np.asarray(sample_mask, dtype=bool).reshape(-1)
-    if sample_mask.size != train_x_full.shape[-1]:
+    if sample_mask.size != fit_x_full.shape[-1]:
         raise ValueError(
             f"Sample mask has {sample_mask.size} entries but waveform has "
-            f"{train_x_full.shape[-1]} samples"
+            f"{fit_x_full.shape[-1]} samples"
         )
     if not np.any(sample_mask):
         raise ValueError("Sample mask removes every waveform sample")
-    train_x = apply_sample_mask(train_x_full, sample_mask)
-    masked_time_ps = apply_sample_mask_to_time(train_view.time_ps, sample_mask)
-    train_target = model_target(dataset, mode)[fit_indices]
+
+    fit_x = apply_sample_mask(fit_x_full, sample_mask)
+    masked_time_ps = apply_sample_mask_to_time(fit_view.time_ps, sample_mask)
+    fit_target = model_target(dataset, mode)[fit_indices]
+
+    runtime_model_config = copy.deepcopy(model_config)
+    runtime_model_config["_early_stopping_seed"] = int(seed)
     fitted = _fit_once(
         spec,
-        model_config,
-        parameters,
-        train_x,
-        train_target,
+        runtime_model_config,
+        dict(parameters or {}),
+        fit_x,
+        fit_target,
         seed=seed,
         output_max_abs_ps=float(config["ml_output"]["max_abs_ps"]),
         input_time_ps=masked_time_ps,
@@ -132,17 +132,65 @@ def fit_fixed_model(
                 "value in at least 99% of training events"
             ),
             "sample_mask_constant_fraction": 0.99,
-            "sample_mask_training_events": mask_training_events,
+            "sample_mask_training_events": int(training_indices.size),
             "input_samples_before_mask": int(sample_mask.size),
             "input_samples_after_mask": int(np.count_nonzero(sample_mask)),
             "input_samples_removed": int(
                 sample_mask.size - np.count_nonzero(sample_mask)
             ),
-            "training_events": int(train_target.size),
-            "fit_population": "training_plus_validation",
+            "training_events": int(fit_target.size),
+            "fit_population": "development",
+            "development_events": int(fit_target.size),
             "validation_used_for_training": True,
-            "validation_used_for_selection": False,
+            "validation_used_for_selection": bool(selection_performed),
+            "model_selection_performed": bool(selection_performed),
+            "refit_after_selection": bool(selection_performed),
+            "selection_protocol": (
+                "validation_ctr_model_selection_then_development_refit"
+                if selection_performed
+                else "single_candidate_selection_skipped_development_fit"
+            ),
+        }
+    )
+    return fitted
+
+
+def fit_fixed_model(
+    spec,
+    model_config,
+    config,
+    dataset,
+    mode: str,
+    *,
+    seed: int,
+    sample_mask: np.ndarray | None = None,
+    logger=None,
+) -> tuple[FittedModel, dict[str, Any]]:
+    """Fit one fixed-reference candidate on the full development population."""
+    candidates = list(spec.candidates(model_config))
+    if len(candidates) != 1:
+        raise ValueError(
+            f"Fixed-reference model {spec.name!r} must expose exactly one candidate, "
+            f"got {len(candidates)}"
+        )
+    parameters = dict(candidates[0] or {})
+    fitted = fit_development_model(
+        spec,
+        model_config,
+        config,
+        dataset,
+        mode,
+        parameters,
+        seed=seed,
+        sample_mask=sample_mask,
+        logger=logger,
+        selection_performed=False,
+    )
+    fitted.metadata.update(
+        {
             "selection_protocol": "fixed_reference_configuration_no_model_selection",
+            "validation_used_for_selection": False,
+            "model_selection_performed": False,
             "refit_after_selection": False,
         }
     )
@@ -286,14 +334,6 @@ def search_model(
     )
 
 
-def selected_model(search: SearchResult) -> FittedModel:
-    """Return the validation-selected model exactly as trained during search."""
-    fitted = search.best.artifact
-    if not isinstance(fitted, FittedModel):
-        raise RuntimeError("Selected candidate no longer contains its trained model artifact")
-    return fitted
-
-
 def predict_indices(spec, fitted, dataset, mode, indices):
     view = waveform_view(dataset, mode, np.asarray(indices, dtype=np.int64))
     pair = apply_sample_mask(view.materialize(), fitted.sample_mask)
@@ -321,7 +361,7 @@ def save_model(spec, fitted, directory: Path, parameters):
             "sample_mask_file": sample_mask_file,
             "selection_protocol": fitted.metadata.get(
                 "selection_protocol",
-                "internal_train_holdout_early_stopping_validation_ctr_model_selection_selected_checkpoint_used_directly_without_refit",
+                "development_fit_with_internal_early_stopping",
             ),
             "prediction_definition": prediction_definition,
         },
