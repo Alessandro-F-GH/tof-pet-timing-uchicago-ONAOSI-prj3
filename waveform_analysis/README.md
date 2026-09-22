@@ -67,11 +67,19 @@ The MLP hyperparameter grid is defined in `config/model_spaces/mlp.json`. Weight
 
 ### Locally connected MLP
 
-The parallel model `locally_connected_mlp` keeps the same detector-shared antisymmetric form but replaces the fully connected first stage with a 1-D locally connected layer. Each node receives one contiguous receptive field of waveform samples and produces one scalar local representation. Neighboring fields may overlap. Unlike a CNN, weights and biases are not shared across temporal positions, so absolute position remains explicit.
+The parallel model `locally_connected_mlp` keeps the same detector-shared antisymmetric form but uses a hierarchical 1-D locally connected network. Its local layers have CNN-like kernel/stride geometry, but every temporal position has its own learned kernel and bias: there is **no weight sharing** and therefore no translation-equivariance prior.
 
-For receptive-field width `K` and overlap `O`, the stride is `K - O`. There is exactly one learned node per receptive field: no bank of multiple kernels is applied to the same window. The local outputs are activated and then passed to a conventional dense stack. The implementation uses standard PyTorch tensor slicing/stacking to build contiguous receptive fields and ordinary `nn.Parameter` tensors for the position-specific weights. If the nominal stride would leave a tail uncovered, the final receptive field is anchored to the waveform end.
+The scorer uses two successive scalar locally connected layers. Layer 1 operates directly on waveform samples; layer 2 operates on neighboring positions produced by layer 1, preserving temporal locality through more than one stage before the representation is passed to the final dense scorer. Both layers use valid/no-padding geometry.
 
-Because local receptive fields require consecutive samples, this model retains the complete configured ML time grid instead of applying the training-derived constant-sample mask. Receptive-field width and overlap are selected on validation CTR together with the other configured hyperparameters. The ready configuration is `config/experiments/model_study_locally_connected_mlp.json`.
+For one detector waveform `s`, the hierarchy is
+
+`s -> local_1 -> activation -> local_2 -> activation -> dense scorer g_theta(s)`.
+
+The paired timing correction remains exactly antisymmetric and is smoothly bounded:
+
+`y_theta = C * tanh((g_theta(s1) - g_theta(s2)) / C)`.
+
+The current configuration fixes the architecture rather than searching it: layer-1 kernel/stride = 16/4 samples, layer-2 kernel/stride = 3/1 local positions, dense architecture = [64], SiLU activation, Adam with learning rate 1e-3, batch size 128, and `C = 250 ps`. No random-restart logic is used. Because local receptive fields require consecutive samples, the complete configured ML time grid is retained instead of applying the training-derived constant-sample mask.
 
 ### Reference model: Onishi CNN
 
