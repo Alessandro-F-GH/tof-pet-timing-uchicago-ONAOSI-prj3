@@ -81,32 +81,31 @@ class ActiveModelTests(unittest.TestCase):
         self.assertEqual(config["training"]["momentum"], 0.9)
 
 
-    def test_locally_connected_layer_has_one_unshared_node_per_field(self):
+    def test_locally_connected_layer_has_unshared_position_specific_kernels(self):
         import torch
 
         layer = LocallyConnected1D(
-            input_samples=12,
-            receptive_field_samples=4,
-            overlap_samples=2,
+            input_positions=12,
+            kernel_size=4,
+            stride=2,
         )
-        self.assertEqual(layer.stride_samples, 2)
-        self.assertEqual(layer.n_fields, 5)
+        self.assertEqual(layer.output_positions, 5)
         self.assertEqual(tuple(layer.weight.shape), (5, 4))
         self.assertEqual(tuple(layer.bias.shape), (5,))
         self.assertIsInstance(layer.weight, torch.nn.Parameter)
 
+    def test_locally_connected_layer_matches_valid_stride_geometry(self):
+        import torch
 
-    def test_locally_connected_layer_covers_waveform_tail(self):
         layer = LocallyConnected1D(
-            input_samples=13,
-            receptive_field_samples=4,
-            overlap_samples=2,
+            input_positions=13,
+            kernel_size=4,
+            stride=2,
         )
-        self.assertEqual(layer.field_starts.tolist(), [0, 2, 4, 6, 8, 9])
-        self.assertEqual(
-            int(layer.field_starts[-1]) + layer.receptive_field_samples,
-            layer.input_samples,
-        )
+        values = torch.randn(7, 13)
+        output = layer(values)
+        self.assertEqual(layer.output_positions, 5)
+        self.assertEqual(output.shape, (7, 5))
 
     def test_locally_connected_mlp_pair_antisymmetry(self):
         rng = np.random.default_rng(17)
@@ -116,8 +115,11 @@ class ActiveModelTests(unittest.TestCase):
                 32,
                 [8],
                 "silu",
-                receptive_field_samples=8,
-                overlap_samples=4,
+                layer1_kernel_samples=8,
+                layer1_stride_samples=4,
+                layer2_kernel_positions=3,
+                layer2_stride_positions=1,
+                max_correction_ps=250.0,
             ),
             "cpu",
             {},
@@ -126,23 +128,65 @@ class ActiveModelTests(unittest.TestCase):
         reverse = predict_mlp(artifact, pair[:, ::-1, :])
         np.testing.assert_allclose(forward, -reverse, rtol=1e-6, atol=1e-6)
 
-    def test_locally_connected_candidate_grid_includes_overlap(self):
+    def test_locally_connected_output_is_smoothly_bounded(self):
+        import torch
+
+        limit = 75.0
+        model = SharedLocallyConnectedScorer(
+            32,
+            [8],
+            "silu",
+            layer1_kernel_samples=8,
+            layer1_stride_samples=4,
+            layer2_kernel_positions=3,
+            layer2_stride_positions=1,
+            max_correction_ps=limit,
+        )
+        pair = torch.randn(64, 2, 32) * 100.0
+        output = model(pair)
+        self.assertTrue(torch.all(torch.abs(output) <= limit))
+        reversed_output = model(pair[:, [1, 0], :])
+        torch.testing.assert_close(output, -reversed_output)
+
+    def test_locally_connected_candidate_grid_includes_hierarchy_and_bound(self):
         config = {
             "parameters": {
                 "architecture": [[16]],
                 "activation": ["silu"],
                 "learning_rate": [1e-3],
                 "batch_size": [32],
-                "receptive_field_samples": [8, 16],
-                "overlap_samples": [2, 4],
+                "layer1_kernel_samples": [8, 16],
+                "layer1_stride_samples": [4],
+                "layer2_kernel_positions": [3],
+                "layer2_stride_positions": [1],
+                "max_correction_ps": [150.0, 300.0],
             }
         }
         rows = locally_connected_candidates(config)
         self.assertEqual(len(rows), 4)
         self.assertEqual(
-            {(row["receptive_field_samples"], row["overlap_samples"]) for row in rows},
-            {(8, 2), (8, 4), (16, 2), (16, 4)},
+            {
+                (
+                    row["layer1_kernel_samples"],
+                    row["max_correction_ps"],
+                )
+                for row in rows
+            },
+            {
+                (8, 150.0),
+                (8, 300.0),
+                (16, 150.0),
+                (16, 300.0),
+            },
         )
+
+    def test_locally_connected_rejects_invalid_geometry(self):
+        with self.assertRaisesRegex(ValueError, "kernel_size"):
+            LocallyConnected1D(
+                input_positions=8,
+                kernel_size=16,
+                stride=1,
+            )
 
     def test_onishi_cnn_matches_reference_architecture(self):
         import torch
