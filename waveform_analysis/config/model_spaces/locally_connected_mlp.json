@@ -9,17 +9,23 @@
     "activation": [
       "silu"
     ],
-    "receptive_field_samples": [
-      16,
-      32
+    "layer1_kernel_samples": [
+      16
     ],
-    "overlap_samples": [
-      4,
-      8
+    "layer1_stride_samples": [
+      4
+    ],
+    "layer2_kernel_positions": [
+      3
+    ],
+    "layer2_stride_positions": [
+      1
+    ],
+    "max_correction_ps": [
+      250
     ],
     "learning_rate": [
-      0.001,
-      0.0003
+      0.001
     ],
     "batch_size": [
       128
