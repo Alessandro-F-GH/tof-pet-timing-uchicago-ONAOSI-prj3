@@ -1,0 +1,9 @@
+\section{Conclusion}
+
+This update presents a complete waveform-analysis chain for ML-based timing correction in TOF-PET detectors. The analysis begins from oscilloscope TRC files, preserves the raw acquisition in ROOT format, applies physically motivated event selection, constructs an LED-referenced waveform dataset, and evaluates a shared antisymmetric locally connected model on blind data.
+
+The central modeling choice is to combine local temporal connectivity with position-specific weights. This retains local waveform structure while avoiding the translation-weight-sharing assumption of a CNN for signals that have already been aligned to a physical timing reference.
+
+\todo{Insert the final numerical conclusion: best CTR values, bootstrap uncertainties, relative improvement over LED, and the main board/mode dependence.}
+
+\todo{Add one sentence on the threshold-scan result and one sentence on the next validation/hyperparameter-optimization step.}
