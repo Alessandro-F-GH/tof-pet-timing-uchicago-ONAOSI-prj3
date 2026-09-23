@@ -308,6 +308,12 @@ The complete bounded estimator is shown in Fig.~\ref{fig:ml-pipeline}.
     {Shared antisymmetric LC-MLP estimator. The same detector scorer is applied to both waveforms, and the score difference is mapped through a smooth bounded output function.}
     {fig:ml-pipeline}
 
+\subsection{Comparison strategy}
+
+The present results characterize the proposed LC-MLP using both waveform windows defined in the preprocessing stage. The shorter Onishi window provides a direct reference condition for a future controlled comparison with the paired convolutional neural network (CNN) described by Onishi et al.~\cite{onishi2022}, while the wide window tests whether the proposed model benefits from a longer portion of the detector waveform.
+
+In the planned model comparison, the Onishi CNN and the shared antisymmetric LC-MLP will be evaluated using the same selected events, LED timing definition, data split, and input window. Comparing the two architectures first on the Onishi window will reduce differences due to input information, while repeating the comparison with the wide window will show whether either model benefits from the additional temporal context.
+
 \subsection{Training and blind evaluation}
 
 For this research update, the model architecture is fixed before performance evaluation. 
