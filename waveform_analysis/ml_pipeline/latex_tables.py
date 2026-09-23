@@ -237,7 +237,7 @@ def _final_ctr_table(run: Path, output: Path) -> Path | None:
         method
         for methods in grouped.values()
         for method in methods
-        if method != "led"
+        if method not in {"led", "cfd"}
     )
     model_method = model_methods[0] if model_methods else None
     body = []
@@ -281,7 +281,7 @@ def _threshold_scan_summary_table(run: Path, output: Path) -> Path | None:
     rows.sort(key=lambda row: _float(row.get("threshold_mV")))
     body = [
         [
-            _number(row.get("threshold_mV"), 0),
+            f"{_float(row.get('threshold_mV')):g}",
             _measurement(
                 row.get("led_blind_ctr_ps"),
                 row.get("led_blind_ctr_uncertainty_ps"),
@@ -293,9 +293,19 @@ def _threshold_scan_summary_table(run: Path, output: Path) -> Path | None:
         ]
         for row in rows
     ]
+    voltage = _float(rows[0].get("voltage_V"))
+    mode = str(rows[0].get("mode", ""))
+    mode_label = {
+        "energy_to_energy": "energy-channel",
+        "timing_to_timing": "timing-channel",
+    }.get(mode, mode or "waveform")
+    voltage_label = f"{voltage:g} V" if np.isfinite(voltage) else "the scanned dataset"
     return _write_table(
         output / "threshold_scan_summary.tex",
-        caption="Blind-test coincidence timing resolution as a function of the LED threshold.",
+        caption=(
+            "Blind-test coincidence timing resolution as a function of the "
+            f"LED threshold for the {mode_label} study at {voltage_label}."
+        ),
         label="tab:threshold-scan-summary",
         columns=[
             "LED threshold [mV]",
