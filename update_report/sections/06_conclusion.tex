@@ -1,19 +1,46 @@
 \section{Conclusion}
 
-\paragraph{Energy-channel correction.}
-The locally connected waveform correction improves the blind-test coincidence timing resolution (CTR) for both front-end boards, with the largest gains obtained from the energy channel. Using the wide waveform window, the relative CTR improvement ranges from approximately \(23\%\) to \(34\%\) for the UC board and from \(18\%\) to \(21\%\) for the FBK board across the investigated bias voltages. At \SI{48}{V}, for example, the UC-board CTR is reduced from \(166\pm2\) ps with leading-edge discrimination (LED) to \(128\pm2\) ps after correction, while the FBK-board CTR is reduced from \(144\pm2\) ps to \(114\pm2\) ps.
+The locally connected waveform correction improves the blind-test coincidence timing resolution (CTR) for both front-end boards, 
+with the largest gains obtained from the energy channel.
 
-Most of the energy-channel correction is already obtained from the short Onishi window around the leading edge. Extending the input to the wide window gives a further reduction of \(1\)--\(3\) ps for the UC datasets and \(3\)--\(7\) ps for the FBK datasets. This is consistent with the XAI maps, where the strongest energy-channel sensitivity is concentrated around the rising edge. The threshold scans further show that the learned correction reduces the dependence on the selected LED threshold: in the representative UC energy-channel scan, the LED CTR varies from \(166\) to \(264\) ps, while the corrected CTR remains within \(129\)--\(141\) ps; for FBK, the corresponding ranges are \(143\)--\(211\) ps and \(114\)--\(121\) ps.
+\paragraph{Energy-channel correction.}
+ 
+Using the wide waveform window, the relative CTR improvement ranges from approximately \(23\%\) to \(34\%\) for the UC board and from \(18\%\) to \(21\%\) 
+for the FBK board across the investigated bias voltages. At \SI{48}{V}, for example, the UC-board CTR is reduced from \(166\pm2\) ps with leading-edge 
+discrimination (LED) to \(128\pm2\) ps after correction, while the FBK-board CTR is reduced from \(144\pm2\) ps to \(114\pm2\) ps.
+
+Most of the energy-channel correction is already obtained from the short Onishi window around the leading edge. Extending the input to the wide window 
+gives a further reduction of \(1\)--\(3\) ps for the UC datasets and \(3\)--\(7\) ps for the FBK datasets. 
+This is consistent with the XAI maps, where the strongest energy-channel sensitivity is concentrated around the rising edge. 
+The threshold scans further show that the learned correction reduces the dependence on the selected LED threshold: 
+in the representative UC energy-channel scan, the LED CTR varies from \(166\) to \(264\) ps, while the corrected CTR remains within \(129\)--\(141\) ps; 
+for FBK, the corresponding ranges are \(143\)--\(211\) ps and \(114\)--\(121\) ps.
 
 \paragraph{Timing-channel correction.}
-The timing-channel behavior is different. Since this channel is already designed to provide a fast and relatively uniform timing signal, the correction obtainable from the short waveform region is smaller. With the Onishi window, the improvement is approximately \(1.0\)--\(1.8\%\) for the UC board and \(1.5\)--\(4.0\%\) for the FBK board. Extending the waveform window consistently increases the improvement to approximately \(3.0\)--\(5.3\%\) for UC and \(5.1\)--\(6.5\%\) for FBK. The wide-window correction reaches \(57.4\pm0.8\) ps for the UC board at \SI{48}{V} and \(58\pm1\) ps for the FBK board at \SI{49}{V}.
+The timing-channel behavior is different. Since this channel is already designed to provide a fast and relatively uniform timing signal, the correction 
+obtainable from the short waveform region is smaller. With the Onishi window, the improvement is approximately \(1.0\)--\(1.8\%\) for the UC board and 
+\(1.5\)--\(4.0\%\) for the FBK board. Extending the waveform window consistently increases the improvement to approximately \(3.0\)--\(5.3\%\) for UC 
+and \(5.1\)--\(6.5\%\) for FBK. The wide-window correction reaches \(57.4\pm0.8\) ps for the UC board at \SI{48}{V} and \(58\pm1\) ps for the FBK board 
+at \SI{49}{V}.
 
-The XAI maps show sensitivity not only around the leading edge but also in later portions of the timing waveform, extending to approximately \SI{20}{ns} after the aligned crossing. This suggests that waveform structures following the primary rising edge, including secondary pulse features, may contain information correlated with the event-by-event timing error.
+The XAI maps show sensitivity not only around the leading edge but also in later portions of the timing waveform, extending to approximately 
+\SI{20}{ns} after the aligned crossing. 
+This suggests that waveform structures following the primary rising edge, including secondary pulse features, may contain information correlated 
+with the event-by-event timing error.
 
 \paragraph{Practical implications.}
-The shared antisymmetric formulation provides practical advantages in addition to enforcing the expected detector-exchange symmetry. A single detector scorer is used for both branches, so separate correction models are not required for the two sides of a coincidence pair. This reduces model duplication, allows all training events to constrain the same detector-level function, and makes the approach easier to scale to systems composed of comparable detector modules.
+The shared antisymmetric formulation provides practical advantages in addition to enforcing the expected detector-exchange symmetry. 
+A single detector scorer is used for both branches, so separate correction models are not required for the two sides of a coincidence pair. 
+This reduces model duplication, allows all training events to constrain the same detector-level function, and makes the approach easier to scale 
+to systems composed of comparable detector modules.
 
-Training is also simplified by the paired formulation. Since the model learns the difference between two detector scores relative to a calibrated LED residual, paired data acquired at one known source position are sufficient to construct the training target. The method therefore does not require multiple source positions solely to train the correction model. This is attractive for practical calibration workflows, although transfer to detector modules or electronics with substantially different waveform characteristics would still require dedicated validation.
+Training is also simplified by the paired formulation. Since the model learns the difference between two detector scores relative to a calibrated 
+LED residual, paired data acquired at one known source position are sufficient to construct the training target. The method therefore does not require 
+multiple source positions solely to train the correction model. This is attractive for practical calibration workflows, although transfer to detector 
+modules or electronics with substantially different waveform characteristics would still require dedicated validation.
 
 \paragraph{Next steps.}
-The planned comparison with the implemented Onishi CNN will use identical event selections, timing definitions, data splits, and waveform windows. This will clarify whether the observed temporal behavior is specific to the locally connected architecture or reflects more general properties of the detector waveforms. Further work can also use larger fixed-condition datasets for systematic hyperparameter optimization and investigate whether the late timing-channel information identified by XAI can be exploited by simpler timing estimators or future front-end electronics.
+The planned comparison with the implemented Onishi CNN will use identical event selections, timing definitions, data splits, and waveform windows. 
+This will clarify whether the observed temporal behavior is specific to the model architecture or reflects more general properties of the 
+detector waveforms. Further work can also use larger fixed-condition datasets for systematic hyperparameter optimization and investigate whether the 
+late timing-channel information identified by XAI can be exploited by simpler timing estimators or future front-end electronics.
