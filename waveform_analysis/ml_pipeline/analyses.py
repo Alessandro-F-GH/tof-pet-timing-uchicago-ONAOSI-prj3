@@ -119,11 +119,12 @@ def plot_threshold_scan(
                 [float(row["led_blind_ctr_uncertainty_ps"]) for row in subset],
                 dtype=float,
             )
-            mlp = np.asarray(
-                [float(row["mlp_blind_ctr_ps"]) for row in subset], dtype=float
+            model_name = str(subset[0]["model"])
+            model_ctr = np.asarray(
+                [float(row["model_blind_ctr_ps"]) for row in subset], dtype=float
             )
-            mlp_err = np.asarray(
-                [float(row["mlp_blind_ctr_uncertainty_ps"]) for row in subset],
+            model_err = np.asarray(
+                [float(row["model_blind_ctr_uncertainty_ps"]) for row in subset],
                 dtype=float,
             )
             improvement = np.asarray(
@@ -149,11 +150,11 @@ def plot_threshold_scan(
             )
             ax.errorbar(
                 threshold,
-                mlp,
-                yerr=np.where(np.isfinite(mlp_err), mlp_err, 0.0),
+                model_ctr,
+                yerr=np.where(np.isfinite(model_err), model_err, 0.0),
                 capsize=2.5,
-                label=LABELS.get("mlp", "MLP"),
-                **model_style("mlp"),
+                label=LABELS.get(model_name, model_name),
+                **model_style(model_name),
             )
             ax.set_xlabel("LED threshold above baseline [mV]")
             ax.set_ylabel("CTR [ps]")
@@ -175,7 +176,7 @@ def plot_threshold_scan(
                     np.isfinite(improvement_err), improvement_err, 0.0
                 ),
                 capsize=2.5,
-                **model_style("mlp"),
+                **model_style(model_name),
             )
             ax.axhline(0.0, color="#7F7F7F", linestyle=":", linewidth=0.9)
             ax.set_xlabel("LED threshold above baseline [mV]")
@@ -202,7 +203,9 @@ def run_blind_led_threshold_scan(
     rebuild: bool,
     resume: bool = False,
 ) -> dict[str, Any]:
-    model_name = "mlp"
+    if len(config["models"]) != 1:
+        raise ValueError("threshold scan requires exactly one configured model")
+    model_name = next(iter(config["models"]))
     thresholds = sorted(
         {float(value) for value in config["standard_methods"]["led_thresholds_mV"]}
     )
@@ -250,9 +253,9 @@ def run_blind_led_threshold_scan(
             artifact_dir = (
                 output_dir / "artifacts" / dataset_name / _threshold_label(threshold)
             )
-            residual_path = artifact_dir / "mlp_blind_residuals_ps.npy"
+            residual_path = artifact_dir / f"{model_name}_blind_residuals_ps.npy"
             led_path = artifact_dir / "led_blind_residuals_ps.npy"
-            output_path = artifact_dir / "mlp_blind_model_output_ps.npy"
+            output_path = artifact_dir / f"{model_name}_blind_model_output_ps.npy"
             if (
                 resume
                 and key in completed
@@ -269,7 +272,9 @@ def run_blind_led_threshold_scan(
                 continue
 
             candidate_config = _threshold_config(config, threshold, output_dir)
-            candidate_config["models"] = {"mlp": config["models"]["mlp"]}
+            candidate_config["models"] = {
+                model_name: config["models"][model_name]
+            }
             with progress.task(
                 "threshold_scan",
                 f"{dataset_name} | {threshold:g} mV",
@@ -471,8 +476,8 @@ def run_blind_led_threshold_scan(
                         "led_blind_ctr_uncertainty_ps": float(
                             led_fit.ctr_error_ps
                         ),
-                        "mlp_blind_ctr_ps": float(model_fit.ctr_ps),
-                        "mlp_blind_ctr_uncertainty_ps": float(
+                        "model_blind_ctr_ps": float(model_fit.ctr_ps),
+                        "model_blind_ctr_uncertainty_ps": float(
                             model_fit.ctr_error_ps
                         ),
                         "relative_improvement_percent": improvement,
@@ -487,11 +492,12 @@ def run_blind_led_threshold_scan(
 
             logger.info(
                 "Result | %s | LED=%g mV | LED CTR=%.3f ± %.3f ps | "
-                "MLP CTR=%.3f ± %.3f ps | improvement=%.2f ± %.2f%%",
+                "%s CTR=%.3f ± %.3f ps | improvement=%.2f ± %.2f%%",
                 dataset_name,
                 threshold,
                 float(led_fit.ctr_ps),
                 float(led_fit.ctr_error_ps),
+                LABELS.get(model_name, model_name),
                 float(model_fit.ctr_ps),
                 float(model_fit.ctr_error_ps),
                 improvement,
