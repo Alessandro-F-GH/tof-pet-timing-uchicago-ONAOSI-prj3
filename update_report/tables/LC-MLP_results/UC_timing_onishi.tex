@@ -1,22 +1,17 @@
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{lrlrr}
+\begin{tabular}{rrr}
 \toprule
-Dataset & Bias [V] & Method & CTR [ps] & $N$ \\
+Bias [V] & LED CTR [ps] & Corrected CTR [ps] \\
 \midrule
-42V-100mV & 42.0 & LED & 62.10 $\pm$ 0.80 & 4304 \\
-42V-100mV & 42.0 & Locally connected MLP & 61.23 $\pm$ 0.69 & 4304 \\
-44V-115mV & 44.0 & LED & 62.06 $\pm$ 0.91 & 3559 \\
-44V-115mV & 44.0 & Locally connected MLP & 61.47 $\pm$ 0.89 & 3559 \\
-46V-130mV & 46.0 & LED & 60.48 $\pm$ 0.95 & 3494 \\
-46V-130mV & 46.0 & Locally connected MLP & 59.38 $\pm$ 0.86 & 3494 \\
-48V-140mV & 48.0 & LED & 60.31 $\pm$ 1.06 & 3070 \\
-48V-140mV & 48.0 & Locally connected MLP & 58.83 $\pm$ 1.08 & 3070 \\
-49V-150mV & 49.0 & LED & 59.40 $\pm$ 0.87 & 4234 \\
-49V-150mV & 49.0 & Locally connected MLP & 58.51 $\pm$ 0.72 & 4234 \\
+42 & 62.1 $\pm$ 0.8 & 61.2 $\pm$ 0.7 \\
+44 & 62.1 $\pm$ 0.9 & 61.5 $\pm$ 0.9 \\
+46 & 60.5 $\pm$ 1.0 & 59.4 $\pm$ 0.9 \\
+48 & 60 $\pm$ 1 & 59 $\pm$ 1 \\
+49 & 59.4 $\pm$ 0.9 & 58.5 $\pm$ 0.7 \\
 \bottomrule
 \end{tabular}
-\caption{Blind-test coincidence timing resolution for the evaluated methods.}
-\label{tab:final-ctr}
+\caption{UC-board timing-channel results using the Onishi waveform window.}
+\label{tab:uc-timing-onishi}
 \end{table}
