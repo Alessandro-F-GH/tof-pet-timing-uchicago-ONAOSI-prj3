@@ -1,0 +1,71 @@
+\documentclass[10pt,a4paper,twocolumn]{article}
+
+\usepackage[margin=1.65cm,columnsep=0.65cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+\sisetup{separate-uncertainty=true}
+
+\newcommand{\todo}[1]{\textcolor{red!70!black}{\textbf{TODO:} #1}}
+\newcommand{\TOF}{\mathrm{TOF}}
+\newcommand{\CTR}{\mathrm{CTR}}
+
+\newcommand{\reportfigure}[3]{%
+  \begin{figure}[t]
+    \centering
+    \IfFileExists{#1}{%
+      \includegraphics[width=\columnwidth]{#1}%
+    }{%
+      \fbox{%
+        \begin{minipage}[c][3.7cm][c]{0.92\columnwidth}
+          \centering
+          \textbf{Figure placeholder}\\[0.4em]
+          \texttt{\detokenize{#1}}\\[0.4em]
+          #2
+        \end{minipage}%
+      }%
+    }
+    \caption{#2}
+    \label{#3}
+  \end{figure}
+}
+
+\title{\textbf{Waveform-Based Machine-Learning Timing Correction for TOF-PET Detectors}\\
+\large Research Group Update}
+\author{\todo{Author and affiliation}}
+\date{\todo{Date}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Time-of-flight positron emission tomography (TOF-PET) benefits directly from improved coincidence timing resolution. This update summarizes a waveform-based machine-learning approach for correcting leading-edge timing using the full detector waveform. The proposed model applies the same detector-level scorer to the two aligned waveforms and combines the two scores antisymmetrically, so exchanging the detector inputs changes only the sign of the predicted correction. The current model uses locally connected temporal processing: neighboring waveform samples are processed hierarchically while weights remain position specific rather than shared across time.
+
+The report focuses on the experimental data, event selection, waveform preprocessing, target definition, training and blind evaluation pipeline, and the resulting timing performance for the University of Chicago and Fondazione Bruno Kessler front-end boards.
+
+\todo{Insert a short numerical summary of the final CTR improvement and the main comparison across modes/boards.}
+\end{abstract}
+
+\input{sections/00_introduction}
+\input{sections/01_experimental_setup}
+\input{sections/02_preprocessing}
+\input{sections/03_ml_model_pipeline}
+\input{sections/04_datasets_results}
+\input{sections/05_conclusion}
+
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\end{document}
