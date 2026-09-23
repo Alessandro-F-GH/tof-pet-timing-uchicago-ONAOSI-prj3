@@ -1,9 +1,13 @@
 \section{Conclusion}
 
-This update presents a complete waveform-analysis chain for ML-based timing correction in TOF-PET detectors. The analysis begins from oscilloscope TRC files, preserves the raw acquisition in ROOT format, applies physically motivated event selection, constructs an LED-referenced waveform dataset, and evaluates a shared antisymmetric locally connected model on blind data.
-
-The central modeling choice is to combine local temporal connectivity with position-specific weights. This retains local waveform structure while avoiding the translation-weight-sharing assumption of a CNN for signals that have already been aligned to a physical timing reference.
-
-\todo{Insert the final numerical conclusion: best CTR values, bootstrap uncertainties, relative improvement over LED, and the main board/mode dependence.}
-
+The model leads to a consistent improvement for both modes, even if the biggest improvement is observed when applying the method
+to the energy channel data. Also, the improvement on energy channel is mostly determined by the first rising part of the signal: the ctr
+doesn't improve significantly increasing the window length and the xai analysiss shows a single sharp peak in importance on the first edge only
+for both boards data. The relative improvement is consistent with previous work and the LED correction is unbiased, as observed by Onishi 2022 (ref). 
+The application of ML to the timing channel is novel to the best of our knowledge. Since the timing channel is already designed for timing, producing
+very similar sharp signals, it is expected that the LED error that can be corrected using the waveform shape is reduced. Snyway, it is interesting
+that the improvement is significantly and consistently increased  using a bigger window (both boards), and XAI shows that relevant timing information can be found
+even 20 ns after the arrival. This effect suggest that both the leading edge and secondary pulses can provide information about the true time of 
+arrival of the photon. Even if the correction is small, especially in UC board, this effect should be further investigated and could lead to an improvement
+of timing performances even using standard methods.
 \todo{Add one sentence on the threshold-scan result and one sentence on the next validation/hyperparameter-optimization step.}

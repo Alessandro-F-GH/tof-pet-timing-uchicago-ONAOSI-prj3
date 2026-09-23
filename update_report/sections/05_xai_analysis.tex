@@ -1,5 +1,19 @@
 \section{Explainability analysis}
 
+Explainable artificial intelligence (XAI) is used here to investigate how the trained model exploits the waveform information that leads to the observed 
+timing correction. While the coincidence timing resolution quantifies the performance of the model, it does not indicate which regions of the signal are 
+responsible for that performance.
+
+The purpose of the XAI analysis is therefore to identify where, in the aligned waveform, the model is most sensitive to the input and to relate these 
+regions to the physical structure of the detector signal. This provides additional insight into the behavior of the model beyond the final CTR value 
+and helps assess which parts of the waveform contain useful information for timing correction.
+
+Understanding how the model uses the signal may also have practical implications beyond model interpretation. 
+The identified informative waveform regions could suggest which signal features should be preserved or emphasized in future front-end electronics 
+designs, while regions consistently assigned little importance may indicate where acquisition bandwidth or waveform duration could potentially be 
+reduced. At the same time, the analysis can help clarify the intrinsic limits of the proposed correction approach by showing which information is 
+actually available to the model in the measured waveform.
+
 \subsection{Gradient-based temporal sensitivity}
 
 The temporal regions used by the locally connected multilayer perceptron (LC-MLP) are examined with a gradient-based explainability analysis. For each event, the sensitivity of the predicted timing correction \(\widehat{y}\) to every normalized input sample is computed from the input gradient. The sample-wise importance is defined as the mean absolute gradient over the analyzed events and over the two detector branches:
