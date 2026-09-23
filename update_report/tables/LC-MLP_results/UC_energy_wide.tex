@@ -1,0 +1,22 @@
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lrlrr}
+\toprule
+Dataset & Bias [V] & Method & CTR [ps] & $N$ \\
+\midrule
+42V-100mV & 42.0 & LED & 258.90 $\pm$ 3.07 & 4775 \\
+42V-100mV & 42.0 & Locally connected MLP & 172.48 $\pm$ 2.38 & 4775 \\
+44V-115mV & 44.0 & LED & 216.25 $\pm$ 3.25 & 4144 \\
+44V-115mV & 44.0 & Locally connected MLP & 158.07 $\pm$ 2.23 & 4144 \\
+46V-130mV & 46.0 & LED & 184.63 $\pm$ 2.35 & 4155 \\
+46V-130mV & 46.0 & Locally connected MLP & 141.86 $\pm$ 1.97 & 4155 \\
+48V-140mV & 48.0 & LED & 166.23 $\pm$ 2.27 & 3919 \\
+48V-140mV & 48.0 & Locally connected MLP & 127.81 $\pm$ 1.70 & 3919 \\
+49V-150mV & 49.0 & LED & 166.65 $\pm$ 2.10 & 5623 \\
+49V-150mV & 49.0 & Locally connected MLP & 128.15 $\pm$ 1.47 & 5623 \\
+\bottomrule
+\end{tabular}
+\caption{Blind-test coincidence timing resolution for the evaluated methods.}
+\label{tab:final-ctr}
+\end{table}
