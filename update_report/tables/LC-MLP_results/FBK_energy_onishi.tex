@@ -1,22 +1,17 @@
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{lrlrr}
+\begin{tabular}{rrr}
 \toprule
-Dataset & Bias [V] & Method & CTR [ps] & $N$ \\
+Bias [V] & LED CTR [ps] & Corrected CTR [ps] \\
 \midrule
-45V-400mV & 45.0 & LED & 163.49 $\pm$ 2.48 & 3588 \\
-45V-400mV & 45.0 & Locally connected MLP & 134.06 $\pm$ 2.16 & 3588 \\
-46V-440mV & 46.0 & LED & 154.65 $\pm$ 2.40 & 4376 \\
-46V-440mV & 46.0 & Locally connected MLP & 126.25 $\pm$ 1.71 & 4376 \\
-47V-470mV & 47.0 & LED & 150.85 $\pm$ 1.89 & 4655 \\
-47V-470mV & 47.0 & Locally connected MLP & 126.55 $\pm$ 1.56 & 4655 \\
-48V-480mV & 48.0 & LED & 144.23 $\pm$ 1.99 & 4033 \\
-48V-480mV & 48.0 & Locally connected MLP & 121.24 $\pm$ 1.99 & 4033 \\
-49V-490mV & 49.0 & LED & 140.16 $\pm$ 2.20 & 3954 \\
-49V-490mV & 49.0 & Locally connected MLP & 120.30 $\pm$ 1.82 & 3954 \\
+45 & 163 $\pm$ 2 & 134 $\pm$ 2 \\
+46 & 155 $\pm$ 2 & 126 $\pm$ 2 \\
+47 & 151 $\pm$ 2 & 127 $\pm$ 2 \\
+48 & 144 $\pm$ 2 & 121 $\pm$ 2 \\
+49 & 140 $\pm$ 2 & 120 $\pm$ 2 \\
 \bottomrule
 \end{tabular}
-\caption{Blind-test coincidence timing resolution for the evaluated methods.}
-\label{tab:final-ctr}
+\caption{FBK-board energy-channel results using the Onishi waveform window.}
+\label{tab:fbk-energy-onishi}
 \end{table}
