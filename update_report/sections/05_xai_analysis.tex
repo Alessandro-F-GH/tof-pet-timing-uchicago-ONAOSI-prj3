@@ -1,0 +1,60 @@
+\section{Explainability analysis}
+
+\subsection{Gradient-based temporal sensitivity}
+
+The temporal regions used by the locally connected multilayer perceptron (LC-MLP) are examined with a gradient-based explainability analysis. For each event, the sensitivity of the predicted timing correction \(\widehat{y}\) to every normalized input sample is computed from the input gradient. The sample-wise importance is defined as the mean absolute gradient over the analyzed events and over the two detector branches:
+
+\begin{equation}
+    I_j
+    =
+    \frac{1}{2N}
+    \sum_{n=1}^{N}
+    \sum_{d=1}^{2}
+    \left|
+        \frac{\partial \widehat{y}_n}
+             {\partial x_{n,d,j}}
+    \right|,
+\end{equation}
+
+where \(x_{n,d,j}\) is sample \(j\) of detector \(d\) for event \(n\). Since the gradient is evaluated through the complete trained model, the sensitivity also includes the effect of the smooth bounded output transformation described previously.
+
+The analysis is performed on up to 1024 events from the development population; the blind test population is not used to construct the XAI map. The resulting quantity should be interpreted as local model sensitivity rather than as a causal attribution: large values identify time samples for which small input variations produce a comparatively large change in the model output.
+
+For visualization, the sample-wise importance is averaged within consecutive \SI{1}{ns} intervals. If \(B_k\) denotes the set of samples belonging to the \(k\)-th time interval,
+
+\begin{equation}
+    \overline{I}_k
+    =
+    \frac{1}{|B_k|}
+    \sum_{j\in B_k} I_j .
+\end{equation}
+
+The interval values are then normalized to the largest value in the waveform, so that the displayed importance ranges from 0 to 1. In each plot, the upper panel shows one representative detector-waveform pair in physical voltage units, with the background shading indicating the normalized temporal sensitivity. The lower panel shows the corresponding \SI{1}{ns}-binned importance profile.
+
+\subsection{Representative UC-board results}
+
+Representative XAI maps for the UC board are shown for the energy-channel and timing-channel modes at \SI{48}{V} in Figs.~\ref{fig:xai-uc-energy} and~\ref{fig:xai-uc-timing}, respectively.
+
+\reportfigure
+    {../report/figures/xai/UC_energy_48V.pdf}
+    {Gradient-based temporal sensitivity of the LC-MLP for the UC-board energy-channel study at \SI{48}{V}.}
+    {fig:xai-uc-energy}
+
+\reportfigure
+    {../report/figures/xai/UC_timing_48V.pdf}
+    {Gradient-based temporal sensitivity of the LC-MLP for the UC-board timing-channel study at \SI{48}{V}.}
+    {fig:xai-uc-timing}
+
+\subsection{Representative FBK-board results}
+
+Representative XAI maps for the FBK board are shown for the energy-channel study at \SI{48}{V} and the timing-channel study at \SI{47}{V} in Figs.~\ref{fig:xai-fbk-energy} and~\ref{fig:xai-fbk-timing}, respectively.
+
+\reportfigure
+    {../report/figures/xai/FBK_energy_48V.pdf}
+    {Gradient-based temporal sensitivity of the LC-MLP for the FBK-board energy-channel study at \SI{48}{V}.}
+    {fig:xai-fbk-energy}
+
+\reportfigure
+    {../report/figures/xai/FBK_timing_47V.pdf}
+    {Gradient-based temporal sensitivity of the LC-MLP for the FBK-board timing-channel study at \SI{47}{V}.}
+    {fig:xai-fbk-timing}
