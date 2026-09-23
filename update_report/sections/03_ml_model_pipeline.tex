@@ -32,6 +32,11 @@ Because the same scorer is used for both detectors, exchanging the two detector 
 
 The detector-exchange antisymmetry is therefore imposed directly by the model architecture rather than learned from the training data.
 
+\paragraph{Practical advantages of the shared formulation.}
+The shared construction is also useful from an implementation perspective. Because the same scorer is used for both detector branches, the model does not require a separate detector-specific function for each side of the coincidence pair. All training events therefore contribute to the same detector-level mapping, reducing model duplication and simplifying deployment.
+
+For systems composed of comparable detector modules, this formulation is more scalable than training a different correction model for every detector pairing. The supervision is also comparatively simple: training requires paired waveforms acquired at a known source position, from which the calibrated timing residual can be constructed. A single fixed source position is therefore sufficient for model training, without requiring a dedicated scan over multiple source locations. Generalization to detector hardware with substantially different signal characteristics would still need to be validated experimentally.
+
 
 \subsection{Locally connected multilayer perceptron}
 
