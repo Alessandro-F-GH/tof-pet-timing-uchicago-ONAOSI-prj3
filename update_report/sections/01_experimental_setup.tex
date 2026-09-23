@@ -1,0 +1,37 @@
+\section{Experimental setup and acquired data}
+
+\subsection{Detector system}
+
+The measurements use two opposing detector modules with a \(^{22}\mathrm{Na}\) source positioned between them. Each detector module consists of a silicon photomultiplier (SiPM) coupled to a lutetium--yttrium oxyorthosilicate (LYSO) crystal with dimensions \(2\times2\times3~\mathrm{mm}^3\).
+
+Two front-end electronics configurations are considered:
+\begin{itemize}[leftmargin=*]
+    \item the University of Chicago (UC) front-end board;
+    \item the Fondazione Bruno Kessler (FBK) front-end board.
+\end{itemize}
+Measurements were acquired at several SiPM bias voltages. The boards are analyzed separately rather than pooling the datasets.
+
+\subsection{Oscilloscope acquisition}
+
+Each event contains four oscilloscope channels:
+\begin{itemize}[leftmargin=*]
+    \item channels 1--2: energy waveforms for the two detectors;
+    \item channels 3--4: timing waveforms for the two detectors.
+\end{itemize}
+
+The oscilloscope acquisition window is \SI{100}{ns}, sampled at \SI{80}{GS/s}. Both the energy-channel and timing-channel waveform families are retained so that timing correction can be studied independently in the two modes.
+
+\subsection{Dataset summary}
+
+The dataset tables report the acquired bias-voltage points, total event counts, and event counts after selection. The UC and FBK tables are intentionally kept separate.
+
+\input{tables/uc_board_dataset}
+
+\input{tables/fbk_board_dataset}
+
+\todo{Replace the two dataset-table placeholders with the frozen UC and FBK tables from the analysis outputs.}
+
+\reportfigure
+    {figures/experimental_setup.pdf}
+    {Experimental setup with the two detector modules, source, front-end electronics, and four oscilloscope channels.}
+    {fig:experimental-setup}
