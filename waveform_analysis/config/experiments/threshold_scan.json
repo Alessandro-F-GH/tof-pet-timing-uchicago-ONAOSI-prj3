@@ -4,8 +4,8 @@
   "preprocessing_config": "../preprocessing/default_ctr.json",
   "experiment": {
     "type": "threshold_scan",
-    "name": "timing_threshold_scan_46V",
-    "output_dir": "results/studies/timing_threshold_scan_46V",
+    "name": "timing_threshold_scan_locally_connected_mlp_46V",
+    "output_dir": "results/studies/timing_threshold_scan_locally_connected_mlp_46V",
     "voltage_V": 46
   },
   "standard_methods": {
@@ -21,7 +21,7 @@
     ]
   },
   "models": [
-    "mlp"
+    "locally_connected_mlp"
   ],
   "mode": "timing_to_timing",
   "cfd": false
