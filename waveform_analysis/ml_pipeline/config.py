@@ -129,8 +129,8 @@ def validate_config(config):
 
 
     if experiment_type == "threshold_scan":
-        if set(config["models"]) != {"mlp"}:
-            raise ConfigError("threshold_scan requires exactly models=['mlp']")
+        if len(config["models"]) != 1:
+            raise ConfigError("threshold_scan requires exactly one configured model")
         if "voltage_V" not in experiment:
             raise ConfigError("threshold_scan requires experiment.voltage_V")
         voltage = float(experiment["voltage_V"])
