@@ -45,14 +45,23 @@ def _number(value: Any, digits: int = 2) -> str:
     return f"{number:.{digits}f}"
 
 
-def _measurement(value: Any, uncertainty: Any, digits: int = 2) -> str:
+def _measurement(value: Any, uncertainty: Any) -> str:
     central = _float(value)
     error = _float(uncertainty)
     if not np.isfinite(central):
         return "--"
-    if not np.isfinite(error):
-        return _number(central, digits)
-    return f"{central:.{digits}f} $\\pm$ {error:.{digits}f}"
+    if not np.isfinite(error) or error <= 0:
+        return _number(central, 2)
+
+    exponent = int(np.floor(np.log10(abs(error))))
+    decimals = max(0, -exponent)
+    scale = 10.0 ** decimals
+    rounded_error = round(error * scale) / scale
+    rounded_central = round(central * scale) / scale
+    return (
+        f"{rounded_central:.{decimals}f} "
+        f"$\\pm$ {rounded_error:.{decimals}f}"
+    )
 
 
 def _bool_mark(value: Any) -> str:
@@ -217,33 +226,85 @@ def _final_ctr_table(run: Path, output: Path) -> Path | None:
     ]
     if not rows:
         return None
-    rows.sort(
-        key=lambda row: (
-            _float(row.get("voltage_V")),
-            str(row.get("dataset", "")),
-            str(row.get("method", "")),
-        )
-    )
-    body = []
+
+    grouped: dict[int, dict[str, dict[str, Any]]] = {}
     for row in rows:
+        voltage = int(round(_float(row.get("voltage_V"))))
+        method = str(row.get("method", ""))
+        grouped.setdefault(voltage, {})[method] = row
+
+    model_methods = sorted(
+        method
+        for methods in grouped.values()
+        for method in methods
+        if method != "led"
+    )
+    model_method = model_methods[0] if model_methods else None
+    body = []
+    for voltage in sorted(grouped):
+        methods = grouped[voltage]
+        led = methods.get("led")
+        model = methods.get(model_method) if model_method is not None else None
+        if led is None or model is None:
+            continue
         body.append(
             [
-                _escape(row.get("dataset", "")),
-                _number(row.get("voltage_V"), 1),
-                _escape(LABELS.get(str(row.get("method", "")), str(row.get("method", "")))),
-                _measurement(row.get("ctr_ps"), row.get("ctr_uncertainty_ps")),
-                str(int(_float(row.get("n"), 0))),
+                str(voltage),
+                _measurement(
+                    led.get("ctr_ps"),
+                    led.get("ctr_uncertainty_ps"),
+                ),
+                _measurement(
+                    model.get("ctr_ps"),
+                    model.get("ctr_uncertainty_ps"),
+                ),
             ]
         )
+    if not body:
+        return None
+
     return _write_table(
         output / "final_ctr.tex",
-        caption="Blind-test coincidence timing resolution for the evaluated methods.",
+        caption="Blind-test coincidence timing resolution.",
         label="tab:final-ctr",
-        columns=["Dataset", "Bias [V]", "Method", "CTR [ps]", "$N$"],
+        columns=["Bias [V]", "LED CTR [ps]", "Corrected CTR [ps]"],
         rows=body,
-        alignment="lrlrr",
+        alignment="rrr",
     )
 
+
+def _threshold_scan_summary_table(run: Path, output: Path) -> Path | None:
+    rows = _read_csv(run / "csv" / "threshold_scan.csv")
+    if not rows:
+        return None
+
+    rows.sort(key=lambda row: _float(row.get("threshold_mV")))
+    body = [
+        [
+            _number(row.get("threshold_mV"), 0),
+            _measurement(
+                row.get("led_blind_ctr_ps"),
+                row.get("led_blind_ctr_uncertainty_ps"),
+            ),
+            _measurement(
+                row.get("model_blind_ctr_ps"),
+                row.get("model_blind_ctr_uncertainty_ps"),
+            ),
+        ]
+        for row in rows
+    ]
+    return _write_table(
+        output / "threshold_scan_summary.tex",
+        caption="Blind-test coincidence timing resolution as a function of the LED threshold.",
+        label="tab:threshold-scan-summary",
+        columns=[
+            "LED threshold [mV]",
+            "LED CTR [ps]",
+            "Corrected CTR [ps]",
+        ],
+        rows=body,
+        alignment="rrr",
+    )
 
 def _threshold_table(run: Path, output: Path) -> Path | None:
     rows = _read_csv(run / "analyses" / "led_threshold" / "csv" / "threshold_scan.csv")
@@ -347,7 +408,12 @@ def make_latex_tables(
     output.mkdir(parents=True, exist_ok=True)
 
     generated = []
-    for builder in (_final_ctr_table, _threshold_table, _window_table):
+    for builder in (
+        _final_ctr_table,
+        _threshold_scan_summary_table,
+        _threshold_table,
+        _window_table,
+    ):
         path = builder(run, output)
         if path is not None:
             generated.append(path)
