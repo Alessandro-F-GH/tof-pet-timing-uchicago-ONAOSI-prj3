@@ -1,69 +1,63 @@
 \section{Datasets and results}
 
+The results are reported separately for the University of Chicago (UC) and Fondazione Bruno Kessler (FBK) front-end boards and for the energy- and timing-channel waveform modes. For each configuration, the fixed-threshold results are shown for both the Onishi input window and the wider input window. A separate LED-threshold scan is reported for one representative bias-voltage dataset in each board/mode combination.
+
+\subsection{Dataset summary}
+
+The numbers of collected, photopeak-selected, and finally selected events for the UC and FBK datasets are reported in Tables~\ref{tab:uc-board-dataset} and~\ref{tab:fbk-board-dataset}, respectively.
+
+\input{tables/datasets/uc_board_dataset}
+
+\input{tables/datasets/fbk_board_dataset}
+
+
 \subsection{UC board -- energy-channel mode}
 
-%\input{tables/results_uc_energy}
+The fixed-threshold blind-test CTR results for the UC-board energy-channel study are reported for the Onishi and wide waveform windows in Tables~\ref{tab:uc-energy-onishi} and~\ref{tab:uc-energy-wide}.
 
-\reportfigure
-    {figures/uc_energy_ctr_vs_voltage.pdf}
-    {UC-board energy-channel mode: LED and locally connected MLP CTR versus bias voltage at the fixed LED threshold.}
-    {fig:uc-energy-voltage}
+\input{tables/LC-MLP_results/UC_energy_onishi}
 
-\reportfigure
-    {figures/uc_energy_ctr_vs_threshold.pdf}
-    {UC-board energy-channel mode: CTR versus LED threshold. Populate only if this is the dataset used for the threshold scan.}
-    {fig:uc-energy-threshold}
+\input{tables/LC-MLP_results/UC_energy_wide}
 
-\todo{Add a short interpretation: absolute CTR, relative correction, voltage dependence, and whether this dataset contains the threshold scan.}
+The dependence on the LED threshold was studied separately at \SI{48}{V}. The corresponding LED and corrected CTR values are reported in Table~\ref{tab:uc-energy-threshold-scan}.
+
+\input{tables/Threshold_scan_results/UC_energy_48V}
+
 
 \subsection{UC board -- timing-channel mode}
 
-%\input{tables/results_uc_timing}
+The fixed-threshold blind-test CTR results for the UC-board timing-channel study are reported for the Onishi and wide waveform windows in Tables~\ref{tab:uc-timing-onishi} and~\ref{tab:uc-timing-wide}.
 
-\reportfigure
-    {figures/uc_timing_ctr_vs_voltage.pdf}
-    {UC-board timing-channel mode: LED and locally connected MLP CTR versus bias voltage at the fixed LED threshold.}
-    {fig:uc-timing-voltage}
+\input{tables/LC-MLP_results/UC_timing_onishi}
 
-\reportfigure
-    {figures/uc_timing_ctr_vs_threshold.pdf}
-    {UC-board timing-channel mode: CTR versus LED threshold. Populate only if this is the dataset used for the threshold scan.}
-    {fig:uc-timing-threshold}
+\input{tables/LC-MLP_results/UC_timing_wide}
 
-\todo{Add a short interpretation of the timing-channel results.}
+The LED-threshold scan for the timing-channel mode was performed at \SI{48}{V}. The results are reported in Table~\ref{tab:uc-timing-threshold-scan}.
+
+\input{tables/Threshold_scan_results/UC_timing_48V}
+
 
 \subsection{FBK board -- energy-channel mode}
 
-%\input{tables/results_fbk_energy}
+The fixed-threshold blind-test CTR results for the FBK-board energy-channel study are reported for the Onishi and wide waveform windows in Tables~\ref{tab:fbk-energy-onishi} and~\ref{tab:fbk-energy-wide}.
 
-\reportfigure
-    {figures/fbk_energy_ctr_vs_voltage.pdf}
-    {FBK-board energy-channel mode: LED and locally connected MLP CTR versus bias voltage at the fixed LED threshold.}
-    {fig:fbk-energy-voltage}
+\input{tables/LC-MLP_results/FBK_energy_onishi}
 
-\reportfigure
-    {figures/fbk_energy_ctr_vs_threshold.pdf}
-    {FBK-board energy-channel mode: CTR versus LED threshold. Populate only if this is the dataset used for the threshold scan.}
-    {fig:fbk-energy-threshold}
+\input{tables/LC-MLP_results/FBK_energy_wide}
 
-\todo{Add a short interpretation of the FBK energy-channel results.}
+The LED-threshold scan for the FBK-board energy-channel mode was performed at \SI{48}{V}. The results are reported in Table~\ref{tab:fbk-energy-threshold-scan}.
+
+\input{tables/Threshold_scan_results/FBK_energy_48V}
+
 
 \subsection{FBK board -- timing-channel mode}
 
-%\input{tables/results_fbk_timing}
+The fixed-threshold blind-test CTR results for the FBK-board timing-channel study are reported for the Onishi and wide waveform windows in Tables~\ref{tab:fbk-timing-onishi} and~\ref{tab:fbk-timing-wide}.
 
-\reportfigure
-    {figures/fbk_timing_ctr_vs_voltage.pdf}
-    {FBK-board timing-channel mode: LED and locally connected MLP CTR versus bias voltage at the fixed LED threshold.}
-    {fig:fbk-timing-voltage}
+\input{tables/LC-MLP_results/FBK_timing_onishi}
 
-\reportfigure
-    {figures/fbk_timing_ctr_vs_threshold.pdf}
-    {FBK-board timing-channel mode: CTR versus LED threshold. Populate only if this is the dataset used for the threshold scan.}
-    {fig:fbk-timing-threshold}
+\input{tables/LC-MLP_results/FBK_timing_wide}
 
-\todo{Add a short interpretation of the FBK timing-channel results.}
+The LED-threshold scan for the FBK-board timing-channel mode was performed at \SI{47}{V}. The results are reported in Table~\ref{tab:fbk-timing-threshold-scan}.
 
-\subsection{Cross-dataset summary}
-
-\todo{Summarize the common behavior across the four board/mode combinations. Keep the discussion descriptive until all CTR values and bootstrap uncertainties are frozen.}
+\input{tables/Threshold_scan_results/FBK_timing_47V}
