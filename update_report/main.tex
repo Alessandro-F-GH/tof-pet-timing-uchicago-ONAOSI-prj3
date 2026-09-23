@@ -47,21 +47,28 @@
 
 \title{\textbf{Waveform-Based Machine-Learning Timing Correction for TOF-PET Detectors}\\
 \large Research Group Update}
-\author{\todo{Author and affiliation}}
-\date{\todo{Date}}
+\author{Alessandro Falcetta}
+\date{09-23-2026}
 
 \begin{document}
 
 \maketitle
-
 \begin{abstract}
-Time-of-flight positron emission tomography (TOF-PET) benefits directly from improved coincidence timing resolution. 
-This update summarizes a waveform-based machine-learning approach for correcting leading-edge timing using the full detector waveform. 
-The proposed model applies the same detector-level scorer to the two aligned waveforms and combines the two scores antisymmetrically.
-The current model uses locally connected temporal processing instead of the convolutional neural networks commonly adopted in previous
- waveform-based TOF-PET studies.
-\todo{Insert a short numerical summary of the final CTR improvement and the main comparison across modes/boards.}
-This are partial results and the model could be further optimized, even if the expected improvement would be marginal.
+
+Time-of-flight positron emission tomography (TOF-PET) benefits directly from improved coincidence timing resolution (CTR). 
+This update presents a waveform-based machine-learning approach for correcting leading-edge timing using the full detector waveform.
+
+The proposed model applies a shared detector-level scorer independently to the two aligned detector waveforms and combines the resulting scores 
+antisymmetrically. The detector scorer is implemented using locally connected temporal layers, which preserve local waveform structure without imposing 
+the temporal weight sharing of a convolutional neural network (CNN).
+
+The method provides consistent CTR improvements across both front-end boards and both waveform families. Using the wider waveform window, 
+the energy-channel CTR is improved by approximately \(23\)--\(34\%\) for the UC board and \(18\)--\(21\%\) for the FBK board. 
+The timing-channel improvement is smaller but systematic, reaching approximately \(3\)--\(5\%\) for UC and \(5\)--\(7\%\) for FBK.
+
+The current results are preliminary and use a fixed model configuration rather than a fully optimized hyperparameter search. 
+Further gains may therefore be possible, although the present results already indicate that most of the achievable correction is captured by 
+a relatively simple and structured model.
 
 \end{abstract}
 

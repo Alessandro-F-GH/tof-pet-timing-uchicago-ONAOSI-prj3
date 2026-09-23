@@ -1,43 +1,54 @@
 \section{Machine-learning model and evaluation pipeline}
 
-\subsection{Shared antisymmetric correction}
+\subsection{Shared detector model}
 
-The proposed model uses a single detector scorer \(g_\theta\), shared between the two detector branches. The same function is therefore applied independently to the two aligned detector waveforms \(s_1\) and \(s_2\). The raw pair correction is defined as
+The machine-learning model estimates an event-by-event correction to the calibrated LED timing residual defined in the previous section.
+
+A single detector scorer \(g_\theta\) is shared between the two detector branches. 
+For an aligned detector waveform \(s\), the function
 
 \begin{equation}
-    \Delta g_\theta
+    g_\theta(s)
+\end{equation}
+
+produces one scalar score. The same function, with the same parameters \(\theta\), is applied independently to the two detector waveforms 
+\(s_1\) and \(s_2\).
+
+The unbounded pair correction is then defined as
+
+\begin{equation}
+    z_\theta(s_1,s_2)
     =
     g_\theta(s_1)-g_\theta(s_2).
 \end{equation}
 
-This construction enforces detector-exchange antisymmetry by design:
+Because the same scorer is used for both detectors, exchanging the two detector signals changes only the sign of the correction:
 
 \begin{equation}
-    \Delta g_\theta(s_2,s_1)
+    z_\theta(s_2,s_1)
     =
-    -\Delta g_\theta(s_1,s_2).
+    -z_\theta(s_1,s_2).
 \end{equation}
 
-The complete shared estimator is illustrated in Fig.~\ref{fig:ml-pipeline}.
-
-The corrected timing residual is obtained by subtracting the model prediction from the calibrated LED residual:
-
-\begin{equation}
-    r_{\mathrm{corr}}
-    =
-    y_{\mathrm{target}}-\widehat{y}.
-\end{equation}
-
-This constrained formulation separates the conventional timing estimator from the learned correction and embeds the detector-exchange symmetry directly into the model structure.
+The detector-exchange antisymmetry is therefore imposed directly by the model architecture rather than learned from the training data.
 
 
 \subsection{Locally connected multilayer perceptron}
 
-The detector scorer is a locally connected multilayer perceptron (LC-MLP). In a locally connected layer, each unit receives input only from a contiguous temporal neighborhood. Unlike a convolutional neural network (CNN), however, the weights are position specific and are not shared across time. This preserves local temporal structure while allowing different regions of the aligned waveform to learn different transformations~\cite{elsayed2020,amit2019}.
+The detector scorer \(g_\theta\) is implemented as a locally connected multilayer perceptron (LC-MLP).
 
-The model uses two successive locally connected layers followed by a fully connected layer with 32 units and a scalar detector score. With kernel size \(k=3\) and stride \(s=1\), consecutive units process overlapping groups of three samples. The second local layer applies the same connectivity pattern to the representation produced by the first layer.
+In a locally connected layer, each unit receives input only from a contiguous temporal neighborhood of the waveform. 
+Unlike a convolutional neural network (CNN), however, the weights are not shared across different temporal positions. 
+The model therefore preserves local temporal structure while allowing different regions of the aligned waveform to learn 
+different transformations~\cite{elsayed2020,amit2019}.
 
-The architecture of the detector scorer is shown in Fig.~\ref{fig:local-architecture}, while its use inside the shared antisymmetric estimator is shown in Fig.~\ref{fig:ml-pipeline}.
+This property is particularly suitable for the present application because all waveforms are aligned to the LED crossing. 
+Consequently, the position of a feature relative to the crossing has a fixed physical meaning, and temporal translation invariance is not required.
+
+The detector scorer contains two successive locally connected layers, followed by a fully connected layer with 32 hidden units and a scalar output. 
+Both locally connected layers use kernel size \(k=3\) and stride \(s=1\), so neighboring units operate on overlapping temporal regions.
+
+The architecture of the detector scorer is shown in Fig.~\ref{fig:local-architecture}.
 
 \begin{figure*}[t]
 \centering
@@ -263,77 +274,109 @@ first unit in each local layer. Intermediate units are omitted for clarity.
 
 \end{figure*}
 
-\subsection{Bounded model correction}
+\subsection{Bounded timing correction}
 
-To prevent anomalous or out-of-distribution waveforms from producing arbitrarily large timing corrections, the raw antisymmetric output is passed through a smooth bounded transformation:
+The raw score difference \(z_\theta\) is converted into the final model correction using a smooth bounded transformation:
 
 \begin{equation}
     \widehat{y}
     =
     C
     \tanh\left(
-        \frac{
-            g_\theta(s_1)-g_\theta(s_2)
-        }{C}
+        \frac{z_\theta(s_1,s_2)}{C}
     \right),
 \end{equation}
 
-where \(C\) is the maximum correction magnitude. In the present configuration, C is fixed at  \SI{150}{ps}, 
-but could be optimized as an hyperparameter of the ML model.
-
-
-The transformation preserves the antisymmetry of the estimator because the hyperbolic tangent is an odd function. 
-It is also differentiable everywhere, allowing standard gradient-based optimization. 
-This constraint also reduces the influence of anomalous events with very large LED timing errors, 
-preventing the overfitting of rare outliers.
-
-For corrections much smaller than \(C\), the hyperbolic tangent is almost linear, so for most of the corrections
+where \(C\) defines the maximum correction magnitude. In the present configuration,
 
 \begin{equation}
-    \widehat{y} << C 
+    C = \SI{150}{ps}.
+\end{equation}
+
+The final model prediction therefore satisfies
+
+\begin{equation}
+    |\widehat{y}| < C.
+\end{equation}
+
+Bounding the correction prevents anomalous or out-of-distribution waveforms from producing arbitrarily large timing adjustments. 
+It also limits the model's ability to fit rare events with very large LED timing errors, which would otherwise contribute strongly 
+to the training loss.
+
+The transformation preserves detector-exchange antisymmetry because the hyperbolic tangent is an odd function:
+
+\begin{equation}
+    \widehat{y}(s_2,s_1)
+    =
+    -\widehat{y}(s_1,s_2).
+\end{equation}
+
+For raw corrections much smaller than \(C\), the hyperbolic tangent is approximately linear so:
+
+\begin{equation}
+    |z_\theta| \ll C
     \implies
     \widehat{y}
     \simeq
-    g_\theta(s_1)-g_\theta(s_2) .
+    z_\theta(s_1,s_2).
 \end{equation}
 
-The bounding therefore has negligible effect in the approximately linear regime where most ordinary corrections 
-are expected to lie, while progressively limiting unusually large predictions and guaranteeing $|\widehat{y}| < C $.
+The bound therefore mainly affects unusually large predictions, while leaving small corrections approximately unchanged.
 
+Finally, the corrected timing residual is obtained by subtracting the predicted correction from the calibrated LED residual:
 
-The complete bounded estimator is shown in Fig.~\ref{fig:ml-pipeline}.
+\begin{equation}
+    r_{\mathrm{corr}}
+    =
+    y_{\mathrm{target}}-\widehat{y}.
+\end{equation}
+
+The complete model, from the two detector waveforms to the final timing correction, is illustrated in Fig.~\ref{fig:ml-pipeline}.
 
 \reportfigure
     {figures/shared_LC-MLP.png}
-    {Shared antisymmetric LC-MLP estimator. The same detector scorer is applied to both waveforms, and the score difference is mapped through a smooth bounded output function.}
+    {Shared antisymmetric LC-MLP estimator. The same detector scorer is applied independently to the two waveforms; 
+    the difference between the two scalar scores is then mapped through a smooth bounded transformation to obtain the final timing correction.}
     {fig:ml-pipeline}
 
 \subsection{Comparison strategy}
 
-The present results characterize the proposed LC-MLP using both waveform windows defined in the preprocessing stage. The shorter Onishi window provides a direct reference condition for a future controlled comparison with the paired convolutional neural network (CNN) described by Onishi et al.~\cite{onishi2022}, while the wide window tests whether the proposed model benefits from a longer portion of the detector waveform.
+The LC-MLP is evaluated using the two waveform windows defined in the preprocessing section.
 
-In the planned model comparison, the Onishi CNN and the shared antisymmetric LC-MLP will be evaluated using the same selected events, LED timing definition, data split, and input window. Comparing the two architectures first on the Onishi window will reduce differences due to input information, while repeating the comparison with the wide window will show whether either model benefits from the additional temporal context.
+The shorter Onishi window provides a reference configuration for a direct comparison with the paired CNN proposed by Onishi et al.~\cite{onishi2022}. 
+The wide window instead tests whether additional temporal information outside the region immediately surrounding the LED crossing improves the correction.
+
+The Onishi CNN has already been implemented in the analysis pipeline, but a complete comparison has not yet been performed because the model is 
+substantially more computationally expensive to train than the LC-MLP.
+
+In the planned comparison, the Onishi CNN and the shared antisymmetric LC-MLP will be evaluated using the same selected events, LED definition, 
+data split, and waveform window. Comparing the two models using the Onishi window will isolate differences due to the model architecture, 
+while repeating the comparison with the wide window will show whether either architecture benefits from the additional temporal information.
+
 
 \subsection{Training and blind evaluation}
 
-For this research update, the model architecture is fixed before performance evaluation. 
-The intended evaluation uses \(50\%\) of the selected events for model training and \(50\%\) as a blind test population. 
-The blind population is not used to choose model parameters or report intermediate training decisions.
+For the present study, the LC-MLP architecture and training configuration are fixed before the final performance evaluation.
 
-The purpose of the current protocol is to evaluate a fixed model configuration without adapting the architecture or training 
-choices to the blind test set. Hyperparameters have therefore not yet been systematically optimized.
+The selected events are divided into two populations: \(50\%\) development data, used to train the model, and the remaining \(50\%\) 
+used only for the final performance evaluation. The blind population is therefore never used to adapt the model architecture or training parameters.
 
-Model selection is challenging for these datasets because the coincidence timing resolution (CTR) estimate is itself noisy. 
-Reliable comparison between candidate configurations would require a sufficiently large validation population, which would reduce 
-the amount of data available for training and could therefore degrade the final model performance.
+The purpose of the current protocol is to evaluate a fixed model configuration rather than to perform an exhaustive hyperparameter optimization. 
+Model selection is particularly challenging for these datasets because CTR estimates are statistically noisy. A reliable comparison between 
+different hyperparameter configurations would require a sufficiently large validation population, reducing the number of events available for model 
+training.
 
-A possible next step is to collect a larger dataset under a fixed acquisition condition, for example at a single bias voltage, 
-and use it specifically for hyperparameter optimization. With more data available, model selection could be performed using either a 
-dedicated validation holdout or cross-validation, while preserving a separate blind test set for the final unbiased evaluation.
-\footnote{The code in the repository already supports holdout validation.}
+A possible future strategy is therefore to acquire or construct a larger dataset under a fixed experimental condition, 
+for example at a single bias voltage, and use it specifically for model selection. A dedicated validation set or cross-validation 
+could then be used for hyperparameter optimization while preserving an independent blind test population for the final evaluation.
+
 
 \subsection{LED-threshold treatment}
 
-The LED threshold is treated as part of the timing baseline rather than as a free parameter selected on the blind results. 
-A threshold scan is performed for one representative dataset to study the interaction between LED timing and the learned correction. 
-For the remaining bias-voltage datasets, a fixed LED threshold of \SI{15}{mV} is used.
+The LED threshold is treated as part of the conventional timing estimator rather than as a model hyperparameter optimized using the blind test data.
+
+For the main voltage studies, a fixed LED threshold of \SI{15}{mV} above the event baseline is used.
+
+In addition, a separate threshold scan is performed for one representative dataset of each board and waveform mode. At each threshold value, 
+both the uncorrected LED CTR and the LC-MLP-corrected CTR are evaluated. This makes it possible to study how the learned waveform correction 
+depends on the choice of the initial LED timing reference.
