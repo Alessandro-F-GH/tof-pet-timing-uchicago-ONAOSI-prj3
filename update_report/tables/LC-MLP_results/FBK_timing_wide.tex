@@ -1,22 +1,17 @@
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{lrlrr}
+\begin{tabular}{rrr}
 \toprule
-Dataset & Bias [V] & Method & CTR [ps] & $N$ \\
+Bias [V] & LED CTR [ps] & Corrected CTR [ps] \\
 \midrule
-45V-400mV & 45.0 & LED & 64.76 $\pm$ 0.96 & 3361 \\
-45V-400mV & 45.0 & Locally connected MLP & 61.05 $\pm$ 0.85 & 3361 \\
-46V-440mV & 46.0 & LED & 65.49 $\pm$ 1.06 & 4011 \\
-46V-440mV & 46.0 & Locally connected MLP & 61.66 $\pm$ 0.91 & 4011 \\
-47V-470mV & 47.0 & LED & 65.00 $\pm$ 0.89 & 3990 \\
-47V-470mV & 47.0 & Locally connected MLP & 61.27 $\pm$ 0.87 & 3990 \\
-48V-480mV & 48.0 & LED & 63.99 $\pm$ 1.14 & 2724 \\
-48V-480mV & 48.0 & Locally connected MLP & 60.12 $\pm$ 1.16 & 2724 \\
-49V-490mV & 49.0 & LED & 62.32 $\pm$ 1.28 & 1537 \\
-49V-490mV & 49.0 & Locally connected MLP & 57.65 $\pm$ 1.26 & 1537 \\
+45 & 64.8 $\pm$ 1.0 & 61.1 $\pm$ 0.9 \\
+46 & 65 $\pm$ 1 & 61.7 $\pm$ 0.9 \\
+47 & 65.0 $\pm$ 0.9 & 61.3 $\pm$ 0.9 \\
+48 & 64 $\pm$ 1 & 60 $\pm$ 1 \\
+49 & 62 $\pm$ 1 & 58 $\pm$ 1 \\
 \bottomrule
 \end{tabular}
-\caption{Blind-test coincidence timing resolution for the evaluated methods.}
-\label{tab:final-ctr}
+\caption{FBK-board timing-channel results using the wide waveform window.}
+\label{tab:fbk-timing-wide}
 \end{table}
