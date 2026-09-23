@@ -83,7 +83,7 @@ If more than one timing hit falls inside this interval, the hit whose duration i
 \begin{table}[H]
 \centering
 \caption{Configuration used for timing-channel hit selection.}
-\label{tab}
+\label{tab:tot-config}
 \small
 \begin{tabular}{ll}
 \toprule
@@ -145,7 +145,7 @@ below the corresponding limit for both detectors.
 \begin{table}[t]
 \centering
 \caption{Configuration used for the baseline-noise selection.}
-\label{tab}
+\label{tab:baseline-noise-config}
 \small
 \begin{tabular}{ll}
 \toprule
@@ -164,7 +164,7 @@ Applied to & both detector channels \\
 
 \reportfigure
     {figures/baseline_noise_selection.png}
-    {Representative timing-channel time-over-threshold selection.}
+    {Representative baseline-noise selection.}
     {fig:baseline_filter}
 
 
@@ -214,6 +214,20 @@ Waveform amplitudes are normalized using the fixed physical voltage range of the
 This preserves the relative amplitude information of the detector signal and ensures that the same physical voltage 
 is mapped to the same normalized value for every event.
 
+\subsection{Waveform windows}
+
+Two temporal windows are evaluated after LED alignment. The shorter \emph{Onishi window},
+\[
+    [-1.5,\,2.0]~\mathrm{ns},
+\]
+focuses on the waveform region immediately surrounding the threshold crossing and is used as the reference window for comparison with the waveform-based CNN approach of Onishi et al.~\cite{onishi2022}. A second, wider window,
+\[
+    [-2.0,\,30.0]~\mathrm{ns},
+\]
+retains a substantially larger portion of the pulse evolution.
+
+Using both windows separates two questions: whether the proposed model can extract useful timing information from the short region used for the literature-based comparison, and whether additional information contained later in the waveform further improves the correction. Apart from the temporal extent, the preprocessing and amplitude scaling are kept unchanged.
+
 
 
 %    \reportfigure
@@ -233,7 +247,7 @@ with the same central coverage:
 \mathrm{CTR}
 =
 \frac{2\sqrt{2\ln 2}}
-{2\Phi^{-1}(0.9)}
+{2\Phi^{-1}(0.95)}
 w_{90},
 \end{equation}
 
