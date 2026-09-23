@@ -1,0 +1,48 @@
+\section{Machine-learning model and evaluation pipeline}
+
+\subsection{Shared antisymmetric correction}
+
+The proposed model uses one detector scorer \(g_\theta\) shared between the two detector branches. The same function is therefore applied to both aligned detector waveforms. The pair correction is constructed from the difference between the two detector scores, which enforces detector-exchange antisymmetry by design.
+
+The corrected timing residual is obtained by subtracting the model prediction from the calibrated LED residual:
+\begin{equation}
+    r_{\mathrm{corr}}
+    =
+    y_{\mathrm{target}}-\widehat{y}.
+\end{equation}
+
+This formulation separates the conventional timing estimator from the learned correction and embeds the detector-exchange symmetry directly into the model structure.
+
+\subsection{Locally connected multilayer perceptron}
+
+The detector scorer is a locally connected multilayer perceptron (MLP). Local connectivity means that each unit receives only a contiguous temporal neighborhood. Unlike a convolutional neural network (CNN), the weights are not shared across temporal positions. Locally connected layers therefore retain sparse local connectivity while allowing different time regions to learn different filters~\cite{elsayed2020,amit2019}.
+
+The current model is hierarchical: local temporal representations are processed by successive locally connected stages before the final detector score is produced. This is intended to exploit local waveform structure while preserving absolute temporal position in the aligned signal.
+
+\todo{Insert the final frozen architecture diagram and concise layer description.}
+
+\todo{Insert final optimizer, loss, stopping rule, and any output-bounding details only after the configuration used for the reported results is frozen.}
+
+\reportfigure
+    {figures/local_mlp_architecture.pdf}
+    {Shared antisymmetric locally connected model. The same detector scorer is applied to both aligned waveforms; local weights are position specific rather than shared across time.}
+    {fig:local-architecture}
+
+\subsection{Training and blind evaluation}
+
+For this research update, the model architecture is fixed before performance evaluation. The intended evaluation uses \(80\%\) of the selected events for model training and \(20\%\) as a blind test population. The blind population is not used to choose model parameters or report intermediate training decisions.
+
+The main purpose of this protocol is to estimate the performance of the fixed proposed approach without repeatedly adapting the architecture to the same test events.
+
+A stronger future model-development protocol could reserve an additional holdout validation subset or use cross-validation for hyperparameter optimization. This would make architecture and training choices more systematic and could improve performance, but the resulting model selection must remain separated from the final blind evaluation.
+
+\subsection{LED-threshold treatment}
+
+The LED threshold is treated as part of the timing baseline rather than as a free parameter selected on the blind results. A threshold scan is performed for one representative dataset to study the interaction between LED timing and the learned correction. For the remaining bias-voltage datasets, a fixed LED threshold is used.
+
+\todo{Identify the representative threshold-scan dataset and the fixed threshold used for the remaining runs once the final study outputs are frozen.}
+
+\reportfigure
+    {figures/ml_pipeline.pdf}
+    {Scientific ML pipeline: selected waveforms, LED alignment and calibration, fixed locally connected model, blind prediction, corrected residual, and CTR evaluation.}
+    {fig:ml-pipeline}
