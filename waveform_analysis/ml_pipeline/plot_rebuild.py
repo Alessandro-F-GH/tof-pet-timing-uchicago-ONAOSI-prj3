@@ -112,7 +112,12 @@ def rebuild_experiment_plots(
             raise FileNotFoundError(
                 f"Threshold-scan results not found: {run / 'csv' / 'threshold_scan.csv'}"
             )
-        return plot_threshold_scan(destination, rows)
+        paths = plot_threshold_scan(destination, rows)
+        if latex_tables:
+            table_root = destination / "latex_tables"
+            _reset(table_root)
+            paths.extend(make_latex_tables(run, table_root))
+        return paths
 
     return rebuild_study_plots(
         run,
