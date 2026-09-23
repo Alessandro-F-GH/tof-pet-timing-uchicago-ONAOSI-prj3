@@ -1,0 +1,103 @@
+\section{Waveform preprocessing and dataset construction}
+
+\subsection{TRC-to-ROOT conversion}
+
+The oscilloscope data are initially stored as one \texttt{.trc} file per channel and event. A C++17 converter in the repository groups the four channels of each event and writes one ROOT file per acquisition run. The converter performs no timing or event-selection analysis.
+
+For each event and channel, the ROOT representation preserves:
+\begin{itemize}[leftmargin=*]
+    \item the original signed 16-bit analogue-to-digital converter samples;
+    \item the number of samples;
+    \item vertical gain and offset;
+    \item horizontal sampling interval and time offset;
+    \item event and source-file identifiers.
+\end{itemize}
+
+Physical voltage and time are reconstructed in the analysis code from the stored calibration metadata. Keeping the raw samples as 16-bit integers reduces the intermediate data volume while preserving the acquisition information required by the later waveform analysis.
+
+\reportfigure
+    {figures/trc_to_root_pipeline.pdf}
+    {Data conversion from four oscilloscope TRC files per event to one ROOT file per acquisition run.}
+    {fig:trc-root}
+
+\subsection{Event selection}
+
+Event selection is applied before ML training.
+
+\paragraph{Energy photopeak.}
+The energy-channel pulse amplitudes are used to identify the photopeak region for both detectors. Events are retained only when both detector signals satisfy the photopeak selection.
+
+\paragraph{Timing-channel pulse selection.}
+For timing-channel studies, candidate timing pulses are additionally characterized by their time over threshold (ToT). The ToT peak is fitted on the development population and the accepted interval is then used to select the main timing pulse.
+
+\paragraph{Baseline-noise filter.}
+A pre-trigger baseline region is used to estimate waveform noise. When enabled, events with excessive baseline root-mean-square noise are rejected using the configured selection rule.
+
+\reportfigure
+    {figures/photopeak_selection.pdf}
+    {Representative two-detector photopeak selection.}
+    {fig:photopeak}
+
+\reportfigure
+    {figures/tot_selection.pdf}
+    {Representative timing-channel time-over-threshold selection.}
+    {fig:tot}
+
+\subsection{Leading-edge timing and calibration}
+
+Leading-edge discrimination (LED) provides the conventional timing reference. The waveform is not baseline-subtracted event by event. Instead, the LED threshold is interpreted relative to the measured pre-trigger baseline for each waveform, and the threshold-crossing time is obtained by linear interpolation on the rising edge.
+
+The detector-pair LED time difference is
+\begin{equation}
+    \Delta t_{\mathrm{LED}} = t_{\mathrm{LED},1}-t_{\mathrm{LED},2}.
+\end{equation}
+
+A constant inter-channel timing offset is estimated from the training data:
+\begin{equation}
+    \widehat{C}_{12}
+    =
+    \operatorname{mean}_{\mathrm{train}}
+    \left(\Delta t_{\mathrm{LED}}\right)
+    -
+    \mathrm{TOF},
+\end{equation}
+where TOF denotes the known physical time-of-flight offset for the acquisition geometry.
+
+The supervised target is the calibrated LED residual,
+\begin{equation}
+    y_{\mathrm{target}}
+    =
+    \Delta t_{\mathrm{LED}}
+    -
+    \mathrm{TOF}
+    -
+    \widehat{C}_{12}.
+\end{equation}
+The network therefore learns an event-by-event correction to LED timing rather than predicting the physical TOF directly.
+
+\subsection{Machine-learning input}
+
+Each detector waveform is aligned to its LED crossing. A fixed time interval around the aligned crossing is then cropped from the native acquisition grid. The proposed locally connected model keeps a contiguous temporal grid so that every local receptive field corresponds to neighboring waveform samples.
+
+Waveform amplitudes are mapped to the normalized ML input range using the physical scaling convention implemented by the waveform pipeline. No event-wise waveform normalization is applied.
+
+\reportfigure
+    {figures/ml_input_example.pdf}
+    {Example aligned detector-pair waveform and cropped input region used by the ML model.}
+    {fig:ml-input}
+
+\subsection{Coincidence timing resolution}
+
+Coincidence timing resolution (CTR) is extracted from the residual timing distribution with the repository's robust interval-based estimator. For a coverage fraction \(p\), the residuals are sorted and the narrowest empirical interval containing \(\lceil pN\rceil\) events is found. Its width \(w_p\) is converted to the full width at half maximum of a Gaussian with the same central coverage:
+\begin{equation}
+    \mathrm{CTR}
+    =
+    \frac{2\sqrt{2\ln 2}}
+         {2\Phi^{-1}\!\left((1+p)/2\right)}
+    \,w_p ,
+\end{equation}
+where \(\Phi^{-1}\) is the standard-normal quantile function. The current analysis uses \(p=0.90\).
+
+This choice reduces dependence on histogram binning and is consistent with the robust-statistics motivation of using central, contamination-resistant summaries rather than relying only on a full-distribution Gaussian fit~\cite{atkinson2025}. Statistical uncertainty on the final CTR is estimated by event bootstrap.
+
+\todo{State the final bootstrap sample count used in the frozen result tables.}
