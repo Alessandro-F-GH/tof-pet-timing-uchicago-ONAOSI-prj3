@@ -4,25 +4,13 @@
   "preprocessing_config": "../preprocessing/default_ctr.json",
   "experiment": {
     "type": "threshold_scan",
-    "name": "timing_threshold_scan_locally_connected_mlp_46V",
-    "output_dir": "results/studies/timing_threshold_scan_locally_connected_mlp_46V",
-    "voltage_V": 46
-  },
-  "standard_methods": {
-    "led_thresholds_mV": [
-      5,
-      15,
-      25,
-      35,
-      45,
-      50,
-      55,
-      60
-    ]
+    "name": "energy_threshold_scan_locally_connected_mlp_48V",
+    "output_dir": "results/studies/FBK_energy_th_scan_LC-MLP_48V",
+    "voltage_V": 48
   },
   "models": [
     "locally_connected_mlp"
   ],
-  "mode": "timing_to_timing",
+  "mode": "energy_to_energy",
   "cfd": false
 }

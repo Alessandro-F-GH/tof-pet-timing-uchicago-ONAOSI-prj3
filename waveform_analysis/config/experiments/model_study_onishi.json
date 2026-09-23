@@ -5,7 +5,7 @@
   "experiment": {
     "type": "model_study",
     "name": "timing_onishi_cnn",
-    "output_dir": "results/studies/timing_onishi_cnn",
+    "output_dir": "results/studies/FBK_timing_onishi_cnn",
     "fixed_led_threshold_mV": 15.0
   },
   "models": [

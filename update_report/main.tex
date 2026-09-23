@@ -13,6 +13,10 @@
 \usepackage{enumitem}
 \usepackage{caption}
 \usepackage[hidelinks]{hyperref}
+\usepackage{float}
+\usepackage[section]{placeins}
+\usepackage{tikz}
+\usetikzlibrary{fit,calc}
 
 \graphicspath{{figures/}}
 \sisetup{separate-uncertainty=true}
@@ -22,7 +26,7 @@
 \newcommand{\CTR}{\mathrm{CTR}}
 
 \newcommand{\reportfigure}[3]{%
-  \begin{figure}[t]
+  \begin{figure}[H]
     \centering
     \IfFileExists{#1}{%
       \includegraphics[width=\columnwidth]{#1}%
@@ -51,11 +55,14 @@
 \maketitle
 
 \begin{abstract}
-Time-of-flight positron emission tomography (TOF-PET) benefits directly from improved coincidence timing resolution. This update summarizes a waveform-based machine-learning approach for correcting leading-edge timing using the full detector waveform. The proposed model applies the same detector-level scorer to the two aligned waveforms and combines the two scores antisymmetrically, so exchanging the detector inputs changes only the sign of the predicted correction. The current model uses locally connected temporal processing: neighboring waveform samples are processed hierarchically while weights remain position specific rather than shared across time.
-
-The report focuses on the experimental data, event selection, waveform preprocessing, target definition, training and blind evaluation pipeline, and the resulting timing performance for the University of Chicago and Fondazione Bruno Kessler front-end boards.
-
+Time-of-flight positron emission tomography (TOF-PET) benefits directly from improved coincidence timing resolution. 
+This update summarizes a waveform-based machine-learning approach for correcting leading-edge timing using the full detector waveform. 
+The proposed model applies the same detector-level scorer to the two aligned waveforms and combines the two scores antisymmetrically.
+The current model uses locally connected temporal processing instead of the convolutional neural networks commonly adopted in previous
+ waveform-based TOF-PET studies.
 \todo{Insert a short numerical summary of the final CTR improvement and the main comparison across modes/boards.}
+This are partial results and the model could be further optimized, even if the expected improvement would be marginal.
+
 \end{abstract}
 
 \input{sections/00_introduction}

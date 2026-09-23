@@ -2,47 +2,332 @@
 
 \subsection{Shared antisymmetric correction}
 
-The proposed model uses one detector scorer \(g_\theta\) shared between the two detector branches. The same function is therefore applied to both aligned detector waveforms. The pair correction is constructed from the difference between the two detector scores, which enforces detector-exchange antisymmetry by design.
+The proposed model uses a single detector scorer \(g_\theta\), shared between the two detector branches. The same function is therefore applied independently to the two aligned detector waveforms \(s_1\) and \(s_2\). The raw pair correction is defined as
+
+\begin{equation}
+    \Delta g_\theta
+    =
+    g_\theta(s_1)-g_\theta(s_2).
+\end{equation}
+
+This construction enforces detector-exchange antisymmetry by design:
+
+\begin{equation}
+    \Delta g_\theta(s_2,s_1)
+    =
+    -\Delta g_\theta(s_1,s_2).
+\end{equation}
+
+The complete shared estimator is illustrated in Fig.~\ref{fig:ml-pipeline}.
 
 The corrected timing residual is obtained by subtracting the model prediction from the calibrated LED residual:
+
 \begin{equation}
     r_{\mathrm{corr}}
     =
     y_{\mathrm{target}}-\widehat{y}.
 \end{equation}
 
-This formulation separates the conventional timing estimator from the learned correction and embeds the detector-exchange symmetry directly into the model structure.
+This constrained formulation separates the conventional timing estimator from the learned correction and embeds the detector-exchange symmetry directly into the model structure.
+
 
 \subsection{Locally connected multilayer perceptron}
 
-The detector scorer is a locally connected multilayer perceptron (MLP). Local connectivity means that each unit receives only a contiguous temporal neighborhood. Unlike a convolutional neural network (CNN), the weights are not shared across temporal positions. Locally connected layers therefore retain sparse local connectivity while allowing different time regions to learn different filters~\cite{elsayed2020,amit2019}.
+The detector scorer is a locally connected multilayer perceptron (LC-MLP). In a locally connected layer, each unit receives input only from a contiguous temporal neighborhood. Unlike a convolutional neural network (CNN), however, the weights are position specific and are not shared across time. This preserves local temporal structure while allowing different regions of the aligned waveform to learn different transformations~\cite{elsayed2020,amit2019}.
 
-The current model is hierarchical: local temporal representations are processed by successive locally connected stages before the final detector score is produced. This is intended to exploit local waveform structure while preserving absolute temporal position in the aligned signal.
+The model uses two successive locally connected layers followed by a fully connected layer with 32 units and a scalar detector score. With kernel size \(k=3\) and stride \(s=1\), consecutive units process overlapping groups of three samples. The second local layer applies the same connectivity pattern to the representation produced by the first layer.
 
-\todo{Insert the final frozen architecture diagram and concise layer description.}
+The architecture of the detector scorer is shown in Fig.~\ref{fig:local-architecture}, while its use inside the shared antisymmetric estimator is shown in Fig.~\ref{fig:ml-pipeline}.
 
-\todo{Insert final optimizer, loss, stopping rule, and any output-bounding details only after the configuration used for the reported results is frozen.}
+\begin{figure*}[t]
+\centering
+
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    x=1.75cm,
+    y=0.85cm,
+    >=latex,
+    input/.style={
+        circle,
+        draw=black!70,
+        fill=gray!10,
+        thick,
+        minimum size=8mm,
+        inner sep=0pt,
+        font=\scriptsize
+    },
+    localone/.style={
+        circle,
+        draw=blue!70!black,
+        fill=blue!10,
+        thick,
+        minimum size=8mm,
+        inner sep=0pt,
+        font=\scriptsize
+    },
+    localtwo/.style={
+        circle,
+        draw=violet!75!black,
+        fill=violet!10,
+        thick,
+        minimum size=8mm,
+        inner sep=0pt,
+        font=\scriptsize
+    },
+    dense/.style={
+        circle,
+        draw=green!50!black,
+        fill=green!10,
+        thick,
+        minimum size=8mm,
+        inner sep=0pt,
+        font=\scriptsize
+    },
+    output/.style={
+        circle,
+        draw=red!70!black,
+        fill=red!10,
+        thick,
+        minimum size=9mm,
+        inner sep=0pt,
+        font=\scriptsize
+    },
+    edge/.style={
+        draw=black!45,
+        line width=0.4pt
+    },
+    highlighted/.style={
+        draw=black,
+        line width=1pt
+    },
+    receptive/.style={
+        draw=black!70,
+        dashed,
+        rounded corners,
+        line width=0.8pt,
+        inner sep=4pt
+    }
+]
+
+% Column labels
+\node[font=\bfseries] at (0,5.0) {Input};
+\node[font=\bfseries] at (3.4,5.0) {Local layer 1};
+\node[font=\bfseries] at (6.8,5.0) {Local layer 2};
+\node[font=\bfseries] at (10.2,5.0) {Dense layer};
+\node[font=\bfseries] at (13.0,5.0) {Output};
+
+\node at (3.4,4.35) {$k=3,\ s=1$};
+\node at (6.8,4.35) {$k=3,\ s=1$};
+
+% Input
+\node[input] (x1) at (0,3.5) {$x_1$};
+\node[input] (x2) at (0,2.4) {$x_2$};
+\node[input] (x3) at (0,1.3) {$x_3$};
+\node[input] (x4) at (0,0.2) {$x_4$};
+
+\node at (0,-0.9) {$\vdots$};
+
+\node[input] (xtm3) at (0,-2.0) {$x_{T-3}$};
+\node[input] (xtm2) at (0,-3.1) {$x_{T-2}$};
+\node[input] (xtm1) at (0,-4.2) {$x_{T-1}$};
+\node[input] (xt) at (0,-5.3) {$x_T$};
+
+% Local layer 1
+\node[localone] (h11) at (3.4,3.1) {$h^{(1)}_1$};
+\node[localone] (h12) at (3.4,1.6) {$h^{(1)}_2$};
+\node[localone] (h13) at (3.4,0.1) {$h^{(1)}_3$};
+
+\node at (3.4,-1.2) {$\vdots$};
+
+\node[localone] (h1a) at (3.4,-2.6) {$h^{(1)}_{T-4}$};
+\node[localone] (h1b) at (3.4,-4.0) {$h^{(1)}_{T-3}$};
+\node[localone] (h1c) at (3.4,-5.4) {$h^{(1)}_{T-2}$};
+
+% Local layer 2
+\node[localtwo] (h21) at (6.8,2.7) {$h^{(2)}_1$};
+\node[localtwo] (h22) at (6.8,1.0) {$h^{(2)}_2$};
+
+\node at (6.8,-1.2) {$\vdots$};
+
+\node[localtwo] (h2a) at (6.8,-3.0) {$h^{(2)}_{T-5}$};
+\node[localtwo] (h2b) at (6.8,-4.7) {$h^{(2)}_{T-4}$};
+
+% Dense layer
+\node[dense] (d1) at (10.2,2.2) {$d_1$};
+\node[dense] (d2) at (10.2,0.5) {$d_2$};
+
+\node at (10.2,-1.2) {$\vdots$};
+
+\node[dense] (dqm1) at (10.2,-3.0) {$d_{q-1}$};
+\node[dense] (dq) at (10.2,-4.7) {$d_q$};
+
+% Output
+\node[output] (g) at (13.0,-1.2) {$g_\theta(s)$};
+
+% Input -> local layer 1
+\draw[edge] (x1) -- (h11);
+\draw[edge] (x2) -- (h11);
+\draw[edge] (x3) -- (h11);
+
+\draw[edge] (x2) -- (h12);
+\draw[edge] (x3) -- (h12);
+\draw[edge] (x4) -- (h12);
+
+\draw[edge] (x3) -- (h13);
+\draw[edge] (x4) -- (h13);
+
+\draw[edge] (xtm3) -- (h1a);
+\draw[edge] (xtm2) -- (h1a);
+
+\draw[edge] (xtm3) -- (h1b);
+\draw[edge] (xtm2) -- (h1b);
+\draw[edge] (xtm1) -- (h1b);
+
+\draw[edge] (xtm2) -- (h1c);
+\draw[edge] (xtm1) -- (h1c);
+\draw[edge] (xt) -- (h1c);
+
+% Local layer 1 -> local layer 2
+\draw[edge] (h11) -- (h21);
+\draw[edge] (h12) -- (h21);
+\draw[edge] (h13) -- (h21);
+
+\draw[edge] (h12) -- (h22);
+\draw[edge] (h13) -- (h22);
+
+\draw[edge] (h1a) -- (h2a);
+\draw[edge] (h1b) -- (h2a);
+
+\draw[edge] (h1a) -- (h2b);
+\draw[edge] (h1b) -- (h2b);
+\draw[edge] (h1c) -- (h2b);
+
+% Local layer 2 -> dense
+\foreach \u in {h21,h22,h2a,h2b}{
+    \foreach \v in {d1,d2,dqm1,dq}{
+        \draw[edge] (\u) -- (\v);
+    }
+}
+
+% Dense -> output
+\foreach \u in {d1,d2,dqm1,dq}{
+    \draw[edge] (\u) -- (g);
+}
+
+% First receptive field
+\draw[highlighted] (x1) -- (h11);
+\draw[highlighted] (x2) -- (h11);
+\draw[highlighted] (x3) -- (h11);
+
+\node[
+    receptive,
+    fit=(x1)(x2)(x3)
+] (rf1) {};
+
+\node[
+    font=\scriptsize,
+    anchor=south
+] at ($(rf1.north)+(0,-0.1)$)
+{receptive field};
+
+% Second receptive field
+\draw[highlighted] (h11) -- (h21);
+\draw[highlighted] (h12) -- (h21);
+\draw[highlighted] (h13) -- (h21);
+
+\node[
+    receptive,
+    fit=(h11)(h12)(h13)
+] (rf2) {};
+
+\node[
+    font=\scriptsize,
+    anchor=south
+] at ($(rf2.north)+(0,-0.1)$)
+{receptive field};
+
+\node at (10.2,4.35) {32 units};
+
+\node at (13,4.35) {$g_{\theta}(s)$};
+
+\end{tikzpicture}%
+}
+
+\caption{
+Architecture of the locally connected detector scorer \(g_\theta\).
+The first two layers use local receptive fields with kernel size \(k=3\)
+and stride \(s=1\). Dashed boxes highlight the receptive field of the
+first unit in each local layer. Intermediate units are omitted for clarity.
+}
+\label{fig:local-architecture}
+
+\end{figure*}
+
+\subsection{Bounded model correction}
+
+To prevent anomalous or out-of-distribution waveforms from producing arbitrarily large timing corrections, the raw antisymmetric output is passed through a smooth bounded transformation:
+
+\begin{equation}
+    \widehat{y}
+    =
+    C
+    \tanh\left(
+        \frac{
+            g_\theta(s_1)-g_\theta(s_2)
+        }{C}
+    \right),
+\end{equation}
+
+where \(C\) is the maximum correction magnitude. In the present configuration, C is fixed at  \SI{150}{ps}, 
+but could be optimized as an hyperparameter of the ML model.
+
+
+The transformation preserves the antisymmetry of the estimator because the hyperbolic tangent is an odd function. 
+It is also differentiable everywhere, allowing standard gradient-based optimization. 
+This constraint also reduces the influence of anomalous events with very large LED timing errors, 
+preventing the overfitting of rare outliers.
+
+For corrections much smaller than \(C\), the hyperbolic tangent is almost linear, so for most of the corrections
+
+\begin{equation}
+    \widehat{y} << C 
+    \implies
+    \widehat{y}
+    \simeq
+    g_\theta(s_1)-g_\theta(s_2) .
+\end{equation}
+
+The bounding therefore has negligible effect in the approximately linear regime where most ordinary corrections 
+are expected to lie, while progressively limiting unusually large predictions and guaranteeing $|\widehat{y}| < C $.
+
+
+The complete bounded estimator is shown in Fig.~\ref{fig:ml-pipeline}.
 
 \reportfigure
-    {figures/local_mlp_architecture.pdf}
-    {Shared antisymmetric locally connected model. The same detector scorer is applied to both aligned waveforms; local weights are position specific rather than shared across time.}
-    {fig:local-architecture}
+    {figures/shared_LC-MLP.png}
+    {Shared antisymmetric LC-MLP estimator. The same detector scorer is applied to both waveforms, and the score difference is mapped through a smooth bounded output function.}
+    {fig:ml-pipeline}
 
 \subsection{Training and blind evaluation}
 
-For this research update, the model architecture is fixed before performance evaluation. The intended evaluation uses \(80\%\) of the selected events for model training and \(20\%\) as a blind test population. The blind population is not used to choose model parameters or report intermediate training decisions.
+For this research update, the model architecture is fixed before performance evaluation. 
+The intended evaluation uses \(50\%\) of the selected events for model training and \(50\%\) as a blind test population. 
+The blind population is not used to choose model parameters or report intermediate training decisions.
 
-The main purpose of this protocol is to estimate the performance of the fixed proposed approach without repeatedly adapting the architecture to the same test events.
+The purpose of the current protocol is to evaluate a fixed model configuration without adapting the architecture or training 
+choices to the blind test set. Hyperparameters have therefore not yet been systematically optimized.
 
-A stronger future model-development protocol could reserve an additional holdout validation subset or use cross-validation for hyperparameter optimization. This would make architecture and training choices more systematic and could improve performance, but the resulting model selection must remain separated from the final blind evaluation.
+Model selection is challenging for these datasets because the coincidence timing resolution (CTR) estimate is itself noisy. 
+Reliable comparison between candidate configurations would require a sufficiently large validation population, which would reduce 
+the amount of data available for training and could therefore degrade the final model performance.
+
+A possible next step is to collect a larger dataset under a fixed acquisition condition, for example at a single bias voltage, 
+and use it specifically for hyperparameter optimization. With more data available, model selection could be performed using either a 
+dedicated validation holdout or cross-validation, while preserving a separate blind test set for the final unbiased evaluation.
+\footnote{The code in the repository already supports holdout validation.}
 
 \subsection{LED-threshold treatment}
 
-The LED threshold is treated as part of the timing baseline rather than as a free parameter selected on the blind results. A threshold scan is performed for one representative dataset to study the interaction between LED timing and the learned correction. For the remaining bias-voltage datasets, a fixed LED threshold is used.
-
-\todo{Identify the representative threshold-scan dataset and the fixed threshold used for the remaining runs once the final study outputs are frozen.}
-
-\reportfigure
-    {figures/ml_pipeline.pdf}
-    {Scientific ML pipeline: selected waveforms, LED alignment and calibration, fixed locally connected model, blind prediction, corrected residual, and CTR evaluation.}
-    {fig:ml-pipeline}
+The LED threshold is treated as part of the timing baseline rather than as a free parameter selected on the blind results. 
+A threshold scan is performed for one representative dataset to study the interaction between LED timing and the learned correction. 
+For the remaining bias-voltage datasets, a fixed LED threshold of \SI{15}{mV} is used.

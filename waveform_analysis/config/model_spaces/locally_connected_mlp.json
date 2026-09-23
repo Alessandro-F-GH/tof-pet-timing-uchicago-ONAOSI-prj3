@@ -3,17 +3,17 @@
   "parameters": {
     "architecture": [
       [
-        64
+        32
       ]
     ],
     "activation": [
-      "silu"
+      "relu"
     ],
     "layer1_kernel_samples": [
-      16
+      3
     ],
     "layer1_stride_samples": [
-      4
+      1
     ],
     "layer2_kernel_positions": [
       3
@@ -22,10 +22,10 @@
       1
     ],
     "max_correction_ps": [
-      250
+      150
     ],
     "learning_rate": [
-      0.001
+      0.01
     ],
     "batch_size": [
       128
@@ -34,9 +34,9 @@
   "training": {
     "device": "auto",
     "optimizer": "adam",
-    "epochs": 600,
-    "patience": 20,
-    "min_delta": 0.01,
+    "epochs": 1000,
+    "patience": 50,
+    "min_delta": 0.1,
     "gradient_clip_norm": 10,
     "early_stopping_fraction": 0.2,
     "gradient_early_stop": true,

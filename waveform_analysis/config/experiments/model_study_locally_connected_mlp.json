@@ -1,16 +1,16 @@
 {
   "extends": "../profiles/ctr_default.json",
-  "data_config": "../data/converted_runs_07_13.json",
+  "data_config": "../data/Finn.json",
   "preprocessing_config": "../preprocessing/default_ctr.json",
   "experiment": {
     "type": "model_study",
-    "name": "timing_locally_connected_mlp",
-    "output_dir": "results/studies/timing_locally_connected_mlp",
+    "name": "energy_locally_connected_mlp",
+    "output_dir": "results/studies/UC_energy_LC-MLP",
     "fixed_led_threshold_mV": 15.0
   },
   "models": [
     "locally_connected_mlp"
   ],
-  "mode": "timing_to_timing",
+  "mode": "energy_to_energy",
   "cfd": false
 }

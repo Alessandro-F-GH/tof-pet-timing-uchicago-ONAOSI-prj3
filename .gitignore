@@ -36,3 +36,23 @@ report/main.synctex.gz
 report/main.toc
 report/main.vrb
 !report/main.tex
+
+# Report LaTeX build artifacts
+update_report/main.aux
+update_report/main.bbl
+update_report/main.bcf
+update_report/main.blg
+update_report/main.fdb_latexmk
+update_report/main.fls
+update_report/main.lof
+update_report/main.log
+update_report/main.lot
+update_report/main.nav
+update_report/main.out
+update_report/main.pdf
+update_report/main.run.xml
+update_report/main.snm
+update_report/main.synctex.gz
+update_report/main.toc
+update_report/main.vrb
+!update_report/main.tex

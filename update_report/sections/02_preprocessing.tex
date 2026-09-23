@@ -2,50 +2,177 @@
 
 \subsection{TRC-to-ROOT conversion}
 
-The oscilloscope data are initially stored as one \texttt{.trc} file per channel and event. A C++17 converter in the repository groups the four channels of each event and writes one ROOT file per acquisition run. The converter performs no timing or event-selection analysis.
+The oscilloscope data are initially stored as one \texttt{.trc} file per channel and event. 
+A C++ converter in the repository groups the four channels of each event and writes one ROOT file per acquisition run. 
+For each event and channel, the ROOT representation preserves the original signed 16-bit analogue-to-digital converter 
+samples together with the sample count, vertical gain and offset, horizontal sampling interval and time offset, 
+and the event and source-file identifiers. The converter performs no timing or event-selection analysis.
 
-For each event and channel, the ROOT representation preserves:
-\begin{itemize}[leftmargin=*]
-    \item the original signed 16-bit analogue-to-digital converter samples;
-    \item the number of samples;
-    \item vertical gain and offset;
-    \item horizontal sampling interval and time offset;
-    \item event and source-file identifiers.
-\end{itemize}
-
-Physical voltage and time are reconstructed in the analysis code from the stored calibration metadata. Keeping the raw samples as 16-bit integers reduces the intermediate data volume while preserving the acquisition information required by the later waveform analysis.
-
-\reportfigure
-    {figures/trc_to_root_pipeline.pdf}
-    {Data conversion from four oscilloscope TRC files per event to one ROOT file per acquisition run.}
-    {fig:trc-root}
+Physical voltage and time are reconstructed in the analysis code from the stored calibration metadata. 
+Keeping the raw samples as 16-bit integers reduces the intermediate data volume while preserving the acquisition information 
+required by the later waveform analysis.
 
 \subsection{Event selection}
 
-Event selection is applied before ML training.
+Event selection is applied before the timing analysis. 
+The selection criteria are determined from the development population and then applied unchanged to the remaining events
+(we retain a subset of the data for the final unbiased evaluation).
 
 \paragraph{Energy photopeak.}
-The energy-channel pulse amplitudes are used to identify the photopeak region for both detectors. Events are retained only when both detector signals satisfy the photopeak selection.
 
-\paragraph{Timing-channel pulse selection.}
-For timing-channel studies, candidate timing pulses are additionally characterized by their time over threshold (ToT). The ToT peak is fitted on the development population and the accepted interval is then used to select the main timing pulse.
+For each detector, the maximum amplitude of the energy waveform is used to build the pulse-height distribution. The dominant high-amplitude peak 
+is identified from a smoothed histogram and fitted iteratively with a Gaussian function. 
+After each iteration, the fit interval is updated around the fitted mean and standard deviation until convergence or the maximum number of iterations 
+is reached.
 
-\paragraph{Baseline-noise filter.}
-A pre-trigger baseline region is used to estimate waveform noise. When enabled, events with excessive baseline root-mean-square noise are rejected using the configured selection rule.
+The final photopeak selection interval is defined from the fitted Gaussian parameters as
+
+$$
+    \mu - 2\sigma
+    \leq A
+    \leq
+    \mu + 4\sigma .
+$$
+
+An event is retained only if the energy signals from both detectors fall inside their respective photopeak intervals.
+
+\begin{table}[H]
+\centering
+\caption{Configuration used for the energy-photopeak selection.}
+\label{tab:photopeak-config}
+\small
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Histogram bin width & \SI{1}{mV} \\
+Peak search region & above 20th percentile \\
+Histogram smoothing & 2 bins \\
+Initial fit half-width & \SI{15}{mV} \\
+Iterative fit interval & $\mu \pm 2.5\sigma$ \\
+Maximum iterations & 6 \\
+Selection interval & $[\mu-2\sigma,\mu+4\sigma]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \reportfigure
-    {figures/photopeak_selection.pdf}
-    {Representative two-detector photopeak selection.}
+    {figures/photopeak_selection.png}
+    {Representative photopeak selection.}
     {fig:photopeak}
 
+\paragraph{Timing-channel pulse selection.}
+
+The timing channel has a considerably higher gain and may contain multiple threshold crossings caused by electronic noise or secondary pulse structures. For this reason, timing-channel events are additionally selected using the pulse time over threshold (ToT).
+
+Candidate hits are first identified using a fixed trigger level of \SI{120}{mV}. For each detector, the distribution of candidate pulse durations 
+is then constructed from the development events that already satisfy the photopeak selection. 
+As for the energy photopeak, the dominant ToT peak is identified and fitted with the same method used for the photopeak selection.
+
+The accepted ToT interval is
+$$
+\mu_{\mathrm{ToT}}-3\sigma_{\mathrm{ToT}}
+\leq
+\mathrm{ToT}
+\leq
+\mu_{\mathrm{ToT}}+3\sigma_{\mathrm{ToT}} .
+$$
+
+If more than one timing hit falls inside this interval, the hit whose duration is closest to the fitted ToT peak is selected. This suppresses spurious threshold crossings and rejects events with an anomalous timing-channel response.
+
+\begin{table}[H]
+\centering
+\caption{Configuration used for timing-channel hit selection.}
+\label{tab}
+\small
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Timing trigger threshold & \SI{120}{mV} \\
+Histogram bin width & \SI{5}{ps} \\
+Peak search region & above 50th percentile \\
+Histogram smoothing & 2 bins \\
+Initial fit half-width & \SI{200}{ps} \\
+Iterative fit interval & $\mu \pm 2.5\sigma$ \\
+Maximum iterations & 6 \\
+Convergence tolerance & \SI{1}{ps} \\
+ToT acceptance interval & $\mu \pm 3\sigma$ \\
+Main-hit criterion & closest ToT to fitted peak \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
 \reportfigure
-    {figures/tot_selection.pdf}
+    {figures/tot_selection.png}
     {Representative timing-channel time-over-threshold selection.}
     {fig:tot}
 
+
+\paragraph{Baseline-noise filter.}
+
+A pre-trigger waveform interval is used to reject events affected by excessive baseline fluctuations. 
+For each detector, the baseline root-mean-square (RMS) value is calculated in an interval (\SI{-4}{ns} , \SI{-1}{ns}) relative to the selected trigger.
+
+The baseline-noise threshold is estimated from the development population. Let \(R\) denote the distribution of baseline RMS values for a given detector channel. Its central value is estimated by the median, while the dispersion is estimated using the median absolute deviation (MAD), converted to a Gaussian-equivalent scale:
+
+$$
+\sigma_{\mathrm{MAD}}
+=
+1.4826\,
+\operatorname{median}
+\left(
+\left|R-\operatorname{median}(R)\right|
+\right).
+$$
+
+The maximum accepted baseline RMS is then:
+
+$$
+R_{\max}
+=
+\operatorname{median}(R)
++
+5\,\sigma_{\mathrm{MAD}}.
+$$
+
+Events with \(R>R_{\max}\) in either detector channel are rejected.
+
+The threshold is calculated independently for the two detector channels, and an event is retained only if the baseline RMS is finite and 
+below the corresponding limit for both detectors.
+
+\begin{table}[t]
+\centering
+\caption{Configuration used for the baseline-noise selection.}
+\label{tab}
+\small
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Baseline window & \SIrange{-4}{-1}{ns} \\
+Noise observable & baseline RMS \\
+Center estimator & median \\
+Scale estimator & $1.48\times\mathrm{MAD}$ \\
+Rejection threshold & median $+5\sigma_{\mathrm{MAD}}$ \\
+Applied to & both detector channels \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\reportfigure
+    {figures/baseline_noise_selection.png}
+    {Representative timing-channel time-over-threshold selection.}
+    {fig:baseline_filter}
+
+
 \subsection{Leading-edge timing and calibration}
 
-Leading-edge discrimination (LED) provides the conventional timing reference. The waveform is not baseline-subtracted event by event. Instead, the LED threshold is interpreted relative to the measured pre-trigger baseline for each waveform, and the threshold-crossing time is obtained by linear interpolation on the rising edge.
+Leading-edge discrimination (LED) provides the reference timing estimate for each detector. 
+For every waveform, the LED threshold is defined as a fixed voltage offset above the mean pre-trigger baseline. 
+The crossing time is then determined by linear interpolation between the two samples surrounding the rising-edge threshold crossing.
 
 The detector-pair LED time difference is
 \begin{equation}
@@ -77,27 +204,48 @@ The network therefore learns an event-by-event correction to LED timing rather t
 
 \subsection{Machine-learning input}
 
-Each detector waveform is aligned to its LED crossing. A fixed time interval around the aligned crossing is then cropped from the native acquisition grid. The proposed locally connected model keeps a contiguous temporal grid so that every local receptive field corresponds to neighboring waveform samples.
+For each event, the waveform of each detector is aligned to its leading-edge discrimination (LED) crossing time. 
+A fixed time window around the aligned crossing is then extracted and used as input to the machine-learning model.
 
-Waveform amplitudes are mapped to the normalized ML input range using the physical scaling convention implemented by the waveform pipeline. No event-wise waveform normalization is applied.
+The locally connected model receives the waveform samples in their original temporal order, so each local receptive field 
+always contains neighboring samples from the signal.
 
-\reportfigure
-    {figures/ml_input_example.pdf}
-    {Example aligned detector-pair waveform and cropped input region used by the ML model.}
-    {fig:ml-input}
+Waveform amplitudes are normalized using the fixed physical voltage range of the oscilloscope acquisition. 
+This preserves the relative amplitude information of the detector signal and ensures that the same physical voltage 
+is mapped to the same normalized value for every event.
+
+
+
+%    \reportfigure
+%        {figures/ml_input_example.pdf}
+%        {Example aligned detector-pair waveform and cropped input region used by the ML model.}
+%        {fig:ml-input}
+
 
 \subsection{Coincidence timing resolution}
 
-Coincidence timing resolution (CTR) is extracted from the residual timing distribution with the repository's robust interval-based estimator. For a coverage fraction \(p\), the residuals are sorted and the narrowest empirical interval containing \(\lceil pN\rceil\) events is found. Its width \(w_p\) is converted to the full width at half maximum of a Gaussian with the same central coverage:
+Coincidence timing resolution (CTR) is estimated directly from the timing-residual distribution using a robust interval-based method. 
+The residuals are sorted and the narrowest interval containing \(90\%\) of the events is identified. 
+If \(w_{90}\) denotes the width of this interval, it is converted to the full width at half maximum (FWHM) of a Gaussian distribution 
+with the same central coverage:
+
 \begin{equation}
-    \mathrm{CTR}
-    =
-    \frac{2\sqrt{2\ln 2}}
-         {2\Phi^{-1}\!\left((1+p)/2\right)}
-    \,w_p ,
+\mathrm{CTR}
+=
+\frac{2\sqrt{2\ln 2}}
+{2\Phi^{-1}(0.9)}
+w_{90},
 \end{equation}
-where \(\Phi^{-1}\) is the standard-normal quantile function. The current analysis uses \(p=0.90\).
 
-This choice reduces dependence on histogram binning and is consistent with the robust-statistics motivation of using central, contamination-resistant summaries rather than relying only on a full-distribution Gaussian fit~\cite{atkinson2025}. Statistical uncertainty on the final CTR is estimated by event bootstrap.
+where \(\Phi^{-1}\) is the inverse cumulative distribution function of the standard normal distribution.
 
-\todo{State the final bootstrap sample count used in the frozen result tables.}
+Using the narrowest \(90\%\) interval makes the estimate less sensitive to tails and outliers than a fit performed over the complete residual 
+distribution, while retaining a CTR value expressed in the conventional Gaussian-equivalent FWHM form~\cite{atkinson2025}.
+
+The statistical uncertainty on the CTR is estimated by event bootstrap using 100 resamples. 
+For each resample, events are drawn with replacement and the CTR is recomputed with the same procedure; 
+the standard deviation of the resulting CTR distribution is reported as the uncertainty.
+
+When comparing two timing methods on the same set of events, a paired bootstrap is used. 
+The same resampled event indices are applied to both methods at each bootstrap iteration, 
+preserving the event-by-event correspondence between the two residual distributions. 

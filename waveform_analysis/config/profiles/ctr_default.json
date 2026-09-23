@@ -2,7 +2,7 @@
   "model_spaces_dir": "config/model_spaces",
   "validation": {
     "seed": 20260909,
-    "test_fraction": 0.4,
+    "test_fraction": 0.5,
     "validation_fraction": 0.2
   },
   "fit": {
@@ -23,9 +23,7 @@
       25,
       35,
       45,
-      50,
-      55,
-      60
+      55
     ],
     "led_minimum_crossing_efficiency": 0.95,
     "led_coincidence_window_ns": 2,

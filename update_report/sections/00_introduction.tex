@@ -1,11 +1,17 @@
 \section*{Introduction}
 
-Time-of-flight positron emission tomography (TOF-PET) uses the measured difference in photon arrival times to constrain the annihilation position along the line of response. Better timing resolution therefore improves spatial localization and image signal-to-noise performance~\cite{surti2015}. Machine-learning (ML) methods can use waveform information beyond a single threshold crossing and have been investigated for timing estimation and timing correction in PET detectors~\cite{berg2018,onishi2022}.
+Time-of-flight positron emission tomography (TOF-PET) uses the measured difference in photon arrival times to constrain the annihilation position 
+along the line of response. 
+Better timing resolution therefore improves spatial localization and image signal-to-noise performance~\cite{surti2015}. 
+Machine-learning (ML) methods can use waveform information beyond a single threshold crossing and have been investigated 
+for timing estimation and timing correction in PET detectors~\cite{berg2018,onishi2022}.
 
-The present work does not attempt a broad model benchmark. The objective is to test a physically structured waveform correction. Leading-edge discrimination (LED) provides the conventional timing estimate. A shared detector model \(g_\theta\) is applied independently to the two aligned waveforms \(s_1\) and \(s_2\), and the pair correction is constrained to be antisymmetric:
+The objective of this work is to test a physically structured waveform correction. Leading-edge discrimination (LED) provides 
+the conventional timing estimate. A shared detector model \(g_\theta\) is applied independently to the two aligned waveforms 
+\(s_1\) and \(s_2\), and the pair correction is constrained to be antisymmetric:
 \begin{equation}
     \widehat{y}(s_1,s_2)
-    \propto
+    =
     g_\theta(s_1)-g_\theta(s_2).
 \end{equation}
 Thus,
@@ -13,6 +19,11 @@ Thus,
     \widehat{y}(s_2,s_1)=-\widehat{y}(s_1,s_2).
 \end{equation}
 
-The detector scorer is implemented with locally connected temporal layers. These layers preserve local receptive fields but do not share the same weights across temporal positions, which is useful when the waveforms are aligned and absolute time within the waveform has physical meaning~\cite{elsayed2020,amit2019}.
+The detector scorer is implemented with locally connected temporal layers. These layers preserve local receptive fields but do not 
+share the same weights across temporal positions, which is useful when the waveforms are aligned and absolute time within the waveform 
+has physical meaning~\cite{elsayed2020,amit2019}.
 
-This update is organized around the full scientific pipeline: acquisition, conversion, event selection, ML dataset construction, model definition, blind evaluation, and coincidence timing resolution (CTR) results.
+This report is organized to desribe the full scientific pipeline: acquisition, conversion, event selection, ML dataset construction, 
+model definition, blind evaluation, and coincidence timing resolution (CTR) results.
+
+
