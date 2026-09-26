@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 
 from .ml_pipeline.concatenate import concatenate_prepared_datasets
@@ -18,6 +19,7 @@ from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+HISTOGRAM_BINS_ENV = "TOFPET_HISTOGRAM_BINS"
 
 
 def _config_path(path: str | Path) -> Path:
@@ -27,6 +29,13 @@ def _config_path(path: str | Path) -> Path:
         return candidate
     project_candidate = PROJECT_ROOT / candidate
     return project_candidate if project_candidate.is_file() else candidate
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,6 +55,12 @@ def _parser() -> argparse.ArgumentParser:
         help="recreate plots from existing run artifacts without rerunning preprocessing or training",
     )
     run.add_argument("--rebuild-preprocessing", action="store_true")
+    run.add_argument(
+        "--histogram-bins",
+        type=_positive_int,
+        default=22,
+        help="number of bins used for residual-distribution histograms (default: 22)",
+    )
     compare_runs = commands.add_parser("compare-runs")
     compare_runs.add_argument(
         "--runs",
@@ -66,6 +81,12 @@ def _parser() -> argparse.ArgumentParser:
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
     report.add_argument("--output-dir", type=Path)
+    report.add_argument(
+        "--histogram-bins",
+        type=_positive_int,
+        default=22,
+        help="number of bins used for residual-distribution histograms (default: 22)",
+    )
     report.add_argument(
         "--latex-tables",
         action="store_true",
@@ -109,6 +130,7 @@ def main() -> None:
             args.run_dir,
             args.output_dir,
             latex_tables=args.latex_tables,
+            histogram_bins=args.histogram_bins,
         ):
             print(path)
         return
@@ -124,9 +146,14 @@ def main() -> None:
         )
         return
     config = load_config(_config_path(args.config), PROJECT_ROOT)
+    if args.command == "run":
+        os.environ[HISTOGRAM_BINS_ENV] = str(args.histogram_bins)
     if args.command == "run" and args.remake_plots:
         run_dir = Path(config["experiment"]["output_dir"])
-        for path in rebuild_experiment_plots(run_dir):
+        for path in rebuild_experiment_plots(
+            run_dir,
+            histogram_bins=args.histogram_bins,
+        ):
             print(path)
         return
     if args.command == "check":
