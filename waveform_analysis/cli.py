@@ -5,12 +5,6 @@ import json
 import logging
 from pathlib import Path
 
-from utils_fit import (
-    CTR_DEFINITIONS,
-    DEFAULT_CTR_DEFINITION,
-    DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
-)
-
 from .ml_pipeline.concatenate import concatenate_prepared_datasets
 from .ml_pipeline.config import discover_root_files, load_config, public_config
 from .ml_pipeline.data import preprocess_selected
@@ -46,20 +40,10 @@ def _add_reporting_fit_options(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--histogram-bin-width-ps",
         type=_positive_float,
-        default=DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
+        default=None,
         help=(
-            "fixed residual-histogram bin width in ps used for reporting and "
-            "histogram-based CTR definitions; 0 ps is always a bin center "
-            f"(default: {DEFAULT_HISTOGRAM_BIN_WIDTH_PS:g} ps)"
-        ),
-    )
-    command.add_argument(
-        "--ctr-definition",
-        choices=CTR_DEFINITIONS,
-        default=DEFAULT_CTR_DEFINITION,
-        help=(
-            "CTR definition used only while generating reports; experiment selection "
-            f"always uses {DEFAULT_CTR_DEFINITION!r} (default: {DEFAULT_CTR_DEFINITION})"
+            "override the residual-histogram bin width in ps when rebuilding reports; "
+            "if omitted, use fit.histogram_bin_width_ps stored in the run"
         ),
     )
 
@@ -147,7 +131,6 @@ def main() -> None:
             args.output_dir,
             latex_tables=args.latex_tables,
             histogram_bin_width_ps=args.histogram_bin_width_ps,
-            ctr_definition=args.ctr_definition,
         ):
             print(path)
         return
@@ -168,7 +151,6 @@ def main() -> None:
         for path in rebuild_experiment_plots(
             run_dir,
             histogram_bin_width_ps=args.histogram_bin_width_ps,
-            ctr_definition=args.ctr_definition,
         ):
             print(path)
         return
@@ -206,14 +188,10 @@ def main() -> None:
         resume=args.resume,
         rebuild_preprocessing=args.rebuild_preprocessing,
     )
-    if (
-        args.histogram_bin_width_ps != DEFAULT_HISTOGRAM_BIN_WIDTH_PS
-        or args.ctr_definition != DEFAULT_CTR_DEFINITION
-    ):
+    if args.histogram_bin_width_ps is not None:
         rebuild_experiment_plots(
             run_dir,
             histogram_bin_width_ps=args.histogram_bin_width_ps,
-            ctr_definition=args.ctr_definition,
         )
     print(run_dir)
 
