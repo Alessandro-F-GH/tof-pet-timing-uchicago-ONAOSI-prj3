@@ -5,7 +5,11 @@ import json
 import logging
 from pathlib import Path
 
-from utils_fit import CTR_DEFINITIONS, DEFAULT_CTR_DEFINITION, DEFAULT_HISTOGRAM_BINS
+from utils_fit import (
+    CTR_DEFINITIONS,
+    DEFAULT_CTR_DEFINITION,
+    DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
+)
 
 from .ml_pipeline.concatenate import concatenate_prepared_datasets
 from .ml_pipeline.config import discover_root_files, load_config, public_config
@@ -31,21 +35,22 @@ def _config_path(path: str | Path) -> Path:
     return project_candidate if project_candidate.is_file() else candidate
 
 
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be a positive integer")
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if not parsed > 0.0:
+        raise argparse.ArgumentTypeError("value must be a positive number")
     return parsed
 
 
 def _add_reporting_fit_options(command: argparse.ArgumentParser) -> None:
     command.add_argument(
-        "--histogram-bins",
-        type=_positive_int,
-        default=DEFAULT_HISTOGRAM_BINS,
+        "--histogram-bin-width-ps",
+        type=_positive_float,
+        default=DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
         help=(
-            "number of bins used for residual histograms and double-Gaussian "
-            f"reporting fits (default: {DEFAULT_HISTOGRAM_BINS})"
+            "fixed residual-histogram bin width in ps used for reporting and "
+            "histogram-based CTR definitions; 0 ps is always a bin center "
+            f"(default: {DEFAULT_HISTOGRAM_BIN_WIDTH_PS:g} ps)"
         ),
     )
     command.add_argument(
@@ -141,7 +146,7 @@ def main() -> None:
             args.run_dir,
             args.output_dir,
             latex_tables=args.latex_tables,
-            histogram_bins=args.histogram_bins,
+            histogram_bin_width_ps=args.histogram_bin_width_ps,
             ctr_definition=args.ctr_definition,
         ):
             print(path)
@@ -162,7 +167,7 @@ def main() -> None:
         run_dir = Path(config["experiment"]["output_dir"])
         for path in rebuild_experiment_plots(
             run_dir,
-            histogram_bins=args.histogram_bins,
+            histogram_bin_width_ps=args.histogram_bin_width_ps,
             ctr_definition=args.ctr_definition,
         ):
             print(path)
@@ -202,12 +207,12 @@ def main() -> None:
         rebuild_preprocessing=args.rebuild_preprocessing,
     )
     if (
-        args.histogram_bins != DEFAULT_HISTOGRAM_BINS
+        args.histogram_bin_width_ps != DEFAULT_HISTOGRAM_BIN_WIDTH_PS
         or args.ctr_definition != DEFAULT_CTR_DEFINITION
     ):
         rebuild_experiment_plots(
             run_dir,
-            histogram_bins=args.histogram_bins,
+            histogram_bin_width_ps=args.histogram_bin_width_ps,
             ctr_definition=args.ctr_definition,
         )
     print(run_dir)
