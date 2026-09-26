@@ -1,3 +1,8 @@
+from .binning import (
+    DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
+    fixed_width_histogram_edges,
+    validate_histogram_bin_width_ps,
+)
 from .double_gaussian import (
     DoubleGaussianFit,
     double_gaussian_density,
@@ -10,7 +15,6 @@ from .histogram import (
     CTRResult,
     DEFAULT_CTR_DEFINITION,
     DEFAULT_FIT_CONFIG,
-    DEFAULT_HISTOGRAM_BINS,
     DEFAULT_INVALID_TIME_FS,
     FS_PER_PS,
     FitResult,
@@ -30,7 +34,7 @@ __all__ = [
     "CTRResult",
     "DEFAULT_CTR_DEFINITION",
     "DEFAULT_FIT_CONFIG",
-    "DEFAULT_HISTOGRAM_BINS",
+    "DEFAULT_HISTOGRAM_BIN_WIDTH_PS",
     "DEFAULT_INVALID_TIME_FS",
     "DoubleGaussianFit",
     "NEMAFit",
@@ -43,11 +47,13 @@ __all__ = [
     "estimate_delta_times_ps",
     "fit_double_gaussian_fwhm",
     "fit_nema_fwhm",
+    "fixed_width_histogram_edges",
     "nema_fwhm_from_histogram",
     "fit_delta_times_integer_fs",
     "fit_delta_times_ps",
     "scan_timing_grid",
     "fit_ctr_ps",
     "load_fit_csv",
+    "validate_histogram_bin_width_ps",
     "write_fit_csv",
 ]
