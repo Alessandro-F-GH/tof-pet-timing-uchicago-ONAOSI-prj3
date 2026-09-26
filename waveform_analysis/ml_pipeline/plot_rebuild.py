@@ -12,6 +12,7 @@ from .model_output_reporting import make_model_output_reports
 from .plot_style import LABELS
 from .reporting import make_plots, plot_model_study_windows
 from .reporting_fit import reporting_fit_options, resolve_histogram_bin_width_ps
+from .threshold_reporting import recompute_threshold_scan_rows
 
 
 def _reset(directory: Path) -> None:
@@ -120,6 +121,11 @@ def rebuild_experiment_plots(
             raise FileNotFoundError(
                 f"Threshold-scan results not found: {run / 'csv' / 'threshold_scan.csv'}"
             )
+        rows = recompute_threshold_scan_rows(
+            run,
+            rows,
+            histogram_bin_width_ps=bin_width,
+        )
         paths = plot_threshold_scan(destination, rows)
         if latex_tables:
             table_root = destination / "latex_tables"
