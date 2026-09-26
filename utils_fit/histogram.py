@@ -7,9 +7,14 @@ from typing import Any
 
 import numpy as np
 
+from .double_gaussian import DoubleGaussianFit, fit_double_gaussian_fwhm
+
 FS_PER_PS = 1000.0
 DEFAULT_INVALID_TIME_FS = np.iinfo(np.int64).min
 FWHM_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
+CTR_DEFINITIONS = ("shortest_interval", "double_gaussian")
+DEFAULT_CTR_DEFINITION = "shortest_interval"
+DEFAULT_HISTOGRAM_BINS = 22
 DEFAULT_FIT_CONFIG: dict[str, Any] = {
     "coverage_fraction": 0.90,
     "bootstrap_samples": 500,
@@ -18,7 +23,7 @@ DEFAULT_FIT_CONFIG: dict[str, Any] = {
 
 @dataclass
 class CTRResult:
-    """CTR from the Gaussian-equivalent shortest empirical coverage interval."""
+    """CTR estimate and uncertainty from one supported timing-width definition."""
 
     method: str
     parameter: float
@@ -38,6 +43,11 @@ class CTRResult:
     gaussian_equivalent_scale: float
     bootstrap_samples: int
     bootstrap_successful: int
+    definition: str = DEFAULT_CTR_DEFINITION
+    histogram_bins: int = 0
+    sigma_narrow_ps: float = float("nan")
+    sigma_wide_ps: float = float("nan")
+    narrow_fraction: float = float("nan")
     message: str = ""
 
     @property
@@ -118,6 +128,11 @@ class CTRResult:
             "gaussian_equivalent_scale": self.gaussian_equivalent_scale,
             "bootstrap_samples": self.bootstrap_samples,
             "bootstrap_successful": self.bootstrap_successful,
+            "definition": self.definition,
+            "histogram_bins": self.histogram_bins,
+            "sigma_narrow_ps": self.sigma_narrow_ps,
+            "sigma_wide_ps": self.sigma_wide_ps,
+            "narrow_fraction": self.narrow_fraction,
             "message": self.message,
         }
 
@@ -125,11 +140,45 @@ class CTRResult:
 FitResult = CTRResult
 
 
+@dataclass(frozen=True)
+class _PointEstimate:
+    ctr_ps: float
+    center_ps: float
+    interval_events: int = 0
+    interval_low_ps: float = float("nan")
+    interval_high_ps: float = float("nan")
+    interval_width_ps: float = float("nan")
+    gaussian_equivalent_scale: float = float("nan")
+    histogram_bins: int = 0
+    sigma_narrow_ps: float = float("nan")
+    sigma_wide_ps: float = float("nan")
+    narrow_fraction: float = float("nan")
+    double_gaussian_fit: DoubleGaussianFit | None = None
+
+
 def _gaussian_equivalent_scale(coverage_fraction: float) -> float:
     """Scale a central Gaussian coverage width to Gaussian FWHM."""
     p = float(coverage_fraction)
     z = NormalDist().inv_cdf(0.5 * (1.0 + p))
     return float(FWHM_SIGMA / (2.0 * z))
+
+
+def _normalize_definition(definition: str) -> str:
+    value = str(definition).strip().lower()
+    if value not in CTR_DEFINITIONS:
+        raise ValueError(
+            f"Unknown CTR definition {definition!r}; expected one of {CTR_DEFINITIONS}"
+        )
+    return value
+
+
+def _validate_histogram_bins(histogram_bins: int) -> int:
+    if isinstance(histogram_bins, bool):
+        raise ValueError("histogram_bins must be a positive integer")
+    bins = int(histogram_bins)
+    if bins != histogram_bins or bins <= 0:
+        raise ValueError("histogram_bins must be a positive integer")
+    return bins
 
 
 def _failure(
@@ -141,6 +190,8 @@ def _failure(
     n_valid: int,
     coverage_fraction: float,
     bootstrap_samples: int,
+    definition: str,
+    histogram_bins: int,
     message: str,
 ) -> CTRResult:
     return CTRResult(
@@ -154,14 +205,22 @@ def _failure(
         ctr_ps=np.nan,
         ctr_error_ps=np.nan,
         center_ps=np.nan,
-        coverage_fraction=float(coverage_fraction),
+        coverage_fraction=(
+            float(coverage_fraction) if definition == "shortest_interval" else np.nan
+        ),
         interval_events=0,
         interval_low_ps=np.nan,
         interval_high_ps=np.nan,
         interval_width_ps=np.nan,
-        gaussian_equivalent_scale=_gaussian_equivalent_scale(coverage_fraction),
+        gaussian_equivalent_scale=(
+            _gaussian_equivalent_scale(coverage_fraction)
+            if definition == "shortest_interval"
+            else np.nan
+        ),
         bootstrap_samples=int(bootstrap_samples),
         bootstrap_successful=0,
+        definition=definition,
+        histogram_bins=(histogram_bins if definition == "double_gaussian" else 0),
         message=message,
     )
 
@@ -214,6 +273,46 @@ def _shortest_interval(
     return ctr, center, low, high, width, count
 
 
+def _point_estimate(
+    values_ps: np.ndarray,
+    *,
+    definition: str,
+    coverage_fraction: float,
+    histogram_bins: int,
+    initial: _PointEstimate | None = None,
+) -> _PointEstimate:
+    if definition == "shortest_interval":
+        ctr, center, low, high, width, count = _shortest_interval(
+            values_ps,
+            coverage_fraction,
+        )
+        return _PointEstimate(
+            ctr_ps=ctr,
+            center_ps=center,
+            interval_events=count,
+            interval_low_ps=low,
+            interval_high_ps=high,
+            interval_width_ps=width,
+            gaussian_equivalent_scale=_gaussian_equivalent_scale(coverage_fraction),
+        )
+
+    seed_fit = initial.double_gaussian_fit if initial is not None else None
+    fit = fit_double_gaussian_fwhm(
+        values_ps,
+        histogram_bins=histogram_bins,
+        initial=seed_fit,
+    )
+    return _PointEstimate(
+        ctr_ps=fit.ctr_ps,
+        center_ps=fit.center_ps,
+        histogram_bins=fit.histogram_bins,
+        sigma_narrow_ps=fit.sigma_narrow_ps,
+        sigma_wide_ps=fit.sigma_wide_ps,
+        narrow_fraction=fit.narrow_fraction,
+        double_gaussian_fit=fit,
+    )
+
+
 def _estimate_values(
     values_ps: np.ndarray,
     *,
@@ -224,14 +323,19 @@ def _estimate_values(
     config: dict[str, Any] | None,
     seed: int,
     bootstrap: bool,
+    definition: str,
+    histogram_bins: int,
 ) -> CTRResult:
     cfg = _config(config)
+    definition = _normalize_definition(definition)
+    bins = _validate_histogram_bins(histogram_bins)
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     finite = values[np.isfinite(values)]
     n_valid = int(finite.size)
     coverage = float(cfg["coverage_fraction"])
     requested = int(cfg["bootstrap_samples"]) if bootstrap else 0
-    if n_valid < 2:
+    minimum_events = 10 if definition == "double_gaussian" else 2
+    if n_valid < minimum_events:
         return _failure(
             method=method,
             parameter=parameter,
@@ -240,13 +344,34 @@ def _estimate_values(
             n_valid=n_valid,
             coverage_fraction=coverage,
             bootstrap_samples=requested,
-            message="At least two finite residuals are required for CTR",
+            definition=definition,
+            histogram_bins=bins,
+            message=(
+                f"At least {minimum_events} finite residuals are required for "
+                f"CTR definition {definition}"
+            ),
         )
 
-    ctr, center, interval_low, interval_high, interval_width, interval_events = _shortest_interval(
-        finite,
-        coverage,
-    )
+    try:
+        point = _point_estimate(
+            finite,
+            definition=definition,
+            coverage_fraction=coverage,
+            histogram_bins=bins,
+        )
+    except ValueError as exc:
+        return _failure(
+            method=method,
+            parameter=parameter,
+            n_total=n_total,
+            n_selected=n_selected,
+            n_valid=n_valid,
+            coverage_fraction=coverage,
+            bootstrap_samples=requested,
+            definition=definition,
+            histogram_bins=bins,
+            message=str(exc),
+        )
 
     bootstrap_ctrs: list[float] = []
     if requested > 1:
@@ -254,13 +379,23 @@ def _estimate_values(
         for _ in range(requested):
             sample = finite[rng.integers(0, n_valid, size=n_valid)]
             try:
-                trial_ctr = _shortest_interval(sample, coverage)[0]
+                trial = _point_estimate(
+                    sample,
+                    definition=definition,
+                    coverage_fraction=coverage,
+                    histogram_bins=bins,
+                    initial=point,
+                )
             except ValueError:
                 continue
-            if np.isfinite(trial_ctr):
-                bootstrap_ctrs.append(float(trial_ctr))
+            if np.isfinite(trial.ctr_ps):
+                bootstrap_ctrs.append(float(trial.ctr_ps))
 
-    error = float(np.std(bootstrap_ctrs, ddof=1)) if len(bootstrap_ctrs) > 1 else float("nan")
+    error = (
+        float(np.std(bootstrap_ctrs, ddof=1))
+        if len(bootstrap_ctrs) > 1
+        else float("nan")
+    )
 
     return CTRResult(
         method=method,
@@ -270,17 +405,22 @@ def _estimate_values(
         n_selected=int(n_selected),
         n_valid=n_valid,
         crossing_efficiency=n_valid / n_selected if n_selected else 0.0,
-        ctr_ps=float(ctr),
+        ctr_ps=float(point.ctr_ps),
         ctr_error_ps=error,
-        center_ps=float(center),
-        coverage_fraction=coverage,
-        interval_events=int(interval_events),
-        interval_low_ps=float(interval_low),
-        interval_high_ps=float(interval_high),
-        interval_width_ps=float(interval_width),
-        gaussian_equivalent_scale=_gaussian_equivalent_scale(coverage),
+        center_ps=float(point.center_ps),
+        coverage_fraction=(coverage if definition == "shortest_interval" else np.nan),
+        interval_events=int(point.interval_events),
+        interval_low_ps=float(point.interval_low_ps),
+        interval_high_ps=float(point.interval_high_ps),
+        interval_width_ps=float(point.interval_width_ps),
+        gaussian_equivalent_scale=float(point.gaussian_equivalent_scale),
         bootstrap_samples=requested,
         bootstrap_successful=len(bootstrap_ctrs),
+        definition=definition,
+        histogram_bins=(point.histogram_bins if definition == "double_gaussian" else 0),
+        sigma_narrow_ps=float(point.sigma_narrow_ps),
+        sigma_wide_ps=float(point.sigma_wide_ps),
+        narrow_fraction=float(point.narrow_fraction),
     )
 
 
@@ -294,6 +434,8 @@ def estimate_delta_times_ps(
     config: dict[str, Any] | None = None,
     seed: int = 0,
     bootstrap: bool = True,
+    definition: str = DEFAULT_CTR_DEFINITION,
+    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
 ) -> CTRResult:
     values = np.asarray(delta_ps, dtype=np.float64).reshape(-1)
     total = values.size if n_total is None else int(n_total)
@@ -307,6 +449,8 @@ def estimate_delta_times_ps(
         config=config,
         seed=seed,
         bootstrap=bootstrap,
+        definition=definition,
+        histogram_bins=histogram_bins,
     )
 
 
@@ -320,6 +464,8 @@ def estimate_delta_times_integer_fs(
     config: dict[str, Any] | None = None,
     seed: int = 0,
     bootstrap: bool = True,
+    definition: str = DEFAULT_CTR_DEFINITION,
+    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
 ) -> CTRResult:
     raw = np.asarray(delta_fs)
     if raw.ndim != 1:
@@ -338,6 +484,8 @@ def estimate_delta_times_integer_fs(
         config=config,
         seed=seed,
         bootstrap=bootstrap,
+        definition=definition,
+        histogram_bins=histogram_bins,
     )
 
 
