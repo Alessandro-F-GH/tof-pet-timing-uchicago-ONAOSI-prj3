@@ -9,7 +9,7 @@ import numpy as np
 
 from utils_fit import (
     fit_ctr_ps,
-    fit_nema_fwhm,
+    fit_direct_fwhm,
     fixed_width_histogram_edges,
     validate_histogram_bin_width_ps,
 )
@@ -30,7 +30,7 @@ def _fit_config(manifest: dict[str, Any], override_bin_width_ps: float | None) -
     fit = dict((manifest.get("config") or {}).get("fit") or {})
     if "histogram_bin_width_ps" not in fit or "bootstrap_samples" not in fit:
         raise ValueError(
-            "Stored run does not contain the NEMA fit configuration "
+            "Stored run does not contain the direct F1 fit configuration "
             "(histogram_bin_width_ps and bootstrap_samples)"
         )
     if override_bin_width_ps is not None:
@@ -85,7 +85,7 @@ def _recompute_rows(
                 dataset,
                 method,
                 stage,
-                "reporting_nema_ctr",
+                "reporting_direct_f1_ctr",
             ),
             bootstrap=True,
         )
@@ -110,7 +110,7 @@ def _recompute_rows(
     return [dict(row) for row in recomputed]
 
 
-def _nema_distribution_plot(
+def _direct_distribution_plot(
     output,
     run,
     rows,
@@ -121,7 +121,7 @@ def _nema_distribution_plot(
     *,
     histogram_bin_width_ps: float,
 ) -> None:
-    """CTR distribution with NEMA peak and half-maximum width overlaid."""
+    """CTR distribution with direct F1 half-maximum width overlaid."""
     import matplotlib.pyplot as plt
 
     available = []
@@ -153,12 +153,12 @@ def _nema_distribution_plot(
 
     for model, model_residual, model_row in models:
         pair = [led, (model, model_residual, model_row)]
-        nema_fits = [
+        direct_fits = [
             (
                 method,
                 residual,
                 row,
-                fit_nema_fwhm(
+                fit_direct_fwhm(
                     residual,
                     histogram_bin_width_ps=histogram_bin_width_ps,
                 ),
@@ -167,24 +167,24 @@ def _nema_distribution_plot(
         ]
 
         xlim = reporting_module._robust_display_range(
-            [residual for _method, residual, _row, _fit in nema_fits],
+            [residual for _method, residual, _row, _fit in direct_fits],
             quantiles=(0.005, 0.995),
             margin_fraction=0.06,
         )
         xlim = (
             min(
                 float(xlim[0]),
-                min(fit.half_max_left_ps for _m, _r, _row, fit in nema_fits) - 20.0,
+                min(fit.half_max_left_ps for _m, _r, _row, fit in direct_fits) - 20.0,
             ),
             max(
                 float(xlim[1]),
-                max(fit.half_max_right_ps for _m, _r, _row, fit in nema_fits) + 20.0,
+                max(fit.half_max_right_ps for _m, _r, _row, fit in direct_fits) + 20.0,
             ),
         )
 
         fig, ax = plt.subplots(figsize=reporting_module.SINGLE_COLUMN)
         peak = 0.0
-        for index, (method, residual, row, fit) in enumerate(nema_fits):
+        for index, (method, residual, row, fit) in enumerate(direct_fits):
             edges = fixed_width_histogram_edges(
                 residual,
                 histogram_bin_width_ps,
@@ -260,13 +260,12 @@ def _nema_distribution_plot(
 
 @contextmanager
 def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
-    """Recompute report CTR values from residual artifacts with the unique NEMA method."""
+    """Recompute report CTR values from residual artifacts with direct F1."""
     from matplotlib.axes import Axes
 
     override_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
-    original_edges = reporting_module._median_centered_display_edges
     original_distribution_plot = reporting_module._distribution_plot
     original_legend = Axes.legend
     original_latex_read_csv = latex_tables_module._read_csv
@@ -291,24 +290,10 @@ def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
             bootstrap=bootstrap,
         )
 
-    def configured_edges(values, xlim, n_bins=None):
-        del n_bins
-        width = override_width
-        if width is None:
-            raise RuntimeError(
-                "Residual display binning requires the run-specific NEMA bin width"
-            )
-        return fixed_width_histogram_edges(
-            values,
-            width,
-            low_ps=float(xlim[0]),
-            high_ps=float(xlim[1]),
-        )
-
     def configured_distribution_plot(output, run, rows, mode, dataset, stage, paths):
         manifest = json.loads((Path(run) / "manifest.json").read_text(encoding="utf-8"))
         fit_config = _fit_config(manifest, override_width)
-        return _nema_distribution_plot(
+        return _direct_distribution_plot(
             output,
             run,
             rows,
@@ -343,7 +328,6 @@ def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
     finally:
         reporting_module.read_results = original_read_results
         reporting_module.fit_ctr_ps = original_fit_ctr
-        reporting_module._median_centered_display_edges = original_edges
         reporting_module._distribution_plot = original_distribution_plot
         latex_tables_module._read_csv = original_latex_read_csv
         Axes.legend = original_legend
