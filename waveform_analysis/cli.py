@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from pathlib import Path
+
+from utils_fit import CTR_DEFINITIONS, DEFAULT_CTR_DEFINITION, DEFAULT_HISTOGRAM_BINS
 
 from .ml_pipeline.concatenate import concatenate_prepared_datasets
 from .ml_pipeline.config import discover_root_files, load_config, public_config
@@ -19,7 +20,6 @@ from .ml_pipeline.selection_outputs import ensure_selection_outputs
 from .ml_pipeline.study import run_study
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-HISTOGRAM_BINS_ENV = "TOFPET_HISTOGRAM_BINS"
 
 
 def _config_path(path: str | Path) -> Path:
@@ -36,6 +36,27 @@ def _positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be a positive integer")
     return parsed
+
+
+def _add_reporting_fit_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--histogram-bins",
+        type=_positive_int,
+        default=DEFAULT_HISTOGRAM_BINS,
+        help=(
+            "number of bins used for residual histograms and double-Gaussian "
+            f"reporting fits (default: {DEFAULT_HISTOGRAM_BINS})"
+        ),
+    )
+    command.add_argument(
+        "--ctr-definition",
+        choices=CTR_DEFINITIONS,
+        default=DEFAULT_CTR_DEFINITION,
+        help=(
+            "CTR definition used only while generating reports; experiment selection "
+            f"always uses {DEFAULT_CTR_DEFINITION!r} (default: {DEFAULT_CTR_DEFINITION})"
+        ),
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -55,12 +76,7 @@ def _parser() -> argparse.ArgumentParser:
         help="recreate plots from existing run artifacts without rerunning preprocessing or training",
     )
     run.add_argument("--rebuild-preprocessing", action="store_true")
-    run.add_argument(
-        "--histogram-bins",
-        type=_positive_int,
-        default=22,
-        help="number of bins used for residual-distribution histograms (default: 22)",
-    )
+    _add_reporting_fit_options(run)
     compare_runs = commands.add_parser("compare-runs")
     compare_runs.add_argument(
         "--runs",
@@ -81,12 +97,7 @@ def _parser() -> argparse.ArgumentParser:
     report = commands.add_parser("report")
     report.add_argument("--run-dir", type=Path, required=True)
     report.add_argument("--output-dir", type=Path)
-    report.add_argument(
-        "--histogram-bins",
-        type=_positive_int,
-        default=22,
-        help="number of bins used for residual-distribution histograms (default: 22)",
-    )
+    _add_reporting_fit_options(report)
     report.add_argument(
         "--latex-tables",
         action="store_true",
@@ -131,6 +142,7 @@ def main() -> None:
             args.output_dir,
             latex_tables=args.latex_tables,
             histogram_bins=args.histogram_bins,
+            ctr_definition=args.ctr_definition,
         ):
             print(path)
         return
@@ -146,13 +158,12 @@ def main() -> None:
         )
         return
     config = load_config(_config_path(args.config), PROJECT_ROOT)
-    if args.command == "run":
-        os.environ[HISTOGRAM_BINS_ENV] = str(args.histogram_bins)
     if args.command == "run" and args.remake_plots:
         run_dir = Path(config["experiment"]["output_dir"])
         for path in rebuild_experiment_plots(
             run_dir,
             histogram_bins=args.histogram_bins,
+            ctr_definition=args.ctr_definition,
         ):
             print(path)
         return
@@ -184,14 +195,22 @@ def main() -> None:
     if not confirm_overwrite(overwrite_paths):
         print("No files were changed.")
         return
-    print(
-        run_study(
-            config,
-            overwrite=args.overwrite,
-            resume=args.resume,
-            rebuild_preprocessing=args.rebuild_preprocessing,
-        )
+    run_dir = run_study(
+        config,
+        overwrite=args.overwrite,
+        resume=args.resume,
+        rebuild_preprocessing=args.rebuild_preprocessing,
     )
+    if (
+        args.histogram_bins != DEFAULT_HISTOGRAM_BINS
+        or args.ctr_definition != DEFAULT_CTR_DEFINITION
+    ):
+        rebuild_experiment_plots(
+            run_dir,
+            histogram_bins=args.histogram_bins,
+            ctr_definition=args.ctr_definition,
+        )
+    print(run_dir)
 
 
 if __name__ == "__main__":
