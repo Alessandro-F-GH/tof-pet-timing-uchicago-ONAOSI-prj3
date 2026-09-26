@@ -4,10 +4,8 @@ from typing import Any
 
 import numpy as np
 
-from .binning import DEFAULT_HISTOGRAM_BIN_WIDTH_PS
 from .histogram import (
     CTRResult,
-    DEFAULT_CTR_DEFINITION,
     estimate_delta_times_integer_fs,
     estimate_delta_times_ps,
 )
@@ -19,18 +17,14 @@ def fit_ctr_ps(
     *,
     seed: int = 0,
     bootstrap: bool = True,
-    definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
-    """General CTR estimator with optional event-bootstrap uncertainty."""
+    """Estimate CTR with the unique NEMA FWHM definition."""
     result = estimate_delta_times_ps(
         np.asarray(values_ps, dtype=np.float64),
         method="ctr",
         config=config,
         seed=int(seed),
         bootstrap=bool(bootstrap),
-        definition=definition,
-        histogram_bin_width_ps=histogram_bin_width_ps,
     )
     if not result.success or not np.isfinite(result.ctr_ps):
         raise ValueError(result.message or "CTR estimation failed")
@@ -47,10 +41,8 @@ def fit_delta_times_ps(
     config: dict[str, Any] | None = None,
     seed: int = 0,
     bootstrap: bool = False,
-    definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
-    """Generic timing-width extraction using one supported CTR definition."""
+    """NEMA timing-width extraction for floating-point residuals in ps."""
     return estimate_delta_times_ps(
         delta_ps,
         method=method,
@@ -60,8 +52,6 @@ def fit_delta_times_ps(
         config=config,
         seed=seed,
         bootstrap=bootstrap,
-        definition=definition,
-        histogram_bin_width_ps=histogram_bin_width_ps,
     )
 
 
@@ -75,10 +65,8 @@ def fit_delta_times_integer_fs(
     config: dict[str, Any] | None = None,
     seed: int = 0,
     bootstrap: bool = False,
-    definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
-    """Integer-fs counterpart of fit_delta_times_ps."""
+    """NEMA timing-width extraction for integer residuals in fs."""
     return estimate_delta_times_integer_fs(
         delta_fs,
         method=method,
@@ -88,6 +76,4 @@ def fit_delta_times_integer_fs(
         config=config,
         seed=seed,
         bootstrap=bootstrap,
-        definition=definition,
-        histogram_bin_width_ps=histogram_bin_width_ps,
     )
