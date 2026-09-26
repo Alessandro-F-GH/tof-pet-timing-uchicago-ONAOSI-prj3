@@ -17,7 +17,7 @@ def plot_ctr_histogram(
     title: str | None = None,
     xlabel: str = "Time difference [ps]",
 ) -> None:
-    """Plot a NEMA CTR histogram with peak and half-maximum crossings."""
+    """Plot a direct F1 CTR histogram with half-maximum crossings."""
     if result is None or not result.success:
         return
 
@@ -28,7 +28,7 @@ def plot_ctr_histogram(
         ax.bar(edges[:-1], counts, width=np.diff(edges), align="edge", alpha=0.65)
 
     if np.isfinite(result.peak_height) and np.isfinite(result.center_ps):
-        ax.plot(result.center_ps, result.peak_height, marker="o", linestyle="none", label="NEMA peak")
+        ax.plot(result.center_ps, result.peak_height, marker="o", linestyle="none", label="Histogram maximum")
     if np.isfinite(result.half_max_events):
         ax.hlines(
             result.half_max_events,
@@ -36,7 +36,7 @@ def plot_ctr_histogram(
             result.right_half_ps,
             linestyles="--",
             linewidth=1.3,
-            label="NEMA half maximum",
+            label="Half maximum",
         )
     if np.isfinite(result.left_half_ps):
         ax.axvline(result.left_half_ps, ls=":", lw=1.1)
@@ -48,7 +48,7 @@ def plot_ctr_histogram(
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Events / bin")
-    ax.set_title(title or f"{result.method} — parameter {result.parameter:g} — NEMA CTR")
+    ax.set_title(title or f"{result.method} — parameter {result.parameter:g} — direct F1 CTR")
     ax.grid(alpha=0.2)
     ax.legend(loc="upper right")
 
