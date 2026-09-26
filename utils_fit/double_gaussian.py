@@ -95,7 +95,11 @@ def fit_double_gaussian_fwhm(
     """Fit the shared-mean double-Gaussian model and return total-distribution FWHM."""
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     values = values[np.isfinite(values)]
+    if isinstance(histogram_bins, bool):
+        raise ValueError("histogram_bins must be an integer")
     bins = int(histogram_bins)
+    if bins != histogram_bins:
+        raise ValueError("histogram_bins must be an integer")
     if bins < 5:
         raise ValueError("double_gaussian requires at least 5 histogram bins")
     if values.size < 10:
