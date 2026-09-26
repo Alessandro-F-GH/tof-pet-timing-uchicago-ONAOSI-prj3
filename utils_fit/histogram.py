@@ -10,7 +10,7 @@ from .binning import (
     fixed_width_histogram_edges,
     validate_histogram_bin_width_ps,
 )
-from .nema import fit_nema_fwhm
+from .direct_fwhm import fit_direct_fwhm
 
 FS_PER_PS = 1000.0
 DEFAULT_INVALID_TIME_FS = np.iinfo(np.int64).min
@@ -22,7 +22,7 @@ DEFAULT_FIT_CONFIG: dict[str, Any] = {
 
 @dataclass
 class CTRResult:
-    """NEMA FWHM CTR estimate and event-bootstrap uncertainty."""
+    """Direct F1 FWHM CTR estimate and event-bootstrap uncertainty."""
 
     method: str
     parameter: float
@@ -171,11 +171,11 @@ def _estimate_values(
             n_valid=n_valid,
             histogram_bin_width_ps=bin_width,
             bootstrap_samples=requested,
-            message="NEMA CTR requires at least 5 finite residuals",
+            message="Direct F1 CTR requires at least 5 finite residuals",
         )
 
     try:
-        point = fit_nema_fwhm(
+        point = fit_direct_fwhm(
             finite,
             histogram_bin_width_ps=bin_width,
         )
@@ -197,7 +197,7 @@ def _estimate_values(
         for _ in range(requested):
             sample = finite[rng.integers(0, n_valid, size=n_valid)]
             try:
-                trial = fit_nema_fwhm(
+                trial = fit_direct_fwhm(
                     sample,
                     histogram_bin_width_ps=bin_width,
                 )
