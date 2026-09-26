@@ -58,7 +58,6 @@ def _logger(run_dir: Path):
     return logger
 
 
-
 def _assert_resume_config_matches(config: dict[str, Any], run_dir: Path) -> None:
     """Refuse to mix artifacts from different resolved study configurations."""
     manifest_path = run_dir / "manifest.json"
@@ -102,8 +101,6 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
     if canonical_hash(stored_config) != str(config.get("_config_fingerprint", "")):
         return False
 
-    # Verify persisted outputs even when status="complete". This protects
-    # against a stale/corrupt manifest or files removed after completion.
     roots = discover_root_files(config)
     concatenate = bool(config["experiment"].get("concatenate_datasets", False))
     expected_datasets = 1 if concatenate else len(roots)
@@ -149,9 +146,7 @@ def _completed_run_matches(config: dict[str, Any], run_dir: Path) -> bool:
         if not required.issubset(available):
             return False
 
-
     return True
-
 
 
 def _metric_row(config, name, voltage, mode, method, residual, population_n, seed, logger, stage="test"):
@@ -178,12 +173,12 @@ def _metric_row(config, name, voltage, mode, method, residual, population_n, see
         "ctr_ps": float(result.ctr_ps),
         "ctr_uncertainty_ps": float(result.ctr_error_ps),
         "center_ps": float(result.center_ps),
-        "coverage_fraction": float(result.coverage_fraction),
-        "interval_events": int(result.interval_events),
-        "interval_low_ps": float(result.interval_low_ps),
-        "interval_high_ps": float(result.interval_high_ps),
-        "interval_width_ps": float(result.interval_width_ps),
-        "gaussian_equivalent_scale": float(result.gaussian_equivalent_scale),
+        "peak_height": float(result.peak_height),
+        "half_max_events": float(result.half_max_events),
+        "left_half_ps": float(result.left_half_ps),
+        "right_half_ps": float(result.right_half_ps),
+        "histogram_bin_width_ps": float(result.histogram_bin_width_ps),
+        "histogram_bins": int(result.histogram_bins),
         "bootstrap_samples": int(result.bootstrap_samples),
         "bootstrap_successful": int(result.bootstrap_successful),
         "n": int(result.n_valid),
@@ -292,9 +287,8 @@ def _prepare_datasets(
 
 
 def _base_manifest(config, concatenate, roots):
-    coverage = float(config["fit"].get("coverage_fraction", 0.90))
     manifest = {
-        "schema_version": 14,
+        "schema_version": 15,
         "status": "running",
         "config_fingerprint": str(config.get("_config_fingerprint", "")),
         "protocol": "single_mode_holdout",
@@ -330,9 +324,12 @@ def _base_manifest(config, concatenate, roots):
         "ml_target": "delta_t_led - true_tof - calibration_bias",
         "corrected_residual": "ml_target - paired_model_prediction",
         "prediction_limit_ps": float(config["ml_output"]["max_abs_ps"]),
-        "ctr_metric": "gaussian_equivalent_shortest_coverage_interval",
-        "ctr_coverage_fraction": coverage,
-        "ctr_definition": "scale(p) * shortest empirical interval containing ceil(p*N) finite residuals",
+        "ctr_metric": "direct_f1_fwhm",
+        "ctr_definition": (
+            "middlemost histogram maximum; half-height from the maximum bin; "
+            "linear interpolation of the nearest half-maximum crossings; CTR = right - left"
+        ),
+        "ctr_histogram_bin_width_ps": float(config["fit"]["histogram_bin_width_ps"]),
         "ctr_uses_all_finite_residuals": True,
         "ctr_uncertainty": "event_bootstrap_ctr_std",
         "ctr_bootstrap_samples": int(config["fit"]["bootstrap_samples"]),
@@ -569,22 +566,13 @@ def _evaluate_final_datasets(
                     ),
                     "test_row": test_row_existing,
                 }
-                if fixed_reference:
-                    logger.info(
-                        "Result | %s | %s | resumed | blind CTR=%.3f ± %.3f ps",
-                        name,
-                        LABELS.get(model_name, model_name),
-                        float(test_row_existing["ctr_ps"]),
-                        float(test_row_existing["ctr_uncertainty_ps"]),
-                    )
-                else:
-                    logger.info(
-                        "Result | %s | %s | resumed | blind CTR=%.3f ± %.3f ps",
-                        name,
-                        LABELS.get(model_name, model_name),
-                        float(test_row_existing["ctr_ps"]),
-                        float(test_row_existing["ctr_uncertainty_ps"]),
-                    )
+                logger.info(
+                    "Result | %s | %s | resumed | blind CTR=%.3f ± %.3f ps",
+                    name,
+                    LABELS.get(model_name, model_name),
+                    float(test_row_existing["ctr_ps"]),
+                    float(test_row_existing["ctr_uncertainty_ps"]),
+                )
                 continue
 
             search = None
