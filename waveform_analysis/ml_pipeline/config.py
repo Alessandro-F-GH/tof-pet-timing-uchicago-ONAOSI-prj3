@@ -203,14 +203,19 @@ def validate_config(config):
         raise ConfigError("ml_output must contain one positive max_abs_ps")
 
     fit = config["fit"]
-    allowed_fit = {"coverage_fraction", "bootstrap_samples"}
-    extra_fit = sorted(set(fit) - allowed_fit)
-    if extra_fit:
-        raise ConfigError(f"Unknown fit option(s): {extra_fit}")
-    coverage = float(fit.get("coverage_fraction", 0.90))
-    if not 0.0 < coverage < 1.0:
-        raise ConfigError("fit.coverage_fraction must be a fraction in (0, 1)")
-    bootstrap_samples = fit.get("bootstrap_samples")
+    expected_fit = {"histogram_bin_width_ps", "bootstrap_samples"}
+    if set(fit) != expected_fit:
+        missing_fit = sorted(expected_fit - set(fit))
+        extra_fit = sorted(set(fit) - expected_fit)
+        details = []
+        if missing_fit:
+            details.append(f"missing {missing_fit}")
+        if extra_fit:
+            details.append(f"unknown {extra_fit}")
+        raise ConfigError("fit must contain exactly histogram_bin_width_ps and bootstrap_samples: " + ", ".join(details))
+    if not np_isfinite_positive(float(fit["histogram_bin_width_ps"])):
+        raise ConfigError("fit.histogram_bin_width_ps must be finite and positive")
+    bootstrap_samples = fit["bootstrap_samples"]
     if isinstance(bootstrap_samples, bool) or int(bootstrap_samples) != bootstrap_samples or int(bootstrap_samples) < 0:
         raise ConfigError("fit.bootstrap_samples must be a non-negative integer")
 
