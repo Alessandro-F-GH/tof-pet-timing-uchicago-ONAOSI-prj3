@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from utils_fit import double_gaussian_fwhm, fit_ctr_ps
+from utils_fit import double_gaussian_fwhm, fit_ctr_ps, nema_fwhm_from_histogram
 
 
 class CTRTests(unittest.TestCase):
@@ -116,6 +116,51 @@ class CTRTests(unittest.TestCase):
             histogram_bins=30,
         )
         self.assertEqual(result.bootstrap_samples, 20)
+        self.assertGreater(result.bootstrap_successful, 1)
+        self.assertTrue(np.isfinite(result.ctr_error_ps))
+        self.assertGreater(result.ctr_error_ps, 0.0)
+
+    def test_nema_recovers_gaussian_fwhm(self):
+        rng = np.random.default_rng(9)
+        sigma = 30.0
+        values = rng.normal(12.0, sigma, 100000)
+        result = fit_ctr_ps(
+            values,
+            {"coverage_fraction": 0.90, "bootstrap_samples": 0},
+            definition="nema",
+            histogram_bins=40,
+        )
+        expected = 2.354820045 * sigma
+        self.assertEqual(result.definition, "nema")
+        self.assertEqual(result.histogram_bins, 40)
+        self.assertTrue(np.isnan(result.coverage_fraction))
+        self.assertLess(abs(result.ctr_ps - expected) / expected, 0.05)
+        self.assertLess(abs(result.center_ps - 12.0), 5.0)
+
+    def test_nema_histogram_uses_parabolic_peak_and_linear_crossings(self):
+        edges = np.arange(-4.5, 5.5, 1.0)
+        counts = np.array([0, 1, 3, 7, 10, 8, 4, 2, 0], dtype=float)
+        result = nema_fwhm_from_histogram(counts, edges)
+        self.assertGreater(result.peak_height, 10.0)
+        self.assertLess(result.half_max_left_ps, result.center_ps)
+        self.assertGreater(result.half_max_right_ps, result.center_ps)
+        self.assertAlmostEqual(
+            result.ctr_ps,
+            result.half_max_right_ps - result.half_max_left_ps,
+            places=12,
+        )
+
+    def test_nema_uses_existing_event_bootstrap(self):
+        rng = np.random.default_rng(10)
+        values = rng.normal(0.0, 35.0, 5000)
+        result = fit_ctr_ps(
+            values,
+            {"coverage_fraction": 0.90, "bootstrap_samples": 25},
+            seed=101,
+            definition="nema",
+            histogram_bins=35,
+        )
+        self.assertEqual(result.bootstrap_samples, 25)
         self.assertGreater(result.bootstrap_successful, 1)
         self.assertTrue(np.isfinite(result.ctr_error_ps))
         self.assertGreater(result.ctr_error_ps, 0.0)
