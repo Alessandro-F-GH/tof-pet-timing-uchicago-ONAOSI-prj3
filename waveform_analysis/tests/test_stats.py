@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from utils_fit import fit_ctr_ps
+from utils_fit import double_gaussian_fwhm, fit_ctr_ps
 
 
 class CTRTests(unittest.TestCase):
@@ -20,6 +20,7 @@ class CTRTests(unittest.TestCase):
         )
         expected = 2.354820045 * sigma
         self.assertTrue(result.success)
+        self.assertEqual(result.definition, "shortest_interval")
         self.assertLess(abs(result.ctr_ps - expected) / expected, 0.04)
         self.assertAlmostEqual(result.coverage_fraction, 0.90)
         self.assertGreaterEqual(result.interval_events, int(np.ceil(0.90 * values.size)))
@@ -63,6 +64,58 @@ class CTRTests(unittest.TestCase):
             seed=13,
         )
         self.assertEqual(result.bootstrap_samples, 30)
+        self.assertGreater(result.bootstrap_successful, 1)
+        self.assertTrue(np.isfinite(result.ctr_error_ps))
+        self.assertGreater(result.ctr_error_ps, 0.0)
+
+    def test_double_gaussian_recovers_total_mixture_fwhm(self):
+        rng = np.random.default_rng(7)
+        n = 8000
+        narrow_fraction = 0.68
+        sigma_narrow = 28.0
+        sigma_wide = 82.0
+        narrow = rng.random(n) < narrow_fraction
+        values = np.where(
+            narrow,
+            rng.normal(15.0, sigma_narrow, n),
+            rng.normal(15.0, sigma_wide, n),
+        )
+        result = fit_ctr_ps(
+            values,
+            {"coverage_fraction": 0.90, "bootstrap_samples": 0},
+            definition="double_gaussian",
+            histogram_bins=40,
+        )
+        expected = double_gaussian_fwhm(
+            sigma_narrow,
+            sigma_wide,
+            narrow_fraction,
+        )
+        self.assertEqual(result.definition, "double_gaussian")
+        self.assertEqual(result.histogram_bins, 40)
+        self.assertTrue(np.isnan(result.coverage_fraction))
+        self.assertLess(abs(result.ctr_ps - expected) / expected, 0.08)
+        self.assertLess(result.sigma_narrow_ps, result.sigma_wide_ps)
+        self.assertGreater(result.narrow_fraction, 0.0)
+        self.assertLess(result.narrow_fraction, 1.0)
+
+    def test_double_gaussian_uses_existing_event_bootstrap(self):
+        rng = np.random.default_rng(8)
+        n = 2500
+        narrow = rng.random(n) < 0.72
+        values = np.where(
+            narrow,
+            rng.normal(0.0, 25.0, n),
+            rng.normal(0.0, 70.0, n),
+        )
+        result = fit_ctr_ps(
+            values,
+            {"coverage_fraction": 0.90, "bootstrap_samples": 20},
+            seed=81,
+            definition="double_gaussian",
+            histogram_bins=30,
+        )
+        self.assertEqual(result.bootstrap_samples, 20)
         self.assertGreater(result.bootstrap_successful, 1)
         self.assertTrue(np.isfinite(result.ctr_error_ps))
         self.assertGreater(result.ctr_error_ps, 0.0)
