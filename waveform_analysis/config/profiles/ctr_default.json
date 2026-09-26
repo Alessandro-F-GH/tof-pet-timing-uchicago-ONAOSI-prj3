@@ -6,7 +6,7 @@
     "validation_fraction": 0.2
   },
   "fit": {
-    "coverage_fraction": 0.9,
+    "histogram_bin_width_ps": 10.0,
     "bootstrap_samples": 500
   },
   "reporting": {
