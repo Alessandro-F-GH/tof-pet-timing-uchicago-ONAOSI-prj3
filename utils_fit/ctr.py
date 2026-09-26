@@ -18,7 +18,7 @@ def fit_ctr_ps(
     seed: int = 0,
     bootstrap: bool = True,
 ) -> CTRResult:
-    """Estimate CTR with the unique NEMA FWHM definition."""
+    """Estimate CTR with the unique direct F1 FWHM definition."""
     result = estimate_delta_times_ps(
         np.asarray(values_ps, dtype=np.float64),
         method="ctr",
@@ -42,7 +42,7 @@ def fit_delta_times_ps(
     seed: int = 0,
     bootstrap: bool = False,
 ) -> CTRResult:
-    """NEMA timing-width extraction for floating-point residuals in ps."""
+    """Direct F1 timing-width extraction for floating-point residuals in ps."""
     return estimate_delta_times_ps(
         delta_ps,
         method=method,
@@ -66,7 +66,7 @@ def fit_delta_times_integer_fs(
     seed: int = 0,
     bootstrap: bool = False,
 ) -> CTRResult:
-    """NEMA timing-width extraction for integer residuals in fs."""
+    """Direct F1 timing-width extraction for integer residuals in fs."""
     return estimate_delta_times_integer_fs(
         delta_fs,
         method=method,
