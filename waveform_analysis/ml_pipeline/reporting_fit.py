@@ -30,8 +30,12 @@ def resolve_ctr_definition(value: str | None) -> str:
 
 
 def resolve_histogram_bins(value: int | None) -> int:
+    if isinstance(value, bool):
+        raise ValueError("histogram_bins must be a positive integer")
     bins = DEFAULT_HISTOGRAM_BINS if value is None else int(value)
-    if isinstance(value, bool) or bins <= 0:
+    if value is not None and bins != value:
+        raise ValueError("histogram_bins must be a positive integer")
+    if bins <= 0:
         raise ValueError("histogram_bins must be a positive integer")
     return bins
 
@@ -133,6 +137,9 @@ def reporting_fit_options(
 
     definition = resolve_ctr_definition(ctr_definition)
     bins = resolve_histogram_bins(histogram_bins)
+    if definition == "double_gaussian" and bins < 5:
+        raise ValueError("double_gaussian reporting requires at least 5 histogram bins")
+
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
     original_edges = reporting_module._median_centered_display_edges
