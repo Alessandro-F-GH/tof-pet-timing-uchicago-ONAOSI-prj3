@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -36,6 +37,76 @@ def _reporting_fit_config(histogram_bin_width_ps: float) -> dict[str, float | in
         ),
         "bootstrap_samples": int(DEFAULT_FIT_CONFIG["bootstrap_samples"]),
     }
+
+
+def _reporting_ctr(
+    values_ps: np.ndarray,
+    fit_config: dict[str, float | int],
+    *,
+    seed: int,
+    bootstrap: bool,
+):
+    """Direct-F1 CTR for reporting, using the bootstrap median as central value.
+
+    The original-sample fit is retained for geometric diagnostics such as peak
+    position and half-maximum crossings. When bootstrap is enabled, the reported
+    scalar CTR is the median of successful event-bootstrap F1 estimates and its
+    uncertainty is their sample standard deviation.
+    """
+    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
+    finite = values[np.isfinite(values)]
+
+    base = fit_ctr_ps(
+        finite,
+        fit_config,
+        seed=int(seed),
+        bootstrap=False,
+    )
+    if not bootstrap:
+        return base
+
+    requested = int(fit_config["bootstrap_samples"])
+    if requested <= 1:
+        return replace(
+            base,
+            ctr_error_ps=float("nan"),
+            bootstrap_samples=requested,
+            bootstrap_successful=0,
+        )
+
+    bin_width = float(fit_config["histogram_bin_width_ps"])
+    rng = np.random.default_rng(int(seed))
+    bootstrap_ctrs: list[float] = []
+    n_valid = int(finite.size)
+    for _ in range(requested):
+        sample = finite[rng.integers(0, n_valid, size=n_valid)]
+        try:
+            trial = fit_direct_fwhm(
+                sample,
+                histogram_bin_width_ps=bin_width,
+            )
+        except ValueError:
+            continue
+        if np.isfinite(trial.ctr_ps):
+            bootstrap_ctrs.append(float(trial.ctr_ps))
+
+    if not bootstrap_ctrs:
+        raise ValueError("No successful direct-F1 bootstrap replicate for reporting")
+
+    bootstrap_values = np.asarray(bootstrap_ctrs, dtype=np.float64)
+    central = float(np.median(bootstrap_values))
+    error = (
+        float(np.std(bootstrap_values, ddof=1))
+        if bootstrap_values.size > 1
+        else float("nan")
+    )
+    return replace(
+        base,
+        ctr_ps=central,
+        ctr_error_ps=error,
+        bootstrap_samples=requested,
+        bootstrap_successful=int(bootstrap_values.size),
+    )
 
 
 def _recompute_rows(
@@ -75,7 +146,7 @@ def _recompute_rows(
                 f"{dataset}/{method}/{stage}"
             )
         values = np.asarray(residual, dtype=np.float64).reshape(-1)
-        result = fit_ctr_ps(
+        result = _reporting_ctr(
             values,
             fit_config,
             seed=semantic_seed(
@@ -100,6 +171,8 @@ def _recompute_rows(
                 "histogram_bins": int(result.histogram_bins),
                 "bootstrap_samples": int(result.bootstrap_samples),
                 "bootstrap_successful": int(result.bootstrap_successful),
+                "ctr_central_value": "bootstrap_median",
+                "ctr_uncertainty_method": "bootstrap_standard_deviation",
             }
         )
         recomputed.append(updated)
@@ -280,7 +353,7 @@ def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
 
     def configured_fit_ctr(values_ps, config=None, *, seed=0, bootstrap=True):
         del config
-        return fit_ctr_ps(
+        return _reporting_ctr(
             values_ps,
             fit_config,
             seed=seed,
