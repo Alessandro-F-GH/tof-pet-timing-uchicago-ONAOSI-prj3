@@ -4,6 +4,7 @@ from .double_gaussian import (
     double_gaussian_fwhm,
     fit_double_gaussian_fwhm,
 )
+from .nema import NEMAFit, fit_nema_fwhm, nema_fwhm_from_histogram
 from .histogram import (
     CTR_DEFINITIONS,
     CTRResult,
@@ -32,6 +33,7 @@ __all__ = [
     "DEFAULT_HISTOGRAM_BINS",
     "DEFAULT_INVALID_TIME_FS",
     "DoubleGaussianFit",
+    "NEMAFit",
     "FS_PER_PS",
     "FitResult",
     "choose_best",
@@ -40,6 +42,8 @@ __all__ = [
     "estimate_delta_times_integer_fs",
     "estimate_delta_times_ps",
     "fit_double_gaussian_fwhm",
+    "fit_nema_fwhm",
+    "nema_fwhm_from_histogram",
     "fit_delta_times_integer_fs",
     "fit_delta_times_ps",
     "scan_timing_grid",
