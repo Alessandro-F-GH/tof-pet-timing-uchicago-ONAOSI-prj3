@@ -16,7 +16,7 @@ from .reporting import make_plots, plot_model_study_windows
 from .reporting_fit import (
     reporting_fit_options,
     resolve_ctr_definition,
-    resolve_histogram_bins,
+    resolve_histogram_bin_width_ps,
 )
 
 
@@ -30,7 +30,7 @@ def rebuild_study_plots(
     output_dir: str | Path | None = None,
     *,
     latex_tables: bool = False,
-    histogram_bins: int | None = None,
+    histogram_bin_width_ps: float | None = None,
     ctr_definition: str | None = None,
 ) -> list[Path]:
     """Recreate every ordinary-study/report plot from persisted artifacts only."""
@@ -44,12 +44,12 @@ def rebuild_study_plots(
     plot_root = destination / "plots"
     _reset(plot_root)
     definition = resolve_ctr_definition(ctr_definition)
-    bins = resolve_histogram_bins(histogram_bins)
+    bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
 
     paths: list[Path] = []
     with reporting_fit_options(
         ctr_definition=definition,
-        histogram_bins=bins,
+        histogram_bin_width_ps=bin_width,
     ):
         paths.extend(make_plots(run, plot_root))
         paths.extend(
@@ -83,7 +83,7 @@ def rebuild_experiment_plots(
     output_dir: str | Path | None = None,
     *,
     latex_tables: bool = False,
-    histogram_bins: int | None = None,
+    histogram_bin_width_ps: float | None = None,
     ctr_definition: str | None = None,
 ) -> list[Path]:
     """Recreate plots for standard, model-study, or threshold-scan runs."""
@@ -97,7 +97,7 @@ def rebuild_experiment_plots(
         or ((manifest.get("config") or {}).get("experiment") or {}).get("type", "standard")
     ).lower()
     definition = resolve_ctr_definition(ctr_definition)
-    bins = resolve_histogram_bins(histogram_bins)
+    bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
 
     if experiment_type == "model_study":
         destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
@@ -113,13 +113,13 @@ def rebuild_experiment_plots(
                     subrun,
                     sub_destination,
                     latex_tables=latex_tables,
-                    histogram_bins=bins,
+                    histogram_bin_width_ps=bin_width,
                     ctr_definition=definition,
                 )
             )
         with reporting_fit_options(
             ctr_definition=definition,
-            histogram_bins=bins,
+            histogram_bin_width_ps=bin_width,
         ):
             plot_model_study_windows(
                 run,
@@ -153,6 +153,6 @@ def rebuild_experiment_plots(
         run,
         output_dir,
         latex_tables=latex_tables,
-        histogram_bins=bins,
+        histogram_bin_width_ps=bin_width,
         ctr_definition=definition,
     )
