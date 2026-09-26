@@ -27,17 +27,36 @@ def resolve_histogram_bin_width_ps(value: float | None) -> float | None:
 
 
 def _fit_config(manifest: dict[str, Any], override_bin_width_ps: float | None) -> dict[str, Any]:
-    fit = dict((manifest.get("config") or {}).get("fit") or {})
-    if "histogram_bin_width_ps" not in fit or "bootstrap_samples" not in fit:
+    """Resolve the direct-F1 fit configuration for report reconstruction.
+
+    New runs store both direct-F1 options in the manifest. Legacy runs may still
+    contain the former coverage_fraction together with bootstrap_samples. Such
+    runs can be reported with F1 only when the physical histogram bin width is
+    supplied explicitly by the caller; no width is inferred from legacy data.
+    """
+    stored = dict((manifest.get("config") or {}).get("fit") or {})
+
+    bootstrap_samples = stored.get("bootstrap_samples")
+    if bootstrap_samples is None:
         raise ValueError(
-            "Stored run does not contain the direct F1 fit configuration "
-            "(histogram_bin_width_ps and bootstrap_samples)"
+            "Stored run does not contain fit.bootstrap_samples; cannot reconstruct "
+            "CTR uncertainty from persisted residuals"
         )
+
     if override_bin_width_ps is not None:
-        fit["histogram_bin_width_ps"] = validate_histogram_bin_width_ps(
-            override_bin_width_ps
+        bin_width = validate_histogram_bin_width_ps(override_bin_width_ps)
+    elif "histogram_bin_width_ps" in stored:
+        bin_width = validate_histogram_bin_width_ps(stored["histogram_bin_width_ps"])
+    else:
+        raise ValueError(
+            "Stored run predates the direct F1 histogram-bin-width configuration. "
+            "Provide it explicitly with --histogram-bin-width-ps <width>."
         )
-    return fit
+
+    return {
+        "histogram_bin_width_ps": float(bin_width),
+        "bootstrap_samples": bootstrap_samples,
+    }
 
 
 def _base_seed(manifest: dict[str, Any]) -> int:
