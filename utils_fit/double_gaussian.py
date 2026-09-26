@@ -6,6 +6,8 @@ import math
 import numpy as np
 from scipy.optimize import brentq, least_squares
 
+from .binning import fixed_width_histogram_edges, validate_histogram_bin_width_ps
+
 SQRT_2PI = math.sqrt(2.0 * math.pi)
 
 
@@ -19,6 +21,7 @@ class DoubleGaussianFit:
     sigma_wide_ps: float
     narrow_fraction: float
     histogram_bins: int
+    histogram_bin_width_ps: float
     fit_low_ps: float
     fit_high_ps: float
 
@@ -89,29 +92,23 @@ def _initial_scale(values: np.ndarray) -> float:
 def fit_double_gaussian_fwhm(
     values_ps: np.ndarray,
     *,
-    histogram_bins: int = 22,
+    histogram_bin_width_ps: float = 10.0,
     initial: DoubleGaussianFit | None = None,
 ) -> DoubleGaussianFit:
-    """Fit the shared-mean double-Gaussian model and return total-distribution FWHM."""
+    """Fit a shared-mean double Gaussian on a fixed-width, zero-anchored histogram."""
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     values = values[np.isfinite(values)]
-    if isinstance(histogram_bins, bool):
-        raise ValueError("histogram_bins must be an integer")
-    bins = int(histogram_bins)
-    if bins != histogram_bins:
-        raise ValueError("histogram_bins must be an integer")
-    if bins < 5:
-        raise ValueError("double_gaussian requires at least 5 histogram bins")
+    bin_width = validate_histogram_bin_width_ps(histogram_bin_width_ps)
     if values.size < 10:
         raise ValueError("double_gaussian requires at least 10 finite residuals")
-    low = float(np.min(values))
-    high = float(np.max(values))
-    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+    if float(np.ptp(values)) <= 0.0:
         raise ValueError("Double-Gaussian fit requires non-degenerate residuals")
 
-    counts, edges = np.histogram(values, bins=bins, range=(low, high))
+    edges = fixed_width_histogram_edges(values, bin_width)
+    counts, _ = np.histogram(values, bins=edges)
     centers = 0.5 * (edges[:-1] + edges[1:])
-    bin_width = float(edges[1] - edges[0])
+    low = float(edges[0])
+    high = float(edges[-1])
     scale = _initial_scale(values)
     min_sigma = max(bin_width * 0.20, scale * 1.0e-3, 1.0e-6)
     max_sigma = max(float(high - low) * 2.0, scale * 12.0, min_sigma * 20.0)
@@ -193,7 +190,8 @@ def fit_double_gaussian_fwhm(
         sigma_narrow_ps=sigma_narrow,
         sigma_wide_ps=sigma_wide,
         narrow_fraction=fraction,
-        histogram_bins=bins,
+        histogram_bins=int(counts.size),
+        histogram_bin_width_ps=bin_width,
         fit_low_ps=low,
         fit_high_ps=high,
     )
