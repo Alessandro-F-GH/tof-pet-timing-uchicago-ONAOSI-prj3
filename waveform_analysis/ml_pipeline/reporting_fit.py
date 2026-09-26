@@ -8,9 +8,6 @@ from typing import Any, Callable
 import numpy as np
 
 from utils_fit import (
-    CTR_DEFINITIONS,
-    DEFAULT_CTR_DEFINITION,
-    DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
     fit_ctr_ps,
     fit_nema_fwhm,
     fixed_width_histogram_edges,
@@ -23,23 +20,24 @@ from .common import load_artifact_array
 from .splits import semantic_seed
 
 
-def resolve_ctr_definition(value: str | None) -> str:
-    definition = DEFAULT_CTR_DEFINITION if value is None else str(value).strip().lower()
-    if definition not in CTR_DEFINITIONS:
+def resolve_histogram_bin_width_ps(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return validate_histogram_bin_width_ps(value)
+
+
+def _fit_config(manifest: dict[str, Any], override_bin_width_ps: float | None) -> dict[str, Any]:
+    fit = dict((manifest.get("config") or {}).get("fit") or {})
+    if "histogram_bin_width_ps" not in fit or "bootstrap_samples" not in fit:
         raise ValueError(
-            f"Unknown CTR definition {value!r}; expected one of {CTR_DEFINITIONS}"
+            "Stored run does not contain the NEMA fit configuration "
+            "(histogram_bin_width_ps and bootstrap_samples)"
         )
-    return definition
-
-
-def resolve_histogram_bin_width_ps(value: float | None) -> float:
-    return validate_histogram_bin_width_ps(
-        DEFAULT_HISTOGRAM_BIN_WIDTH_PS if value is None else value
-    )
-
-
-def _fit_config(manifest: dict[str, Any]) -> dict[str, Any]:
-    return dict((manifest.get("config") or {}).get("fit") or {})
+    if override_bin_width_ps is not None:
+        fit["histogram_bin_width_ps"] = validate_histogram_bin_width_ps(
+            override_bin_width_ps
+        )
+    return fit
 
 
 def _base_seed(manifest: dict[str, Any]) -> int:
@@ -50,8 +48,7 @@ def _recompute_rows(
     run_dir: str | Path,
     original_reader: Callable[[str | Path], list[dict[str, Any]]],
     *,
-    definition: str,
-    histogram_bin_width_ps: float,
+    override_bin_width_ps: float | None,
     cache: dict[Path, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     run = Path(run_dir).resolve()
@@ -59,14 +56,11 @@ def _recompute_rows(
         return [dict(row) for row in cache[run]]
 
     rows = original_reader(run)
-    if definition == DEFAULT_CTR_DEFINITION:
-        cache[run] = [dict(row) for row in rows]
-        return [dict(row) for row in rows]
-
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-    fit_config = _fit_config(manifest)
+    fit_config = _fit_config(manifest, override_bin_width_ps)
     base_seed = _base_seed(manifest)
     recomputed: list[dict[str, Any]] = []
+
     for row in rows:
         updated = dict(row)
         stage = str(row.get("stage", ""))
@@ -91,32 +85,23 @@ def _recompute_rows(
                 dataset,
                 method,
                 stage,
-                "reporting_ctr",
-                definition,
+                "reporting_nema_ctr",
             ),
             bootstrap=True,
-            definition=definition,
-            histogram_bin_width_ps=histogram_bin_width_ps,
         )
         updated.update(
             {
                 "ctr_ps": float(result.ctr_ps),
                 "ctr_uncertainty_ps": float(result.ctr_error_ps),
                 "center_ps": float(result.center_ps),
-                "coverage_fraction": float(result.coverage_fraction),
-                "interval_events": int(result.interval_events),
-                "interval_low_ps": float(result.interval_low_ps),
-                "interval_high_ps": float(result.interval_high_ps),
-                "interval_width_ps": float(result.interval_width_ps),
-                "gaussian_equivalent_scale": float(result.gaussian_equivalent_scale),
+                "peak_height": float(result.peak_height),
+                "half_max_events": float(result.half_max_events),
+                "left_half_ps": float(result.left_half_ps),
+                "right_half_ps": float(result.right_half_ps),
+                "histogram_bin_width_ps": float(result.histogram_bin_width_ps),
+                "histogram_bins": int(result.histogram_bins),
                 "bootstrap_samples": int(result.bootstrap_samples),
                 "bootstrap_successful": int(result.bootstrap_successful),
-                "ctr_definition": result.definition,
-                "histogram_bins": int(result.histogram_bins),
-                "histogram_bin_width_ps": float(result.histogram_bin_width_ps),
-                "sigma_narrow_ps": float(result.sigma_narrow_ps),
-                "sigma_wide_ps": float(result.sigma_wide_ps),
-                "narrow_fraction": float(result.narrow_fraction),
             }
         )
         recomputed.append(updated)
@@ -136,7 +121,7 @@ def _nema_distribution_plot(
     *,
     histogram_bin_width_ps: float,
 ) -> None:
-    """CTR distribution plot with the NEMA peak and half-maximum width overlaid."""
+    """CTR distribution with NEMA peak and half-maximum width overlaid."""
     import matplotlib.pyplot as plt
 
     available = []
@@ -168,24 +153,33 @@ def _nema_distribution_plot(
 
     for model, model_residual, model_row in models:
         pair = [led, (model, model_residual, model_row)]
-        nema_fits = []
-        for method, residual, row in pair:
-            fit = fit_nema_fwhm(
+        nema_fits = [
+            (
+                method,
                 residual,
-                histogram_bin_width_ps=histogram_bin_width_ps,
+                row,
+                fit_nema_fwhm(
+                    residual,
+                    histogram_bin_width_ps=histogram_bin_width_ps,
+                ),
             )
-            nema_fits.append((method, residual, row, fit))
+            for method, residual, row in pair
+        ]
 
         xlim = reporting_module._robust_display_range(
             [residual for _method, residual, _row, _fit in nema_fits],
             quantiles=(0.005, 0.995),
             margin_fraction=0.06,
         )
-        half_left = [fit.half_max_left_ps for _m, _r, _row, fit in nema_fits]
-        half_right = [fit.half_max_right_ps for _m, _r, _row, fit in nema_fits]
         xlim = (
-            min(float(xlim[0]), min(half_left) - 20.0),
-            max(float(xlim[1]), max(half_right) + 20.0),
+            min(
+                float(xlim[0]),
+                min(fit.half_max_left_ps for _m, _r, _row, fit in nema_fits) - 20.0,
+            ),
+            max(
+                float(xlim[1]),
+                max(fit.half_max_right_ps for _m, _r, _row, fit in nema_fits) + 20.0,
+            ),
         )
 
         fig, ax = plt.subplots(figsize=reporting_module.SINGLE_COLUMN)
@@ -265,17 +259,11 @@ def _nema_distribution_plot(
 
 
 @contextmanager
-def reporting_fit_options(
-    *,
-    ctr_definition: str | None = None,
-    histogram_bin_width_ps: float | None = None,
-):
-    """Apply CTR-definition and fixed histogram width only while rebuilding reports."""
+def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
+    """Recompute report CTR values from residual artifacts with the unique NEMA method."""
     from matplotlib.axes import Axes
 
-    definition = resolve_ctr_definition(ctr_definition)
-    bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
-
+    override_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
     original_edges = reporting_module._median_centered_display_edges
@@ -288,42 +276,48 @@ def reporting_fit_options(
         return _recompute_rows(
             run_dir,
             original_read_results,
-            definition=definition,
-            histogram_bin_width_ps=bin_width,
+            override_bin_width_ps=override_width,
             cache=cache,
         )
 
     def configured_fit_ctr(values_ps, config=None, *, seed=0, bootstrap=True):
+        fit_config = dict(config or {})
+        if override_width is not None:
+            fit_config["histogram_bin_width_ps"] = override_width
         return fit_ctr_ps(
             values_ps,
-            config,
+            fit_config,
             seed=seed,
             bootstrap=bootstrap,
-            definition=definition,
-            histogram_bin_width_ps=bin_width,
         )
 
     def configured_edges(values, xlim, n_bins=None):
+        del n_bins
+        width = override_width
+        if width is None:
+            raise RuntimeError(
+                "Residual display binning requires the run-specific NEMA bin width"
+            )
         return fixed_width_histogram_edges(
             values,
-            bin_width,
+            width,
             low_ps=float(xlim[0]),
             high_ps=float(xlim[1]),
         )
 
     def configured_distribution_plot(output, run, rows, mode, dataset, stage, paths):
-        if definition == "nema":
-            return _nema_distribution_plot(
-                output,
-                run,
-                rows,
-                mode,
-                dataset,
-                stage,
-                paths,
-                histogram_bin_width_ps=bin_width,
-            )
-        return original_distribution_plot(output, run, rows, mode, dataset, stage, paths)
+        manifest = json.loads((Path(run) / "manifest.json").read_text(encoding="utf-8"))
+        fit_config = _fit_config(manifest, override_width)
+        return _nema_distribution_plot(
+            output,
+            run,
+            rows,
+            mode,
+            dataset,
+            stage,
+            paths,
+            histogram_bin_width_ps=float(fit_config["histogram_bin_width_ps"]),
+        )
 
     def configured_legend(self, *args, **kwargs):
         if self.get_xlabel() == "Residual [ps]" and self.get_ylabel() == "Events [count]":
@@ -341,12 +335,11 @@ def reporting_fit_options(
 
     reporting_module.read_results = configured_read_results
     reporting_module.fit_ctr_ps = configured_fit_ctr
-    reporting_module._median_centered_display_edges = configured_edges
     reporting_module._distribution_plot = configured_distribution_plot
     latex_tables_module._read_csv = configured_latex_read_csv
     Axes.legend = configured_legend
     try:
-        yield definition, bin_width
+        yield override_width
     finally:
         reporting_module.read_results = original_read_results
         reporting_module.fit_ctr_ps = original_fit_ctr
