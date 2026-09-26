@@ -3,7 +3,7 @@ from .binning import (
     fixed_width_histogram_edges,
     validate_histogram_bin_width_ps,
 )
-from .nema import NEMAFit, fit_nema_fwhm, nema_fwhm_from_histogram
+from .direct_fwhm import DirectFWHMFit, direct_fwhm_from_histogram, fit_direct_fwhm
 from .histogram import (
     CTRResult,
     DEFAULT_FIT_CONFIG,
@@ -26,15 +26,15 @@ __all__ = [
     "DEFAULT_FIT_CONFIG",
     "DEFAULT_HISTOGRAM_BIN_WIDTH_PS",
     "DEFAULT_INVALID_TIME_FS",
-    "NEMAFit",
+    "DirectFWHMFit",
     "FS_PER_PS",
     "FitResult",
     "choose_best",
+    "direct_fwhm_from_histogram",
     "estimate_delta_times_integer_fs",
     "estimate_delta_times_ps",
-    "fit_nema_fwhm",
+    "fit_direct_fwhm",
     "fixed_width_histogram_edges",
-    "nema_fwhm_from_histogram",
     "fit_delta_times_integer_fs",
     "fit_delta_times_ps",
     "scan_timing_grid",
