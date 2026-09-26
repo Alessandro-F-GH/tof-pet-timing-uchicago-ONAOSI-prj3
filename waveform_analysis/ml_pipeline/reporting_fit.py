@@ -10,9 +10,11 @@ import numpy as np
 from utils_fit import (
     CTR_DEFINITIONS,
     DEFAULT_CTR_DEFINITION,
-    DEFAULT_HISTOGRAM_BINS,
+    DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
     fit_ctr_ps,
     fit_nema_fwhm,
+    fixed_width_histogram_edges,
+    validate_histogram_bin_width_ps,
 )
 
 from . import latex_tables as latex_tables_module
@@ -30,15 +32,10 @@ def resolve_ctr_definition(value: str | None) -> str:
     return definition
 
 
-def resolve_histogram_bins(value: int | None) -> int:
-    if isinstance(value, bool):
-        raise ValueError("histogram_bins must be a positive integer")
-    bins = DEFAULT_HISTOGRAM_BINS if value is None else int(value)
-    if value is not None and bins != value:
-        raise ValueError("histogram_bins must be a positive integer")
-    if bins <= 0:
-        raise ValueError("histogram_bins must be a positive integer")
-    return bins
+def resolve_histogram_bin_width_ps(value: float | None) -> float:
+    return validate_histogram_bin_width_ps(
+        DEFAULT_HISTOGRAM_BIN_WIDTH_PS if value is None else value
+    )
 
 
 def _fit_config(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -54,7 +51,7 @@ def _recompute_rows(
     original_reader: Callable[[str | Path], list[dict[str, Any]]],
     *,
     definition: str,
-    histogram_bins: int,
+    histogram_bin_width_ps: float,
     cache: dict[Path, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     run = Path(run_dir).resolve()
@@ -99,7 +96,7 @@ def _recompute_rows(
             ),
             bootstrap=True,
             definition=definition,
-            histogram_bins=histogram_bins,
+            histogram_bin_width_ps=histogram_bin_width_ps,
         )
         updated.update(
             {
@@ -116,6 +113,7 @@ def _recompute_rows(
                 "bootstrap_successful": int(result.bootstrap_successful),
                 "ctr_definition": result.definition,
                 "histogram_bins": int(result.histogram_bins),
+                "histogram_bin_width_ps": float(result.histogram_bin_width_ps),
                 "sigma_narrow_ps": float(result.sigma_narrow_ps),
                 "sigma_wide_ps": float(result.sigma_wide_ps),
                 "narrow_fraction": float(result.narrow_fraction),
@@ -136,7 +134,7 @@ def _nema_distribution_plot(
     stage,
     paths,
     *,
-    histogram_bins: int,
+    histogram_bin_width_ps: float,
 ) -> None:
     """CTR distribution plot with the NEMA peak and half-maximum width overlaid."""
     import matplotlib.pyplot as plt
@@ -172,7 +170,10 @@ def _nema_distribution_plot(
         pair = [led, (model, model_residual, model_row)]
         nema_fits = []
         for method, residual, row in pair:
-            fit = fit_nema_fwhm(residual, histogram_bins=histogram_bins)
+            fit = fit_nema_fwhm(
+                residual,
+                histogram_bin_width_ps=histogram_bin_width_ps,
+            )
             nema_fits.append((method, residual, row, fit))
 
         xlim = reporting_module._robust_display_range(
@@ -190,10 +191,11 @@ def _nema_distribution_plot(
         fig, ax = plt.subplots(figsize=reporting_module.SINGLE_COLUMN)
         peak = 0.0
         for index, (method, residual, row, fit) in enumerate(nema_fits):
-            edges = np.linspace(
-                float(fit.fit_low_ps),
-                float(fit.fit_high_ps),
-                int(fit.histogram_bins) + 1,
+            edges = fixed_width_histogram_edges(
+                residual,
+                histogram_bin_width_ps,
+                low_ps=float(fit.fit_low_ps),
+                high_ps=float(fit.fit_high_ps),
             )
             counts, _ = np.histogram(residual, bins=edges)
             if counts.size:
@@ -266,17 +268,13 @@ def _nema_distribution_plot(
 def reporting_fit_options(
     *,
     ctr_definition: str | None = None,
-    histogram_bins: int | None = None,
+    histogram_bin_width_ps: float | None = None,
 ):
-    """Apply CTR-definition and histogram settings only while rebuilding reports."""
+    """Apply CTR-definition and fixed histogram width only while rebuilding reports."""
     from matplotlib.axes import Axes
 
     definition = resolve_ctr_definition(ctr_definition)
-    bins = resolve_histogram_bins(histogram_bins)
-    if definition == "double_gaussian" and bins < 5:
-        raise ValueError("double_gaussian reporting requires at least 5 histogram bins")
-    if definition == "nema" and bins < 3:
-        raise ValueError("nema reporting requires at least 3 histogram bins")
+    bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
 
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
@@ -291,7 +289,7 @@ def reporting_fit_options(
             run_dir,
             original_read_results,
             definition=definition,
-            histogram_bins=bins,
+            histogram_bin_width_ps=bin_width,
             cache=cache,
         )
 
@@ -302,11 +300,16 @@ def reporting_fit_options(
             seed=seed,
             bootstrap=bootstrap,
             definition=definition,
-            histogram_bins=bins,
+            histogram_bin_width_ps=bin_width,
         )
 
-    def configured_edges(values, xlim, n_bins=DEFAULT_HISTOGRAM_BINS):
-        return original_edges(values, xlim, bins)
+    def configured_edges(values, xlim, n_bins=None):
+        return fixed_width_histogram_edges(
+            values,
+            bin_width,
+            low_ps=float(xlim[0]),
+            high_ps=float(xlim[1]),
+        )
 
     def configured_distribution_plot(output, run, rows, mode, dataset, stage, paths):
         if definition == "nema":
@@ -318,7 +321,7 @@ def reporting_fit_options(
                 dataset,
                 stage,
                 paths,
-                histogram_bins=bins,
+                histogram_bin_width_ps=bin_width,
             )
         return original_distribution_plot(output, run, rows, mode, dataset, stage, paths)
 
@@ -343,7 +346,7 @@ def reporting_fit_options(
     latex_tables_module._read_csv = configured_latex_read_csv
     Axes.legend = configured_legend
     try:
-        yield definition, bins
+        yield definition, bin_width
     finally:
         reporting_module.read_results = original_read_results
         reporting_module.fit_ctr_ps = original_fit_ctr
