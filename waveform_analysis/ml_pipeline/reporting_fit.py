@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import numpy as np
 
 from utils_fit import (
+    DEFAULT_FIT_CONFIG,
+    DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
     fit_ctr_ps,
     fit_direct_fwhm,
     fixed_width_histogram_edges,
@@ -20,65 +21,43 @@ from .common import load_artifact_array
 from .splits import semantic_seed
 
 
-def resolve_histogram_bin_width_ps(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return validate_histogram_bin_width_ps(value)
+def resolve_histogram_bin_width_ps(value: float | None) -> float:
+    """Resolve reporting bin width without consulting the stored run config."""
+    return validate_histogram_bin_width_ps(
+        DEFAULT_HISTOGRAM_BIN_WIDTH_PS if value is None else value
+    )
 
 
-def _fit_config(manifest: dict[str, Any], override_bin_width_ps: float | None) -> dict[str, Any]:
-    """Resolve the direct-F1 fit configuration for report reconstruction.
-
-    New runs store both direct-F1 options in the manifest. Legacy runs may still
-    contain the former coverage_fraction together with bootstrap_samples. Such
-    runs can be reported with F1 only when the physical histogram bin width is
-    supplied explicitly by the caller; no width is inferred from legacy data.
-    """
-    stored = dict((manifest.get("config") or {}).get("fit") or {})
-
-    bootstrap_samples = stored.get("bootstrap_samples")
-    if bootstrap_samples is None:
-        raise ValueError(
-            "Stored run does not contain fit.bootstrap_samples; cannot reconstruct "
-            "CTR uncertainty from persisted residuals"
-        )
-
-    if override_bin_width_ps is not None:
-        bin_width = validate_histogram_bin_width_ps(override_bin_width_ps)
-    elif "histogram_bin_width_ps" in stored:
-        bin_width = validate_histogram_bin_width_ps(stored["histogram_bin_width_ps"])
-    else:
-        raise ValueError(
-            "Stored run predates the direct F1 histogram-bin-width configuration. "
-            "Provide it explicitly with --histogram-bin-width-ps <width>."
-        )
-
+def _reporting_fit_config(histogram_bin_width_ps: float) -> dict[str, float | int]:
+    """Current reporting-only F1 configuration, independent of run history."""
     return {
-        "histogram_bin_width_ps": float(bin_width),
-        "bootstrap_samples": bootstrap_samples,
+        "histogram_bin_width_ps": validate_histogram_bin_width_ps(
+            histogram_bin_width_ps
+        ),
+        "bootstrap_samples": int(DEFAULT_FIT_CONFIG["bootstrap_samples"]),
     }
-
-
-def _base_seed(manifest: dict[str, Any]) -> int:
-    return int(((manifest.get("config") or {}).get("validation") or {}).get("seed", 0))
 
 
 def _recompute_rows(
     run_dir: str | Path,
-    original_reader: Callable[[str | Path], list[dict[str, Any]]],
+    original_reader: Callable[[str | Path], list[dict]],
     *,
-    override_bin_width_ps: float | None,
-    cache: dict[Path, list[dict[str, Any]]],
-) -> list[dict[str, Any]]:
+    histogram_bin_width_ps: float,
+    cache: dict[Path, list[dict]],
+) -> list[dict]:
+    """Recompute all reportable CTR rows from persisted residual artifacts.
+
+    Stored CTR values and stored fit configuration are intentionally ignored.
+    The persisted results table is used only to discover dataset/method/stage rows
+    and retain unrelated metadata.
+    """
     run = Path(run_dir).resolve()
     if run in cache:
         return [dict(row) for row in cache[run]]
 
     rows = original_reader(run)
-    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
-    fit_config = _fit_config(manifest, override_bin_width_ps)
-    base_seed = _base_seed(manifest)
-    recomputed: list[dict[str, Any]] = []
+    fit_config = _reporting_fit_config(histogram_bin_width_ps)
+    recomputed: list[dict] = []
 
     for row in rows:
         updated = dict(row)
@@ -100,7 +79,7 @@ def _recompute_rows(
             values,
             fit_config,
             seed=semantic_seed(
-                base_seed,
+                0,
                 dataset,
                 method,
                 stage,
@@ -279,29 +258,28 @@ def _direct_distribution_plot(
 
 @contextmanager
 def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
-    """Recompute report CTR values from residual artifacts with direct F1."""
+    """Recompute report CTR values from residual artifacts using current F1 settings."""
     from matplotlib.axes import Axes
 
-    override_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
+    bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
+    fit_config = _reporting_fit_config(bin_width)
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
     original_distribution_plot = reporting_module._distribution_plot
     original_legend = Axes.legend
     original_latex_read_csv = latex_tables_module._read_csv
-    cache: dict[Path, list[dict[str, Any]]] = {}
+    cache: dict[Path, list[dict]] = {}
 
     def configured_read_results(run_dir):
         return _recompute_rows(
             run_dir,
             original_read_results,
-            override_bin_width_ps=override_width,
+            histogram_bin_width_ps=bin_width,
             cache=cache,
         )
 
     def configured_fit_ctr(values_ps, config=None, *, seed=0, bootstrap=True):
-        fit_config = dict(config or {})
-        if override_width is not None:
-            fit_config["histogram_bin_width_ps"] = override_width
+        del config
         return fit_ctr_ps(
             values_ps,
             fit_config,
@@ -310,8 +288,6 @@ def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
         )
 
     def configured_distribution_plot(output, run, rows, mode, dataset, stage, paths):
-        manifest = json.loads((Path(run) / "manifest.json").read_text(encoding="utf-8"))
-        fit_config = _fit_config(manifest, override_width)
         return _direct_distribution_plot(
             output,
             run,
@@ -320,7 +296,7 @@ def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
             dataset,
             stage,
             paths,
-            histogram_bin_width_ps=float(fit_config["histogram_bin_width_ps"]),
+            histogram_bin_width_ps=bin_width,
         )
 
     def configured_legend(self, *args, **kwargs):
@@ -343,7 +319,7 @@ def reporting_fit_options(*, histogram_bin_width_ps: float | None = None):
     latex_tables_module._read_csv = configured_latex_read_csv
     Axes.legend = configured_legend
     try:
-        yield override_width
+        yield bin_width
     finally:
         reporting_module.read_results = original_read_results
         reporting_module.fit_ctr_ps = original_fit_ctr
