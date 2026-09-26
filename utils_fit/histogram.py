@@ -8,13 +8,15 @@ from typing import Any
 import numpy as np
 
 from .double_gaussian import DoubleGaussianFit, fit_double_gaussian_fwhm
+from .nema import fit_nema_fwhm
 
 FS_PER_PS = 1000.0
 DEFAULT_INVALID_TIME_FS = np.iinfo(np.int64).min
 FWHM_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
-CTR_DEFINITIONS = ("shortest_interval", "double_gaussian")
+CTR_DEFINITIONS = ("shortest_interval", "double_gaussian", "nema")
 DEFAULT_CTR_DEFINITION = "shortest_interval"
 DEFAULT_HISTOGRAM_BINS = 22
+_HISTOGRAM_CTR_DEFINITIONS = {"double_gaussian", "nema"}
 DEFAULT_FIT_CONFIG: dict[str, Any] = {
     "coverage_fraction": 0.90,
     "bootstrap_samples": 500,
@@ -220,7 +222,9 @@ def _failure(
         bootstrap_samples=int(bootstrap_samples),
         bootstrap_successful=0,
         definition=definition,
-        histogram_bins=(histogram_bins if definition == "double_gaussian" else 0),
+        histogram_bins=(
+            histogram_bins if definition in _HISTOGRAM_CTR_DEFINITIONS else 0
+        ),
         message=message,
     )
 
@@ -296,20 +300,31 @@ def _point_estimate(
             gaussian_equivalent_scale=_gaussian_equivalent_scale(coverage_fraction),
         )
 
-    seed_fit = initial.double_gaussian_fit if initial is not None else None
-    fit = fit_double_gaussian_fwhm(
+    if definition == "double_gaussian":
+        seed_fit = initial.double_gaussian_fit if initial is not None else None
+        fit = fit_double_gaussian_fwhm(
+            values_ps,
+            histogram_bins=histogram_bins,
+            initial=seed_fit,
+        )
+        return _PointEstimate(
+            ctr_ps=fit.ctr_ps,
+            center_ps=fit.center_ps,
+            histogram_bins=fit.histogram_bins,
+            sigma_narrow_ps=fit.sigma_narrow_ps,
+            sigma_wide_ps=fit.sigma_wide_ps,
+            narrow_fraction=fit.narrow_fraction,
+            double_gaussian_fit=fit,
+        )
+
+    fit = fit_nema_fwhm(
         values_ps,
         histogram_bins=histogram_bins,
-        initial=seed_fit,
     )
     return _PointEstimate(
         ctr_ps=fit.ctr_ps,
         center_ps=fit.center_ps,
         histogram_bins=fit.histogram_bins,
-        sigma_narrow_ps=fit.sigma_narrow_ps,
-        sigma_wide_ps=fit.sigma_wide_ps,
-        narrow_fraction=fit.narrow_fraction,
-        double_gaussian_fit=fit,
     )
 
 
@@ -334,7 +349,11 @@ def _estimate_values(
     n_valid = int(finite.size)
     coverage = float(cfg["coverage_fraction"])
     requested = int(cfg["bootstrap_samples"]) if bootstrap else 0
-    minimum_events = 10 if definition == "double_gaussian" else 2
+    minimum_events = {
+        "shortest_interval": 2,
+        "double_gaussian": 10,
+        "nema": 5,
+    }[definition]
     if n_valid < minimum_events:
         return _failure(
             method=method,
@@ -417,7 +436,9 @@ def _estimate_values(
         bootstrap_samples=requested,
         bootstrap_successful=len(bootstrap_ctrs),
         definition=definition,
-        histogram_bins=(point.histogram_bins if definition == "double_gaussian" else 0),
+        histogram_bins=(
+            point.histogram_bins if definition in _HISTOGRAM_CTR_DEFINITIONS else 0
+        ),
         sigma_narrow_ps=float(point.sigma_narrow_ps),
         sigma_wide_ps=float(point.sigma_wide_ps),
         narrow_fraction=float(point.narrow_fraction),
