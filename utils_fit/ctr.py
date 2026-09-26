@@ -6,6 +6,8 @@ import numpy as np
 
 from .histogram import (
     CTRResult,
+    DEFAULT_CTR_DEFINITION,
+    DEFAULT_HISTOGRAM_BINS,
     estimate_delta_times_integer_fs,
     estimate_delta_times_ps,
 )
@@ -17,14 +19,18 @@ def fit_ctr_ps(
     *,
     seed: int = 0,
     bootstrap: bool = True,
+    definition: str = DEFAULT_CTR_DEFINITION,
+    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
 ) -> CTRResult:
-    """Canonical CTR estimator with optional event-bootstrap uncertainty."""
+    """General CTR estimator with optional event-bootstrap uncertainty."""
     result = estimate_delta_times_ps(
         np.asarray(values_ps, dtype=np.float64),
         method="ctr",
         config=config,
         seed=int(seed),
         bootstrap=bool(bootstrap),
+        definition=definition,
+        histogram_bins=histogram_bins,
     )
     if not result.success or not np.isfinite(result.ctr_ps):
         raise ValueError(result.message or "CTR estimation failed")
@@ -41,8 +47,10 @@ def fit_delta_times_ps(
     config: dict[str, Any] | None = None,
     seed: int = 0,
     bootstrap: bool = False,
+    definition: str = DEFAULT_CTR_DEFINITION,
+    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
 ) -> CTRResult:
-    """Generic timing-width extraction using the canonical CTR definition."""
+    """Generic timing-width extraction using one supported CTR definition."""
     return estimate_delta_times_ps(
         delta_ps,
         method=method,
@@ -52,6 +60,8 @@ def fit_delta_times_ps(
         config=config,
         seed=seed,
         bootstrap=bootstrap,
+        definition=definition,
+        histogram_bins=histogram_bins,
     )
 
 
@@ -65,6 +75,8 @@ def fit_delta_times_integer_fs(
     config: dict[str, Any] | None = None,
     seed: int = 0,
     bootstrap: bool = False,
+    definition: str = DEFAULT_CTR_DEFINITION,
+    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
 ) -> CTRResult:
     """Integer-fs counterpart of fit_delta_times_ps."""
     return estimate_delta_times_integer_fs(
@@ -76,4 +88,6 @@ def fit_delta_times_integer_fs(
         config=config,
         seed=seed,
         bootstrap=bootstrap,
+        definition=definition,
+        histogram_bins=histogram_bins,
     )
