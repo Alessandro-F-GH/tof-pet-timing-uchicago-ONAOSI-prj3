@@ -139,6 +139,8 @@ def reporting_fit_options(
     bins = resolve_histogram_bins(histogram_bins)
     if definition == "double_gaussian" and bins < 5:
         raise ValueError("double_gaussian reporting requires at least 5 histogram bins")
+    if definition == "nema" and bins < 3:
+        raise ValueError("nema reporting requires at least 3 histogram bins")
 
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
