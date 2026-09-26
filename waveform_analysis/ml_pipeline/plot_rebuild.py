@@ -5,19 +5,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from utils_fit import DEFAULT_CTR_DEFINITION
-
 from .analyses import plot_threshold_scan
 from .common import read_csv
 from .latex_tables import make_latex_tables
 from .model_output_reporting import make_model_output_reports
 from .plot_style import LABELS
 from .reporting import make_plots, plot_model_study_windows
-from .reporting_fit import (
-    reporting_fit_options,
-    resolve_ctr_definition,
-    resolve_histogram_bin_width_ps,
-)
+from .reporting_fit import reporting_fit_options, resolve_histogram_bin_width_ps
 
 
 def _reset(directory: Path) -> None:
@@ -31,7 +25,6 @@ def rebuild_study_plots(
     *,
     latex_tables: bool = False,
     histogram_bin_width_ps: float | None = None,
-    ctr_definition: str | None = None,
 ) -> list[Path]:
     """Recreate every ordinary-study/report plot from persisted artifacts only."""
     run = Path(run_dir).resolve()
@@ -43,14 +36,10 @@ def rebuild_study_plots(
     destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
     plot_root = destination / "plots"
     _reset(plot_root)
-    definition = resolve_ctr_definition(ctr_definition)
     bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
 
     paths: list[Path] = []
-    with reporting_fit_options(
-        ctr_definition=definition,
-        histogram_bin_width_ps=bin_width,
-    ):
+    with reporting_fit_options(histogram_bin_width_ps=bin_width):
         paths.extend(make_plots(run, plot_root))
         paths.extend(
             make_model_output_reports(
@@ -84,7 +73,6 @@ def rebuild_experiment_plots(
     *,
     latex_tables: bool = False,
     histogram_bin_width_ps: float | None = None,
-    ctr_definition: str | None = None,
 ) -> list[Path]:
     """Recreate plots for standard, model-study, or threshold-scan runs."""
     run = Path(run_dir).resolve()
@@ -96,7 +84,6 @@ def rebuild_experiment_plots(
         manifest.get("experiment_type")
         or ((manifest.get("config") or {}).get("experiment") or {}).get("type", "standard")
     ).lower()
-    definition = resolve_ctr_definition(ctr_definition)
     bin_width = resolve_histogram_bin_width_ps(histogram_bin_width_ps)
 
     if experiment_type == "model_study":
@@ -114,13 +101,9 @@ def rebuild_experiment_plots(
                     sub_destination,
                     latex_tables=latex_tables,
                     histogram_bin_width_ps=bin_width,
-                    ctr_definition=definition,
                 )
             )
-        with reporting_fit_options(
-            ctr_definition=definition,
-            histogram_bin_width_ps=bin_width,
-        ):
+        with reporting_fit_options(histogram_bin_width_ps=bin_width):
             plot_model_study_windows(
                 run,
                 manifest,
@@ -130,11 +113,6 @@ def rebuild_experiment_plots(
         return paths
 
     if experiment_type == "threshold_scan":
-        if definition != DEFAULT_CTR_DEFINITION:
-            raise ValueError(
-                "ctr_definition is reporting-only for persisted residual distributions; "
-                "threshold-scan reports use the canonical CTR values stored during the scan"
-            )
         destination = run if output_dir is None else Path(output_dir).expanduser().resolve()
         _reset(destination / "plots")
         rows = read_csv(run / "csv" / "threshold_scan.csv")
@@ -154,5 +132,4 @@ def rebuild_experiment_plots(
         output_dir,
         latex_tables=latex_tables,
         histogram_bin_width_ps=bin_width,
-        ctr_definition=definition,
     )
