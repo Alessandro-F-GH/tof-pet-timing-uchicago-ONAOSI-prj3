@@ -13,13 +13,25 @@ class ConfigTests(unittest.TestCase):
     def test_removed_min_events_is_rejected(self):
         bad = copy.deepcopy(self.config)
         bad["fit"]["min_events"] = 100
-        with self.assertRaisesRegex(ConfigError, "Unknown fit option"):
+        with self.assertRaisesRegex(ConfigError, "fit must contain exactly"):
             validate_config(bad)
 
-    def test_removed_bin_width_is_rejected(self):
+    def test_removed_bin_width_name_is_rejected(self):
         bad = copy.deepcopy(self.config)
         bad["fit"]["bin_width_ps"] = 5.0
-        with self.assertRaisesRegex(ConfigError, "Unknown fit option"):
+        with self.assertRaisesRegex(ConfigError, "fit must contain exactly"):
+            validate_config(bad)
+
+    def test_removed_coverage_fraction_is_rejected(self):
+        bad = copy.deepcopy(self.config)
+        bad["fit"]["coverage_fraction"] = 0.9
+        with self.assertRaisesRegex(ConfigError, "fit must contain exactly"):
+            validate_config(bad)
+
+    def test_histogram_bin_width_must_be_positive(self):
+        bad = copy.deepcopy(self.config)
+        bad["fit"]["histogram_bin_width_ps"] = 0.0
+        with self.assertRaisesRegex(ConfigError, "histogram_bin_width_ps"):
             validate_config(bad)
 
     def test_validation_fraction_above_half_is_valid(self):
@@ -27,12 +39,6 @@ class ConfigTests(unittest.TestCase):
         valid["validation"]["test_fraction"] = 0.6
         valid["validation"]["validation_fraction"] = 0.7
         validate_config(valid)
-
-    def test_coverage_fraction_below_half_is_valid(self):
-        valid = copy.deepcopy(self.config)
-        valid["fit"]["coverage_fraction"] = 0.4
-        validate_config(valid)
-
 
     def test_mlp_training_has_no_random_restart_configuration(self):
         self.assertNotIn(
