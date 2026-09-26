@@ -4,10 +4,10 @@ from typing import Any
 
 import numpy as np
 
+from .binning import DEFAULT_HISTOGRAM_BIN_WIDTH_PS
 from .histogram import (
     CTRResult,
     DEFAULT_CTR_DEFINITION,
-    DEFAULT_HISTOGRAM_BINS,
     estimate_delta_times_integer_fs,
     estimate_delta_times_ps,
 )
@@ -20,7 +20,7 @@ def fit_ctr_ps(
     seed: int = 0,
     bootstrap: bool = True,
     definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
+    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
     """General CTR estimator with optional event-bootstrap uncertainty."""
     result = estimate_delta_times_ps(
@@ -30,7 +30,7 @@ def fit_ctr_ps(
         seed=int(seed),
         bootstrap=bool(bootstrap),
         definition=definition,
-        histogram_bins=histogram_bins,
+        histogram_bin_width_ps=histogram_bin_width_ps,
     )
     if not result.success or not np.isfinite(result.ctr_ps):
         raise ValueError(result.message or "CTR estimation failed")
@@ -48,7 +48,7 @@ def fit_delta_times_ps(
     seed: int = 0,
     bootstrap: bool = False,
     definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
+    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
     """Generic timing-width extraction using one supported CTR definition."""
     return estimate_delta_times_ps(
@@ -61,7 +61,7 @@ def fit_delta_times_ps(
         seed=seed,
         bootstrap=bootstrap,
         definition=definition,
-        histogram_bins=histogram_bins,
+        histogram_bin_width_ps=histogram_bin_width_ps,
     )
 
 
@@ -76,7 +76,7 @@ def fit_delta_times_integer_fs(
     seed: int = 0,
     bootstrap: bool = False,
     definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
+    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
     """Integer-fs counterpart of fit_delta_times_ps."""
     return estimate_delta_times_integer_fs(
@@ -89,5 +89,5 @@ def fit_delta_times_integer_fs(
         seed=seed,
         bootstrap=bootstrap,
         definition=definition,
-        histogram_bins=histogram_bins,
+        histogram_bin_width_ps=histogram_bin_width_ps,
     )
