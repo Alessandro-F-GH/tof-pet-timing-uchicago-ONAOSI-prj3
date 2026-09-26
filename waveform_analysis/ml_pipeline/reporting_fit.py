@@ -12,6 +12,7 @@ from utils_fit import (
     DEFAULT_CTR_DEFINITION,
     DEFAULT_HISTOGRAM_BINS,
     fit_ctr_ps,
+    fit_nema_fwhm,
 )
 
 from . import latex_tables as latex_tables_module
@@ -126,6 +127,141 @@ def _recompute_rows(
     return [dict(row) for row in recomputed]
 
 
+def _nema_distribution_plot(
+    output,
+    run,
+    rows,
+    mode,
+    dataset,
+    stage,
+    paths,
+    *,
+    histogram_bins: int,
+) -> None:
+    """CTR distribution plot with the NEMA peak and half-maximum width overlaid."""
+    import matplotlib.pyplot as plt
+
+    available = []
+    for method in reporting_module._distribution_methods(rows, dataset, stage):
+        residual = reporting_module._residual(run, dataset, method, stage)
+        if residual is None:
+            continue
+        residual = np.asarray(residual, dtype=float)
+        residual = residual[np.isfinite(residual)]
+        if not residual.size:
+            continue
+        row = next(
+            (
+                item
+                for item in rows
+                if item["dataset"] == dataset
+                and item["method"] == method
+                and item.get("stage") == stage
+            ),
+            None,
+        )
+        if row is not None:
+            available.append((method, residual, row))
+
+    led = next((item for item in available if item[0] == "led"), None)
+    models = [item for item in available if item[0] not in {"led", "cfd"}]
+    if led is None or not models:
+        return
+
+    for model, model_residual, model_row in models:
+        pair = [led, (model, model_residual, model_row)]
+        nema_fits = []
+        for method, residual, row in pair:
+            fit = fit_nema_fwhm(residual, histogram_bins=histogram_bins)
+            nema_fits.append((method, residual, row, fit))
+
+        xlim = reporting_module._robust_display_range(
+            [residual for _method, residual, _row, _fit in nema_fits],
+            quantiles=(0.005, 0.995),
+            margin_fraction=0.06,
+        )
+        half_left = [fit.half_max_left_ps for _m, _r, _row, fit in nema_fits]
+        half_right = [fit.half_max_right_ps for _m, _r, _row, fit in nema_fits]
+        xlim = (
+            min(float(xlim[0]), min(half_left) - 20.0),
+            max(float(xlim[1]), max(half_right) + 20.0),
+        )
+
+        fig, ax = plt.subplots(figsize=reporting_module.SINGLE_COLUMN)
+        peak = 0.0
+        for index, (method, residual, row, fit) in enumerate(nema_fits):
+            edges = np.linspace(
+                float(fit.fit_low_ps),
+                float(fit.fit_high_ps),
+                int(fit.histogram_bins) + 1,
+            )
+            counts, _ = np.histogram(residual, bins=edges)
+            if counts.size:
+                peak = max(peak, float(np.max(counts)))
+            peak = max(peak, float(fit.peak_height))
+
+            style = reporting_module.model_style(method, index)
+            color = style["color"]
+            label = (
+                f"{reporting_module.LABELS.get(method, method)}, CTR "
+                f"{reporting_module._measurement_text(reporting_module._float(row.get('ctr_ps')), reporting_module._float(row.get('ctr_uncertainty_ps')))} ps"
+            )
+            ax.hist(
+                residual,
+                bins=edges,
+                histtype="step",
+                color=color,
+                linestyle=style["linestyle"],
+                linewidth=1.35,
+                label=label,
+            )
+
+            half_height = 0.5 * float(fit.peak_height)
+            ax.plot(
+                float(fit.center_ps),
+                float(fit.peak_height),
+                marker="o",
+                markersize=4.5,
+                linestyle="none",
+                color=color,
+                zorder=5,
+            )
+            ax.hlines(
+                half_height,
+                float(fit.half_max_left_ps),
+                float(fit.half_max_right_ps),
+                color=color,
+                linestyle=":",
+                linewidth=1.35,
+                zorder=4,
+            )
+            ax.vlines(
+                [float(fit.half_max_left_ps), float(fit.half_max_right_ps)],
+                0.0,
+                half_height,
+                color=color,
+                linestyle=":",
+                linewidth=0.9,
+                alpha=0.8,
+                zorder=3,
+            )
+
+        if peak > 0:
+            ax.set_ylim(0.0, peak * 1.16)
+        ax.set_xlim(*xlim)
+        ax.set_xlabel("Residual [ps]")
+        ax.set_ylabel("Events [count]")
+        ax.legend(loc="best")
+        reporting_module.clean_axis(ax, grid="y")
+        fig.tight_layout()
+        target = reporting_module.save_figure(
+            fig,
+            output / f"ctr_distribution_{stage}_{dataset}_{model}.pdf",
+        )
+        plt.close(fig)
+        paths.append(target)
+
+
 @contextmanager
 def reporting_fit_options(
     *,
@@ -145,6 +281,7 @@ def reporting_fit_options(
     original_read_results = reporting_module.read_results
     original_fit_ctr = reporting_module.fit_ctr_ps
     original_edges = reporting_module._median_centered_display_edges
+    original_distribution_plot = reporting_module._distribution_plot
     original_legend = Axes.legend
     original_latex_read_csv = latex_tables_module._read_csv
     cache: dict[Path, list[dict[str, Any]]] = {}
@@ -171,6 +308,20 @@ def reporting_fit_options(
     def configured_edges(values, xlim, n_bins=DEFAULT_HISTOGRAM_BINS):
         return original_edges(values, xlim, bins)
 
+    def configured_distribution_plot(output, run, rows, mode, dataset, stage, paths):
+        if definition == "nema":
+            return _nema_distribution_plot(
+                output,
+                run,
+                rows,
+                mode,
+                dataset,
+                stage,
+                paths,
+                histogram_bins=bins,
+            )
+        return original_distribution_plot(output, run, rows, mode, dataset, stage, paths)
+
     def configured_legend(self, *args, **kwargs):
         if self.get_xlabel() == "Residual [ps]" and self.get_ylabel() == "Events [count]":
             kwargs["loc"] = "lower center"
@@ -188,6 +339,7 @@ def reporting_fit_options(
     reporting_module.read_results = configured_read_results
     reporting_module.fit_ctr_ps = configured_fit_ctr
     reporting_module._median_centered_display_edges = configured_edges
+    reporting_module._distribution_plot = configured_distribution_plot
     latex_tables_module._read_csv = configured_latex_read_csv
     Axes.legend = configured_legend
     try:
@@ -196,5 +348,6 @@ def reporting_fit_options(
         reporting_module.read_results = original_read_results
         reporting_module.fit_ctr_ps = original_fit_ctr
         reporting_module._median_centered_display_edges = original_edges
+        reporting_module._distribution_plot = original_distribution_plot
         latex_tables_module._read_csv = original_latex_read_csv
         Axes.legend = original_legend
