@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .binning import DEFAULT_HISTOGRAM_BIN_WIDTH_PS, validate_histogram_bin_width_ps
 from .double_gaussian import DoubleGaussianFit, fit_double_gaussian_fwhm
 from .nema import fit_nema_fwhm
 
@@ -15,7 +16,6 @@ DEFAULT_INVALID_TIME_FS = np.iinfo(np.int64).min
 FWHM_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 CTR_DEFINITIONS = ("shortest_interval", "double_gaussian", "nema")
 DEFAULT_CTR_DEFINITION = "shortest_interval"
-DEFAULT_HISTOGRAM_BINS = 22
 _HISTOGRAM_CTR_DEFINITIONS = {"double_gaussian", "nema"}
 DEFAULT_FIT_CONFIG: dict[str, Any] = {
     "coverage_fraction": 0.90,
@@ -47,6 +47,7 @@ class CTRResult:
     bootstrap_successful: int
     definition: str = DEFAULT_CTR_DEFINITION
     histogram_bins: int = 0
+    histogram_bin_width_ps: float = float("nan")
     sigma_narrow_ps: float = float("nan")
     sigma_wide_ps: float = float("nan")
     narrow_fraction: float = float("nan")
@@ -132,6 +133,7 @@ class CTRResult:
             "bootstrap_successful": self.bootstrap_successful,
             "definition": self.definition,
             "histogram_bins": self.histogram_bins,
+            "histogram_bin_width_ps": self.histogram_bin_width_ps,
             "sigma_narrow_ps": self.sigma_narrow_ps,
             "sigma_wide_ps": self.sigma_wide_ps,
             "narrow_fraction": self.narrow_fraction,
@@ -152,6 +154,7 @@ class _PointEstimate:
     interval_width_ps: float = float("nan")
     gaussian_equivalent_scale: float = float("nan")
     histogram_bins: int = 0
+    histogram_bin_width_ps: float = float("nan")
     sigma_narrow_ps: float = float("nan")
     sigma_wide_ps: float = float("nan")
     narrow_fraction: float = float("nan")
@@ -174,15 +177,6 @@ def _normalize_definition(definition: str) -> str:
     return value
 
 
-def _validate_histogram_bins(histogram_bins: int) -> int:
-    if isinstance(histogram_bins, bool):
-        raise ValueError("histogram_bins must be a positive integer")
-    bins = int(histogram_bins)
-    if bins != histogram_bins or bins <= 0:
-        raise ValueError("histogram_bins must be a positive integer")
-    return bins
-
-
 def _failure(
     *,
     method: str,
@@ -193,7 +187,7 @@ def _failure(
     coverage_fraction: float,
     bootstrap_samples: int,
     definition: str,
-    histogram_bins: int,
+    histogram_bin_width_ps: float,
     message: str,
 ) -> CTRResult:
     return CTRResult(
@@ -222,8 +216,11 @@ def _failure(
         bootstrap_samples=int(bootstrap_samples),
         bootstrap_successful=0,
         definition=definition,
-        histogram_bins=(
-            histogram_bins if definition in _HISTOGRAM_CTR_DEFINITIONS else 0
+        histogram_bins=0,
+        histogram_bin_width_ps=(
+            histogram_bin_width_ps
+            if definition in _HISTOGRAM_CTR_DEFINITIONS
+            else np.nan
         ),
         message=message,
     )
@@ -282,7 +279,7 @@ def _point_estimate(
     *,
     definition: str,
     coverage_fraction: float,
-    histogram_bins: int,
+    histogram_bin_width_ps: float,
     initial: _PointEstimate | None = None,
 ) -> _PointEstimate:
     if definition == "shortest_interval":
@@ -304,13 +301,14 @@ def _point_estimate(
         seed_fit = initial.double_gaussian_fit if initial is not None else None
         fit = fit_double_gaussian_fwhm(
             values_ps,
-            histogram_bins=histogram_bins,
+            histogram_bin_width_ps=histogram_bin_width_ps,
             initial=seed_fit,
         )
         return _PointEstimate(
             ctr_ps=fit.ctr_ps,
             center_ps=fit.center_ps,
             histogram_bins=fit.histogram_bins,
+            histogram_bin_width_ps=fit.histogram_bin_width_ps,
             sigma_narrow_ps=fit.sigma_narrow_ps,
             sigma_wide_ps=fit.sigma_wide_ps,
             narrow_fraction=fit.narrow_fraction,
@@ -319,12 +317,13 @@ def _point_estimate(
 
     fit = fit_nema_fwhm(
         values_ps,
-        histogram_bins=histogram_bins,
+        histogram_bin_width_ps=histogram_bin_width_ps,
     )
     return _PointEstimate(
         ctr_ps=fit.ctr_ps,
         center_ps=fit.center_ps,
         histogram_bins=fit.histogram_bins,
+        histogram_bin_width_ps=fit.histogram_bin_width_ps,
     )
 
 
@@ -339,11 +338,11 @@ def _estimate_values(
     seed: int,
     bootstrap: bool,
     definition: str,
-    histogram_bins: int,
+    histogram_bin_width_ps: float,
 ) -> CTRResult:
     cfg = _config(config)
     definition = _normalize_definition(definition)
-    bins = _validate_histogram_bins(histogram_bins)
+    bin_width = validate_histogram_bin_width_ps(histogram_bin_width_ps)
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     finite = values[np.isfinite(values)]
     n_valid = int(finite.size)
@@ -364,7 +363,7 @@ def _estimate_values(
             coverage_fraction=coverage,
             bootstrap_samples=requested,
             definition=definition,
-            histogram_bins=bins,
+            histogram_bin_width_ps=bin_width,
             message=(
                 f"At least {minimum_events} finite residuals are required for "
                 f"CTR definition {definition}"
@@ -376,7 +375,7 @@ def _estimate_values(
             finite,
             definition=definition,
             coverage_fraction=coverage,
-            histogram_bins=bins,
+            histogram_bin_width_ps=bin_width,
         )
     except ValueError as exc:
         return _failure(
@@ -388,7 +387,7 @@ def _estimate_values(
             coverage_fraction=coverage,
             bootstrap_samples=requested,
             definition=definition,
-            histogram_bins=bins,
+            histogram_bin_width_ps=bin_width,
             message=str(exc),
         )
 
@@ -402,7 +401,7 @@ def _estimate_values(
                     sample,
                     definition=definition,
                     coverage_fraction=coverage,
-                    histogram_bins=bins,
+                    histogram_bin_width_ps=bin_width,
                     initial=point,
                 )
             except ValueError:
@@ -439,6 +438,11 @@ def _estimate_values(
         histogram_bins=(
             point.histogram_bins if definition in _HISTOGRAM_CTR_DEFINITIONS else 0
         ),
+        histogram_bin_width_ps=(
+            point.histogram_bin_width_ps
+            if definition in _HISTOGRAM_CTR_DEFINITIONS
+            else np.nan
+        ),
         sigma_narrow_ps=float(point.sigma_narrow_ps),
         sigma_wide_ps=float(point.sigma_wide_ps),
         narrow_fraction=float(point.narrow_fraction),
@@ -456,7 +460,7 @@ def estimate_delta_times_ps(
     seed: int = 0,
     bootstrap: bool = True,
     definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
+    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
     values = np.asarray(delta_ps, dtype=np.float64).reshape(-1)
     total = values.size if n_total is None else int(n_total)
@@ -471,7 +475,7 @@ def estimate_delta_times_ps(
         seed=seed,
         bootstrap=bootstrap,
         definition=definition,
-        histogram_bins=histogram_bins,
+        histogram_bin_width_ps=histogram_bin_width_ps,
     )
 
 
@@ -486,7 +490,7 @@ def estimate_delta_times_integer_fs(
     seed: int = 0,
     bootstrap: bool = True,
     definition: str = DEFAULT_CTR_DEFINITION,
-    histogram_bins: int = DEFAULT_HISTOGRAM_BINS,
+    histogram_bin_width_ps: float = DEFAULT_HISTOGRAM_BIN_WIDTH_PS,
 ) -> CTRResult:
     raw = np.asarray(delta_fs)
     if raw.ndim != 1:
@@ -506,7 +510,7 @@ def estimate_delta_times_integer_fs(
         seed=seed,
         bootstrap=bootstrap,
         definition=definition,
-        histogram_bins=histogram_bins,
+        histogram_bin_width_ps=histogram_bin_width_ps,
     )
 
 
