@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .binning import fixed_width_histogram_edges, validate_histogram_bin_width_ps
+
 
 @dataclass(frozen=True)
 class NEMAFit:
@@ -15,6 +17,7 @@ class NEMAFit:
     half_max_left_ps: float
     half_max_right_ps: float
     histogram_bins: int
+    histogram_bin_width_ps: float
     fit_low_ps: float
     fit_high_ps: float
 
@@ -59,14 +62,12 @@ def nema_fwhm_from_histogram(
     widths = np.diff(edges)
     if not np.allclose(widths, widths[0], rtol=1.0e-10, atol=1.0e-12):
         raise ValueError("NEMA FWHM requires uniform histogram binning")
+    bin_width = float(widths[0])
     centers = 0.5 * (edges[:-1] + edges[1:])
     peak_index = _middle_maximum_index(y)
     if peak_index == 0 or peak_index == y.size - 1:
         raise ValueError("NEMA peak bin must have neighbours on both sides")
 
-    # NEMA: estimate the true peak height from the parabola through the peak
-    # bin and its two nearest neighbours. Center x before fitting for numerical
-    # stability while preserving the exact quadratic interpolation.
     local_x = centers[peak_index - 1 : peak_index + 2] - centers[peak_index]
     local_y = y[peak_index - 1 : peak_index + 2]
     a, b, c = np.polyfit(local_x, local_y, 2)
@@ -116,6 +117,7 @@ def nema_fwhm_from_histogram(
         half_max_left_ps=float(left),
         half_max_right_ps=float(right),
         histogram_bins=int(y.size),
+        histogram_bin_width_ps=bin_width,
         fit_low_ps=float(edges[0]),
         fit_high_ps=float(edges[-1]),
     )
@@ -124,19 +126,16 @@ def nema_fwhm_from_histogram(
 def fit_nema_fwhm(
     values_ps: np.ndarray,
     *,
-    histogram_bins: int = 22,
+    histogram_bin_width_ps: float = 10.0,
 ) -> NEMAFit:
-    """Histogram timing residuals and evaluate FWHM with the NEMA method."""
+    """Evaluate NEMA FWHM on a fixed-width, zero-anchored residual histogram."""
     values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
     values = values[np.isfinite(values)]
-    bins = int(histogram_bins)
-    if bins < 3:
-        raise ValueError("nema requires at least 3 histogram bins")
+    bin_width = validate_histogram_bin_width_ps(histogram_bin_width_ps)
     if values.size < 5:
         raise ValueError("nema requires at least 5 finite residuals")
-    low = float(np.min(values))
-    high = float(np.max(values))
-    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+    if float(np.ptp(values)) <= 0.0:
         raise ValueError("NEMA FWHM requires non-degenerate residuals")
-    counts, edges = np.histogram(values, bins=bins, range=(low, high))
+    edges = fixed_width_histogram_edges(values, bin_width)
+    counts, _ = np.histogram(values, bins=edges)
     return nema_fwhm_from_histogram(counts, edges)
