@@ -40,6 +40,7 @@ class PairedCTRImprovement:
     rmse_improvement_ci_high_ps: float
     bootstrap_requested: int
     bootstrap_successful: int
+    rmse_bootstrap_successful: int
     corrected_bootstrap_ctr_ps: np.ndarray
     led_bootstrap_ctr_ps: np.ndarray
     improvement_bootstrap_ps: np.ndarray
@@ -57,8 +58,9 @@ def paired_ctr_improvement(
 ) -> PairedCTRImprovement:
     """Paired event-bootstrap comparison of ML-corrected residuals against LED residuals.
 
-    The same event resample is used for CTR and RMSE, and for corrected and LED
-    residuals. Positive improvement means baseline metric - corrected metric > 0.
+    Corrected and LED metrics always use the same event indices. RMSE is retained
+    for every valid resample independently of whether the CTR estimator succeeds.
+    Positive improvement means baseline metric - corrected metric > 0.
     """
     corrected = np.asarray(corrected_ps, dtype=np.float64).reshape(-1)
     led = np.asarray(led_ps, dtype=np.float64).reshape(-1)
@@ -94,6 +96,14 @@ def paired_ctr_improvement(
             indices = rng.integers(0, n, size=n)
             corrected_sample = corrected[indices]
             led_sample = led[indices]
+
+            corrected_trial_rmse = rmse_ps(corrected_sample)
+            led_trial_rmse = rmse_ps(led_sample)
+            if np.isfinite(corrected_trial_rmse) and np.isfinite(led_trial_rmse):
+                corrected_rmse_trials.append(corrected_trial_rmse)
+                led_rmse_trials.append(led_trial_rmse)
+                rmse_improvement_trials.append(float(led_trial_rmse - corrected_trial_rmse))
+
             try:
                 corrected_trial = ctr_estimate(corrected_sample, fit_cfg, bootstrap=False)
                 led_trial = ctr_estimate(led_sample, fit_cfg, bootstrap=False)
@@ -101,14 +111,9 @@ def paired_ctr_improvement(
                 continue
             if not (np.isfinite(corrected_trial.ctr_ps) and np.isfinite(led_trial.ctr_ps)):
                 continue
-            corrected_trial_rmse = rmse_ps(corrected_sample)
-            led_trial_rmse = rmse_ps(led_sample)
             corrected_ctr_trials.append(float(corrected_trial.ctr_ps))
             led_ctr_trials.append(float(led_trial.ctr_ps))
             ctr_improvement_trials.append(float(led_trial.ctr_ps - corrected_trial.ctr_ps))
-            corrected_rmse_trials.append(corrected_trial_rmse)
-            led_rmse_trials.append(led_trial_rmse)
-            rmse_improvement_trials.append(float(led_trial_rmse - corrected_trial_rmse))
 
     corrected_ctr_array = np.asarray(corrected_ctr_trials, dtype=np.float64)
     led_ctr_array = np.asarray(led_ctr_trials, dtype=np.float64)
@@ -152,6 +157,7 @@ def paired_ctr_improvement(
         rmse_improvement_ci_high_ps=rmse_ci_high,
         bootstrap_requested=requested,
         bootstrap_successful=int(ctr_improvement_array.size),
+        rmse_bootstrap_successful=int(rmse_improvement_array.size),
         corrected_bootstrap_ctr_ps=corrected_ctr_array,
         led_bootstrap_ctr_ps=led_ctr_array,
         improvement_bootstrap_ps=ctr_improvement_array,
