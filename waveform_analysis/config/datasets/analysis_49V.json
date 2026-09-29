@@ -1,5 +1,5 @@
 {
-  "root_file": "processed_data/converted_Finn/49V-490mV.root",
+  "root_file": "processed_data/converted_runs_07-13/49V-490mV.root",
   "true_tof_ps": 0.0,
   "channels": {
     "energy": [1, 2],
