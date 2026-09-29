@@ -80,8 +80,10 @@ def validate_config(c):
     if float(c["fit"]["histogram_bin_width_ps"])<=0 or int(c["fit"]["bootstrap_samples"])<0:raise ConfigError("invalid fit settings")
     from .models import model_names
     if c["model"]["name"] not in model_names():raise ConfigError(f"unregistered model {c['model']['name']}")
-def load_config(path,project_root=None):
+def load_config(path,project_root=None,defaults=None):
     source=Path(path).expanduser().resolve();root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1];raw=_read(source)
+    if defaults:
+        merged=copy.deepcopy(defaults);merged.update(raw);raw=merged
     legacy={"extends","data_config","experiment","models","standard_methods","validation","cfd"}
     if legacy & set(raw):raise ConfigError("Old experiment schema is incompatible with the control/analysis study protocol")
     reference=_dataset(source,raw.get("reference_dataset"),root);analysis=_dataset(source,raw.get("analysis_dataset"),root)
@@ -100,5 +102,7 @@ def load_config(path,project_root=None):
 def load_batch_config(path,project_root=None):
     source=Path(path).expanduser().resolve();raw=_read(source);studies=raw.get("studies")
     if not isinstance(studies,list) or not studies:raise ConfigError("batch config requires a non-empty ordered studies list")
-    return [load_config(_rel(source,item),project_root) for item in studies]
+    shared={k:copy.deepcopy(raw[k]) for k in ("reference_dataset","analysis_dataset") if k in raw}
+    if set(shared)!={"reference_dataset","analysis_dataset"}:raise ConfigError("batch config must define shared reference_dataset and analysis_dataset")
+    return [load_config(_rel(source,item),project_root,defaults=shared) for item in studies]
 def public_config(c):return {k:v for k,v in c.items() if not str(k).startswith("_")}
