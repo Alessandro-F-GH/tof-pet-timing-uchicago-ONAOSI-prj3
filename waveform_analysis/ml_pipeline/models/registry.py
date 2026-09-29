@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+from .direct_cnn1d import MODEL_SPEC as DIRECT_CNN1D_SPEC
+from .direct_mlp import MODEL_SPEC as DIRECT_MLP_SPEC
 from .locally_connected_mlp import MODEL_SPEC as LOCALLY_CONNECTED_MLP_SPEC
+from .minirocket import MODEL_SPEC as MINIROCKET_SPEC
 from .mlp import MODEL_SPEC as MLP_SPEC
-from .onishi_cnn import MODEL_SPEC as ONISHI_CNN_SPEC
+from .onishi_cnn import MODEL_SPEC as _ONISHI_CNN_SPEC
+from .shared_cnn1d import MODEL_SPEC as SHARED_CNN1D_SPEC
 from .spec import ModelSpec
+
+ONISHI_CNN_SPEC = replace(_ONISHI_CNN_SPEC, estimator_formulation="direct")
 
 _REGISTRY: dict[str, ModelSpec] = {
     MLP_SPEC.name: MLP_SPEC,
     LOCALLY_CONNECTED_MLP_SPEC.name: LOCALLY_CONNECTED_MLP_SPEC,
+    SHARED_CNN1D_SPEC.name: SHARED_CNN1D_SPEC,
+    DIRECT_MLP_SPEC.name: DIRECT_MLP_SPEC,
+    DIRECT_CNN1D_SPEC.name: DIRECT_CNN1D_SPEC,
     ONISHI_CNN_SPEC.name: ONISHI_CNN_SPEC,
+    MINIROCKET_SPEC.name: MINIROCKET_SPEC,
 }
 
 
