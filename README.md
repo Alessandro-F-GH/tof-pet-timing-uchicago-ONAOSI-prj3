@@ -2,26 +2,26 @@
 
 Analysis software for the ONAOSI/UChicago TOF-PET project.
 
-- `waveform_analysis/`: oscilloscope event selection, native-time preprocessing, LED/CFD calibration, waveform ML and XAI.
+- `waveform_analysis/`: oscilloscope event selection, fixed-control preprocessing and waveform ML.
 - `janus_data_analysis/`: Pico-TDC / Janus timing analysis.
 - `utils_fit/`: repository-wide timing-resolution utilities.
 
-The waveform path has one scientific order:
+The waveform ML path follows one scientific order:
 
-`ROOT -> raw development/test split -> development-fitted event selection -> native-time preprocessing -> LED/CFD + ML dataset preparation -> training/validation model selection -> final test evaluation`
+`independent control -> fit/freeze preprocessing + LED threshold -> apply frozen rules to independent analysis data -> fixed ML population -> repeated train/validation/blind holdout -> model selection/refit -> blind evaluation`
 
-The permanent test population never determines the photopeak, pulse-duration cuts, baseline-noise cuts, LED threshold, CFD fraction, input normalization, ML hyperparameters or early stopping.
+The control sample can determine photopeak, baseline-noise, baseline-clipping, timing-ToT and LED-selection rules, but contributes no ML training or test events. The analysis sample can only be filtered with those frozen rules. For a given analysis population and resampling seed, train/validation/blind event identities are independent of model and waveform window so later studies can be paired by seed.
 
-Waveform ML includes the antisymmetric MLP and the paired Onishi CNN reference. The supervised target is the calibrated LED residual, `Delta t_LED - TOF - C_hat_12`. CTR throughout the repository is the Gaussian-equivalent shortest empirical coverage interval implemented in `utils_fit`; the default coverage is 90% and the default final uncertainty uses 500 event-bootstrap resamples. Fixed-bin FWHM is retained only as a secondary core-peak diagnostic.
-
-Waveform studies use one mode per experiment: `energy_to_energy` or `timing_to_timing`.
+Waveform studies use one mode per study: `energy_to_energy` or `timing_to_timing`. A study also resolves exactly one registered model and one waveform window. Hyperparameter selection is generic: a single candidate is fitted directly on train+validation; multiple candidates are trained on train only, selected by validation CTR, then refitted from scratch on train+validation before blind evaluation.
 
 Run from the repository root, for example:
 
 ```bash
-python -m waveform_analysis.cli check --config waveform_analysis/config/experiments/model_study_mlp.json
-python -m waveform_analysis.cli prepare --config waveform_analysis/config/experiments/model_study_mlp.json
-python -m waveform_analysis.cli run --config waveform_analysis/config/experiments/model_study_mlp.json
+python -m waveform_analysis.cli check --config waveform_analysis/config/studies/example.json
+python -m waveform_analysis.cli run --config waveform_analysis/config/studies/example.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/main.json
 ```
 
-See `waveform_analysis/README.md` for the detailed data contract and experiment commands.
+Old voltage-scan, threshold-scan, concatenated-dataset and multi-model/multi-window experiment schemas are intentionally incompatible with the current pipeline.
+
+See `waveform_analysis/README.md` for the study configuration, output schema and leakage invariants.
