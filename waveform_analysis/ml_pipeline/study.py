@@ -68,7 +68,6 @@ def _blind_evaluation(store,spec,fitted,dataset,config,split,target,seed,cid,pop
     corrected=target[split.test]-pred;led=target[split.test]
     swap=detector_swap_rmse(spec,fitted,dataset,config["mode"],split.test)
     paired=paired_ctr_improvement(corrected,led,config["fit"],seed=semantic_seed(seed,"paired_led_ml",cid))
-    store.save_paired_bootstrap(seed,cid,paired)
     return _row(seed,"blind",cid,True,corrected,led,config["fit"],spec=spec,config=config,
         population_identity=population_identity,swap_rmse_ps=swap,paired=paired)
 
@@ -76,15 +75,16 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
     run_dir=Path(config["output_dir"]).resolve();store=RunStore(run_dir,overwrite=overwrite,resume=resume);logger=_logger(run_dir)
     spec=get_model(config["model"]["name"]);candidates=candidate_manifest(list(spec.candidates(config["model"]["space"])))
     seeds=_resampling_seeds(config["resampling"])
-    manifest={"schema_version":34,"status":"running","config_fingerprint":config["_config_fingerprint"],"reference":config["reference"],
+    manifest={"schema_version":35,"status":"running","config_fingerprint":config["_config_fingerprint"],"reference":config["reference"],
         "analysis":config["analysis"],"mode":config["mode"],"model":config["model"]["name"],"estimator_formulation":spec.estimator_formulation,"window_ns":config["window_ns"],
         "feature_transform":None if spec.feature_transform is None else spec.feature_transform.name,
-        "resampling":config["resampling"],"generated_resampling_seeds":seeds,"preprocessing":config["preprocessing"],"preprocessing_fingerprint":canonical_hash(config["preprocessing"])}
+        "resampling":config["resampling"],"generated_resampling_seeds":seeds,"preprocessing":config["preprocessing"],"preprocessing_fingerprint":canonical_hash(config["preprocessing"]),
+        "paired_comparison_unit":"blind_split","event_level_paired_bootstrap":False}
     if resume and (run_dir/"manifest.json").is_file():
         old=json.loads((run_dir/"manifest.json").read_text())
         if old.get("config_fingerprint")!=config["_config_fingerprint"]:raise RuntimeError("Cannot resume with a different resolved configuration")
     store.write_manifest(manifest);store.write_candidates(candidates)
-    logger.info("Study | reference=%s | analysis=%s | mode=%s | model=%s | formulation=%s | window=%s | bootstrap=%d | base_seed=%d | candidates=%d",
+    logger.info("Study | reference=%s | analysis=%s | mode=%s | model=%s | formulation=%s | window=%s | splits=%d | base_seed=%d | candidates=%d",
         config["reference"]["root_file"],config["analysis"]["root_file"],config["mode"],config["model"]["name"],spec.estimator_formulation,config["window_ns"],
         len(seeds),int(config["resampling"]["seed"]),len(candidates))
     control,control_dir=fit_control_artifact(config["reference"]["root_file"],config["reference"],config["preprocessing"],config["fit"],
@@ -108,7 +108,7 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
         if min(len(split.train),len(split.validation),len(split.test))<minimum:
             raise RuntimeError(f"Resampling seed {seed} violates minimum_events_per_split={minimum}")
         store.save_split(seed,dataset.event_index,split)
-        logger.info("Resampling %d/%d | seed=%s | train=%d validation=%d test=%d",pos,len(seeds),seed,len(split.train),len(split.validation),len(split.test))
+        logger.info("Split %d/%d | seed=%s | train=%d validation=%d test=%d",pos,len(seeds),seed,len(split.train),len(split.validation),len(split.test))
         transform_cache=FeatureTransformCache();transform_seed_base=semantic_seed(seed,config["model"]["name"],"transform")
         if len(candidates)==1:
             cid,params=next(iter(candidates.items()))
@@ -118,11 +118,9 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
                     transform_seed_base=transform_seed_base,feature_transform_cache=transform_cache,logger=logger)
                 row=_blind_evaluation(store,spec,fitted,dataset,config,split,target,seed,cid,population_identity);store.upsert_result(row)
                 save_model(spec,fitted,store.model_dir(seed,cid),params)
-                logger.info("Blind | seed=%s | candidate=%s | CTR=%.3f ± %.3f ps | LED CTR=%.3f ± %.3f ps | CTR improvement=%.3f ± %.3f ps (%.2f%%) | RMSE=%.3f ± %.3f ps | LED RMSE=%.3f ± %.3f ps | RMSE improvement=%.3f ± %.3f ps (%.2f%%) | swap RMSE=%.3f ps",
-                    seed,cid,row["ctr_ps"],row["ctr_uncertainty_ps"],row["uncorrected_ctr_ps"],row["uncorrected_ctr_uncertainty_ps"],
-                    row["improvement_ps"],row["improvement_uncertainty_ps"],row["improvement_percent"],
-                    row["rmse_ps"],row["rmse_uncertainty_ps"],row["uncorrected_rmse_ps"],row["uncorrected_rmse_uncertainty_ps"],
-                    row["rmse_improvement_ps"],row["rmse_improvement_uncertainty_ps"],row["rmse_improvement_percent"],row["swap_rmse_ps"])
+                logger.info("Blind | seed=%s | candidate=%s | CTR=%.3f ps | LED CTR=%.3f ps | CTR improvement=%.3f ps (%.2f%%) | RMSE=%.3f ps | LED RMSE=%.3f ps | RMSE improvement=%.3f ps (%.2f%%) | swap RMSE=%.3f ps",
+                    seed,cid,row["ctr_ps"],row["uncorrected_ctr_ps"],row["improvement_ps"],row["improvement_percent"],
+                    row["rmse_ps"],row["uncorrected_rmse_ps"],row["rmse_improvement_ps"],row["rmse_improvement_percent"],row["swap_rmse_ps"])
             progress.complete("resampling_seed",f"seed {seed}",announce=False);continue
         scores=[]
         for i,(cid,params) in enumerate(candidates.items(),1):
@@ -147,11 +145,9 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
                 feature_transform_cache=transform_cache,logger=logger)
             row=_blind_evaluation(store,spec,fitted,dataset,config,split,target,seed,cid,population_identity);store.upsert_result(row)
             save_model(spec,fitted,store.model_dir(seed,cid),params)
-            logger.info("Blind | seed=%s | candidate=%s | CTR=%.3f ± %.3f ps | LED CTR=%.3f ± %.3f ps | CTR improvement=%.3f ± %.3f ps (%.2f%%) | RMSE=%.3f ± %.3f ps | LED RMSE=%.3f ± %.3f ps | RMSE improvement=%.3f ± %.3f ps (%.2f%%) | swap RMSE=%.3f ps",
-                seed,cid,row["ctr_ps"],row["ctr_uncertainty_ps"],row["uncorrected_ctr_ps"],row["uncorrected_ctr_uncertainty_ps"],
-                row["improvement_ps"],row["improvement_uncertainty_ps"],row["improvement_percent"],
-                row["rmse_ps"],row["rmse_uncertainty_ps"],row["uncorrected_rmse_ps"],row["uncorrected_rmse_uncertainty_ps"],
-                row["rmse_improvement_ps"],row["rmse_improvement_uncertainty_ps"],row["rmse_improvement_percent"],row["swap_rmse_ps"])
+            logger.info("Blind | seed=%s | candidate=%s | CTR=%.3f ps | LED CTR=%.3f ps | CTR improvement=%.3f ps (%.2f%%) | RMSE=%.3f ps | LED RMSE=%.3f ps | RMSE improvement=%.3f ps (%.2f%%) | swap RMSE=%.3f ps",
+                seed,cid,row["ctr_ps"],row["uncorrected_ctr_ps"],row["improvement_ps"],row["improvement_percent"],
+                row["rmse_ps"],row["uncorrected_rmse_ps"],row["rmse_improvement_ps"],row["rmse_improvement_percent"],row["swap_rmse_ps"])
         progress.complete("resampling_seed",f"seed {seed}",note=f"candidate={cid}")
     rows=store.read_results()
     if len(candidates)>1:
@@ -168,9 +164,10 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
     manifest["blind_rmse_mean_ps"]=float(np.mean(blind_rmse)) if blind_rmse else None;manifest["blind_rmse_std_ps"]=float(np.std(blind_rmse,ddof=1)) if len(blind_rmse)>1 else 0.0
     manifest["paired_ctr_improvement_mean_ps"]=float(np.mean(ctr_improvements)) if ctr_improvements else None;manifest["paired_ctr_improvement_std_ps"]=float(np.std(ctr_improvements,ddof=1)) if len(ctr_improvements)>1 else 0.0
     manifest["paired_rmse_improvement_mean_ps"]=float(np.mean(rmse_improvements)) if rmse_improvements else None;manifest["paired_rmse_improvement_std_ps"]=float(np.std(rmse_improvements,ddof=1)) if len(rmse_improvements)>1 else 0.0
+    manifest["paired_split_count"]=len(ctr_improvements)
     manifest["blind_rmse_ctr_pearson_r"]=correlation if np.isfinite(correlation) else None;manifest["blind_rmse_ctr_correlation_n"]=n_correlation
     manifest["result_plots"]={k:(str(v) if v is not None else None) for k,v in plots.items()}
-    store.write_manifest(manifest);logger.info("Study complete | %s | blind CTR mean=%.3f ps | blind RMSE mean=%.3f ps | paired CTR improvement mean=%.3f ps | paired RMSE improvement mean=%.3f ps | RMSE-vs-CTR r=%s",
-        run_dir,manifest["blind_ctr_mean_ps"],manifest["blind_rmse_mean_ps"],manifest["paired_ctr_improvement_mean_ps"],manifest["paired_rmse_improvement_mean_ps"],
+    store.write_manifest(manifest);logger.info("Study complete | %s | blind CTR mean=%.3f ps | blind RMSE mean=%.3f ps | paired CTR improvement mean=%.3f ± %.3f ps across %d splits | paired RMSE improvement mean=%.3f ± %.3f ps | RMSE-vs-CTR r=%s",
+        run_dir,manifest["blind_ctr_mean_ps"],manifest["blind_rmse_mean_ps"],manifest["paired_ctr_improvement_mean_ps"],manifest["paired_ctr_improvement_std_ps"],manifest["paired_split_count"],manifest["paired_rmse_improvement_mean_ps"],manifest["paired_rmse_improvement_std_ps"],
         "nan" if manifest["blind_rmse_ctr_pearson_r"] is None else f"{manifest['blind_rmse_ctr_pearson_r']:.3f}")
     return run_dir
