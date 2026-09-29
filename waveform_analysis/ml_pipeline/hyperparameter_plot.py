@@ -14,14 +14,14 @@ def _varied(candidates):
 def _numeric(values):
     return all(isinstance(v,(int,float,np.integer,np.floating)) and np.isfinite(float(v)) for v in values)
 
-def plot_hyperparameter_validation(results,candidates,output_path,logger=None):
+def plot_hyperparameter_validation(results,candidates,output_path,logger=None,*,metric="ctr_ps",metric_label="CTR"):
     varied=_varied(candidates)
     if not varied:return None
     rows=[r for r in results if r.get("stage")=="validation"]
     if not rows:return None
     scores={}
     for cid in candidates:
-        v=[float(r["ctr_ps"]) for r in rows if r.get("candidate_id")==cid and str(r.get("ctr_ps","")) not in ("","nan")]
+        v=[float(r[metric]) for r in rows if r.get("candidate_id")==cid and str(r.get(metric,"")) not in ("","nan")]
         if v:scores[cid]=float(np.mean(v))
     if not scores:return None
     numeric=[k for k in varied if _numeric([candidates[c].get(k) for c in candidates])]
@@ -38,7 +38,7 @@ def plot_hyperparameter_validation(results,candidates,output_path,logger=None):
     for label,vals in groups.items():
         vals=sorted(vals,key=lambda x:(float(x[0]) if isinstance(x[0],(int,float)) else str(x[0]),x[2]))
         ax.plot([v[0] for v in vals],[v[1] for v in vals],marker="o",label=label if series_keys else None)
-    ax.set_xlabel(xkey);ax.set_ylabel("Mean validation CTR [ps]")
+    ax.set_xlabel(xkey);ax.set_ylabel(f"Mean validation {metric_label} [ps]")
     if series_keys:ax.legend()
     xs=[candidates[c].get(xkey) for c in scores]
     if _numeric(xs):
