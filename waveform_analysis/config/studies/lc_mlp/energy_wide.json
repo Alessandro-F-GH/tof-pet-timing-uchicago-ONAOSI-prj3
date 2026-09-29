@@ -1,7 +1,5 @@
 {
   "name": "lc_mlp_energy_wide_49V",
-  "reference_dataset": "../../datasets/control.json",
-  "analysis_dataset": "../../datasets/analysis_49V.json",
   "preprocessing_config": "../../preprocessing/default_ctr.json",
   "mode": "energy_to_energy",
   "model": "locally_connected_mlp",
@@ -18,7 +16,7 @@
     "minimum_events_per_split": 50
   },
   "fit": {
-    "histogram_bin_width_ps": 10.0,
+    "histogram_bin_width_ps": 20.0,
     "bootstrap_samples": 500
   },
   "ml_input": {
