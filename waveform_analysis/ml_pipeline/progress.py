@@ -18,24 +18,19 @@ def _format_duration(seconds: float) -> str:
 
 
 def _display_category(category: str) -> str:
-    category = str(category)
-    if category == "selection":
-        return "event selection"
-    if category == "native_preprocess":
-        return "native preprocessing"
-    if category == "led_scan":
-        return "LED scan"
-    if category == "led_prepare":
-        return "LED selection + ML preparation"
-    if category.startswith("final_model:"):
-        return f"model {category.split(':', 1)[1]}"
-    if category.startswith("window_scan:"):
-        return f"window scan {category.split(':', 1)[1]}"
-    return category
+    labels = {
+        "control_preprocessing": "control preprocessing",
+        "analysis_preprocessing": "analysis preprocessing",
+        "resampling_seed": "resampling seeds",
+        "candidate_fit": "candidate fits",
+        "final_refit": "final refits",
+        "batch_study": "batch studies",
+    }
+    return labels.get(str(category), str(category).replace("_", " "))
 
 
 class ProgressTracker:
-    """Track homogeneous stages without pretending unlike tasks have equal cost."""
+    """Concise stage-aware progress tracker for sequential study execution."""
 
     def __init__(self, logger, plan: dict[str, int]):
         self.logger = logger
@@ -43,9 +38,7 @@ class ProgressTracker:
         self.completed: dict[str, int] = {key: 0 for key in self.plan}
         self.started = monotonic()
         self.samples: dict[str, list[float]] = defaultdict(list)
-        details = " | ".join(
-            f"{_display_category(name)}={count}" for name, count in self.plan.items()
-        )
+        details = " | ".join(f"{_display_category(name)}={count}" for name, count in self.plan.items())
         self.logger.info("Execution plan | %s", details or "no tracked stages")
 
     @property
@@ -74,42 +67,23 @@ class ProgressTracker:
             return f"elapsed={self.elapsed_text}"
         eta = self._stage_eta_seconds(category)
         if eta is None:
-            timing = "stage ETA=pending"
+            timing = "ETA=pending"
         elif eta <= 0.0:
-            timing = "stage complete"
+            timing = "complete"
         else:
             finish = datetime.now() + timedelta(seconds=eta)
-            timing = (
-                f"stage ETA≈{_format_duration(eta)} "
-                f"| stage finish≈{finish.strftime('%H:%M')}"
-            )
-        return f"stage={done}/{total} | elapsed={self.elapsed_text} | {timing}"
+            timing = f"ETA≈{_format_duration(eta)} | finish≈{finish.strftime('%H:%M')}"
+        return f"{done}/{total} | elapsed={self.elapsed_text} | {timing}"
 
-    def _record(
-        self,
-        category: str,
-        *,
-        duration_s: float,
-        include_sample: bool,
-    ) -> None:
+    def _record(self, category: str, *, duration_s: float, include_sample: bool) -> None:
         category = str(category)
         if category in self.plan:
-            self.completed[category] = min(
-                self.plan[category],
-                self.completed.get(category, 0) + 1,
-            )
+            self.completed[category] = min(self.plan[category], self.completed.get(category, 0) + 1)
         if include_sample and duration_s > 0.0:
             self.samples[category].append(float(duration_s))
 
     @contextmanager
-    def task(
-        self,
-        category: str,
-        label: str,
-        *,
-        announce_start: bool = True,
-        announce_finish: bool = True,
-    ):
+    def task(self, category: str, label: str, *, announce_start: bool = True, announce_finish: bool = True):
         if announce_start:
             self.logger.info("Start | %s", label)
         started = monotonic()
@@ -118,34 +92,15 @@ class ProgressTracker:
         except Exception as exc:
             duration = monotonic() - started
             self._record(category, duration_s=duration, include_sample=True)
-            self.logger.error(
-                "Failed | %s | task=%s | %s | %s: %s",
-                label,
-                _format_duration(duration),
-                self.stage_text(category),
-                type(exc).__name__,
-                exc,
-            )
+            self.logger.error("Failed | %s | task=%s | %s | %s: %s", label, _format_duration(duration), self.stage_text(category), type(exc).__name__, exc)
             raise
         else:
             duration = monotonic() - started
             self._record(category, duration_s=duration, include_sample=True)
             if announce_finish:
-                self.logger.info(
-                    "Done | %s | task=%s | %s",
-                    label,
-                    _format_duration(duration),
-                    self.stage_text(category),
-                )
+                self.logger.info("Done | %s | task=%s | %s", label, _format_duration(duration), self.stage_text(category))
 
-    def complete(
-        self,
-        category: str,
-        label: str,
-        *,
-        note: str | None = None,
-        announce: bool = True,
-    ) -> None:
+    def complete(self, category: str, label: str, *, note: str | None = None, announce: bool = True) -> None:
         self._record(category, duration_s=0.0, include_sample=False)
         if announce:
             suffix = f" | {note}" if note else ""
