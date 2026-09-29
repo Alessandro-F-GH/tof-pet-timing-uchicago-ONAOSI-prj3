@@ -32,6 +32,16 @@ class PhotopeakResult:
     def chi2_ndof(self) -> float:
         return self.chi2 / self.ndof if self.ndof > 0 else np.nan
 
+    @property
+    def selection_low(self) -> float:
+        """Backward-compatible alias for generic peak-selection code."""
+        return self.selection_low_mV
+
+    @property
+    def selection_high(self) -> float:
+        """Backward-compatible alias for generic peak-selection code."""
+        return self.selection_high_mV
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "channel": self.channel,
