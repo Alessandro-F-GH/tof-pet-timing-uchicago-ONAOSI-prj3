@@ -12,7 +12,7 @@ class RegistryTests(unittest.TestCase):
                 "locally_connected_mlp",
                 "shared_cnn1d",
                 "direct_mlp",
-                "direct_cnn1d",
+                "independent_cnn1d",
                 "onishi_cnn",
                 "minirocket",
             },

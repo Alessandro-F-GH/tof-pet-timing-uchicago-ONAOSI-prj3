@@ -31,10 +31,10 @@
     "../studies/benchmark50/direct_mlp/timing_onishi.json",
     "../studies/benchmark50/direct_mlp/timing_wide.json",
 
-    "../studies/benchmark50/direct_cnn1d/energy_onishi.json",
-    "../studies/benchmark50/direct_cnn1d/energy_wide.json",
-    "../studies/benchmark50/direct_cnn1d/timing_onishi.json",
-    "../studies/benchmark50/direct_cnn1d/timing_wide.json",
+    "../studies/benchmark50/independent_cnn1d/energy_onishi.json",
+    "../studies/benchmark50/independent_cnn1d/energy_wide.json",
+    "../studies/benchmark50/independent_cnn1d/timing_onishi.json",
+    "../studies/benchmark50/independent_cnn1d/timing_wide.json",
 
     "../studies/benchmark50/minirocket/energy_onishi.json",
     "../studies/benchmark50/minirocket/energy_wide.json",

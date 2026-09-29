@@ -45,7 +45,8 @@ class _TemporalBackbone(nn.Module):
         incoming = int(input_channels)
         length = int(input_samples)
         for channels, kernel in zip(conv_channels, kernel_samples):
-            channels = int(channels); kernel = int(kernel)
+            channels = int(channels)
+            kernel = int(kernel)
             if kernel > length:
                 raise ValueError("CNN kernel exceeds available temporal samples")
             layers.extend([nn.Conv1d(incoming, channels, kernel_size=kernel), _activation(activation)])
@@ -60,6 +61,7 @@ class _TemporalBackbone(nn.Module):
 
 class SharedCNN1D(nn.Module):
     """One shared temporal CNN scorer per detector, combined antisymmetrically."""
+
     def __init__(self, input_samples: int, architecture, activation: str, *, conv_channels, kernel_samples):
         super().__init__()
         self.backbone = _TemporalBackbone(1, input_samples, conv_channels, kernel_samples, activation)
@@ -74,17 +76,26 @@ class SharedCNN1D(nn.Module):
         return self.detector_score(pair[:, 0, :]) - self.detector_score(pair[:, 1, :])
 
 
-class DirectCNN1D(nn.Module):
-    """Direct temporal CNN with the two detectors represented as input channels."""
+class IndependentCNN1D(nn.Module):
+    """Two detector-specific temporal CNN scorers with independent parameters."""
+
     def __init__(self, input_samples: int, architecture, activation: str, *, conv_channels, kernel_samples):
         super().__init__()
-        self.backbone = _TemporalBackbone(2, input_samples, conv_channels, kernel_samples, activation)
-        self.head = DenseStack(self.backbone.output_dim, architecture, activation)
+        self.backbone_1 = _TemporalBackbone(1, input_samples, conv_channels, kernel_samples, activation)
+        self.head_1 = DenseStack(self.backbone_1.output_dim, architecture, activation)
+        self.backbone_2 = _TemporalBackbone(1, input_samples, conv_channels, kernel_samples, activation)
+        self.head_2 = DenseStack(self.backbone_2.output_dim, architecture, activation)
+
+    def detector_1_score(self, waveform: torch.Tensor) -> torch.Tensor:
+        return self.head_1(self.backbone_1(waveform[:, None, :]))
+
+    def detector_2_score(self, waveform: torch.Tensor) -> torch.Tensor:
+        return self.head_2(self.backbone_2(waveform[:, None, :]))
 
     def forward(self, pair: torch.Tensor) -> torch.Tensor:
         if pair.ndim != 3 or pair.shape[1] != 2:
-            raise ValueError(f"direct_cnn1d expects [event, detector=2, time], got {tuple(pair.shape)}")
-        return self.head(self.backbone(pair))
+            raise ValueError(f"independent_cnn1d expects [event, detector=2, time], got {tuple(pair.shape)}")
+        return self.detector_1_score(pair[:, 0, :]) - self.detector_2_score(pair[:, 1, :])
 
 
 def fit_cnn(*, model_name, model_factory, params, train_x, train_target, seed, config, metadata_extra):
@@ -110,4 +121,4 @@ def fit_cnn(*, model_name, model_factory, params, train_x, train_target, seed, c
     )
 
 
-__all__ = ["SharedCNN1D", "DirectCNN1D", "candidates", "fit_cnn", "predict", "save"]
+__all__ = ["SharedCNN1D", "IndependentCNN1D", "candidates", "fit_cnn", "predict", "save"]

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .direct_cnn1d import MODEL_SPEC as DIRECT_CNN1D_SPEC
 from .direct_mlp import MODEL_SPEC as DIRECT_MLP_SPEC
+from .independent_cnn1d import MODEL_SPEC as INDEPENDENT_CNN1D_SPEC
 from .locally_connected_mlp import MODEL_SPEC as LOCALLY_CONNECTED_MLP_SPEC
 from .minirocket import MODEL_SPEC as MINIROCKET_SPEC
 from .mlp import MODEL_SPEC as MLP_SPEC
@@ -18,7 +18,7 @@ _REGISTRY: dict[str, ModelSpec] = {
     LOCALLY_CONNECTED_MLP_SPEC.name: LOCALLY_CONNECTED_MLP_SPEC,
     SHARED_CNN1D_SPEC.name: SHARED_CNN1D_SPEC,
     DIRECT_MLP_SPEC.name: DIRECT_MLP_SPEC,
-    DIRECT_CNN1D_SPEC.name: DIRECT_CNN1D_SPEC,
+    INDEPENDENT_CNN1D_SPEC.name: INDEPENDENT_CNN1D_SPEC,
     ONISHI_CNN_SPEC.name: ONISHI_CNN_SPEC,
     MINIROCKET_SPEC.name: MINIROCKET_SPEC,
 }

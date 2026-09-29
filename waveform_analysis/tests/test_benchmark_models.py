@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from waveform_analysis.ml_pipeline.models import get_model, model_names
-from waveform_analysis.ml_pipeline.models._cnn1d_common import DirectCNN1D, SharedCNN1D
+from waveform_analysis.ml_pipeline.models._cnn1d_common import IndependentCNN1D, SharedCNN1D
 from waveform_analysis.ml_pipeline.models.direct_mlp import DirectPairMLP
 from waveform_analysis.ml_pipeline.models.minirocket import candidates as minirocket_candidates
 from waveform_analysis.ml_pipeline.models.spec import FeatureTransformSpec
@@ -10,13 +10,13 @@ from waveform_analysis.ml_pipeline.train import FeatureTransformCache
 
 
 def test_benchmark_registry_contains_all_model_families():
-    expected={"mlp","locally_connected_mlp","shared_cnn1d","direct_mlp","direct_cnn1d","onishi_cnn","minirocket"}
+    expected={"mlp","locally_connected_mlp","shared_cnn1d","direct_mlp","independent_cnn1d","onishi_cnn","minirocket"}
     assert expected <= set(model_names())
     assert get_model("mlp").estimator_formulation=="shared"
     assert get_model("locally_connected_mlp").estimator_formulation=="shared"
     assert get_model("shared_cnn1d").estimator_formulation=="shared"
     assert get_model("direct_mlp").estimator_formulation=="direct"
-    assert get_model("direct_cnn1d").estimator_formulation=="direct"
+    assert get_model("independent_cnn1d").estimator_formulation=="direct"
     assert get_model("onishi_cnn").estimator_formulation=="direct"
     assert get_model("minirocket").estimator_formulation=="direct"
     assert get_model("minirocket").feature_transform is not None
@@ -29,10 +29,17 @@ def test_shared_cnn1d_is_exactly_antisymmetric():
     torch.testing.assert_close(forward,-reverse)
 
 
-def test_direct_cnn1d_preserves_pair_shape_contract():
-    model=DirectCNN1D(32,[8],"silu",conv_channels=[4,8],kernel_samples=[5,3])
+def test_independent_cnn1d_uses_unshared_single_channel_branches():
+    model=IndependentCNN1D(32,[8],"silu",conv_channels=[4,8],kernel_samples=[5,3])
     pair=torch.randn(6,2,32)
     assert model(pair).shape==(6,)
+    assert model.backbone_1 is not model.backbone_2
+    assert model.head_1 is not model.head_2
+    first_conv_1=next(layer for layer in model.backbone_1.network if isinstance(layer,torch.nn.Conv1d))
+    first_conv_2=next(layer for layer in model.backbone_2.network if isinstance(layer,torch.nn.Conv1d))
+    assert first_conv_1.in_channels==1
+    assert first_conv_2.in_channels==1
+    assert next(model.backbone_1.parameters()).data_ptr()!=next(model.backbone_2.parameters()).data_ptr()
 
 
 def test_direct_mlp_preserves_pair_shape_contract():

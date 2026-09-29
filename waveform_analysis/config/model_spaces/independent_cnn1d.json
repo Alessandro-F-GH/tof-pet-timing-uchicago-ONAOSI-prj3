@@ -1,5 +1,5 @@
 {
-  "model": "direct_cnn1d",
+  "model": "independent_cnn1d",
   "parameters": {
     "architecture": [[64]],
     "activation": ["silu"],

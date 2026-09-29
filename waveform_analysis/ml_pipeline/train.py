@@ -122,10 +122,10 @@ def load_fitted_model(spec,directory,parameters,config):
         from .models.locally_connected_mlp import SharedLocallyConnectedScorer
         from .models._mlp_common import MLPArtifact
         model=SharedLocallyConnectedScorer(n,p["architecture"],p["activation"],layer1_kernel_samples=p["layer1_kernel_samples"],layer1_stride_samples=p["layer1_stride_samples"],layer2_kernel_positions=p["layer2_kernel_positions"],layer2_stride_positions=p["layer2_stride_positions"],max_correction_ps=p["max_correction_ps"]);artifact_type=MLPArtifact
-    elif spec.name in {"shared_cnn1d","direct_cnn1d"}:
-        from .models._cnn1d_common import SharedCNN1D,DirectCNN1D
+    elif spec.name in {"shared_cnn1d","independent_cnn1d"}:
+        from .models._cnn1d_common import IndependentCNN1D,SharedCNN1D
         from .models._mlp_common import MLPArtifact
-        cls=SharedCNN1D if spec.name=="shared_cnn1d" else DirectCNN1D
+        cls=SharedCNN1D if spec.name=="shared_cnn1d" else IndependentCNN1D
         model=cls(n,p["architecture"],p["activation"],conv_channels=p["conv_channels"],kernel_samples=p["kernel_samples"]);artifact_type=MLPArtifact
     elif spec.name=="onishi_cnn":
         from .models.onishi_cnn import OnishiPairedCNN,OnishiCNNArtifact
