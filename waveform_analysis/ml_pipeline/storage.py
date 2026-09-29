@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from .common import atomic_json
 
-RESULT_FIELDS=("seed","stage","candidate_id","selected","ctr_ps","ctr_uncertainty_ps","uncorrected_ctr_ps","n","rmse_ps")
+RESULT_FIELDS=("seed","stage","model","estimator_formulation","mode","window_start_ns","window_end_ns","population_identity","candidate_id","selected","ctr_ps","ctr_uncertainty_ps","uncorrected_ctr_ps","n","rmse_ps","swap_rmse_ps")
 
 class RunStore:
     def __init__(self,root,*,overwrite=False,resume=False):
