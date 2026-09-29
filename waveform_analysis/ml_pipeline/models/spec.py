@@ -22,3 +22,12 @@ class ModelSpec:
     save: ModelSave
     explain: ModelExplain | None = None
     preserve_temporal_grid: bool = False
+    estimator_formulation: str = "shared"
+
+    def __post_init__(self) -> None:
+        formulation = str(self.estimator_formulation).strip().lower()
+        if formulation not in {"shared", "direct"}:
+            raise ValueError(
+                "estimator_formulation must be either 'shared' or 'direct'"
+            )
+        object.__setattr__(self, "estimator_formulation", formulation)
