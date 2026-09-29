@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from .common import atomic_json
 
-RESULT_FIELDS=("seed","stage","model","estimator_formulation","mode","window_start_ns","window_end_ns","population_identity","candidate_id","selected","ctr_ps","ctr_uncertainty_ps","uncorrected_ctr_ps","n","rmse_ps","swap_rmse_ps")
+RESULT_FIELDS=("seed","stage","model","estimator_formulation","mode","window_start_ns","window_end_ns","population_identity","candidate_id","selected","ctr_ps","ctr_uncertainty_ps","uncorrected_ctr_ps","uncorrected_ctr_uncertainty_ps","improvement_ps","improvement_uncertainty_ps","improvement_percent","improvement_ci_low_ps","improvement_ci_high_ps","paired_bootstrap_successful","n","rmse_ps","swap_rmse_ps")
 
 class RunStore:
     def __init__(self,root,*,overwrite=False,resume=False):
@@ -43,5 +43,11 @@ class RunStore:
         np.savez_compressed(d/f"seed_{int(seed)}.npz",train=split.train,validation=split.validation,test=split.test,
             train_event_index=np.asarray(event_index)[split.train],validation_event_index=np.asarray(event_index)[split.validation],
             test_event_index=np.asarray(event_index)[split.test])
+    def save_paired_bootstrap(self,seed,candidate_id,comparison):
+        d=self.root/"paired_bootstrap";d.mkdir(exist_ok=True)
+        np.savez_compressed(d/f"seed_{int(seed)}_{candidate_id}.npz",
+            corrected_ctr_ps=np.asarray(comparison.corrected_bootstrap_ctr_ps,np.float64),
+            led_ctr_ps=np.asarray(comparison.led_bootstrap_ctr_ps,np.float64),
+            improvement_ps=np.asarray(comparison.improvement_bootstrap_ps,np.float64))
     def model_dir(self,seed,candidate_id):
         p=self.root/"models"/f"seed_{int(seed)}"/candidate_id; p.mkdir(parents=True,exist_ok=True); return p
