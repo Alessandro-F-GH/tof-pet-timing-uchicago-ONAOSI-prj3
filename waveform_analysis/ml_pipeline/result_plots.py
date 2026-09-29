@@ -13,35 +13,51 @@ def _blind_rows(rows):
     return [r for r in rows if r.get("stage")=="blind"]
 
 
-def plot_blind_ctr_distribution(rows,path,title="Blind CTR distribution"):
-    blind=_blind_rows(rows)
-    values=np.asarray([float(r["ctr_ps"]) for r in blind],float)
-    values=values[np.isfinite(values)]
+def _finite_row_values(rows,key):
+    values=[]
+    for row in rows:
+        try:value=float(row.get(key,"nan"))
+        except (TypeError,ValueError):continue
+        if np.isfinite(value):values.append(value)
+    return np.asarray(values,float)
+
+
+def _plot_blind_distribution(rows,path,key,xlabel,title):
+    values=_finite_row_values(_blind_rows(rows),key)
     if not values.size:return None
     fig,ax=plt.subplots()
     bins=max(5,min(20,int(np.ceil(np.sqrt(values.size)))))
     ax.hist(values,bins=bins,histtype="stepfilled",alpha=.45)
     mean=float(np.mean(values));std=float(np.std(values,ddof=1)) if values.size>1 else 0.0
     ax.axvline(mean,linestyle="--",label=f"mean = {mean:.2f} ps")
-    ax.set_xlabel("Blind CTR [ps]");ax.set_ylabel("Repeated-holdout runs");ax.set_title(title)
+    ax.set_xlabel(xlabel);ax.set_ylabel("Repeated-holdout runs");ax.set_title(title)
     ax.legend(title=f"n={values.size}, std={std:.2f} ps")
     return _save(fig,path)
 
 
-def _paired_bootstrap_values(run_dir):
+def plot_blind_ctr_distribution(rows,path,title="Blind CTR distribution"):
+    return _plot_blind_distribution(rows,path,"ctr_ps","Blind CTR [ps]",title)
+
+
+def plot_blind_rmse_distribution(rows,path,title="Blind RMSE distribution"):
+    return _plot_blind_distribution(rows,path,"rmse_ps","Blind RMSE [ps]",title)
+
+
+def _paired_bootstrap_values(run_dir,key):
     directory=Path(run_dir)/"paired_bootstrap"
     arrays=[]
     if directory.is_dir():
         for path in sorted(directory.glob("*.npz")):
             with np.load(path) as data:
-                values=np.asarray(data["improvement_ps"],float).reshape(-1)
+                if key not in data.files:continue
+                values=np.asarray(data[key],float).reshape(-1)
             values=values[np.isfinite(values)]
             if values.size:arrays.append(values)
     return np.concatenate(arrays) if arrays else np.empty(0,float)
 
 
-def plot_paired_improvement_bootstrap(run_dir,path,title="Paired LED-to-ML bootstrap improvement"):
-    values=_paired_bootstrap_values(run_dir)
+def _plot_paired_improvement_bootstrap(run_dir,path,key,xlabel,title):
+    values=_paired_bootstrap_values(run_dir,key)
     if not values.size:return None
     fig,ax=plt.subplots()
     bins=max(10,min(60,int(np.ceil(np.sqrt(values.size)))))
@@ -50,29 +66,72 @@ def plot_paired_improvement_bootstrap(run_dir,path,title="Paired LED-to-ML boots
     q025,q975=np.quantile(values,[.025,.975])
     ax.axvline(0.0,linestyle=":",label="no improvement")
     ax.axvline(mean,linestyle="--",label=f"mean = {mean:.2f} ps")
-    ax.set_xlabel(r"CTR improvement, LED - ML [ps]");ax.set_ylabel("Paired bootstrap samples");ax.set_title(title)
+    ax.set_xlabel(xlabel);ax.set_ylabel("Paired bootstrap samples");ax.set_title(title)
     ax.legend(title=f"n={values.size}, std={std:.2f} ps\n95% interval [{q025:.2f}, {q975:.2f}] ps")
     return _save(fig,path)
+
+
+def plot_paired_improvement_bootstrap(run_dir,path,title="Paired LED-to-ML bootstrap CTR improvement"):
+    return _plot_paired_improvement_bootstrap(run_dir,path,"improvement_ps",r"CTR improvement, LED - ML [ps]",title)
+
+
+def plot_paired_rmse_improvement_bootstrap(run_dir,path,title="Paired LED-to-ML bootstrap RMSE improvement"):
+    return _plot_paired_improvement_bootstrap(run_dir,path,"rmse_improvement_ps",r"RMSE improvement, LED - ML [ps]",title)
+
+
+def plot_rmse_ctr_correlation(rows,path,title="Blind RMSE vs CTR"):
+    pairs=[]
+    for row in _blind_rows(rows):
+        try:
+            ctr=float(row.get("ctr_ps","nan"));rmse=float(row.get("rmse_ps","nan"))
+        except (TypeError,ValueError):continue
+        if np.isfinite(ctr) and np.isfinite(rmse):pairs.append((rmse,ctr))
+    if not pairs:return None
+    values=np.asarray(pairs,float);rmse=values[:,0];ctr=values[:,1]
+    correlation=float(np.corrcoef(rmse,ctr)[0,1]) if values.shape[0]>1 and np.std(rmse)>0 and np.std(ctr)>0 else float("nan")
+    fig,ax=plt.subplots()
+    ax.scatter(rmse,ctr)
+    ax.set_xlabel("Blind RMSE [ps]");ax.set_ylabel("Blind CTR [ps]");ax.set_title(title)
+    ax.text(.03,.97,f"Pearson r = {correlation:.3f}\nn = {values.shape[0]}",transform=ax.transAxes,ha="left",va="top")
+    return _save(fig,path)
+
+
+def blind_rmse_ctr_correlation(rows):
+    pairs=[]
+    for row in _blind_rows(rows):
+        try:pairs.append((float(row.get("rmse_ps","nan")),float(row.get("ctr_ps","nan"))))
+        except (TypeError,ValueError):continue
+    values=np.asarray([(x,y) for x,y in pairs if np.isfinite(x) and np.isfinite(y)],float)
+    if values.shape[0]<2 or np.std(values[:,0])==0 or np.std(values[:,1])==0:return float("nan"),int(values.shape[0])
+    return float(np.corrcoef(values[:,0],values[:,1])[0,1]),int(values.shape[0])
 
 
 def write_blind_summary(rows,path):
     blind=_blind_rows(rows)
     if not blind:return None
-    ctr=np.asarray([float(r["ctr_ps"]) for r in blind],float)
-    improvement=np.asarray([float(r.get("improvement_ps","nan")) for r in blind],float)
-    percent=np.asarray([float(r.get("improvement_percent","nan")) for r in blind],float)
+    metrics=(
+        ("blind_ctr_ps","ctr_ps"),
+        ("blind_rmse_ps","rmse_ps"),
+        ("paired_ctr_improvement_ps","improvement_ps"),
+        ("paired_ctr_improvement_percent","improvement_percent"),
+        ("paired_rmse_improvement_ps","rmse_improvement_ps"),
+        ("paired_rmse_improvement_percent","rmse_improvement_percent"),
+    )
     def stats(values):
-        values=values[np.isfinite(values)]
+        values=np.asarray(values,float);values=values[np.isfinite(values)]
         return (float(np.mean(values)) if values.size else float("nan"),
-                float(np.std(values,ddof=1)) if values.size>1 else 0.0,
-                int(values.size))
-    ctr_mean,ctr_std,n_ctr=stats(ctr);imp_mean,imp_std,n_imp=stats(improvement);pct_mean,pct_std,n_pct=stats(percent)
+                float(np.std(values,ddof=1)) if values.size>1 else 0.0,int(values.size))
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     with path.open("w",encoding="utf-8",newline="") as stream:
         writer=csv.DictWriter(stream,fieldnames=["metric","mean","std","n"]);writer.writeheader()
-        writer.writerow({"metric":"blind_ctr_ps","mean":ctr_mean,"std":ctr_std,"n":n_ctr})
-        writer.writerow({"metric":"paired_improvement_ps","mean":imp_mean,"std":imp_std,"n":n_imp})
-        writer.writerow({"metric":"paired_improvement_percent","mean":pct_mean,"std":pct_std,"n":n_pct})
+        for label,key in metrics:
+            values=[]
+            for row in blind:
+                try:values.append(float(row.get(key,"nan")))
+                except (TypeError,ValueError):pass
+            mean,std,n=stats(values);writer.writerow({"metric":label,"mean":mean,"std":std,"n":n})
+        correlation,n_corr=blind_rmse_ctr_correlation(rows)
+        writer.writerow({"metric":"blind_rmse_ctr_pearson_r","mean":correlation,"std":"","n":n_corr})
     return path
 
 
@@ -80,6 +139,9 @@ def make_study_result_plots(rows,run_dir,*,model,mode,window_ns):
     run_dir=Path(run_dir);label=f"{model} | {mode} | [{window_ns['start']}, {window_ns['end']}] ns"
     return {
         "blind_ctr":plot_blind_ctr_distribution(rows,run_dir/"blind_ctr_distribution.png",f"Blind CTR distribution\n{label}"),
-        "paired_improvement":plot_paired_improvement_bootstrap(run_dir,run_dir/"paired_led_improvement_bootstrap_distribution.png",f"Paired LED-to-ML bootstrap improvement\n{label}"),
+        "blind_rmse":plot_blind_rmse_distribution(rows,run_dir/"blind_rmse_distribution.png",f"Blind RMSE distribution\n{label}"),
+        "paired_ctr_improvement":plot_paired_improvement_bootstrap(run_dir,run_dir/"paired_led_ctr_improvement_bootstrap_distribution.png",f"Paired LED-to-ML CTR improvement\n{label}"),
+        "paired_rmse_improvement":plot_paired_rmse_improvement_bootstrap(run_dir,run_dir/"paired_led_rmse_improvement_bootstrap_distribution.png",f"Paired LED-to-ML RMSE improvement\n{label}"),
+        "rmse_ctr_correlation":plot_rmse_ctr_correlation(rows,run_dir/"blind_rmse_vs_ctr.png",f"Blind RMSE vs CTR\n{label}"),
         "summary":write_blind_summary(rows,run_dir/"blind_summary.csv"),
     }
