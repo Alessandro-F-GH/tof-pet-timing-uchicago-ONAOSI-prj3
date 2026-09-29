@@ -56,11 +56,13 @@ def paired_ctr_improvement(
     *,
     seed: int,
 ) -> PairedCTRImprovement:
-    """Paired event-bootstrap comparison of ML-corrected residuals against LED residuals.
+    """Evaluate LED and ML on one blind split without any inner resampling.
 
-    Corrected and LED metrics always use the same event indices. RMSE is retained
-    for every valid resample independently of whether the CTR estimator succeeds.
-    Positive improvement means baseline metric - corrected metric > 0.
+    Corrected and LED metrics use exactly the same event population.  The split is
+    the statistical unit for the study-level paired comparison: this function
+    therefore returns one point estimate per split and deliberately performs no
+    event-level bootstrap.  Positive improvement means baseline metric -
+    corrected metric > 0.
     """
     corrected = np.asarray(corrected_ps, dtype=np.float64).reshape(-1)
     led = np.asarray(led_ps, dtype=np.float64).reshape(-1)
@@ -82,88 +84,38 @@ def paired_ctr_improvement(
     rmse_improvement = float(led_rmse - corrected_rmse)
     rmse_fraction = rmse_improvement / led_rmse if led_rmse != 0 else float("nan")
 
-    requested = int(fit_cfg.get("bootstrap_samples", 500))
-    corrected_ctr_trials: list[float] = []
-    led_ctr_trials: list[float] = []
-    ctr_improvement_trials: list[float] = []
-    corrected_rmse_trials: list[float] = []
-    led_rmse_trials: list[float] = []
-    rmse_improvement_trials: list[float] = []
-    if requested > 1:
-        rng = np.random.default_rng(int(seed))
-        n = corrected.size
-        for _ in range(requested):
-            indices = rng.integers(0, n, size=n)
-            corrected_sample = corrected[indices]
-            led_sample = led[indices]
-
-            corrected_trial_rmse = rmse_ps(corrected_sample)
-            led_trial_rmse = rmse_ps(led_sample)
-            if np.isfinite(corrected_trial_rmse) and np.isfinite(led_trial_rmse):
-                corrected_rmse_trials.append(corrected_trial_rmse)
-                led_rmse_trials.append(led_trial_rmse)
-                rmse_improvement_trials.append(float(led_trial_rmse - corrected_trial_rmse))
-
-            try:
-                corrected_trial = ctr_estimate(corrected_sample, fit_cfg, bootstrap=False)
-                led_trial = ctr_estimate(led_sample, fit_cfg, bootstrap=False)
-            except ValueError:
-                continue
-            if not (np.isfinite(corrected_trial.ctr_ps) and np.isfinite(led_trial.ctr_ps)):
-                continue
-            corrected_ctr_trials.append(float(corrected_trial.ctr_ps))
-            led_ctr_trials.append(float(led_trial.ctr_ps))
-            ctr_improvement_trials.append(float(led_trial.ctr_ps - corrected_trial.ctr_ps))
-
-    corrected_ctr_array = np.asarray(corrected_ctr_trials, dtype=np.float64)
-    led_ctr_array = np.asarray(led_ctr_trials, dtype=np.float64)
-    ctr_improvement_array = np.asarray(ctr_improvement_trials, dtype=np.float64)
-    corrected_rmse_array = np.asarray(corrected_rmse_trials, dtype=np.float64)
-    led_rmse_array = np.asarray(led_rmse_trials, dtype=np.float64)
-    rmse_improvement_array = np.asarray(rmse_improvement_trials, dtype=np.float64)
-
-    def _std(values):
-        return float(np.std(values, ddof=1)) if values.size > 1 else float("nan")
-
-    def _ci(values):
-        if values.size:
-            low, high = np.quantile(values, [0.025, 0.975])
-            return float(low), float(high)
-        return float("nan"), float("nan")
-
-    ctr_ci_low, ctr_ci_high = _ci(ctr_improvement_array)
-    rmse_ci_low, rmse_ci_high = _ci(rmse_improvement_array)
-
+    empty = np.empty(0, dtype=np.float64)
+    nan = float("nan")
     return PairedCTRImprovement(
         corrected_ctr_ps=float(corrected_point.ctr_ps),
-        corrected_ctr_error_ps=_std(corrected_ctr_array),
+        corrected_ctr_error_ps=nan,
         led_ctr_ps=float(led_point.ctr_ps),
-        led_ctr_error_ps=_std(led_ctr_array),
+        led_ctr_error_ps=nan,
         improvement_ps=ctr_improvement,
-        improvement_error_ps=_std(ctr_improvement_array),
+        improvement_error_ps=nan,
         improvement_fraction=float(ctr_fraction),
         improvement_percent=float(100.0 * ctr_fraction),
-        improvement_ci_low_ps=ctr_ci_low,
-        improvement_ci_high_ps=ctr_ci_high,
+        improvement_ci_low_ps=nan,
+        improvement_ci_high_ps=nan,
         corrected_rmse_ps=corrected_rmse,
-        corrected_rmse_error_ps=_std(corrected_rmse_array),
+        corrected_rmse_error_ps=nan,
         led_rmse_ps=led_rmse,
-        led_rmse_error_ps=_std(led_rmse_array),
+        led_rmse_error_ps=nan,
         rmse_improvement_ps=rmse_improvement,
-        rmse_improvement_error_ps=_std(rmse_improvement_array),
+        rmse_improvement_error_ps=nan,
         rmse_improvement_fraction=float(rmse_fraction),
         rmse_improvement_percent=float(100.0 * rmse_fraction),
-        rmse_improvement_ci_low_ps=rmse_ci_low,
-        rmse_improvement_ci_high_ps=rmse_ci_high,
-        bootstrap_requested=requested,
-        bootstrap_successful=int(ctr_improvement_array.size),
-        rmse_bootstrap_successful=int(rmse_improvement_array.size),
-        corrected_bootstrap_ctr_ps=corrected_ctr_array,
-        led_bootstrap_ctr_ps=led_ctr_array,
-        improvement_bootstrap_ps=ctr_improvement_array,
-        corrected_bootstrap_rmse_ps=corrected_rmse_array,
-        led_bootstrap_rmse_ps=led_rmse_array,
-        rmse_improvement_bootstrap_ps=rmse_improvement_array,
+        rmse_improvement_ci_low_ps=nan,
+        rmse_improvement_ci_high_ps=nan,
+        bootstrap_requested=0,
+        bootstrap_successful=0,
+        rmse_bootstrap_successful=0,
+        corrected_bootstrap_ctr_ps=empty.copy(),
+        led_bootstrap_ctr_ps=empty.copy(),
+        improvement_bootstrap_ps=empty.copy(),
+        corrected_bootstrap_rmse_ps=empty.copy(),
+        led_bootstrap_rmse_ps=empty.copy(),
+        rmse_improvement_bootstrap_ps=empty.copy(),
     )
 
 
