@@ -1,7 +1,5 @@
 {
   "name": "lc_mlp_timing_wide_49V",
-  "reference_dataset": "../../datasets/control.json",
-  "analysis_dataset": "../../datasets/analysis_49V.json",
   "preprocessing_config": "../../preprocessing/default_ctr.json",
   "mode": "timing_to_timing",
   "model": "locally_connected_mlp",
