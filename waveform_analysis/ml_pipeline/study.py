@@ -23,6 +23,10 @@ def _logger(run_dir):
     for h in (logging.StreamHandler(),logging.FileHandler(Path(run_dir)/"study.log",encoding="utf-8")):h.setFormatter(fmt);logger.addHandler(h)
     return logger
 
+def _resampling_seeds(resampling):
+    base_seed=int(resampling["seed"]);n=int(resampling["n_bootstrap"])
+    return [semantic_seed(base_seed,"resampling",i) for i in range(n)]
+
 def _metric(values,fit_cfg,seed,bootstrap=True):
     v=np.asarray(values,float);finite=v[np.isfinite(v)]
     if finite.size!=v.size or not finite.size:raise RuntimeError("CTR requires one finite residual per evaluated event")
@@ -39,16 +43,17 @@ def _row(seed,stage,cid,selected,corrected,uncorrected,fit_cfg):
 def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False):
     run_dir=Path(config["output_dir"]).resolve();store=RunStore(run_dir,overwrite=overwrite,resume=resume);logger=_logger(run_dir)
     spec=get_model(config["model"]["name"]);candidates=candidate_manifest(list(spec.candidates(config["model"]["space"])))
+    seeds=_resampling_seeds(config["resampling"])
     manifest={"schema_version":30,"status":"running","config_fingerprint":config["_config_fingerprint"],"reference":config["reference"],
         "analysis":config["analysis"],"mode":config["mode"],"model":config["model"]["name"],"window_ns":config["window_ns"],
-        "resampling":config["resampling"],"preprocessing":config["preprocessing"],"preprocessing_fingerprint":canonical_hash(config["preprocessing"])}
+        "resampling":config["resampling"],"generated_resampling_seeds":seeds,"preprocessing":config["preprocessing"],"preprocessing_fingerprint":canonical_hash(config["preprocessing"])}
     if resume and (run_dir/"manifest.json").is_file():
         old=json.loads((run_dir/"manifest.json").read_text())
         if old.get("config_fingerprint")!=config["_config_fingerprint"]:raise RuntimeError("Cannot resume with a different resolved configuration")
     store.write_manifest(manifest);store.write_candidates(candidates)
-    logger.info("Study | reference=%s | analysis=%s | mode=%s | model=%s | window=%s | seeds=%d | candidates=%d",
+    logger.info("Study | reference=%s | analysis=%s | mode=%s | model=%s | window=%s | bootstrap=%d | base_seed=%d | candidates=%d",
         config["reference"]["root_file"],config["analysis"]["root_file"],config["mode"],config["model"]["name"],config["window_ns"],
-        len(config["resampling"]["seeds"]),len(candidates))
+        len(seeds),int(config["resampling"]["seed"]),len(candidates))
     control,control_dir=fit_control_artifact(config["reference"]["root_file"],config["reference"],config["preprocessing"],config["fit"],
         cache_root=config["preprocessing"]["cache_dir"],rebuild=rebuild_preprocessing,logger=logger)
     selection=apply_selection_rules(config["analysis"]["root_file"],config["analysis"],config["preprocessing"],control["selection_rules"],config["mode"],
@@ -61,15 +66,15 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
         "analysis_population_identity":dataset.manifest["analysis_population_identity"],"prepared_dataset":str(dataset.directory)})
     store.write_manifest(manifest)
     target=model_target(dataset,config["mode"])
-    progress=ProgressTracker(logger,{"resampling_seed":len(config["resampling"]["seeds"])})
-    for pos,seed in enumerate(config["resampling"]["seeds"],1):
+    progress=ProgressTracker(logger,{"resampling_seed":len(seeds)})
+    for pos,seed in enumerate(seeds,1):
         split=make_resampling_split(dataset.n_events,analysis_identity=dataset.manifest["analysis_population_identity"],resampling_seed=int(seed),
             validation_fraction=config["resampling"]["validation_fraction"],test_fraction=config["resampling"]["test_fraction"])
         minimum=int(config["resampling"]["minimum_events_per_split"])
         if min(len(split.train),len(split.validation),len(split.test))<minimum:
             raise RuntimeError(f"Resampling seed {seed} violates minimum_events_per_split={minimum}")
         store.save_split(seed,dataset.event_index,split)
-        logger.info("Resampling %d/%d | seed=%s | train=%d validation=%d test=%d",pos,len(config["resampling"]["seeds"]),seed,len(split.train),len(split.validation),len(split.test))
+        logger.info("Resampling %d/%d | seed=%s | train=%d validation=%d test=%d",pos,len(seeds),seed,len(split.train),len(split.validation),len(split.test))
         if len(candidates)==1:
             cid,params=next(iter(candidates.items()))
             if not store.has_result(seed,"blind",cid):
