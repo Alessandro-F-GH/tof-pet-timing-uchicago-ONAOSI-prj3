@@ -1,340 +1,103 @@
 from __future__ import annotations
-
-import copy, json
+import copy,json
 from pathlib import Path
-from typing import Any
-
-from .common import canonical_hash, voltage_from_name
-
-CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
-
-
-class ConfigError(ValueError):
-    pass
-
-
-def _read(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ConfigError(f"Configuration file not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ConfigError(f"Configuration {path} must contain an object")
-    return value
-
-
-def merge(base, override):
-    result = copy.deepcopy(base)
-    for key, value in override.items():
-        result[key] = merge(result[key], value) if isinstance(value, dict) and isinstance(result.get(key), dict) else copy.deepcopy(value)
-    return result
-
-
-def _relative(owner: Path, value):
-    path = Path(value).expanduser()
-    return (owner.parent / path).resolve() if not path.is_absolute() else path.resolve()
-
-
-def _resolve(path: Path, stack: tuple[Path, ...] = ()):
-    path = path.resolve()
-    if path in stack:
-        raise ConfigError("Configuration include cycle: " + " -> ".join(map(str, (*stack, path))))
-    raw = _read(path)
-    result = {}
-    refs = raw.get("extends", [])
-    refs = [refs] if isinstance(refs, str) else list(refs or [])
-    for ref in refs:
-        result = merge(result, _resolve(_relative(path, ref), (*stack, path)))
-    for key, section in (("data_config", "data"), ("preprocessing_config", "preprocessing")):
-        if key in raw:
-            module = _read(_relative(path, raw[key]))
-            value = module.get(section, module)
-            if not isinstance(value, dict):
-                raise ConfigError(f"{key} must resolve to an object")
-            result = merge(result, {section: value})
-    return merge(result, {k: copy.deepcopy(v) for k, v in raw.items() if k not in {"extends", "data_config", "preprocessing_config"}})
-
-
-def _project_path(root: Path, value):
-    path = Path(value).expanduser()
-    return str((root / path).resolve() if not path.is_absolute() else path.resolve())
-
-
-def _load_models(config, root):
-    names = config.get("models")
-    if not isinstance(names, list) or not names:
-        raise ConfigError("models must be a non-empty list")
-    model_dir = Path(_project_path(root, config.pop("model_spaces_dir", "config/model_spaces")))
-    resolved = {}
-    for raw_name in names:
-        name = str(raw_name)
-        path = model_dir / f"{name}.json"
-        model = _read(path)
-        if str(model.get("model", name)) != name:
-            raise ConfigError(f"Model file {path} must declare model={name!r}")
-        resolved[name] = model
-    config["models"] = resolved
-
-
-def mode_family(mode: str) -> str:
-    if mode == "energy_to_energy":
-        return "energy"
-    if mode == "timing_to_timing":
-        return "timing"
-    raise ConfigError(f"mode must be one of {CHANNEL_MODES}, got {mode!r}")
-
-
-
-def validate_config(config):
-    required = {"data", "preprocessing", "validation", "standard_methods", "models", "mode", "cfd", "ml_input", "ml_output", "fit", "experiment"}
-    missing = sorted(required - set(config))
-    if missing:
-        raise ConfigError(f"Missing configuration section(s): {missing}")
-    allowed = required | {"reporting"}
-    extra = sorted(
-        key for key in config
-        if key not in allowed and not str(key).startswith("_")
-    )
-    if extra:
-        raise ConfigError(f"Unknown configuration section(s): {extra}")
-    mode = str(config["mode"])
-    family = mode_family(mode)
-    if not isinstance(config["cfd"], bool):
-        raise ConfigError("cfd must be true or false")
-
-    experiment = config["experiment"]
-    experiment_type = str(experiment.get("type", "standard")).strip().lower()
-    if experiment_type not in {"standard", "model_study", "threshold_scan"}:
-        raise ConfigError(
-            "experiment.type must be one of: standard, model_study, threshold_scan"
-        )
-    experiment["type"] = experiment_type
-
-    if experiment_type == "model_study":
-        if len(config["models"]) != 1:
-            raise ConfigError(
-                "model_study requires exactly one configured model"
-            )
-        if "fixed_led_threshold_mV" not in experiment:
-            raise ConfigError(
-                "model_study requires experiment.fixed_led_threshold_mV"
-            )
-        fixed_led = float(experiment["fixed_led_threshold_mV"])
-        if not np_isfinite_positive(fixed_led):
-            raise ConfigError(
-                "experiment.fixed_led_threshold_mV must be finite and positive"
-            )
-
-
-    if experiment_type == "threshold_scan":
-        if len(config["models"]) != 1:
-            raise ConfigError("threshold_scan requires exactly one configured model")
-        if "voltage_V" not in experiment:
-            raise ConfigError("threshold_scan requires experiment.voltage_V")
-        voltage = float(experiment["voltage_V"])
-        import math
-        if not math.isfinite(voltage):
-            raise ConfigError("experiment.voltage_V must be finite")
-
-    concatenate = bool(experiment.get("concatenate_datasets", False))
-    if concatenate:
-        if "fixed_led_threshold_mV" not in experiment:
-            raise ConfigError(
-                "experiment.fixed_led_threshold_mV is required for concatenated studies"
-            )
-        if "fixed_led_threshold_mV" in experiment:
-            fixed_led = float(experiment["fixed_led_threshold_mV"])
-            if not np_isfinite_positive(fixed_led):
-                raise ConfigError("experiment.fixed_led_threshold_mV must be finite and positive")
-        name = str(experiment.get("concatenated_dataset_name", "concatenated")).strip()
-        if not name:
-            raise ConfigError("experiment.concatenated_dataset_name must not be empty")
-        experiment["concatenated_dataset_name"] = name
-
-    validation = config["validation"]
-    extra = sorted(set(validation) - {"seed", "test_fraction", "validation_fraction"})
-    if extra:
-        raise ConfigError(f"Unknown validation option(s): {extra}")
-    for key in ("test_fraction", "validation_fraction"):
-        value = float(validation[key])
-        if not 0.0 < value < 1.0:
-            raise ConfigError(f"validation.{key} must be a fraction in (0, 1)")
-
-    ml_input = config["ml_input"]
-    allowed_ml_input = {"window_ns", "windows", "default_window", "subsampling"}
-    extra_ml_input = sorted(set(ml_input) - allowed_ml_input)
-    if extra_ml_input:
-        raise ConfigError(f"Unknown ml_input option(s): {extra_ml_input}")
-    windows = ml_input.get("windows")
-    if windows is not None:
-        if not isinstance(windows, dict) or not windows:
-            raise ConfigError("ml_input.windows must be a non-empty mapping")
-        for label, value in windows.items():
-            if not str(label).strip():
-                raise ConfigError("ml_input.windows names must not be empty")
-            if not isinstance(value, dict) or set(value) != {"start", "end"}:
-                raise ConfigError(
-                    f"ml_input.windows.{label} must contain start and end"
-                )
-            if float(value["end"]) <= float(value["start"]):
-                raise ConfigError(
-                    f"ml_input.windows.{label}.end must exceed start"
-                )
-        default_window = str(ml_input.get("default_window", "")).strip()
-        if not default_window or default_window not in windows:
-            raise ConfigError(
-                "ml_input.default_window must name one entry in ml_input.windows"
-            )
-    if experiment_type == "model_study" and not windows:
-        raise ConfigError(
-            "model_study requires shared ml_input.windows in the profile/config"
-        )
-    if "window_ns" not in ml_input:
-        raise ConfigError("ml_input.window_ns must be resolved before validation")
-    if float(ml_input["window_ns"]["end"]) <= float(ml_input["window_ns"]["start"]):
-        raise ConfigError("ml_input.window_ns.end must exceed start")
-    if int(ml_input.get("subsampling", 1)) <= 0:
-        raise ConfigError("ml_input.subsampling must be positive")
-
-    ml_output = config["ml_output"]
-    if set(ml_output) != {"max_abs_ps"} or float(ml_output["max_abs_ps"]) <= 0:
-        raise ConfigError("ml_output must contain one positive max_abs_ps")
-
-    fit = config["fit"]
-    expected_fit = {"histogram_bin_width_ps", "bootstrap_samples"}
-    if set(fit) != expected_fit:
-        missing_fit = sorted(expected_fit - set(fit))
-        extra_fit = sorted(set(fit) - expected_fit)
-        details = []
-        if missing_fit:
-            details.append(f"missing {missing_fit}")
-        if extra_fit:
-            details.append(f"unknown {extra_fit}")
-        raise ConfigError("fit must contain exactly histogram_bin_width_ps and bootstrap_samples: " + ", ".join(details))
-    if not np_isfinite_positive(float(fit["histogram_bin_width_ps"])):
-        raise ConfigError("fit.histogram_bin_width_ps must be finite and positive")
-    bootstrap_samples = fit["bootstrap_samples"]
-    if isinstance(bootstrap_samples, bool) or int(bootstrap_samples) != bootstrap_samples or int(bootstrap_samples) < 0:
-        raise ConfigError("fit.bootstrap_samples must be a non-negative integer")
-
-    preprocessing = config["preprocessing"]
-    for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir", "materialized_window_ns", "selection", "photopeak", "energy"):
-        if key not in preprocessing:
-            raise ConfigError(f"preprocessing.{key} is required")
-    channels = config["data"]["channels"]
-    if family == "timing" and not channels.get("timing"):
-        raise ConfigError("timing_to_timing requires timing channels")
-    for required_family in {"energy", family}:
-        if required_family not in preprocessing:
-            raise ConfigError(f"preprocessing.{required_family} is required")
-        for key in ("trigger_threshold_mV", "vertical_scale_limit_mV"):
-            if key not in preprocessing[required_family]:
-                raise ConfigError(f"preprocessing.{required_family}.{key} is required")
-    if "rising_edge_before_trigger_ns" in preprocessing["energy"]:
-        raise ConfigError("Unknown preprocessing.energy option: rising_edge_before_trigger_ns")
-    if family == "timing" and "rising_edge_before_trigger_ns" not in preprocessing["timing"]:
-        raise ConfigError("preprocessing.timing.rising_edge_before_trigger_ns is required")
-    if "pulse_duration_mad" in preprocessing["selection"]:
-        raise ConfigError("Unknown preprocessing.selection option: pulse_duration_mad")
-    if family == "timing":
-        if "tot_peak" not in preprocessing:
-            raise ConfigError("preprocessing.tot_peak is required for timing_to_timing")
-        tot = preprocessing["tot_peak"]
-        required_tot = {"histogram_bin_ns", "search_quantile_min", "smoothing_sigma_bins", "initial_half_width_ns", "iteration_sigma", "max_iterations", "convergence_tolerance_ns", "selection_sigma_low", "selection_sigma_high"}
-        missing_tot = sorted(required_tot - set(tot))
-        if missing_tot:
-            raise ConfigError(f"Missing preprocessing.tot_peak option(s): {missing_tot}")
-        if float(tot["histogram_bin_ns"]) <= 0 or float(tot["initial_half_width_ns"]) <= 0 or float(tot["convergence_tolerance_ns"]) <= 0:
-            raise ConfigError("preprocessing.tot_peak widths/tolerance must be positive")
-        if float(tot["selection_sigma_high"]) <= float(tot["selection_sigma_low"]):
-            raise ConfigError("preprocessing.tot_peak.selection_sigma_high must exceed selection_sigma_low")
-
-    noise = preprocessing["selection"]["baseline_noise"]
-    if bool(noise.get("enabled", False)) and (len(noise["window_ns"]) != 2 or float(noise["window_ns"][1]) > 0.0):
-        raise ConfigError("baseline_noise.window_ns must be [start, end] before the trigger")
-
-    standard = config["standard_methods"]
-    if not standard.get("led_thresholds_mV"):
-        raise ConfigError("LED threshold list must not be empty")
-    if not 0.0 < float(standard.get("led_minimum_crossing_efficiency", 0.95)) <= 1.0:
-        raise ConfigError("standard_methods.led_minimum_crossing_efficiency must be in (0, 1]")
-    if float(standard.get("led_coincidence_window_ns", 2.0)) <= 0:
-        raise ConfigError("standard_methods.led_coincidence_window_ns must be positive")
-    if config["cfd"] and not standard.get("cfd_fractions"):
-        raise ConfigError("CFD fraction list must not be empty when cfd=true")
-
+from .common import canonical_hash
+CHANNEL_MODES=("energy_to_energy","timing_to_timing")
+class ConfigError(ValueError):pass
+def _read(path):
+    p=Path(path)
+    try:v=json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError as e:raise ConfigError(f"Configuration file not found: {p}") from e
+    except json.JSONDecodeError as e:raise ConfigError(f"Invalid JSON in {p}: {e}") from e
+    if not isinstance(v,dict):raise ConfigError(f"{p} must contain a JSON object")
+    return v
+def _rel(owner,value):
+    p=Path(value).expanduser();return (owner.parent/p).resolve() if not p.is_absolute() else p.resolve()
+def _project(root,value):
+    p=Path(value).expanduser();return str((root/p).resolve() if not p.is_absolute() else p.resolve())
+def _module(path,key=None):
+    raw=_read(path)
+    if key and key in raw:return copy.deepcopy(raw[key])
+    return raw
+def _dataset(owner,value,root):
+    d=_module(_rel(owner,value)) if isinstance(value,str) else copy.deepcopy(value)
+    if not isinstance(d,dict):raise ConfigError("dataset must resolve to an object")
+    if "root_file" not in d:raise ConfigError("each dataset must explicitly define root_file")
+    d["root_file"]=_project(root,d["root_file"])
+    if "true_tof_ps" not in d or "channels" not in d:raise ConfigError("dataset requires true_tof_ps and channels")
+    return d
+def _preprocessing(owner,value,root):
+    p=_module(_rel(owner,value),"preprocessing") if isinstance(value,str) else copy.deepcopy(value)
+    if "cache_dir" not in p:p["cache_dir"]="processed_data/ml_protocol_v2"
+    p["cache_dir"]=_project(root,p["cache_dir"])
+    return p
+def _model(owner,raw,root):
+    if isinstance(raw,str):
+        name=raw;path=root/"config"/"model_spaces"/f"{name}.json";space=_read(path)
+    elif isinstance(raw,dict):
+        name=str(raw.get("name",""))
+        if "space_config" in raw:space=_read(_rel(owner,raw["space_config"]))
+        elif "space" in raw:space=copy.deepcopy(raw["space"])
+        else:
+            path=root/"config"/"model_spaces"/f"{name}.json";space=_read(path)
+    else:raise ConfigError("model must be a name or object")
+    if not name:name=str(space.get("model",""))
+    if str(space.get("model",name))!=name:raise ConfigError("model-space name mismatch")
+    return {"name":name,"space":space}
+def _window(raw):
+    if isinstance(raw,dict) and set(raw)>={"start","end"}:return {"start":float(raw["start"]),"end":float(raw["end"])}
+    raise ConfigError("window must resolve to exactly one {start,end} interval")
+def validate_config(c):
+    for key in ("reference","analysis","preprocessing","mode","model","window_ns","resampling","fit","ml_input","ml_output","output_dir"):
+        if key not in c:raise ConfigError(f"Missing {key}")
+    if c["mode"] not in CHANNEL_MODES:raise ConfigError(f"mode must be one of {CHANNEL_MODES}")
+    if c["reference"]["channels"]!=c["analysis"]["channels"]:raise ConfigError("reference and analysis channel definitions must match")
+    if Path(c["reference"]["root_file"]).resolve()==Path(c["analysis"]["root_file"]).resolve():raise ConfigError("reference and analysis datasets must be independent files")
+    if c["mode"]=="timing_to_timing" and not c["analysis"]["channels"].get("timing"):raise ConfigError("timing mode requires timing channels")
+    p=c["preprocessing"]
+    for key in ("materialized_window_ns","energy","timing","selection","photopeak","tot_peak","led_selection","io"):
+        if key not in p:raise ConfigError(f"preprocessing.{key} is required")
+    clip=p["selection"].get("baseline_clipping")
+    if not isinstance(clip,dict) or "margin_mV" not in clip or float(clip["margin_mV"])<0:raise ConfigError("selection.baseline_clipping.margin_mV must be non-negative")
+    noise=p["selection"]["baseline_noise"]
+    if len(noise["window_ns"])!=2 or float(noise["window_ns"][1])>0:raise ConfigError("baseline window must lie before trigger")
+    led=p["led_selection"]
+    if not led.get("thresholds_mV"):raise ConfigError("led_selection.thresholds_mV must be non-empty")
+    if not 0<float(led["minimum_crossing_efficiency"])<=1:raise ConfigError("invalid LED minimum crossing efficiency")
+    if float(led["coincidence_window_ns"])<=0:raise ConfigError("invalid LED coincidence window")
+    r=c["resampling"]
+    if str(r.get("policy","repeated_holdout"))!="repeated_holdout":raise ConfigError("only repeated_holdout is implemented")
+    seeds=r.get("seeds")
+    if not isinstance(seeds,list) or not seeds or len(set(map(int,seeds)))!=len(seeds):raise ConfigError("resampling.seeds must be a non-empty unique list")
+    vf,tf=float(r["validation_fraction"]),float(r["test_fraction"])
+    if vf<=0 or tf<=0 or vf+tf>=1:raise ConfigError("validation/test fractions must be positive and sum to <1")
+    minimum=int(r["minimum_events_per_split"])
+    if minimum<1:raise ConfigError("resampling.minimum_events_per_split must be >=1")
+    if c["window_ns"]["end"]<=c["window_ns"]["start"]:raise ConfigError("window end must exceed start")
+    if int(c["ml_input"].get("subsampling",1))<=0:raise ConfigError("ml_input.subsampling must be positive")
+    if float(c["ml_output"]["max_abs_ps"])<=0:raise ConfigError("ml_output.max_abs_ps must be positive")
+    if float(c["fit"]["histogram_bin_width_ps"])<=0 or int(c["fit"]["bootstrap_samples"])<0:raise ConfigError("invalid fit settings")
     from .models import model_names
-    unknown_models = set(config["models"]) - set(model_names())
-    if unknown_models:
-        raise ConfigError(f"Unregistered model(s): {sorted(unknown_models)}")
-    for name, model in config["models"].items():
-        if "verbose" in model and not isinstance(model["verbose"], bool):
-            raise ConfigError(f"{name}: verbose must be a boolean")
-        training = model.get("training", {}) or {}
-        if "selection_metric" in training or "selection_metric" in model:
-            raise ConfigError(f"{name}: selection_metric is fixed to validation CTR and must not be configured")
-
-
-def np_isfinite_positive(value: float) -> bool:
-    import math
-    return math.isfinite(float(value)) and float(value) > 0.0
-
-
-def load_config(path: str | Path, project_root: str | Path | None = None):
-    source = Path(path).expanduser().resolve()
-    root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]
-    config = _resolve(source)
-    ml_input = config.get("ml_input")
-    if isinstance(ml_input, dict) and isinstance(ml_input.get("windows"), dict):
-        default_window = str(ml_input.get("default_window", "")).strip()
-        if default_window and default_window in ml_input["windows"]:
-            ml_input["window_ns"] = copy.deepcopy(
-                ml_input["windows"][default_window]
-            )
-    _load_models(config, root)
-    validate_config(config)
-    mode = str(config["mode"])
-    if "root_folder" in config["data"]:
-        config["data"]["root_folder"] = _project_path(root, config["data"]["root_folder"])
-    for key in ("selection_store_dir", "preprocessed_dir", "prepared_dir"):
-        config["preprocessing"][key] = str(Path(_project_path(root, config["preprocessing"][key])) / mode)
-    config["experiment"]["output_dir"] = _project_path(root, config["experiment"]["output_dir"])
-    config["_config_path"] = str(source)
-    config["_config_fingerprint"] = canonical_hash({k: v for k, v in config.items() if not str(k).startswith("_")})
-    return config
-
-
-def discover_root_files(config):
-    data = config["data"]
-    root = Path(data["root_folder"])
-    pattern = str(data.get("root_glob", "*.root"))
-    files = sorted(
-        root.rglob(pattern)
-        if bool(data.get("recursive", False))
-        else root.glob(pattern)
-    )
-    files = [p.resolve() for p in files if p.is_file()]
-    experiment = config.get("experiment") or {}
-    if str(experiment.get("type", "standard")).lower() == "threshold_scan":
-        target = float(experiment["voltage_V"])
-        files = [
-            path
-            for path in files
-            if np_isfinite_voltage_match(path.stem, target)
-        ]
-    return files
-
-
-def np_isfinite_voltage_match(name: str, target: float) -> bool:
-    import math
-    value = float(voltage_from_name(name))
-    return (
-        math.isfinite(value)
-        and math.isclose(value, float(target), rel_tol=0.0, abs_tol=1e-9)
-    )
-
-
-def public_config(config):
-    return {k: copy.deepcopy(v) for k, v in config.items() if not str(k).startswith("_")}
+    if c["model"]["name"] not in model_names():raise ConfigError(f"unregistered model {c['model']['name']}")
+def load_config(path,project_root=None):
+    source=Path(path).expanduser().resolve();root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1];raw=_read(source)
+    legacy={"extends","data_config","experiment","models","standard_methods","validation","cfd"}
+    if legacy & set(raw):raise ConfigError("Old experiment schema is incompatible with the control/analysis study protocol")
+    reference=_dataset(source,raw.get("reference_dataset"),root);analysis=_dataset(source,raw.get("analysis_dataset"),root)
+    preprocessing=_preprocessing(source,raw.get("preprocessing_config"),root);model=_model(source,raw.get("model"),root)
+    if "window" in raw:window=_window(raw["window"])
+    elif "window_name" in raw and isinstance(raw.get("windows"),dict):
+        try:window=_window(raw["windows"][raw["window_name"]])
+        except KeyError as e:raise ConfigError("window_name not found in windows") from e
+    else:raise ConfigError("study requires one window or window_name")
+    c={"name":str(raw.get("name",source.stem)),"reference":reference,"analysis":analysis,"preprocessing":preprocessing,
+       "mode":str(raw["mode"]),"model":model,"window_ns":window,
+       "resampling":copy.deepcopy(raw["resampling"]),"fit":copy.deepcopy(raw["fit"]),
+       "ml_input":copy.deepcopy(raw.get("ml_input",{"subsampling":1})),"ml_output":copy.deepcopy(raw["ml_output"]),
+       "output_dir":_project(root,raw["output_dir"])}
+    validate_config(c);c["_config_path"]=str(source);c["_config_fingerprint"]=canonical_hash(c);return c
+def load_batch_config(path,project_root=None):
+    source=Path(path).expanduser().resolve();raw=_read(source);studies=raw.get("studies")
+    if not isinstance(studies,list) or not studies:raise ConfigError("batch config requires a non-empty ordered studies list")
+    return [load_config(_rel(source,item),project_root) for item in studies]
+def public_config(c):return {k:v for k,v in c.items() if not str(k).startswith("_")}
