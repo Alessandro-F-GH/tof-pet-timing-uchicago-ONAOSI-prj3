@@ -1,0 +1,19 @@
+{
+  "reference_dataset": "../datasets/control.json",
+  "analysis_dataset": {
+    "root_file": "processed_data/converted_runs_07-13/49V-490mV.root",
+    "true_tof_ps": 0.0,
+    "channels": {
+      "energy": [1, 2],
+      "polarities": [1, 1],
+      "timing": [3, 4],
+      "timing_polarities": [1, 1]
+    }
+  },
+  "studies": [
+    "../studies/onishi_cnn/energy_onishi.json",
+    "../studies/onishi_cnn/energy_wide.json",
+    "../studies/onishi_cnn/timing_onishi.json",
+    "../studies/onishi_cnn/timing_wide.json"
+  ]
+}
