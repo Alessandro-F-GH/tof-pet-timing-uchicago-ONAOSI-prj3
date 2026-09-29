@@ -7,7 +7,7 @@ from .models import get_model
 from .search import candidate_manifest,CandidateScore,choose_best
 from .splits import make_resampling_split,semantic_seed
 from .storage import RunStore
-from .train import detector_swap_rmse,fit_on_indices,predict_indices,save_model
+from .train import FeatureTransformCache,detector_swap_rmse,fit_on_indices,predict_indices,save_model
 from .stats import ctr_estimate
 from .view import model_target
 from .control_preprocessing import fit_control_artifact
@@ -47,8 +47,9 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
     run_dir=Path(config["output_dir"]).resolve();store=RunStore(run_dir,overwrite=overwrite,resume=resume);logger=_logger(run_dir)
     spec=get_model(config["model"]["name"]);candidates=candidate_manifest(list(spec.candidates(config["model"]["space"])))
     seeds=_resampling_seeds(config["resampling"])
-    manifest={"schema_version":31,"status":"running","config_fingerprint":config["_config_fingerprint"],"reference":config["reference"],
+    manifest={"schema_version":32,"status":"running","config_fingerprint":config["_config_fingerprint"],"reference":config["reference"],
         "analysis":config["analysis"],"mode":config["mode"],"model":config["model"]["name"],"estimator_formulation":spec.estimator_formulation,"window_ns":config["window_ns"],
+        "feature_transform":None if spec.feature_transform is None else spec.feature_transform.name,
         "resampling":config["resampling"],"generated_resampling_seeds":seeds,"preprocessing":config["preprocessing"],"preprocessing_fingerprint":canonical_hash(config["preprocessing"])}
     if resume and (run_dir/"manifest.json").is_file():
         old=json.loads((run_dir/"manifest.json").read_text())
@@ -79,11 +80,14 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
             raise RuntimeError(f"Resampling seed {seed} violates minimum_events_per_split={minimum}")
         store.save_split(seed,dataset.event_index,split)
         logger.info("Resampling %d/%d | seed=%s | train=%d validation=%d test=%d",pos,len(seeds),seed,len(split.train),len(split.validation),len(split.test))
+        transform_cache=FeatureTransformCache()
+        transform_seed_base=semantic_seed(seed,config["model"]["name"],"transform")
         if len(candidates)==1:
             cid,params=next(iter(candidates.items()))
             if not store.has_result(seed,"blind",cid):
                 fit_idx=np.concatenate([split.train,split.validation]);model_seed=semantic_seed(seed,config["model"]["name"],cid,"final")
-                fitted=fit_on_indices(spec,config["model"]["space"],config,dataset,fit_idx,params,seed=model_seed,logger=logger)
+                fitted=fit_on_indices(spec,config["model"]["space"],config,dataset,fit_idx,params,seed=model_seed,
+                    transform_seed_base=transform_seed_base,feature_transform_cache=transform_cache,logger=logger)
                 pred=predict_indices(spec,fitted,dataset,config["mode"],split.test)
                 swap=detector_swap_rmse(spec,fitted,dataset,config["mode"],split.test)
                 row=_row(seed,"blind",cid,True,target[split.test]-pred,target[split.test],config["fit"],spec=spec,config=config,population_identity=population_identity,swap_rmse_ps=swap);store.upsert_result(row)
@@ -97,7 +101,8 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
             if existing:scores.append(CandidateScore(cid,float(existing["ctr_ps"])));continue
             logger.info("Candidate %d/%d | %s",i,len(candidates),cid)
             fitted=fit_on_indices(spec,config["model"]["space"],config,dataset,split.train,params,
-                seed=semantic_seed(seed,config["model"]["name"],cid,"candidate"),logger=logger)
+                seed=semantic_seed(seed,config["model"]["name"],cid,"candidate"),transform_seed_base=transform_seed_base,
+                feature_transform_cache=transform_cache,logger=logger)
             pred=predict_indices(spec,fitted,dataset,config["mode"],split.validation)
             row=_row(seed,"validation",cid,False,target[split.validation]-pred,target[split.validation],config["fit"],spec=spec,config=config,population_identity=population_identity);store.upsert_result(row)
             scores.append(CandidateScore(cid,float(row["ctr_ps"])));logger.info("Validation | candidate=%s | CTR=%.3f ps",cid,row["ctr_ps"])
@@ -109,7 +114,8 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
         if not store.has_result(seed,"blind",cid):
             fit_idx=np.concatenate([split.train,split.validation]);logger.info("Final refit | candidate=%s | n=%d",cid,len(fit_idx))
             fitted=fit_on_indices(spec,config["model"]["space"],config,dataset,fit_idx,params,
-                seed=semantic_seed(seed,config["model"]["name"],cid,"final"),logger=logger)
+                seed=semantic_seed(seed,config["model"]["name"],cid,"final"),transform_seed_base=transform_seed_base,
+                feature_transform_cache=transform_cache,logger=logger)
             pred=predict_indices(spec,fitted,dataset,config["mode"],split.test)
             swap=detector_swap_rmse(spec,fitted,dataset,config["mode"],split.test)
             row=_row(seed,"blind",cid,True,target[split.test]-pred,target[split.test],config["fit"],spec=spec,config=config,population_identity=population_identity,swap_rmse_ps=swap);store.upsert_result(row)
