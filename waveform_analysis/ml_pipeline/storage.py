@@ -11,7 +11,7 @@ RESULT_FIELDS=(
     "improvement_ps","improvement_uncertainty_ps","improvement_percent","improvement_ci_low_ps","improvement_ci_high_ps",
     "rmse_ps","rmse_uncertainty_ps","uncorrected_rmse_ps","uncorrected_rmse_uncertainty_ps",
     "rmse_improvement_ps","rmse_improvement_uncertainty_ps","rmse_improvement_percent","rmse_improvement_ci_low_ps","rmse_improvement_ci_high_ps",
-    "paired_bootstrap_successful","n","swap_rmse_ps"
+    "paired_bootstrap_successful","paired_rmse_bootstrap_successful","n","swap_rmse_ps"
 )
 
 class RunStore:
