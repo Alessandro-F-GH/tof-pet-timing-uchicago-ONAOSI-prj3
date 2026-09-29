@@ -1,5 +1,5 @@
 from __future__ import annotations
-import copy,json
+import copy,json,warnings
 from pathlib import Path
 from .common import canonical_hash
 CHANNEL_MODES=("energy_to_energy","timing_to_timing")
@@ -52,7 +52,8 @@ def validate_config(c):
         if key not in c:raise ConfigError(f"Missing {key}")
     if c["mode"] not in CHANNEL_MODES:raise ConfigError(f"mode must be one of {CHANNEL_MODES}")
     if c["reference"]["channels"]!=c["analysis"]["channels"]:raise ConfigError("reference and analysis channel definitions must match")
-    if Path(c["reference"]["root_file"]).resolve()==Path(c["analysis"]["root_file"]).resolve():raise ConfigError("reference and analysis datasets must be independent files")
+    if Path(c["reference"]["root_file"]).resolve()==Path(c["analysis"]["root_file"]).resolve():
+        warnings.warn("Reference and analysis datasets point to the same file. This is allowed for pipeline testing only; use independent datasets for unbiased production studies.",RuntimeWarning,stacklevel=2)
     if c["mode"]=="timing_to_timing" and not c["analysis"]["channels"].get("timing"):raise ConfigError("timing mode requires timing channels")
     p=c["preprocessing"]
     for key in ("materialized_window_ns","energy","timing","selection","photopeak","tot_peak","led_selection","io"):
