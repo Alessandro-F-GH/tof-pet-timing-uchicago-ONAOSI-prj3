@@ -7,6 +7,7 @@ from utils_fit import (
     fit_ctr_ps,
     fixed_width_histogram_edges,
 )
+from waveform_analysis.ml_pipeline.stats import paired_ctr_improvement
 
 
 class CTRTests(unittest.TestCase):
@@ -64,6 +65,21 @@ class CTRTests(unittest.TestCase):
         self.assertGreater(result.bootstrap_successful, 1)
         self.assertTrue(np.isfinite(result.ctr_error_ps))
         self.assertGreater(result.ctr_error_ps, 0.0)
+
+    def test_paired_bootstrap_uses_same_event_resamples(self):
+        rng=np.random.default_rng(23)
+        led=rng.normal(0.0,45.0,4000)
+        corrected=0.72*led+rng.normal(0.0,4.0,led.size)
+        cfg={"histogram_bin_width_ps":10.0,"bootstrap_samples":40}
+        first=paired_ctr_improvement(corrected,led,cfg,seed=91)
+        second=paired_ctr_improvement(corrected,led,cfg,seed=91)
+        self.assertGreater(first.improvement_ps,0.0)
+        self.assertGreater(first.bootstrap_successful,1)
+        self.assertTrue(np.isfinite(first.improvement_error_ps))
+        self.assertGreater(first.improvement_percent,0.0)
+        np.testing.assert_allclose(first.corrected_bootstrap_ctr_ps,second.corrected_bootstrap_ctr_ps)
+        np.testing.assert_allclose(first.led_bootstrap_ctr_ps,second.led_bootstrap_ctr_ps)
+        np.testing.assert_allclose(first.improvement_bootstrap_ps,first.led_bootstrap_ctr_ps-first.corrected_bootstrap_ctr_ps)
 
     def test_fixed_width_edges_are_outlier_invariant_locally(self):
         core = np.array([-21.0, -4.0, 0.0, 7.0, 24.0])
