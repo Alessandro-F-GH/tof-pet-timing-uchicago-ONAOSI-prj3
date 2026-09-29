@@ -25,6 +25,13 @@ def test_seed_changes_split_reproducibly():
     assert not np.array_equal(a.test,b.test);np.testing.assert_array_equal(b.test,c.test)
 
 
+def test_bootstrap_seeds_are_deterministic_from_one_base_seed():
+    cfg={"seed":1001,"n_bootstrap":10}
+    first=study._resampling_seeds(cfg);second=study._resampling_seeds(cfg)
+    assert first==second and len(first)==10 and len(set(first))==10
+    assert first!=study._resampling_seeds({"seed":1002,"n_bootstrap":10})
+
+
 def test_candidate_ids_stable_under_grid_reordering():
     a={"learning_rate":0.01,"batch_size":16};b={"learning_rate":0.001,"batch_size":16}
     first=candidate_manifest([a,b]);second=candidate_manifest([{"x":1},b,a])
