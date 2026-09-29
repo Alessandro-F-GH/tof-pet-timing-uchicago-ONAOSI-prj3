@@ -56,7 +56,7 @@ def test_results_schema_has_no_legacy_scan_columns():
     assert "voltage" not in RESULT_FIELDS
     assert "threshold" not in RESULT_FIELDS
     assert "hyperparameters" not in RESULT_FIELDS
-    assert set(("seed","stage","candidate_id","ctr_ps","uncorrected_ctr_ps","n"))<=set(RESULT_FIELDS)
+    assert set(("seed","stage","model","estimator_formulation","mode","population_identity","candidate_id","ctr_ps","uncorrected_ctr_ps","n","swap_rmse_ps"))<=set(RESULT_FIELDS)
 
 
 def test_hyperparameter_plot_preserves_full_combinations(tmp_path):
@@ -86,11 +86,12 @@ def test_batch_execution_is_sequential(monkeypatch,tmp_path):
     assert [p.name for p in outputs]==calls
 
 
-def test_prepared_data_uses_control_led_and_does_not_scan_candidates_again():
+def test_prepared_data_uses_control_led_and_window_scoped_population():
     source=inspect.getsource(prepared_data.prepare_ml_dataset)
     assert 'selected_led_threshold_mV' in source
     assert 'led_selection"]["thresholds_mV' not in source
-    assert "increase the common materialized window instead of dropping events per study" in source
+    assert 'coincidence & window_valid' in source
+    assert '"population_scope":"dataset+mode+window"' in source
 
 
 def test_orchestration_has_generic_candidate_policy_and_no_concrete_model_branching():
