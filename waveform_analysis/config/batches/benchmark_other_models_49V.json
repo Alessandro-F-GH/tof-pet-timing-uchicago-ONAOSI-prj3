@@ -11,34 +11,34 @@
     }
   },
   "studies": [
-    "../studies/benchmark50/mlp/energy_onishi.json",
-    "../studies/benchmark50/mlp/energy_wide.json",
-    "../studies/benchmark50/mlp/timing_onishi.json",
-    "../studies/benchmark50/mlp/timing_wide.json",
+    "../studies/benchmark_test/mlp/energy_onishi.json",
+    "../studies/benchmark_test/mlp/energy_wide.json",
+    "../studies/benchmark_test/mlp/timing_onishi.json",
+    "../studies/benchmark_test/mlp/timing_wide.json",
 
-    "../studies/benchmark50/locally_connected_mlp/energy_onishi.json",
-    "../studies/benchmark50/locally_connected_mlp/energy_wide.json",
-    "../studies/benchmark50/locally_connected_mlp/timing_onishi.json",
-    "../studies/benchmark50/locally_connected_mlp/timing_wide.json",
+    "../studies/benchmark_test/locally_connected_mlp/energy_onishi.json",
+    "../studies/benchmark_test/locally_connected_mlp/energy_wide.json",
+    "../studies/benchmark_test/locally_connected_mlp/timing_onishi.json",
+    "../studies/benchmark_test/locally_connected_mlp/timing_wide.json",
 
-    "../studies/benchmark50/shared_cnn1d/energy_onishi.json",
-    "../studies/benchmark50/shared_cnn1d/energy_wide.json",
-    "../studies/benchmark50/shared_cnn1d/timing_onishi.json",
-    "../studies/benchmark50/shared_cnn1d/timing_wide.json",
+    "../studies/benchmark_test/shared_cnn1d/energy_onishi.json",
+    "../studies/benchmark_test/shared_cnn1d/energy_wide.json",
+    "../studies/benchmark_test/shared_cnn1d/timing_onishi.json",
+    "../studies/benchmark_test/shared_cnn1d/timing_wide.json",
 
-    "../studies/benchmark50/direct_mlp/energy_onishi.json",
-    "../studies/benchmark50/direct_mlp/energy_wide.json",
-    "../studies/benchmark50/direct_mlp/timing_onishi.json",
-    "../studies/benchmark50/direct_mlp/timing_wide.json",
+    "../studies/benchmark_test/direct_mlp/energy_onishi.json",
+    "../studies/benchmark_test/direct_mlp/energy_wide.json",
+    "../studies/benchmark_test/direct_mlp/timing_onishi.json",
+    "../studies/benchmark_test/direct_mlp/timing_wide.json",
 
-    "../studies/benchmark50/independent_cnn1d/energy_onishi.json",
-    "../studies/benchmark50/independent_cnn1d/energy_wide.json",
-    "../studies/benchmark50/independent_cnn1d/timing_onishi.json",
-    "../studies/benchmark50/independent_cnn1d/timing_wide.json",
+    "../studies/benchmark_test/independent_cnn1d/energy_onishi.json",
+    "../studies/benchmark_test/independent_cnn1d/energy_wide.json",
+    "../studies/benchmark_test/independent_cnn1d/timing_onishi.json",
+    "../studies/benchmark_test/independent_cnn1d/timing_wide.json",
 
-    "../studies/benchmark50/minirocket/energy_onishi.json",
-    "../studies/benchmark50/minirocket/energy_wide.json",
-    "../studies/benchmark50/minirocket/timing_onishi.json",
-    "../studies/benchmark50/minirocket/timing_wide.json"
+    "../studies/benchmark_test/minirocket/energy_onishi.json",
+    "../studies/benchmark_test/minirocket/energy_wide.json",
+    "../studies/benchmark_test/minirocket/timing_onishi.json",
+    "../studies/benchmark_test/minirocket/timing_wide.json"
   ]
 }
