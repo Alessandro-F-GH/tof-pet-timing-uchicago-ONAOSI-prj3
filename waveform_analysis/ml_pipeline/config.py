@@ -100,9 +100,9 @@ def load_config(path,project_root=None,defaults=None):
        "output_dir":_project(root,raw["output_dir"])}
     validate_config(c);c["_config_path"]=str(source);c["_config_fingerprint"]=canonical_hash(c);return c
 def load_batch_config(path,project_root=None):
-    source=Path(path).expanduser().resolve();raw=_read(source);studies=raw.get("studies")
+    source=Path(path).expanduser().resolve();root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1];raw=_read(source);studies=raw.get("studies")
     if not isinstance(studies,list) or not studies:raise ConfigError("batch config requires a non-empty ordered studies list")
-    shared={k:copy.deepcopy(raw[k]) for k in ("reference_dataset","analysis_dataset") if k in raw}
-    if set(shared)!={"reference_dataset","analysis_dataset"}:raise ConfigError("batch config must define shared reference_dataset and analysis_dataset")
-    return [load_config(_rel(source,item),project_root,defaults=shared) for item in studies]
+    if "reference_dataset" not in raw or "analysis_dataset" not in raw:raise ConfigError("batch config must define shared reference_dataset and analysis_dataset")
+    shared={"reference_dataset":_dataset(source,raw["reference_dataset"],root),"analysis_dataset":_dataset(source,raw["analysis_dataset"],root)}
+    return [load_config(_rel(source,item),root,defaults=shared) for item in studies]
 def public_config(c):return {k:v for k,v in c.items() if not str(k).startswith("_")}
