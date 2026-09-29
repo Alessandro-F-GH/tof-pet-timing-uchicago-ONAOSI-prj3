@@ -30,8 +30,8 @@ def _plot_blind_distribution(rows,path,key,xlabel,title):
     ax.hist(values,bins=bins,histtype="stepfilled",alpha=.45)
     mean=float(np.mean(values));std=float(np.std(values,ddof=1)) if values.size>1 else 0.0
     ax.axvline(mean,linestyle="--",label=f"mean = {mean:.2f} ps")
-    ax.set_xlabel(xlabel);ax.set_ylabel("Repeated-holdout runs");ax.set_title(title)
-    ax.legend(title=f"n={values.size}, std={std:.2f} ps")
+    ax.set_xlabel(xlabel);ax.set_ylabel("Repeated-holdout splits");ax.set_title(title)
+    ax.legend(title=f"n={values.size} splits, std={std:.2f} ps")
     return _save(fig,path)
 
 
@@ -43,40 +43,16 @@ def plot_blind_rmse_distribution(rows,path,title="Blind RMSE distribution"):
     return _plot_blind_distribution(rows,path,"rmse_ps","Blind RMSE [ps]",title)
 
 
-def _paired_bootstrap_values(run_dir,key):
-    directory=Path(run_dir)/"paired_bootstrap"
-    arrays=[]
-    if directory.is_dir():
-        for path in sorted(directory.glob("*.npz")):
-            with np.load(path) as data:
-                if key not in data.files:continue
-                values=np.asarray(data[key],float).reshape(-1)
-            values=values[np.isfinite(values)]
-            if values.size:arrays.append(values)
-    return np.concatenate(arrays) if arrays else np.empty(0,float)
+def plot_paired_improvement_splits(rows,path,title="Paired LED-to-ML CTR improvement across splits"):
+    return _plot_blind_distribution(
+        rows,path,"improvement_ps",r"CTR improvement, LED - ML [ps]",title
+    )
 
 
-def _plot_paired_improvement_bootstrap(run_dir,path,key,xlabel,title):
-    values=_paired_bootstrap_values(run_dir,key)
-    if not values.size:return None
-    fig,ax=plt.subplots()
-    bins=max(10,min(60,int(np.ceil(np.sqrt(values.size)))))
-    ax.hist(values,bins=bins,histtype="stepfilled",alpha=.45)
-    mean=float(np.mean(values));std=float(np.std(values,ddof=1)) if values.size>1 else 0.0
-    q025,q975=np.quantile(values,[.025,.975])
-    ax.axvline(0.0,linestyle=":",label="no improvement")
-    ax.axvline(mean,linestyle="--",label=f"mean = {mean:.2f} ps")
-    ax.set_xlabel(xlabel);ax.set_ylabel("Paired bootstrap samples");ax.set_title(title)
-    ax.legend(title=f"n={values.size}, std={std:.2f} ps\n95% interval [{q025:.2f}, {q975:.2f}] ps")
-    return _save(fig,path)
-
-
-def plot_paired_improvement_bootstrap(run_dir,path,title="Paired LED-to-ML bootstrap CTR improvement"):
-    return _plot_paired_improvement_bootstrap(run_dir,path,"improvement_ps",r"CTR improvement, LED - ML [ps]",title)
-
-
-def plot_paired_rmse_improvement_bootstrap(run_dir,path,title="Paired LED-to-ML bootstrap RMSE improvement"):
-    return _plot_paired_improvement_bootstrap(run_dir,path,"rmse_improvement_ps",r"RMSE improvement, LED - ML [ps]",title)
+def plot_paired_rmse_improvement_splits(rows,path,title="Paired LED-to-ML RMSE improvement across splits"):
+    return _plot_blind_distribution(
+        rows,path,"rmse_improvement_ps",r"RMSE improvement, LED - ML [ps]",title
+    )
 
 
 def plot_rmse_ctr_correlation(rows,path,title="Blind RMSE vs CTR"):
@@ -140,8 +116,8 @@ def make_study_result_plots(rows,run_dir,*,model,mode,window_ns):
     return {
         "blind_ctr":plot_blind_ctr_distribution(rows,run_dir/"blind_ctr_distribution.png",f"Blind CTR distribution\n{label}"),
         "blind_rmse":plot_blind_rmse_distribution(rows,run_dir/"blind_rmse_distribution.png",f"Blind RMSE distribution\n{label}"),
-        "paired_ctr_improvement":plot_paired_improvement_bootstrap(run_dir,run_dir/"paired_led_ctr_improvement_bootstrap_distribution.png",f"Paired LED-to-ML CTR improvement\n{label}"),
-        "paired_rmse_improvement":plot_paired_rmse_improvement_bootstrap(run_dir,run_dir/"paired_led_rmse_improvement_bootstrap_distribution.png",f"Paired LED-to-ML RMSE improvement\n{label}"),
+        "paired_ctr_improvement":plot_paired_improvement_splits(rows,run_dir/"paired_led_ctr_improvement_split_distribution.png",f"Paired LED-to-ML CTR improvement across splits\n{label}"),
+        "paired_rmse_improvement":plot_paired_rmse_improvement_splits(rows,run_dir/"paired_led_rmse_improvement_split_distribution.png",f"Paired LED-to-ML RMSE improvement across splits\n{label}"),
         "rmse_ctr_correlation":plot_rmse_ctr_correlation(rows,run_dir/"blind_rmse_vs_ctr.png",f"Blind RMSE vs CTR\n{label}"),
         "summary":write_blind_summary(rows,run_dir/"blind_summary.csv"),
     }
