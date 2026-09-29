@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
-DATASET_FORMAT_VERSION=30
+DATASET_FORMAT_VERSION=31
 
 @dataclass(frozen=True)
 class InputTransform:
