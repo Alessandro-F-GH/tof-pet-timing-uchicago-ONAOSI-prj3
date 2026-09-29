@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 
 from .spec import ModelSpec
 
@@ -15,6 +16,7 @@ from .spec import ModelSpec
 @dataclass
 class MiniRocketArtifact:
     transformer: Any
+    scaler: StandardScaler
     regressor: Ridge
     metadata: dict[str, Any]
 
@@ -42,7 +44,7 @@ def candidates(config):
 
 def _transformer(params, seed):
     try:
-        from sktime.transformations.panel.rocket import MiniRocketMultivariate
+        from sktime.transformations.rocket import MiniRocketMultivariate
     except ImportError as exc:
         raise ImportError(
             "minirocket requires the optional 'sktime' dependency. "
@@ -68,16 +70,21 @@ def fit(params, train_x, train_target, *, seed, config):
         raise ValueError(f"minirocket expects [event, detector=2, time], got {x.shape}")
     if x.shape[0] != y.size:
         raise ValueError("minirocket train_x and train_target must contain the same number of events")
+    if x.shape[-1] < 9:
+        raise ValueError("MiniRocket requires at least 9 temporal samples")
     transformer = _transformer(params, seed)
     features = _array(transformer.fit_transform(x))
+    scaler = StandardScaler(with_mean=False)
+    scaled = scaler.fit_transform(features)
     regressor = Ridge(alpha=float(params["ridge_alpha"]))
-    regressor.fit(features, y)
+    regressor.fit(scaled, y)
     return MiniRocketArtifact(
         transformer=transformer,
+        scaler=scaler,
         regressor=regressor,
         metadata={
             "input_definition": "paired normalized detector waveforms as one multivariate two-channel time series",
-            "prediction_definition": "MiniRocket multivariate features followed by Ridge regression",
+            "prediction_definition": "MiniRocket multivariate features + StandardScaler(with_mean=False) + Ridge regression",
             "detector_swap_antisymmetry_enforced": False,
             "num_kernels": int(params["num_kernels"]),
             "ridge_alpha": float(params["ridge_alpha"]),
@@ -92,7 +99,8 @@ def fit(params, train_x, train_target, *, seed, config):
 def predict(artifact: MiniRocketArtifact, normalized_pair: np.ndarray) -> np.ndarray:
     x = np.asarray(normalized_pair, dtype=np.float32)
     features = _array(artifact.transformer.transform(x))
-    return np.asarray(artifact.regressor.predict(features), dtype=np.float64)
+    scaled = artifact.scaler.transform(features)
+    return np.asarray(artifact.regressor.predict(scaled), dtype=np.float64)
 
 
 def save(artifact: MiniRocketArtifact, path: Path) -> None:
