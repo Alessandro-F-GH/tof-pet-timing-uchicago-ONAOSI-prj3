@@ -15,6 +15,7 @@ from .event_selection import apply_selection_rules
 from .data import preprocess_selected
 from .prepared_data import prepare_ml_dataset
 from .hyperparameter_plot import plot_hyperparameter_validation
+from .progress import ProgressTracker
 
 def _logger(run_dir):
     logger=logging.getLogger(f"waveform-study:{run_dir}");logger.setLevel(logging.INFO);logger.handlers.clear();logger.propagate=False
@@ -60,6 +61,7 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
         "analysis_population_identity":dataset.manifest["analysis_population_identity"],"prepared_dataset":str(dataset.directory)})
     store.write_manifest(manifest)
     target=model_target(dataset,config["mode"])
+    progress=ProgressTracker(logger,{"resampling_seed":len(config["resampling"]["seeds"])})
     for pos,seed in enumerate(config["resampling"]["seeds"],1):
         split=make_resampling_split(dataset.n_events,analysis_identity=dataset.manifest["analysis_population_identity"],resampling_seed=int(seed),
             validation_fraction=config["resampling"]["validation_fraction"],test_fraction=config["resampling"]["test_fraction"])
@@ -77,6 +79,7 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
                 row=_row(seed,"blind",cid,True,target[split.test]-pred,target[split.test],config["fit"]);store.upsert_result(row)
                 save_model(spec,fitted,store.model_dir(seed,cid),params)
                 logger.info("Blind | seed=%s | candidate=%s | CTR=%.3f ± %.3f ps",seed,cid,row["ctr_ps"],row["ctr_uncertainty_ps"])
+            progress.complete("resampling_seed",f"seed {seed}",announce=False)
             continue
         scores=[]
         for i,(cid,params) in enumerate(candidates.items(),1):
@@ -101,6 +104,7 @@ def run_study(config,*,overwrite=False,resume=False,rebuild_preprocessing=False)
             row=_row(seed,"blind",cid,True,target[split.test]-pred,target[split.test],config["fit"]);store.upsert_result(row)
             save_model(spec,fitted,store.model_dir(seed,cid),params)
             logger.info("Blind | seed=%s | candidate=%s | CTR=%.3f ± %.3f ps",seed,cid,row["ctr_ps"],row["ctr_uncertainty_ps"])
+        progress.complete("resampling_seed",f"seed {seed}",note=f"candidate={cid}")
     if len(candidates)>1:plot_hyperparameter_validation(store.read_results(),candidates,run_dir/"hyperparameter_validation.png",logger)
     blind=[float(r["ctr_ps"]) for r in store.read_results() if r.get("stage")=="blind"]
     manifest["status"]="complete";manifest["blind_ctr_mean_ps"]=float(np.mean(blind)) if blind else None;manifest["blind_ctr_std_ps"]=float(np.std(blind,ddof=1)) if len(blind)>1 else 0.0
