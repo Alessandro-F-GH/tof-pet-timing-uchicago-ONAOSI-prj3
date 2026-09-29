@@ -1,0 +1,44 @@
+{
+  "reference_dataset": "../datasets/control.json",
+  "analysis_dataset": {
+    "root_file": "processed_data/converted_runs_07-13/49V-490mV.root",
+    "true_tof_ps": 0.0,
+    "channels": {
+      "energy": [1, 2],
+      "polarities": [1, 1],
+      "timing": [3, 4],
+      "timing_polarities": [1, 1]
+    }
+  },
+  "studies": [
+    "../studies/benchmark50/mlp/energy_onishi.json",
+    "../studies/benchmark50/mlp/energy_wide.json",
+    "../studies/benchmark50/mlp/timing_onishi.json",
+    "../studies/benchmark50/mlp/timing_wide.json",
+
+    "../studies/benchmark50/locally_connected_mlp/energy_onishi.json",
+    "../studies/benchmark50/locally_connected_mlp/energy_wide.json",
+    "../studies/benchmark50/locally_connected_mlp/timing_onishi.json",
+    "../studies/benchmark50/locally_connected_mlp/timing_wide.json",
+
+    "../studies/benchmark50/shared_cnn1d/energy_onishi.json",
+    "../studies/benchmark50/shared_cnn1d/energy_wide.json",
+    "../studies/benchmark50/shared_cnn1d/timing_onishi.json",
+    "../studies/benchmark50/shared_cnn1d/timing_wide.json",
+
+    "../studies/benchmark50/direct_mlp/energy_onishi.json",
+    "../studies/benchmark50/direct_mlp/energy_wide.json",
+    "../studies/benchmark50/direct_mlp/timing_onishi.json",
+    "../studies/benchmark50/direct_mlp/timing_wide.json",
+
+    "../studies/benchmark50/direct_cnn1d/energy_onishi.json",
+    "../studies/benchmark50/direct_cnn1d/energy_wide.json",
+    "../studies/benchmark50/direct_cnn1d/timing_onishi.json",
+    "../studies/benchmark50/direct_cnn1d/timing_wide.json",
+
+    "../studies/benchmark50/minirocket/energy_onishi.json",
+    "../studies/benchmark50/minirocket/energy_wide.json",
+    "../studies/benchmark50/minirocket/timing_onishi.json",
+    "../studies/benchmark50/minirocket/timing_wide.json"
+  ]
+}
