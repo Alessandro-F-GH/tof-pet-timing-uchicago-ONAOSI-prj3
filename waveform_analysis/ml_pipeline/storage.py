@@ -60,5 +60,14 @@ class RunStore:
             corrected_rmse_ps=np.asarray(comparison.corrected_bootstrap_rmse_ps,np.float64),
             led_rmse_ps=np.asarray(comparison.led_bootstrap_rmse_ps,np.float64),
             rmse_improvement_ps=np.asarray(comparison.rmse_improvement_bootstrap_ps,np.float64))
+    def blind_residuals_path(self,seed,candidate_id):
+        return self.root/"blind_residuals"/f"seed_{int(seed)}_{candidate_id}.npz"
+    def save_blind_residuals(self,seed,candidate_id,event_index,corrected_ps,led_ps):
+        path=self.blind_residuals_path(seed,candidate_id);path.parent.mkdir(exist_ok=True)
+        np.savez_compressed(path,
+            event_index=np.asarray(event_index,np.int64),
+            corrected_ps=np.asarray(corrected_ps,np.float64),
+            led_ps=np.asarray(led_ps,np.float64))
+        return path
     def model_dir(self,seed,candidate_id):
         p=self.root/"models"/f"seed_{int(seed)}"/candidate_id; p.mkdir(parents=True,exist_ok=True); return p
