@@ -30,7 +30,7 @@ A study JSON contains:
   "preprocessing_config": "preprocessing/default_ctr.json",
   "mode": "timing_to_timing",
   "model": "locally_connected_mlp",
-  "window": {"start": -1.0, "end": 10.0},
+  "window": {"start": -1.5, "end": 2.0},
   "resampling": {
     "policy": "repeated_holdout",
     "seeds": [11, 22, 33],
@@ -38,12 +38,14 @@ A study JSON contains:
     "test_fraction": 0.20,
     "minimum_events_per_split": 50
   },
-  "fit": {"histogram_bin_width_ps": 2.0, "bootstrap_samples": 500},
+  "fit": {"histogram_bin_width_ps": 10.0, "bootstrap_samples": 500},
   "ml_input": {"subsampling": 1},
-  "ml_output": {"max_abs_ps": 1000.0},
+  "ml_output": {"max_abs_ps": 2000.0},
   "output_dir": "results/timing_lcmlp"
 }
 ```
+
+The values above illustrate one resolved study; split fractions and resampling seeds are intentionally study-level choices. The shared preprocessing file retains the previously used trigger, fit, ToT and LED-candidate settings unless explicitly changed for the new acquisition.
 
 Dataset configs explicitly define `root_file`, `true_tof_ps`, and `channels`. Reference and analysis must be different files.
 
