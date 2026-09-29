@@ -1,0 +1,30 @@
+{
+  "name": "lc_mlp_timing_onishi_49V",
+  "reference_dataset": "../../datasets/control.json",
+  "analysis_dataset": "../../datasets/analysis_49V.json",
+  "preprocessing_config": "../../preprocessing/default_ctr.json",
+  "mode": "timing_to_timing",
+  "model": "locally_connected_mlp",
+  "window": {
+    "start": -1.5,
+    "end": 2.0
+  },
+  "resampling": {
+    "policy": "repeated_holdout",
+    "seeds": [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010],
+    "validation_fraction": 0.2,
+    "test_fraction": 0.2,
+    "minimum_events_per_split": 50
+  },
+  "fit": {
+    "histogram_bin_width_ps": 10.0,
+    "bootstrap_samples": 500
+  },
+  "ml_input": {
+    "subsampling": 1
+  },
+  "ml_output": {
+    "max_abs_ps": 2000.0
+  },
+  "output_dir": "results/studies/lc_mlp_49V/timing_onishi"
+}
