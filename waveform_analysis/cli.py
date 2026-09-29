@@ -5,6 +5,7 @@ from .ml_pipeline.config import load_config,load_batch_config,public_config
 from .ml_pipeline.study import run_study
 from .ml_pipeline.batch import run_batch
 from .ml_pipeline.postprocess import remake_study_plots,remake_batch_plots
+from .ml_pipeline.binning_scan import run_ctr_binning_scan
 PROJECT_ROOT=Path(__file__).resolve().parent
 
 def _config_path(path):
@@ -27,18 +28,24 @@ def _parser():
     batch.add_argument("--rebuild-preprocessing",action="store_true")
     batch.add_argument("--remake-plots",action="store_true",help="Regenerate plots for all saved batch studies without preprocessing or retraining")
     remake_batch=sub.add_parser("remake-batch-plots");remake_batch.add_argument("--config",type=Path,required=True)
+    scan=sub.add_parser("ctr-binning-scan",help="Recompute blind CTR for multiple histogram bin widths and correlate with RMSE")
+    scan.add_argument("--config",type=Path,required=True)
+    scan.add_argument("--bin-widths",type=float,nargs="+",default=[5.0,7.5,10.0,12.5,15.0,20.0])
     return p
 
 def _validate_remake_args(args):
     if not getattr(args,"remake_plots",False):return
-    if getattr(args,"overwrite",False) or getattr(args,"resume",False) or getattr(args,"rebuild_preprocessing",False):
-        raise SystemExit("--remake-plots cannot be combined with --overwrite, --resume, or --rebuild-preprocessing")
+    if getattr(args,"overwrite",False) or getattr(args,"resume",False) or getattr(args,"rebuild_preprocessing",False):raise SystemExit("--remake-plots cannot be combined with --overwrite, --resume, or --rebuild-preprocessing")
 
 def main():
     args=_parser().parse_args()
     if args.command=="check":
         cfg=load_config(_config_path(args.config),PROJECT_ROOT);print(json.dumps(public_config(cfg),indent=2));return
     logging.basicConfig(level=logging.INFO,format="%(asctime)s | %(levelname)s | %(message)s");logger=logging.getLogger("waveform-batch")
+    if args.command=="ctr-binning-scan":
+        cfg=load_config(_config_path(args.config),PROJECT_ROOT);outputs=run_ctr_binning_scan(cfg,args.bin_widths,logger=logger)
+        for path in outputs.values():print(Path(path).resolve())
+        return
     if args.command=="remake-plots":
         cfg=load_config(_config_path(args.config),PROJECT_ROOT);remake_study_plots(cfg,logger=logger);print(Path(cfg["output_dir"]).resolve());return
     if args.command=="remake-batch-plots":
