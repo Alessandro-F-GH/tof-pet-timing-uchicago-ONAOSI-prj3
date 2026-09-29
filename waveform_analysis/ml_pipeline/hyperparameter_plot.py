@@ -21,8 +21,17 @@ def plot_hyperparameter_validation(results,candidates,output_path,logger=None,*,
     if not rows:return None
     scores={}
     for cid in candidates:
-        v=[float(r[metric]) for r in rows if r.get("candidate_id")==cid and str(r.get(metric,"")) not in ("","nan")]
-        if v:scores[cid]=float(np.mean(v))
+        values=np.asarray([
+            float(r[metric]) for r in rows
+            if r.get("candidate_id")==cid and str(r.get(metric,"")) not in ("","nan")
+        ],float)
+        values=values[np.isfinite(values)]
+        if values.size:
+            scores[cid]=(
+                float(np.mean(values)),
+                float(np.std(values,ddof=1)) if values.size>1 else 0.0,
+                int(values.size),
+            )
     if not scores:return None
     numeric=[k for k in varied if _numeric([candidates[c].get(k) for c in candidates])]
     if numeric:
@@ -31,13 +40,20 @@ def plot_hyperparameter_validation(results,candidates,output_path,logger=None,*,
     else:xkey=varied[0]
     series_keys=[k for k in varied if k!=xkey]
     groups={}
-    for cid,score in scores.items():
+    for cid,(mean,std,n) in scores.items():
         c=candidates[cid];label=", ".join(f"{k}={c.get(k)}" for k in series_keys) if series_keys else "candidates"
-        groups.setdefault(label,[]).append((c.get(xkey),score,cid))
+        groups.setdefault(label,[]).append((c.get(xkey),mean,std,n,cid))
     fig,ax=plt.subplots()
     for label,vals in groups.items():
-        vals=sorted(vals,key=lambda x:(float(x[0]) if isinstance(x[0],(int,float)) else str(x[0]),x[2]))
-        ax.plot([v[0] for v in vals],[v[1] for v in vals],marker="o",label=label if series_keys else None)
+        vals=sorted(vals,key=lambda x:(float(x[0]) if isinstance(x[0],(int,float)) else str(x[0]),x[4]))
+        ax.errorbar(
+            [v[0] for v in vals],
+            [v[1] for v in vals],
+            yerr=[v[2] for v in vals],
+            marker="o",
+            capsize=3,
+            label=label if series_keys else None,
+        )
     ax.set_xlabel(xkey);ax.set_ylabel(f"Mean validation {metric_label} [ps]")
     if series_keys:ax.legend()
     xs=[candidates[c].get(xkey) for c in scores]
@@ -45,5 +61,8 @@ def plot_hyperparameter_validation(results,candidates,output_path,logger=None,*,
         vals=np.asarray(xs,float)
         if np.all(vals>0):ax.set_xscale("log")
         elif logger:logger.warning("Hyperparameter %s contains zero/negative values; using linear x scale",xkey)
+    if logger:
+        counts=sorted({n for _,_,n in scores.values()})
+        logger.info("Validation plot error bars show ±1 standard deviation across repeated-holdout splits; n per candidate=%s",counts)
     fig.tight_layout();output_path=Path(output_path);output_path.parent.mkdir(parents=True,exist_ok=True);fig.savefig(output_path);plt.close(fig)
     return output_path
