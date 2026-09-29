@@ -43,11 +43,9 @@ def prepare_ml_dataset(preprocessed,control_artifact,config,*,cache_dir,rebuild=
     if not np.allclose(np.asarray(intervals),ref,rtol=1e-9,atol=0):raise ValueError(f"{family} sampling interval must be common")
     offsets,time_ps=_input_offsets(ref,config["window_ns"],config["ml_input"]["subsampling"])
     window_valid=np.all((anchors+int(offsets[0])>=0)&(anchors+int(offsets[-1])<waves.shape[2]),axis=1)
-    rows=np.flatnonzero(coincidence)
-    if not rows.size:raise RuntimeError("No events remain after frozen selection and fixed LED coincidence")
-    invalid_window=rows[~window_valid[rows]]
-    if invalid_window.size:
-        raise ValueError(f"Configured waveform window is unavailable for {invalid_window.size} fixed-population events; increase the common materialized window instead of dropping events per study")
+    rows=np.flatnonzero(coincidence & window_valid)
+    if not rows.size:raise RuntimeError("No events remain after frozen selection, fixed LED coincidence, and waveform-window availability")
+    dropped_window=int(np.count_nonzero(coincidence & ~window_valid))
     out=np.empty((rows.size,2,offsets.size),np.float32)
     for oi,event in enumerate(rows):
         for d in range(2):out[oi,d]=np.asarray(waves[event,d,anchors[event,d]+offsets],np.float32)
@@ -59,18 +57,22 @@ def prepare_ml_dataset(preprocessed,control_artifact,config,*,cache_dir,rebuild=
     np.save(base/f"{family}_led_time_ps.npy",np.asarray(led[rows],np.float64))
     np.save(base/f"{family}_target_ps.npy",np.asarray(residual[rows],np.float64))
     np.save(base/"event_index.npy",np.asarray(preprocessed.event_index)[rows]);np.save(base/"bias_voltage_V.npy",np.asarray(preprocessed.bias_voltage_V)[rows])
+    population_identity=canonical_hash({"source":preprocessed.manifest["source"],"mode":config["mode"],"window_ns":config["window_ns"],"event_index":np.asarray(preprocessed.event_index)[rows].tolist()})
     manifest={"format_version":DATASET_FORMAT_VERSION,"fingerprint":fp,"analysis_source":preprocessed.manifest["source"],
-        "analysis_population_identity":canonical_hash({"source":preprocessed.manifest["source"],"event_index":np.asarray(preprocessed.event_index)[rows].tolist()}),
+        "analysis_population_identity":population_identity,
         "control_fingerprint":control_artifact["fingerprint"],"mode":config["mode"],"family":family,"fixed_led_threshold_mV":threshold,
         "true_tof_ps":true,"window_ns":config["window_ns"],"subsampling":int(config["ml_input"]["subsampling"]),
-        "n_before_fixed_led":int(preprocessed.n_events),"n_final":int(rows.size),
+        "n_before_fixed_led":int(preprocessed.n_events),"n_after_fixed_led":int(coincidence.sum()),"n_dropped_window":dropped_window,"n_final":int(rows.size),
+        "population_scope":"dataset+mode+window",
         "target_definition":"fixed_LED_delta_t - true_tof (no analysis-wide calibration fitted before splitting)"}
     atomic_json(base/"manifest.json",manifest)
     write_csv(base/"preprocessing_summary.csv",[
         {"stage":"native_preprocessed","remaining":int(preprocessed.n_events),"fraction":1.0},
         {"stage":"fixed_led_crossing","remaining":int(finite_led.sum()),"fraction":float(finite_led.mean())},
         {"stage":"fixed_led_coincidence","remaining":int(coincidence.sum()),"fraction":float(coincidence.mean())},
+        {"stage":"window_available","remaining":int(rows.size),"fraction":float(rows.size)/max(1,int(preprocessed.n_events))},
         {"stage":"final_ml_population","remaining":int(rows.size),"fraction":float(rows.size)/max(1,int(preprocessed.n_events))},
     ])
-    if logger:logger.info("Prepared fixed ML population | n=%d | LED=%.6g mV",rows.size,threshold)
+    if logger:
+        logger.info("Prepared ML population | n=%d | LED=%.6g mV | window_dropped=%d",rows.size,threshold,dropped_window)
     return load_prepared_dataset(base)
