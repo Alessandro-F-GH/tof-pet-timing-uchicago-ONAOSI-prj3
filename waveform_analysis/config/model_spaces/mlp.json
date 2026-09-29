@@ -8,21 +8,23 @@
       ]
     ],
     "activation": [
-      "silu"
+      "relu"
     ],
     "learning_rate": [
-      0.001,
-      0.0003
+      1e-2,
+      1e-3,
+      1e-4
     ],
     "batch_size": [
+      16,
       128
     ]
   },
   "training": {
     "device": "auto",
-    "epochs": 600,
-    "patience": 20,
-    "min_delta": 0.01,
+    "epochs": 1000,
+    "patience": 50,
+    "min_delta": 0.1,
     "gradient_clip_norm": 10,
     "early_stopping_fraction": 0.2,
     "gradient_early_stop": true,
