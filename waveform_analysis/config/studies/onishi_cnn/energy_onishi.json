@@ -10,9 +10,9 @@
   "resampling": {
     "policy": "repeated_holdout",
     "seed": 1001,
-    "n_bootstrap": 3,
+    "n_bootstrap": 50,
     "validation_fraction": 0.2,
-    "test_fraction": 0.2,
+    "test_fraction": 0.5,
     "minimum_events_per_split": 50
   },
   "fit": {
