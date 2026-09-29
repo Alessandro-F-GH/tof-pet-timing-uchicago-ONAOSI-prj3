@@ -66,7 +66,7 @@ class CTRTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result.ctr_error_ps))
         self.assertGreater(result.ctr_error_ps, 0.0)
 
-    def test_paired_bootstrap_uses_same_event_resamples(self):
+    def test_paired_bootstrap_uses_same_event_resamples_for_ctr_and_rmse(self):
         rng=np.random.default_rng(23)
         led=rng.normal(0.0,45.0,4000)
         corrected=0.72*led+rng.normal(0.0,4.0,led.size)
@@ -74,12 +74,20 @@ class CTRTests(unittest.TestCase):
         first=paired_ctr_improvement(corrected,led,cfg,seed=91)
         second=paired_ctr_improvement(corrected,led,cfg,seed=91)
         self.assertGreater(first.improvement_ps,0.0)
+        self.assertGreater(first.rmse_improvement_ps,0.0)
         self.assertGreater(first.bootstrap_successful,1)
+        self.assertEqual(first.rmse_bootstrap_successful,40)
         self.assertTrue(np.isfinite(first.improvement_error_ps))
+        self.assertTrue(np.isfinite(first.corrected_rmse_error_ps))
+        self.assertTrue(np.isfinite(first.rmse_improvement_error_ps))
         self.assertGreater(first.improvement_percent,0.0)
+        self.assertGreater(first.rmse_improvement_percent,0.0)
         np.testing.assert_allclose(first.corrected_bootstrap_ctr_ps,second.corrected_bootstrap_ctr_ps)
         np.testing.assert_allclose(first.led_bootstrap_ctr_ps,second.led_bootstrap_ctr_ps)
         np.testing.assert_allclose(first.improvement_bootstrap_ps,first.led_bootstrap_ctr_ps-first.corrected_bootstrap_ctr_ps)
+        np.testing.assert_allclose(first.corrected_bootstrap_rmse_ps,second.corrected_bootstrap_rmse_ps)
+        np.testing.assert_allclose(first.led_bootstrap_rmse_ps,second.led_bootstrap_rmse_ps)
+        np.testing.assert_allclose(first.rmse_improvement_bootstrap_ps,first.led_bootstrap_rmse_ps-first.corrected_bootstrap_rmse_ps)
 
     def test_fixed_width_edges_are_outlier_invariant_locally(self):
         core = np.array([-21.0, -4.0, 0.0, 7.0, 24.0])

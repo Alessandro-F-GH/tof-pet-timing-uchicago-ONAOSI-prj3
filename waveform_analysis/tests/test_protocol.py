@@ -56,13 +56,26 @@ def test_results_schema_has_no_legacy_scan_columns():
     assert "voltage" not in RESULT_FIELDS
     assert "threshold" not in RESULT_FIELDS
     assert "hyperparameters" not in RESULT_FIELDS
-    assert set(("seed","stage","model","estimator_formulation","mode","population_identity","candidate_id","ctr_ps","uncorrected_ctr_ps","n","swap_rmse_ps"))<=set(RESULT_FIELDS)
+    required=(
+        "seed","stage","model","estimator_formulation","mode","population_identity","candidate_id",
+        "ctr_ps","ctr_uncertainty_ps","uncorrected_ctr_ps",
+        "rmse_ps","rmse_uncertainty_ps","uncorrected_rmse_ps","rmse_improvement_ps",
+        "n","swap_rmse_ps",
+    )
+    assert set(required)<=set(RESULT_FIELDS)
 
 
 def test_hyperparameter_plot_preserves_full_combinations(tmp_path):
     candidates={"a":{"learning_rate":1e-3,"batch_size":16},"b":{"learning_rate":1e-3,"batch_size":32},"c":{"learning_rate":1e-2,"batch_size":16},"d":{"learning_rate":1e-2,"batch_size":32}}
     rows=[{"seed":seed,"stage":"validation","candidate_id":cid,"ctr_ps":50+i} for seed in (1,2) for i,cid in enumerate(candidates)]
     path=plot_hyperparameter_validation(rows,candidates,tmp_path/"grid.png");assert path is not None and path.is_file()
+
+
+def test_hyperparameter_plot_supports_rmse(tmp_path):
+    candidates={"a":{"learning_rate":1e-3},"b":{"learning_rate":1e-2}}
+    rows=[{"seed":1,"stage":"validation","candidate_id":"a","rmse_ps":30.0},{"seed":1,"stage":"validation","candidate_id":"b","rmse_ps":25.0}]
+    path=plot_hyperparameter_validation(rows,candidates,tmp_path/"rmse.png",metric="rmse_ps",metric_label="RMSE")
+    assert path is not None and path.is_file()
 
 
 def test_one_candidate_has_no_validation_plot(tmp_path):

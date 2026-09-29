@@ -26,10 +26,12 @@ def remake_study_plots(config, *, logger=None):
         candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
         if len(candidates) > 1 and any(r.get("stage") == "validation" for r in rows):
             plot_hyperparameter_validation(
-                rows,
-                candidates,
-                run_dir / "hyperparameter_validation.png",
-                log,
+                rows, candidates, run_dir / "hyperparameter_validation_ctr.png", log,
+                metric="ctr_ps", metric_label="CTR",
+            )
+            plot_hyperparameter_validation(
+                rows, candidates, run_dir / "hyperparameter_validation_rmse.png", log,
+                metric="rmse_ps", metric_label="RMSE",
             )
 
     plots = make_study_result_plots(
@@ -40,11 +42,16 @@ def remake_study_plots(config, *, logger=None):
         window_ns=config["window_ns"],
     )
 
-    if plots.get("paired_improvement") is None:
+    if plots.get("paired_ctr_improvement") is None:
         log.warning(
-            "Paired LED-to-ML bootstrap plot unavailable for %s: no saved paired-bootstrap samples. "
-            "This is expected for runs completed before paired bootstrap persistence was added; "
-            "aggregate CTR rows are insufficient to reconstruct the event-paired bootstrap.",
+            "Paired CTR bootstrap plot unavailable for %s: no saved paired-bootstrap CTR samples.",
+            run_dir,
+        )
+    if plots.get("paired_rmse_improvement") is None:
+        log.warning(
+            "Paired RMSE bootstrap plot unavailable for %s: saved paired-bootstrap files predate RMSE persistence. "
+            "Blind RMSE distributions/correlation can still be remade from results.csv when rmse_ps is present, "
+            "but paired RMSE uncertainty cannot be reconstructed from aggregate rows.",
             run_dir,
         )
     log.info("Plots remade without training | %s", run_dir)
