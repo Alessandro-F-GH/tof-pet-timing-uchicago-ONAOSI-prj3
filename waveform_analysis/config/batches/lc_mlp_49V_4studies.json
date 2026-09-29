@@ -1,0 +1,8 @@
+{
+  "studies": [
+    "../studies/lc_mlp/energy_onishi.json",
+    "../studies/lc_mlp/energy_wide.json",
+    "../studies/lc_mlp/timing_onishi.json",
+    "../studies/lc_mlp/timing_wide.json"
+  ]
+}
