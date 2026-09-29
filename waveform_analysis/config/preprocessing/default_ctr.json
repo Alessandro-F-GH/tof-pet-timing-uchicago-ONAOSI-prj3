@@ -9,6 +9,6 @@
   },
   "photopeak": {"histogram_bin_mV": 1.0, "search_quantile_min": 0.2, "smoothing_sigma_bins": 2.0, "initial_half_width_mV": 15.0, "iteration_sigma": 2.5, "max_iterations": 6, "convergence_tolerance_mV": 0.01, "selection_sigma_low": -2.0, "selection_sigma_high": 4.0},
   "tot_peak": {"histogram_bin_ns": 0.005, "search_quantile_min": 0.5, "smoothing_sigma_bins": 2.0, "initial_half_width_ns": 0.20, "iteration_sigma": 2.5, "max_iterations": 6, "convergence_tolerance_ns": 0.001, "selection_sigma_low": -3.0, "selection_sigma_high": 3.0},
-  "led_selection": {"thresholds_mV": [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0], "minimum_crossing_efficiency": 0.95, "coincidence_window_ns": 2.0},
+  "led_selection": {"thresholds_mV": [5.0, 15.0, 25.0, 35.0, 45.0, 55.0], "minimum_crossing_efficiency": 0.95, "coincidence_window_ns": 2.0},
   "io": {"step_size": "128 MB", "max_events": 0}
 }
