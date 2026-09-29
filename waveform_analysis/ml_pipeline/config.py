@@ -67,8 +67,9 @@ def validate_config(c):
     if float(led["coincidence_window_ns"])<=0:raise ConfigError("invalid LED coincidence window")
     r=c["resampling"]
     if str(r.get("policy","repeated_holdout"))!="repeated_holdout":raise ConfigError("only repeated_holdout is implemented")
-    seeds=r.get("seeds")
-    if not isinstance(seeds,list) or not seeds or len(set(map(int,seeds)))!=len(seeds):raise ConfigError("resampling.seeds must be a non-empty unique list")
+    if "seed" not in r:raise ConfigError("resampling.seed is required")
+    int(r["seed"])
+    if int(r.get("n_bootstrap",0))<1:raise ConfigError("resampling.n_bootstrap must be >=1")
     vf,tf=float(r["validation_fraction"]),float(r["test_fraction"])
     if vf<=0 or tf<=0 or vf+tf>=1:raise ConfigError("validation/test fractions must be positive and sum to <1")
     minimum=int(r["minimum_events_per_split"])
