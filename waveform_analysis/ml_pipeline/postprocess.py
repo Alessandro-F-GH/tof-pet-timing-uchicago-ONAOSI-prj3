@@ -44,14 +44,12 @@ def remake_study_plots(config, *, logger=None):
 
     if plots.get("paired_ctr_improvement") is None:
         log.warning(
-            "Paired CTR bootstrap plot unavailable for %s: no saved paired-bootstrap CTR samples.",
+            "Paired CTR split-distribution plot unavailable for %s: no finite blind split improvements found.",
             run_dir,
         )
     if plots.get("paired_rmse_improvement") is None:
         log.warning(
-            "Paired RMSE bootstrap plot unavailable for %s: saved paired-bootstrap files predate RMSE persistence. "
-            "Blind RMSE distributions/correlation can still be remade from results.csv when rmse_ps is present, "
-            "but paired RMSE uncertainty cannot be reconstructed from aggregate rows.",
+            "Paired RMSE split-distribution plot unavailable for %s: no finite blind split improvements found.",
             run_dir,
         )
     log.info("Plots remade without training | %s", run_dir)
