@@ -90,6 +90,31 @@ Shared artifacts are written once under:
 
 `fixed_validation.npz` contains `tuning_train` and `validation`. A replica `split.npz` contains only `train` and `test`; both are subsets of `tuning_train`, so fixed-validation indices are absent from every replica split.
 
+## Preprocessing diagnostics
+
+Selection diagnostics are produced as part of the cached analysis preprocessing artifact. They are generated once for each analysis dataset and mode and are reused on subsequent runs. Running with `--rebuild-preprocessing` rebuilds the corresponding preprocessing cache and therefore regenerates these plots from the source data.
+
+A batch also publishes one copy of the cached selection diagnostics for each mode under:
+
+```text
+<batch>/preprocessing/
+    energy_to_energy/
+        photopeak_selection.png
+        baseline_noise.png
+        baseline_clipping.png
+        selection_summary.csv
+        selection_manifest.json
+    timing_to_timing/
+        photopeak_selection.png
+        timing_tot_selection.png
+        baseline_noise.png
+        baseline_clipping.png
+        selection_summary.csv
+        selection_manifest.json
+```
+
+These batch diagnostics are based on the exact analysis dataset used by the ML pipeline and on the frozen selection rules derived from the control dataset. They are published once per batch and mode rather than once per model or waveform window. When preprocessing is rebuilt, the batch copy is refreshed from the rebuilt cache.
+
 ## Hyperparameter selection
 
 Hyperparameter selection uses **RMSE in ps on the one fixed validation set**:
