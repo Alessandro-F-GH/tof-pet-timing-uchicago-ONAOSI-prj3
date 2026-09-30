@@ -5,6 +5,7 @@ from pathlib import Path
 from .common import canonical_hash
 
 CHANNEL_MODES=("energy_to_energy","timing_to_timing")
+MODEL_SAVE_POLICIES=("all","first","none")
 class ConfigError(ValueError):pass
 
 @dataclass(frozen=True)
@@ -81,6 +82,11 @@ def _fit(raw):
         if n:warnings.warn("fit.bootstrap_samples is ignored; uncertainty is estimated across replicas",RuntimeWarning,stacklevel=3)
     return f
 
+def _save_models(raw):
+    value=str(raw if raw is not None else "all").strip().lower()
+    if value not in MODEL_SAVE_POLICIES:raise ConfigError(f"save_models must be one of {MODEL_SAVE_POLICIES}")
+    return value
+
 def validate_config(c):
     for key in ("reference","analysis","preprocessing","mode","model","window_ns","resampling","fit","ml_input","ml_output","output_dir"):
         if key not in c:raise ConfigError(f"Missing {key}")
@@ -112,6 +118,7 @@ def validate_config(c):
     if float(c["ml_output"]["max_abs_ps"])<=0:raise ConfigError("ml_output.max_abs_ps must be positive")
     if "bootstrap_samples" in c["fit"]:raise ConfigError("fit.bootstrap_samples is not supported; use replicas")
     if float(c["fit"]["histogram_bin_width_ps"])<=0:raise ConfigError("invalid fit settings")
+    c["save_models"]=_save_models(c.get("save_models","all"))
     from .models import model_names
     if c["model"]["name"] not in model_names():raise ConfigError(f"unregistered model {c['model']['name']}")
 
@@ -127,10 +134,11 @@ def _resolve(source,raw,root):
     else:raise ConfigError("study requires one window or window_name")
     c={"name":str(raw.get("name",source.stem)),"reference":reference,"analysis":analysis,"preprocessing":preprocessing,
        "mode":str(raw["mode"]),"model":model,"window_ns":window,"resampling":_resampling(raw["resampling"]),"fit":_fit(raw["fit"]),
-       "ml_input":copy.deepcopy(raw.get("ml_input",{"subsampling":1})),"ml_output":copy.deepcopy(raw["ml_output"]),"output_dir":_project(root,raw["output_dir"])}
+       "ml_input":copy.deepcopy(raw.get("ml_input",{"subsampling":1})),"ml_output":copy.deepcopy(raw["ml_output"]),"output_dir":_project(root,raw["output_dir"]),
+       "save_models":_save_models(raw.get("save_models","all"))}
     for key in ("study_name","run_id","window_name"):
         if key in raw:c[key]=str(raw[key])
-    validate_config(c);c["_config_path"]=str(source);c["_config_fingerprint"]=canonical_hash(c);return c
+    validate_config(c);c["_config_path"]=str(source);c["_config_fingerprint"]=canonical_hash({k:v for k,v in c.items() if k!="save_models"});return c
 
 def load_config(path,project_root=None,defaults=None):
     source=Path(path).expanduser().resolve();root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1];raw=_read(source)
@@ -152,7 +160,7 @@ def _protocol_value(protocol,key,mode):
 def _compact_batch(source,raw,root):
     for key in ("name","reference_dataset","analysis_dataset","output_dir","protocol","sweep"):
         if key not in raw:raise ConfigError(f"compact batch config requires {key}")
-    protocol=copy.deepcopy(raw["protocol"]);sweep=copy.deepcopy(raw["sweep"])
+    protocol=copy.deepcopy(raw["protocol"]);sweep=copy.deepcopy(raw["sweep"]);save_models=_save_models(raw.get("save_models","all"))
     for key in ("preprocessing_config","resampling","fit","ml_output"):
         if key not in protocol:raise ConfigError(f"protocol.{key} is required")
     models=sweep.get("models");modes=sweep.get("modes");windows=sweep.get("windows");rules=sweep.get("exclude",[])
@@ -174,25 +182,25 @@ def _compact_batch(source,raw,root):
                       "reference_dataset":raw["reference_dataset"],"analysis_dataset":raw["analysis_dataset"],"preprocessing_config":protocol["preprocessing_config"],
                       "model":model_raw,"mode":mode,"window":window,"resampling":protocol["resampling"],"fit":_protocol_value(protocol,"fit",mode),
                       "ml_input":_protocol_value(protocol,"ml_input",mode) if "ml_input" in protocol else {"subsampling":1},
-                      "ml_output":_protocol_value(protocol,"ml_output",mode),"output_dir":str(out/model/_mode_tag(mode)/str(window_name))}
+                      "ml_output":_protocol_value(protocol,"ml_output",mode),"output_dir":str(out/model/_mode_tag(mode)/str(window_name)),"save_models":save_models}
                 runs.append(_resolve(source,item,root))
     if not runs:raise ConfigError("batch sweep produced no runs")
     axes={"models":[m if isinstance(m,str) else str(m.get("name")) for m in models],"modes":[str(m) for m in modes],"windows":{str(k):_window(v) for k,v in windows.items()}}
     normalized={"preprocessing_config":str(protocol["preprocessing_config"]),"resampling":_resampling(protocol["resampling"]),"fit":copy.deepcopy(protocol["fit"]),
-                "ml_input":copy.deepcopy(protocol.get("ml_input",{"subsampling":1})),"ml_output":copy.deepcopy(protocol["ml_output"])}
+                "ml_input":copy.deepcopy(protocol.get("ml_input",{"subsampling":1})),"ml_output":copy.deepcopy(protocol["ml_output"]),"save_models":save_models}
     return BatchConfig(name,str(out.resolve()),str(source),normalized,axes,tuple(runs))
 
 def _legacy_batch(source,raw,root):
     studies=raw.get("studies")
     if not isinstance(studies,list) or not studies:raise ConfigError("batch config requires a non-empty ordered studies list")
     if "reference_dataset" not in raw or "analysis_dataset" not in raw:raise ConfigError("batch config must define shared reference_dataset and analysis_dataset")
-    shared={"reference_dataset":_dataset(source,raw["reference_dataset"],root),"analysis_dataset":_dataset(source,raw["analysis_dataset"],root)}
+    shared={"reference_dataset":_dataset(source,raw["reference_dataset"],root),"analysis_dataset":_dataset(source,raw["analysis_dataset"],root),"save_models":_save_models(raw.get("save_models","all"))}
     runs=tuple(load_config(_rel(source,item),root,defaults=shared) for item in studies);out=os.path.commonpath([c["output_dir"] for c in runs])
-    return BatchConfig(str(raw.get("name",source.stem)),str(Path(out).resolve()),str(source),{}, {},runs)
+    return BatchConfig(str(raw.get("name",source.stem)),str(Path(out).resolve()),str(source),{"save_models":shared["save_models"]},{},runs)
 
 def load_batch_config(path,project_root=None):
     source=Path(path).expanduser().resolve();root=Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1];raw=_read(source)
     return _compact_batch(source,raw,root) if "sweep" in raw or "protocol" in raw else _legacy_batch(source,raw,root)
 
 def public_config(c):return {k:v for k,v in c.items() if not str(k).startswith("_")}
-def public_batch_config(batch):return {"name":batch.name,"output_dir":batch.output_dir,"source_path":batch.source_path,"protocol":batch.protocol,"axes":batch.axes,"runs":[public_config(c) for c in batch.runs]}
+def public_batch_config(batch):return {"name":batch.name,"output_dir":batch.output_dir,"source_path":batch.source_path,"protocol":batch.protocol,"axes":batch.axes,"save_models":batch.runs[0].get("save_models","all") if batch.runs else "all","runs":[public_config(c) for c in batch.runs]}
