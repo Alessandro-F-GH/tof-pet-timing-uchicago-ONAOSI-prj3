@@ -1,0 +1,48 @@
+{
+  "name": "benchmark_other_models_48V",
+  "reference_dataset": "../datasets/control.json",
+  "analysis_dataset": {
+    "root_file": "processed_data/converted_runs_07-13/48V-480mV.root",
+    "true_tof_ps": 0.0,
+    "channels": {
+      "energy": [1, 2],
+      "polarities": [1, 1],
+      "timing": [3, 4],
+      "timing_polarities": [1, 1]
+    }
+  },
+  "output_dir": "results/studies/FBK/benchmark_test",
+  "protocol": {
+    "preprocessing_config": "../preprocessing/default_ctr.json",
+    "resampling": {
+      "policy": "repeated_holdout",
+      "seed": 1001,
+      "n_replicas": 5,
+      "validation_fraction": 0.2,
+      "test_fraction": 0.5,
+      "minimum_events_per_split": 50
+    },
+    "fit": {
+      "energy_to_energy": {"histogram_bin_width_ps": 20.0},
+      "timing_to_timing": {"histogram_bin_width_ps": 10.0}
+    },
+    "ml_input": {"subsampling": 1},
+    "ml_output": {"max_abs_ps": 2000.0}
+  },
+  "sweep": {
+    "models": [
+      "mlp",
+      "locally_connected_mlp",
+      "shared_cnn1d",
+      "direct_mlp",
+      "independent_cnn1d",
+      "minirocket",
+      "onishi_cnn"
+    ],
+    "modes": ["energy_to_energy", "timing_to_timing"],
+    "windows": {
+      "onishi": {"start": -1.5, "end": 2.0},
+      "wide": {"start": -2.0, "end": 30.0}
+    }
+  }
+}
