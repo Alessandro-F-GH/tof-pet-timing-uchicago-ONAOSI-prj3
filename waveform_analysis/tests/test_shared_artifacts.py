@@ -39,11 +39,7 @@ def _config():
 
 
 def test_shared_fixed_validation_and_replica_are_written_once(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        shared_artifacts,
-        "ctr_estimate",
-        lambda *args, **kwargs: SimpleNamespace(ctr_ps=75.0),
-    )
+    monkeypatch.setattr(shared_artifacts, "ctr_estimate", lambda *args, **kwargs: SimpleNamespace(ctr_ps=75.0))
     dataset = DummyDataset(tmp_path / "prepared")
     target = np.linspace(-100.0, 100.0, dataset.n_events)
     store = ExperimentArtifactStore(tmp_path / "artifacts")
@@ -67,18 +63,22 @@ def test_shared_fixed_validation_and_replica_are_written_once(tmp_path, monkeypa
         assert set(data.files) == {"train", "test", "seed"}
 
     assert set(fixed_a.split.validation).isdisjoint(set(replica_a.split.test))
-    assert set(fixed_a.split.validation) <= set(replica_a.split.train)
+    assert set(fixed_a.split.validation).isdisjoint(set(replica_a.split.train))
+    assert set(replica_a.split.train) | set(replica_a.split.test) == set(fixed_a.split.tuning_train)
     assert len(replica_a.split.test) == 50
-    assert len(replica_a.split.train) == 50
+    assert len(replica_a.split.train) == 40
+
+
+def test_sampling_identity_encodes_validation_exclusion_protocol(tmp_path):
+    dataset = DummyDataset(tmp_path / "prepared")
+    store = ExperimentArtifactStore(tmp_path / "artifacts")
+    identity = store._sampling_identity(dataset, _config())
+    assert isinstance(identity, str) and identity
+    assert shared_artifacts.SAMPLING_PROTOCOL == "fixed_validation_excluded_from_replicas_v3"
 
 
 def test_analysis_protocol_separates_shared_population_artifacts(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        shared_artifacts,
-        "ctr_estimate",
-        lambda *args, **kwargs: SimpleNamespace(ctr_ps=75.0),
-    )
-    target = np.linspace(-100.0, 100.0, 100)
+    monkeypatch.setattr(shared_artifacts, "ctr_estimate", lambda *args, **kwargs: SimpleNamespace(ctr_ps=75.0))
     store = ExperimentArtifactStore(tmp_path / "artifacts")
     a_dataset = DummyDataset(tmp_path / "a", protocol="protocol-A")
     b_dataset = DummyDataset(tmp_path / "b", protocol="protocol-B")
@@ -90,26 +90,12 @@ def test_analysis_protocol_separates_shared_population_artifacts(tmp_path, monke
 def test_control_cache_identity_includes_mode_specific_ctr_fit(tmp_path):
     reference = tmp_path / "control.root"
     reference.write_bytes(b"x")
-    dataset = {
-        "root_file": str(reference),
-        "true_tof_ps": 0.0,
-        "channels": {"energy": [1, 2], "timing": [3, 4]},
-    }
+    dataset = {"root_file": str(reference), "true_tof_ps": 0.0, "channels": {"energy": [1, 2], "timing": [3, 4]}}
     preprocessing = {"selection": {}, "led_selection": {}}
     modes = ("energy_to_energy", "timing_to_timing")
-    a = {
-        "energy_to_energy": {"histogram_bin_width_ps": 20.0},
-        "timing_to_timing": {"histogram_bin_width_ps": 10.0},
-    }
-    b = {
-        "energy_to_energy": {"histogram_bin_width_ps": 20.0},
-        "timing_to_timing": {"histogram_bin_width_ps": 20.0},
-    }
-    assert control_preprocessing._artifact_fingerprint(
-        reference, dataset, preprocessing, a, modes
-    ) != control_preprocessing._artifact_fingerprint(
-        reference, dataset, preprocessing, b, modes
-    )
+    a = {"energy_to_energy": {"histogram_bin_width_ps": 20.0}, "timing_to_timing": {"histogram_bin_width_ps": 10.0}}
+    b = {"energy_to_energy": {"histogram_bin_width_ps": 20.0}, "timing_to_timing": {"histogram_bin_width_ps": 20.0}}
+    assert control_preprocessing._artifact_fingerprint(reference, dataset, preprocessing, a, modes) != control_preprocessing._artifact_fingerprint(reference, dataset, preprocessing, b, modes)
 
 
 def test_batch_control_protocol_rejects_mode_dependent_mismatch():
