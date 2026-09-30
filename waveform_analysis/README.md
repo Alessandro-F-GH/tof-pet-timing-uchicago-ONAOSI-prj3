@@ -6,7 +6,7 @@ The waveform analysis uses a fixed-control, repeated-holdout protocol. A resolve
 
 For every repeated-holdout replica, preprocessing and LED selection remain fixed, candidate selection uses only train/validation data, the winning model is refit on train+validation, and the blind split is evaluated once. CTR extraction is a point estimate on each replica: the CTR fit itself is not bootstrapped. Study variation is estimated from the distribution across replica seeds.
 
-Cross-model paired bootstrap is allowed only when analysis dataset, resolved analysis-protocol identity, mode, window, and replica seed match. Energy and timing modes are never pooled.
+Cross-model paired bootstrap is allowed only when analysis dataset, resolved analysis-protocol identity, resampling definition, mode, window, and replica seed match. Energy and timing modes are never pooled.
 
 ## Compact batch configuration
 
@@ -18,6 +18,7 @@ Comparison studies should normally use one batch JSON instead of one JSON per mo
   "reference_dataset": "../datasets/control.json",
   "analysis_dataset": "../datasets/analysis_49V.json",
   "output_dir": "results/studies/benchmark_49V",
+  "save_models": "first",
   "protocol": {
     "preprocessing_config": "../preprocessing/default_ctr.json",
     "resampling": {
@@ -46,11 +47,17 @@ Comparison studies should normally use one batch JSON instead of one JSON per mo
 }
 ```
 
+`save_models` controls only fitted-model persistence and does not change the scientific configuration fingerprint:
+
+- `"all"` (default): save the final refitted model for every repeated-holdout replica.
+- `"first"`: save only the final refitted model from the first replica. Hyperparameter-candidate models are never saved.
+- `"none"`: save no fitted models. Blind residuals/predictions are still stored, so reporting and output-correlation analysis remain available.
+
 Optional `sweep.exclude` entries remove exceptional combinations without enumerating the remaining runs. Legacy explicit study-list batches remain readable; legacy `resampling.n_bootstrap` is interpreted as `n_replicas`, while `fit.bootstrap_samples` is ignored because fit-level bootstrap is no longer part of the ML pipeline.
 
 ## Shared batch artifacts
 
-A compact batch stores model-independent artifacts once under `artifacts/populations/`. A population is identified by the resolved analysis protocol; each replica stores one positional `split.npz`, one blind LED reference, and one LED baseline point estimate. Every model using that same population and seed reuses those files. Model run directories therefore keep only model-specific results, residuals/predictions, fitted models, and diagnostics.
+A compact batch stores model-independent artifacts once under `artifacts/populations/`. A population is identified by the resolved analysis protocol; each replica stores one positional `split.npz`, one blind LED reference, and one LED baseline point estimate. Every model using that same population and seed reuses those files. Model run directories therefore keep only model-specific results, residuals/predictions, optionally fitted models, and diagnostics.
 
 The event-population identity and analysis-protocol identity are distinct. Split generation is tied to the event population, while paired model comparison requires the stricter analysis-protocol identity so studies with coincidentally identical event IDs but different preprocessing/control definitions are not treated as paired.
 
@@ -84,6 +91,8 @@ python -m waveform_analysis.cli report \
   --output-dir results/reports/A_vs_B
 ```
 
-Reports are grouped by model, mode, and window. They contain seed-level mean/std summaries, replica-level paired bootstrap comparisons where pairing is valid, one paired LED-to-ML improvement plot per mode/window, and one model CTR comparison plot per mode/window.
+Reports are grouped by model, mode, and window. They contain seed-level mean/std summaries, replica-level paired bootstrap comparisons where pairing is valid, one paired LED-to-ML improvement plot per mode/window, one model CTR comparison plot per mode/window, and model-output correlation matrices for every compatible dataset/protocol/mode/window group.
 
-A compact batch writes a root `manifest.json`, `runs.csv`, and shared `artifacts/`. Each resolved model run stores its own `manifest.json`, `resolved_config.json`, `results.csv`, candidates, fitted models, model-dependent blind residuals, and plots; it references the shared replica artifacts instead of duplicating split and LED arrays.
+Model-output correlation uses the actual blind-event model outputs. Pearson correlation is computed separately inside each matched repeated-holdout replica; replica correlations are combined with a Fisher-z mean. Modes and windows are never mixed. The report writes a heatmap, a correlation-matrix CSV, a matched-replica-count matrix, and a long-form `model_output_correlations.csv`.
+
+A compact batch writes a root `manifest.json`, `runs.csv`, and shared `artifacts/`. Each resolved model run stores its own `manifest.json`, `resolved_config.json`, `results.csv`, candidates, model-dependent blind residuals, and plots; fitted models are stored according to `save_models`, and shared replica artifacts are referenced instead of duplicated.
