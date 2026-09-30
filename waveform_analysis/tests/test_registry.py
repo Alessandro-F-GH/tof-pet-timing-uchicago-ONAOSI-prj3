@@ -8,7 +8,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(
             set(model_names()),
             {
-                "mlp",
+                "antisymmetric_mlp",
                 "locally_connected_mlp",
                 "shared_cnn1d",
                 "direct_mlp",
