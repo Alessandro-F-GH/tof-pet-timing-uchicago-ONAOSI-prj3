@@ -12,7 +12,7 @@
     }
   },
   "output_dir": "results/studies/FBK/benchmark_test",
-  "save_models": "all",
+  "save_models": "none",
   "protocol": {
     "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
