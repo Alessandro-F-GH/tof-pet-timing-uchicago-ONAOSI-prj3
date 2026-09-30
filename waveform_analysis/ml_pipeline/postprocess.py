@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 
+from .config import BatchConfig
 from .hyperparameter_plot import plot_hyperparameter_validation
 from .result_plots import make_study_result_plots
 from .storage import RunStore
@@ -41,22 +42,12 @@ def remake_study_plots(config, *, logger=None):
         mode=config["mode"],
         window_ns=config["window_ns"],
     )
-
-    if plots.get("paired_ctr_improvement") is None:
-        log.warning(
-            "Paired CTR split-distribution plot unavailable for %s: no finite blind split improvements found.",
-            run_dir,
-        )
-    if plots.get("paired_rmse_improvement") is None:
-        log.warning(
-            "Paired RMSE split-distribution plot unavailable for %s: no finite blind split improvements found.",
-            run_dir,
-        )
     log.info("Plots remade without training | %s", run_dir)
     return plots
 
 
-def remake_batch_plots(configs, *, logger=None):
+def remake_batch_plots(batch, *, logger=None):
+    configs = batch.runs if isinstance(batch, BatchConfig) else batch
     outputs = []
     total = len(configs)
     for i, config in enumerate(configs, 1):

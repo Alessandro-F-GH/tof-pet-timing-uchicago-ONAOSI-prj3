@@ -18,35 +18,31 @@ def rmse_ps(values: np.ndarray) -> float:
 
 @dataclass(frozen=True)
 class PairedCTRImprovement:
+    """One LED-vs-ML point estimate on one blind repeated-holdout replica."""
+
     corrected_ctr_ps: float
-    corrected_ctr_error_ps: float
     led_ctr_ps: float
-    led_ctr_error_ps: float
     improvement_ps: float
-    improvement_error_ps: float
     improvement_fraction: float
     improvement_percent: float
-    improvement_ci_low_ps: float
-    improvement_ci_high_ps: float
     corrected_rmse_ps: float
-    corrected_rmse_error_ps: float
     led_rmse_ps: float
-    led_rmse_error_ps: float
     rmse_improvement_ps: float
-    rmse_improvement_error_ps: float
     rmse_improvement_fraction: float
     rmse_improvement_percent: float
-    rmse_improvement_ci_low_ps: float
-    rmse_improvement_ci_high_ps: float
-    bootstrap_requested: int
-    bootstrap_successful: int
-    rmse_bootstrap_successful: int
-    corrected_bootstrap_ctr_ps: np.ndarray
-    led_bootstrap_ctr_ps: np.ndarray
-    improvement_bootstrap_ps: np.ndarray
-    corrected_bootstrap_rmse_ps: np.ndarray
-    led_bootstrap_rmse_ps: np.ndarray
-    rmse_improvement_bootstrap_ps: np.ndarray
+
+
+@dataclass(frozen=True)
+class PairedReplicaSummary:
+    """Paired uncertainty summary using replicas, never events, as the unit."""
+
+    n_pairs: int
+    reference_mean: float
+    candidate_mean: float
+    difference_mean: float
+    difference_std: float
+    ci_low: float
+    ci_high: float
 
 
 def paired_ctr_improvement(
@@ -54,15 +50,13 @@ def paired_ctr_improvement(
     led_ps: np.ndarray,
     fit_cfg: dict,
     *,
-    seed: int,
+    seed: int | None = None,
 ) -> PairedCTRImprovement:
-    """Evaluate LED and ML on one blind split without any inner resampling.
+    """Evaluate LED and ML on one blind split without resampling events.
 
-    Corrected and LED metrics use exactly the same event population.  The split is
-    the statistical unit for the study-level paired comparison: this function
-    therefore returns one point estimate per split and deliberately performs no
-    event-level bootstrap.  Positive improvement means baseline metric -
-    corrected metric > 0.
+    The repeated-holdout replica is the statistical unit.  This function only
+    computes the point estimate for that replica; study-level variation is
+    estimated later from the collection of replica seeds.
     """
     corrected = np.asarray(corrected_ps, dtype=np.float64).reshape(-1)
     led = np.asarray(led_ps, dtype=np.float64).reshape(-1)
@@ -74,8 +68,8 @@ def paired_ctr_improvement(
     if corrected.size < 5:
         raise ValueError("paired comparison requires at least 5 finite event pairs")
 
-    corrected_point = ctr_estimate(corrected, fit_cfg, seed=int(seed), bootstrap=False)
-    led_point = ctr_estimate(led, fit_cfg, seed=int(seed), bootstrap=False)
+    corrected_point = ctr_estimate(corrected, fit_cfg, seed=seed, bootstrap=False)
+    led_point = ctr_estimate(led, fit_cfg, seed=seed, bootstrap=False)
     ctr_improvement = float(led_point.ctr_ps - corrected_point.ctr_ps)
     ctr_fraction = ctr_improvement / float(led_point.ctr_ps) if led_point.ctr_ps != 0 else float("nan")
 
@@ -84,38 +78,62 @@ def paired_ctr_improvement(
     rmse_improvement = float(led_rmse - corrected_rmse)
     rmse_fraction = rmse_improvement / led_rmse if led_rmse != 0 else float("nan")
 
-    empty = np.empty(0, dtype=np.float64)
-    nan = float("nan")
     return PairedCTRImprovement(
         corrected_ctr_ps=float(corrected_point.ctr_ps),
-        corrected_ctr_error_ps=nan,
         led_ctr_ps=float(led_point.ctr_ps),
-        led_ctr_error_ps=nan,
         improvement_ps=ctr_improvement,
-        improvement_error_ps=nan,
         improvement_fraction=float(ctr_fraction),
         improvement_percent=float(100.0 * ctr_fraction),
-        improvement_ci_low_ps=nan,
-        improvement_ci_high_ps=nan,
         corrected_rmse_ps=corrected_rmse,
-        corrected_rmse_error_ps=nan,
         led_rmse_ps=led_rmse,
-        led_rmse_error_ps=nan,
         rmse_improvement_ps=rmse_improvement,
-        rmse_improvement_error_ps=nan,
         rmse_improvement_fraction=float(rmse_fraction),
         rmse_improvement_percent=float(100.0 * rmse_fraction),
-        rmse_improvement_ci_low_ps=nan,
-        rmse_improvement_ci_high_ps=nan,
-        bootstrap_requested=0,
-        bootstrap_successful=0,
-        rmse_bootstrap_successful=0,
-        corrected_bootstrap_ctr_ps=empty.copy(),
-        led_bootstrap_ctr_ps=empty.copy(),
-        improvement_bootstrap_ps=empty.copy(),
-        corrected_bootstrap_rmse_ps=empty.copy(),
-        led_bootstrap_rmse_ps=empty.copy(),
-        rmse_improvement_bootstrap_ps=empty.copy(),
+    )
+
+
+def paired_replica_difference(
+    reference_values: np.ndarray,
+    candidate_values: np.ndarray,
+    *,
+    seed: int = 1729,
+    n_bootstrap: int = 5000,
+    confidence: float = 0.90,
+) -> PairedReplicaSummary:
+    """Bootstrap paired *replica-level* differences.
+
+    Inputs must already be aligned by repeated-holdout seed and must refer to the
+    same analysis dataset, mode, and waveform window.  Positive difference means
+    ``reference - candidate > 0``.
+    """
+    reference = np.asarray(reference_values, dtype=np.float64).reshape(-1)
+    candidate = np.asarray(candidate_values, dtype=np.float64).reshape(-1)
+    if reference.shape != candidate.shape:
+        raise ValueError("paired replica arrays must have the same shape")
+    finite = np.isfinite(reference) & np.isfinite(candidate)
+    reference = reference[finite]
+    candidate = candidate[finite]
+    if not reference.size:
+        raise ValueError("paired replica comparison requires at least one finite pair")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must lie in (0, 1)")
+    if n_bootstrap < 1:
+        raise ValueError("n_bootstrap must be >= 1")
+
+    differences = reference - candidate
+    rng = np.random.default_rng(int(seed))
+    draw = rng.integers(0, differences.size, size=(int(n_bootstrap), differences.size))
+    bootstrap_means = differences[draw].mean(axis=1)
+    alpha = 1.0 - float(confidence)
+
+    return PairedReplicaSummary(
+        n_pairs=int(differences.size),
+        reference_mean=float(np.mean(reference)),
+        candidate_mean=float(np.mean(candidate)),
+        difference_mean=float(np.mean(differences)),
+        difference_std=float(np.std(differences, ddof=1)) if differences.size > 1 else 0.0,
+        ci_low=float(np.quantile(bootstrap_means, alpha / 2.0)),
+        ci_high=float(np.quantile(bootstrap_means, 1.0 - alpha / 2.0)),
     )
 
 
