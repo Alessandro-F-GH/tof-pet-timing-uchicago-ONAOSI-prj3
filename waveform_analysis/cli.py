@@ -26,7 +26,7 @@ def _config_path(path):
 def _parser():
     parser = argparse.ArgumentParser(
         prog="python -m waveform_analysis.cli",
-        description="TOF-PET fixed-control preprocessing + repeated-holdout ML studies",
+        description="TOF-PET fixed-control ML studies with fixed hyperparameter validation and blind replicas",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -55,32 +55,50 @@ def _parser():
     remake_batch = sub.add_parser("remake-batch-plots")
     remake_batch.add_argument("--config", type=Path, required=True)
 
-    report = sub.add_parser("report", help="Compare completed study results by model, mode, and window")
+    report = sub.add_parser(
+        "report",
+        help="Compare completed replica results by model, mode, and window",
+    )
     source = report.add_mutually_exclusive_group(required=True)
     source.add_argument("--batch-config", type=Path)
     source.add_argument("--studies", type=Path, nargs="+")
     report.add_argument("--output-dir", type=Path)
 
-    scan = sub.add_parser("ctr-binning-scan", help="Recompute blind CTR for multiple histogram bin widths and correlate with RMSE")
+    scan = sub.add_parser(
+        "ctr-binning-scan",
+        help="Recompute blind-replica CTR for multiple histogram bin widths and correlate with RMSE",
+    )
     scan.add_argument("--config", type=Path, required=True)
-    scan.add_argument("--bin-widths", type=float, nargs="+", default=[5.0, 7.5, 10.0, 12.5, 15.0, 20.0])
+    scan.add_argument(
+        "--bin-widths",
+        type=float,
+        nargs="+",
+        default=[5.0, 7.5, 10.0, 12.5, 15.0, 20.0],
+    )
     return parser
 
 
 def _validate_remake_args(args):
     if not getattr(args, "remake_plots", False):
         return
-    if getattr(args, "overwrite", False) or getattr(args, "resume", False) or getattr(args, "rebuild_preprocessing", False):
-        raise SystemExit("--remake-plots cannot be combined with --overwrite, --resume, or --rebuild-preprocessing")
+    if (
+        getattr(args, "overwrite", False)
+        or getattr(args, "resume", False)
+        or getattr(args, "rebuild_preprocessing", False)
+    ):
+        raise SystemExit(
+            "--remake-plots cannot be combined with --overwrite, --resume, or --rebuild-preprocessing"
+        )
 
 
 def main():
     args = _parser().parse_args()
 
     if args.command == "check":
-        cfg = load_config(_config_path(args.config), PROJECT_ROOT)
-        print(json.dumps(public_config(cfg), indent=2))
+        config = load_config(_config_path(args.config), PROJECT_ROOT)
+        print(json.dumps(public_config(config), indent=2))
         return
+
     if args.command == "check-batch":
         batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
         print(json.dumps(public_batch_config(batch), indent=2))
@@ -101,16 +119,16 @@ def main():
         return
 
     if args.command == "ctr-binning-scan":
-        cfg = load_config(_config_path(args.config), PROJECT_ROOT)
-        outputs = run_ctr_binning_scan(cfg, args.bin_widths, logger=logger)
+        config = load_config(_config_path(args.config), PROJECT_ROOT)
+        outputs = run_ctr_binning_scan(config, args.bin_widths, logger=logger)
         for path in outputs.values():
             print(Path(path).resolve())
         return
 
     if args.command == "remake-plots":
-        cfg = load_config(_config_path(args.config), PROJECT_ROOT)
-        remake_study_plots(cfg, logger=logger)
-        print(Path(cfg["output_dir"]).resolve())
+        config = load_config(_config_path(args.config), PROJECT_ROOT)
+        remake_study_plots(config, logger=logger)
+        print(Path(config["output_dir"]).resolve())
         return
 
     if args.command == "remake-batch-plots":
@@ -127,22 +145,29 @@ def main():
             for run_dir, _ in remake_batch_plots(batch, logger=logger):
                 print(run_dir)
             return
-        for out in run_batch(
+        for output in run_batch(
             batch,
             overwrite=args.overwrite,
             resume=args.resume,
             rebuild_preprocessing=args.rebuild_preprocessing,
             logger=logger,
         ):
-            print(out)
+            print(output)
         return
 
-    cfg = load_config(_config_path(args.config), PROJECT_ROOT)
+    config = load_config(_config_path(args.config), PROJECT_ROOT)
     if args.remake_plots:
-        remake_study_plots(cfg, logger=logger)
-        print(Path(cfg["output_dir"]).resolve())
+        remake_study_plots(config, logger=logger)
+        print(Path(config["output_dir"]).resolve())
         return
-    print(run_study(cfg, overwrite=args.overwrite, resume=args.resume, rebuild_preprocessing=args.rebuild_preprocessing))
+    print(
+        run_study(
+            config,
+            overwrite=args.overwrite,
+            resume=args.resume,
+            rebuild_preprocessing=args.rebuild_preprocessing,
+        )
+    )
 
 
 if __name__ == "__main__":

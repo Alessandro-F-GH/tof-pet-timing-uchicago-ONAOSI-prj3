@@ -1,16 +1,30 @@
 # Waveform ML pipeline
 
-The waveform analysis uses a fixed-control, repeated-holdout protocol. A resolved run is one `dataset + mode + model + window`; a batch generates and organizes those runs while owning model-independent experiment artifacts.
+The waveform ML benchmark uses one fixed hyperparameter-selection split followed by repeated blind replicas.
 
-## Statistical protocol
+## Protocol
 
-For every repeated-holdout replica, preprocessing and LED selection remain fixed, candidate selection uses only train/validation data, the winning model is refit on train+validation, and the blind split is evaluated once. CTR extraction is a point estimate on each replica: the CTR fit itself is not bootstrapped. Study variation is estimated from the distribution across replica seeds.
+For each resolved `dataset + mode + model + window` run:
 
-Cross-model paired bootstrap is allowed only when analysis dataset, resolved analysis-protocol identity, resampling definition, mode, window, and replica seed match. Energy and timing modes are never pooled.
+1. A **fixed validation set** is drawn once from the prepared population using the batch seed.
+2. Every hyperparameter candidate is trained once on the complementary tuning-training pool and evaluated only on that fixed validation set.
+3. The best candidate is selected by fixed-validation CTR and its configuration is frozen.
+4. The validation set stops being an evaluation set. For replica `r`, the blind test is sampled only from the original non-validation pool, using a deterministic replica seed derived from the same batch seed.
+5. The replica model is fit **once** on `fixed validation + all non-blind events` and evaluated once on that replica's blind test.
+
+The hyperparameter-tuning pass is not a replica and is not included in replica uncertainty.
+
+With `validation_fraction = 0.10` and `blind_fraction = 0.50`, 10% of the full population is fixed validation, each blind test contains 50% of the full population sampled from the remaining 90%, and each replica model is trained on the other 50%.
+
+The protocol requires
+
+```text
+validation_fraction + blind_fraction < 1
+```
+
+so every replica retains a variable non-validation training subset.
 
 ## Compact batch configuration
-
-Comparison studies should normally use one batch JSON instead of one JSON per model/mode/window combination. Shared protocol choices are written once and the batch expands the Cartesian product of models, modes, and named windows. Mode-specific protocol values are supported when scientifically required, for example different CTR histogram bin widths for energy and timing.
 
 ```json
 {
@@ -20,13 +34,14 @@ Comparison studies should normally use one batch JSON instead of one JSON per mo
   "output_dir": "results/studies/benchmark_49V",
   "save_models": "first",
   "protocol": {
+    "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
-    "resampling": {
-      "policy": "repeated_holdout",
-      "seed": 1001,
+    "model_selection": {
+      "validation_fraction": 0.10
+    },
+    "evaluation": {
       "n_replicas": 50,
-      "validation_fraction": 0.20,
-      "test_fraction": 0.50,
+      "blind_fraction": 0.50,
       "minimum_events_per_split": 50
     },
     "fit": {
@@ -47,52 +62,83 @@ Comparison studies should normally use one batch JSON instead of one JSON per mo
 }
 ```
 
-`save_models` controls only fitted-model persistence and does not change the scientific configuration fingerprint:
+The configuration schema is strict: only the fields shown above are accepted. There is no compatibility path for previous experiment layouts.
 
-- `"all"` (default): save the final refitted model for every repeated-holdout replica.
-- `"first"`: save only the final refitted model from the first replica. Hyperparameter-candidate models are never saved.
-- `"none"`: save no fitted models. Blind residuals/predictions are still stored, so reporting and output-correlation analysis remain available.
+## Seeds and shared artifacts
 
-Optional `sweep.exclude` entries remove exceptional combinations without enumerating the remaining runs. Legacy explicit study-list batches remain readable; legacy `resampling.n_bootstrap` is interpreted as `n_replicas`, while `fit.bootstrap_samples` is ignored because fit-level bootstrap is no longer part of the ML pipeline.
+`protocol.seed` is the only sampling seed supplied by the batch.
 
-## Shared batch artifacts
+- fixed validation seed: derived from `protocol.seed + population identity`
+- replica seed: derived from `protocol.seed + population identity + replica index`
 
-A compact batch stores model-independent artifacts once under `artifacts/populations/`. A population is identified by the resolved analysis protocol; each replica stores one positional `split.npz`, one blind LED reference, and one LED baseline point estimate. Every model using that same population and seed reuses those files. Model run directories therefore keep only model-specific results, residuals/predictions, optionally fitted models, and diagnostics.
+Models sharing the same prepared population and sampling protocol therefore reuse exactly the same fixed validation split and replica blind tests.
 
-The event-population identity and analysis-protocol identity are distinct. Split generation is tied to the event population, while paired model comparison requires the stricter analysis-protocol identity so studies with coincidentally identical event IDs but different preprocessing/control definitions are not treated as paired.
+Shared artifacts are written once under:
 
-Control LED-selection cache identity includes the mode-specific CTR fit definition. This makes the energy/timing LED threshold selection independent of batch execution order. When preprocessing is explicitly rebuilt, the batch rebuilds each shared control/mode/window scope once rather than once per model.
+```text
+<batch>/artifacts/populations/<population>/sampling/<sampling-id>/
+    fixed_validation.npz
+    manifest.json
+    replicas/
+        replica_001_seed_<seed>/
+            split.npz
+            blind_reference.npz
+            baseline_<fit-id>.json
+        ...
+```
+
+`fixed_validation.npz` contains `tuning_train` and `validation`. A replica `split.npz` contains only `train` and `test`; the fixed validation indices are already included in replica `train`.
+
+## Results
+
+Each run writes one `results.csv` with two explicit phases:
+
+- `phase = hyperparameter_validation`: one row per candidate, evaluated on the one fixed validation set; `replica_index` is empty.
+- `phase = replica`: one row per blind replica using the selected frozen configuration; `replica_index = 1..N`.
+
+`selected_hyperparameters.json` records the chosen candidate and the fixed-validation selection rule.
+
+Once hyperparameters are frozen, each replica consists of one fit and one blind evaluation.
+
+## Model persistence
+
+Batch `save_models` accepts:
+
+- `all`: save the fitted model from every replica.
+- `first`: save only the fitted model from replica 1.
+- `none`: save no fitted replica model.
+
+Hyperparameter-tuning candidate models are never saved. `first` always means the first blind replica, never the fixed-validation tuning fit.
+
+Blind residuals are retained independently of model persistence, so reporting and output-correlation analysis work with `save_models: "none"`.
+
+## Reporting
+
+Reports use only `phase = replica` rows for uncertainty and model comparison.
+
+Paired model comparisons require the same:
+
+- analysis dataset and analysis-protocol identity,
+- sampling identity,
+- mode,
+- waveform window,
+- replica index.
+
+Energy and timing modes are never pooled.
+
+The report includes:
+
+- replica CTR/RMSE summaries,
+- paired LED-to-ML improvements,
+- paired model CTR comparisons,
+- model-output Pearson-correlation matrices.
+
+Model-output correlation is computed event-by-event inside each matched blind replica and combined across replicas with a Fisher-z mean.
 
 ## Commands
 
-Validate a batch:
-
 ```bash
-python -m waveform_analysis.cli check-batch --config config/batches/benchmark_49V.json
+python -m waveform_analysis.cli check-batch --config config/batches/benchmark_other_models_49V.json
+python -m waveform_analysis.cli batch --config config/batches/benchmark_other_models_49V.json
+python -m waveform_analysis.cli report --batch-config config/batches/benchmark_other_models_49V.json
 ```
-
-Run it:
-
-```bash
-python -m waveform_analysis.cli batch --config config/batches/benchmark_49V.json
-```
-
-Report one batch:
-
-```bash
-python -m waveform_analysis.cli report --batch-config config/batches/benchmark_49V.json
-```
-
-Report multiple completed studies or batch result roots:
-
-```bash
-python -m waveform_analysis.cli report \
-  --studies results/studies/study_A results/studies/study_B \
-  --output-dir results/reports/A_vs_B
-```
-
-Reports are grouped by model, mode, and window. They contain seed-level mean/std summaries, replica-level paired bootstrap comparisons where pairing is valid, one paired LED-to-ML improvement plot per mode/window, one model CTR comparison plot per mode/window, and model-output correlation matrices for every compatible dataset/protocol/mode/window group.
-
-Model-output correlation uses the actual blind-event model outputs. Pearson correlation is computed separately inside each matched repeated-holdout replica; replica correlations are combined with a Fisher-z mean. Modes and windows are never mixed. The report writes a heatmap, a correlation-matrix CSV, a matched-replica-count matrix, and a long-form `model_output_correlations.csv`.
-
-A compact batch writes a root `manifest.json`, `runs.csv`, and shared `artifacts/`. Each resolved model run stores its own `manifest.json`, `resolved_config.json`, `results.csv`, candidates, model-dependent blind residuals, and plots; fitted models are stored according to `save_models`, and shared replica artifacts are referenced instead of duplicated.

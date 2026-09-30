@@ -9,17 +9,25 @@ from pathlib import Path
 import numpy as np
 
 from .common import atomic_json, canonical_hash
-from .splits import ResamplingSplit, make_resampling_split, semantic_seed
+from .splits import FixedValidationSplit, ReplicaSplit, make_fixed_validation_split, make_replica_split
 from .stats import ctr_estimate, rmse_ps
+
+
+@dataclass(frozen=True)
+class SharedValidationArtifacts:
+    directory: Path
+    split: FixedValidationSplit
+    sampling_identity: str
 
 
 @dataclass(frozen=True)
 class SharedReplicaArtifacts:
     directory: Path
-    split: ResamplingSplit
+    split: ReplicaSplit
     led_ps: np.ndarray
     led_ctr_ps: float
     led_rmse_ps: float
+    sampling_identity: str
 
 
 def _atomic_npz(path: Path, **arrays) -> None:
@@ -43,28 +51,41 @@ def _safe(text: object) -> str:
 
 
 class ExperimentArtifactStore:
-    """Batch-level storage for artifacts that do not depend on the ML model."""
+    """Batch-level storage for model-independent tuning and replica artifacts."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _population_dir(self, dataset, config) -> Path:
-        protocol_identity = str(dataset.manifest.get("analysis_protocol_identity") or dataset.manifest["analysis_population_identity"])
+        protocol_identity = str(dataset.manifest["analysis_protocol_identity"])
         mode = "energy" if config["mode"] == "energy_to_energy" else "timing"
-        window = config.get("window_name") or f"{float(config['window_ns']['start']):g}_{float(config['window_ns']['end']):g}ns"
+        window = config.get("window_name") or (
+            f"{float(config['window_ns']['start']):g}_{float(config['window_ns']['end']):g}ns"
+        )
         return self.root / "populations" / f"{mode}__{_safe(window)}__{protocol_identity[:12]}"
 
-    def prepare_replica(self, dataset, config, seed: int, target: np.ndarray) -> SharedReplicaArtifacts:
-        protocol_identity = str(dataset.manifest.get("analysis_protocol_identity") or dataset.manifest["analysis_population_identity"])
-        event_population_identity = str(dataset.manifest.get("event_population_identity") or dataset.manifest.get("analysis_population_identity"))
+    def _sampling_identity(self, dataset, config) -> str:
+        return canonical_hash({
+            "event_population_identity": str(dataset.manifest["event_population_identity"]),
+            "batch_seed": int(config["seed"]),
+            "validation_fraction": float(config["model_selection"]["validation_fraction"]),
+            "blind_fraction": float(config["evaluation"]["blind_fraction"]),
+            "minimum_events_per_split": int(config["evaluation"]["minimum_events_per_split"]),
+        })
+
+    def prepare_fixed_validation(self, dataset, config) -> SharedValidationArtifacts:
+        protocol_identity = str(dataset.manifest["analysis_protocol_identity"])
+        event_identity = str(dataset.manifest["event_population_identity"])
+        sampling_identity = self._sampling_identity(dataset, config)
         population_dir = self._population_dir(dataset, config)
-        population_dir.mkdir(parents=True, exist_ok=True)
+        sampling_dir = population_dir / "sampling" / sampling_identity[:16]
+        sampling_dir.mkdir(parents=True, exist_ok=True)
 
         population_manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "analysis_protocol_identity": protocol_identity,
-            "event_population_identity": event_population_identity,
+            "event_population_identity": event_identity,
             "prepared_dataset": str(Path(dataset.directory).resolve()),
             "analysis_source": dataset.manifest.get("analysis_source"),
             "mode": config["mode"],
@@ -72,56 +93,118 @@ class ExperimentArtifactStore:
             "window_ns": config["window_ns"],
             "n_events": int(dataset.n_events),
         }
-        manifest_path = population_dir / "manifest.json"
-        if manifest_path.is_file():
-            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        population_manifest_path = population_dir / "manifest.json"
+        if population_manifest_path.is_file():
+            existing = json.loads(population_manifest_path.read_text(encoding="utf-8"))
             for key in ("analysis_protocol_identity", "event_population_identity", "n_events"):
                 if existing.get(key) != population_manifest.get(key):
                     raise RuntimeError(f"Shared population artifact mismatch for {key}: {population_dir}")
         else:
-            atomic_json(manifest_path, population_manifest)
+            atomic_json(population_manifest_path, population_manifest)
 
-        resampling = config["resampling"]
-        resampling_identity = canonical_hash({
-            "policy": resampling.get("policy", "repeated_holdout"),
-            "event_population_identity": event_population_identity,
-            "validation_fraction": float(resampling["validation_fraction"]),
-            "test_fraction": float(resampling["test_fraction"]),
-            "minimum_events_per_split": int(resampling["minimum_events_per_split"]),
-        })
-        replica_dir = population_dir / "resampling" / resampling_identity[:16] / f"seed_{int(seed)}"
+        split = make_fixed_validation_split(
+            dataset.n_events,
+            analysis_identity=event_identity,
+            batch_seed=int(config["seed"]),
+            validation_fraction=float(config["model_selection"]["validation_fraction"]),
+        )
+        minimum = int(config["evaluation"]["minimum_events_per_split"])
+        if min(len(split.tuning_train), len(split.validation)) < minimum:
+            raise RuntimeError(
+                f"Fixed model-selection split violates minimum_events_per_split={minimum}"
+            )
+
+        split_path = sampling_dir / "fixed_validation.npz"
+        if split_path.is_file():
+            with np.load(split_path) as data:
+                saved = FixedValidationSplit(
+                    tuning_train=np.asarray(data["tuning_train"], dtype=np.int64),
+                    validation=np.asarray(data["validation"], dtype=np.int64),
+                    seed=int(data["seed"]),
+                )
+            saved.validate(dataset.n_events)
+            if (
+                saved.seed != split.seed
+                or not np.array_equal(saved.tuning_train, split.tuning_train)
+                or not np.array_equal(saved.validation, split.validation)
+            ):
+                raise RuntimeError(f"Shared fixed validation split mismatch: {split_path}")
+            split = saved
+        else:
+            _atomic_npz(
+                split_path,
+                tuning_train=split.tuning_train,
+                validation=split.validation,
+                seed=np.asarray(split.seed, dtype=np.int64),
+            )
+
+        manifest = {
+            "schema_version": 2,
+            "sampling_identity": sampling_identity,
+            "batch_seed": int(config["seed"]),
+            "fixed_validation_seed": int(split.seed),
+            "validation_fraction": float(config["model_selection"]["validation_fraction"]),
+            "blind_fraction": float(config["evaluation"]["blind_fraction"]),
+            "n_events": int(dataset.n_events),
+            "n_tuning_train": int(len(split.tuning_train)),
+            "n_validation": int(len(split.validation)),
+            "split_path": str(split_path.resolve()),
+        }
+        atomic_json(sampling_dir / "manifest.json", manifest)
+        return SharedValidationArtifacts(
+            directory=sampling_dir.resolve(),
+            split=split,
+            sampling_identity=sampling_identity,
+        )
+
+    def prepare_replica(
+        self,
+        dataset,
+        config,
+        replica_index: int,
+        target: np.ndarray,
+        fixed: SharedValidationArtifacts | None = None,
+    ) -> SharedReplicaArtifacts:
+        fixed = fixed or self.prepare_fixed_validation(dataset, config)
+        split = make_replica_split(
+            dataset.n_events,
+            fixed.split,
+            analysis_identity=str(dataset.manifest["event_population_identity"]),
+            batch_seed=int(config["seed"]),
+            replica_index=int(replica_index),
+            blind_fraction=float(config["evaluation"]["blind_fraction"]),
+        )
+        minimum = int(config["evaluation"]["minimum_events_per_split"])
+        if min(len(split.train), len(split.test)) < minimum:
+            raise RuntimeError(
+                f"Replica {replica_index} violates minimum_events_per_split={minimum}"
+            )
+
+        replica_dir = (
+            fixed.directory
+            / "replicas"
+            / f"replica_{int(replica_index):03d}_seed_{int(split.seed)}"
+        )
         replica_dir.mkdir(parents=True, exist_ok=True)
-
         split_path = replica_dir / "split.npz"
         if split_path.is_file():
             with np.load(split_path) as data:
-                split = ResamplingSplit(np.asarray(data["train"], dtype=np.int64), np.asarray(data["validation"], dtype=np.int64), np.asarray(data["test"], dtype=np.int64))
-            split.validate(dataset.n_events)
+                saved_train = np.asarray(data["train"], dtype=np.int64)
+                saved_test = np.asarray(data["test"], dtype=np.int64)
+                saved_seed = int(data["seed"])
+            if (
+                saved_seed != split.seed
+                or not np.array_equal(saved_train, split.train)
+                or not np.array_equal(saved_test, split.test)
+            ):
+                raise RuntimeError(f"Shared replica split mismatch: {split_path}")
         else:
-            split = make_resampling_split(
-                dataset.n_events,
-                analysis_identity=event_population_identity,
-                resampling_seed=int(seed),
-                validation_fraction=float(resampling["validation_fraction"]),
-                test_fraction=float(resampling["test_fraction"]),
+            _atomic_npz(
+                split_path,
+                train=split.train,
+                test=split.test,
+                seed=np.asarray(split.seed, dtype=np.int64),
             )
-            minimum = int(resampling["minimum_events_per_split"])
-            if min(len(split.train), len(split.validation), len(split.test)) < minimum:
-                raise RuntimeError(f"Resampling seed {seed} violates minimum_events_per_split={minimum}")
-            _atomic_npz(split_path, train=split.train, validation=split.validation, test=split.test)
-
-        replica_manifest = {
-            "schema_version": 1,
-            "seed": int(seed),
-            "analysis_protocol_identity": protocol_identity,
-            "event_population_identity": event_population_identity,
-            "resampling_identity": resampling_identity,
-            "n_train": int(len(split.train)),
-            "n_validation": int(len(split.validation)),
-            "n_test": int(len(split.test)),
-            "split_path": str(split_path.resolve()),
-        }
-        atomic_json(replica_dir / "manifest.json", replica_manifest)
 
         target = np.asarray(target, dtype=np.float64)
         led_ps = np.asarray(target[split.test], dtype=np.float64)
@@ -132,7 +215,7 @@ class ExperimentArtifactStore:
                 saved_event_index = np.asarray(data["event_index"], dtype=np.int64)
                 saved_led = np.asarray(data["led_ps"], dtype=np.float64)
             if not np.array_equal(saved_event_index, event_index) or not np.array_equal(saved_led, led_ps):
-                raise RuntimeError(f"Shared blind reference does not match resolved population: {reference_path}")
+                raise RuntimeError(f"Shared blind reference mismatch: {reference_path}")
         else:
             _atomic_npz(reference_path, event_index=event_index, led_ps=led_ps)
 
@@ -141,8 +224,31 @@ class ExperimentArtifactStore:
         if baseline_path.is_file():
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         else:
-            point = ctr_estimate(led_ps, config["fit"], seed=semantic_seed(int(seed), "shared_led_baseline", fit_identity), bootstrap=False)
-            baseline = {"fit_identity": fit_identity, "n": int(led_ps.size), "led_ctr_ps": float(point.ctr_ps), "led_rmse_ps": float(rmse_ps(led_ps))}
+            point = ctr_estimate(led_ps, config["fit"], seed=split.seed, bootstrap=False)
+            baseline = {
+                "fit_identity": fit_identity,
+                "n": int(led_ps.size),
+                "led_ctr_ps": float(point.ctr_ps),
+                "led_rmse_ps": float(rmse_ps(led_ps)),
+            }
             atomic_json(baseline_path, baseline)
 
-        return SharedReplicaArtifacts(directory=replica_dir.resolve(), split=split, led_ps=led_ps, led_ctr_ps=float(baseline["led_ctr_ps"]), led_rmse_ps=float(baseline["led_rmse_ps"]))
+        replica_manifest = {
+            "schema_version": 2,
+            "replica_index": int(replica_index),
+            "seed": int(split.seed),
+            "sampling_identity": fixed.sampling_identity,
+            "n_train": int(len(split.train)),
+            "n_test": int(len(split.test)),
+            "split_path": str(split_path.resolve()),
+        }
+        atomic_json(replica_dir / "manifest.json", replica_manifest)
+
+        return SharedReplicaArtifacts(
+            directory=replica_dir.resolve(),
+            split=split,
+            led_ps=led_ps,
+            led_ctr_ps=float(baseline["led_ctr_ps"]),
+            led_rmse_ps=float(baseline["led_rmse_ps"]),
+            sampling_identity=fixed.sampling_identity,
+        )
