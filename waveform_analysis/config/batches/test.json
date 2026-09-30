@@ -31,7 +31,7 @@
   },
   "sweep": {
     "models": [
-      "mlp",
+      "antisymmetric_mlp",
       "locally_connected_mlp",
       "shared_cnn1d",
       "direct_mlp",

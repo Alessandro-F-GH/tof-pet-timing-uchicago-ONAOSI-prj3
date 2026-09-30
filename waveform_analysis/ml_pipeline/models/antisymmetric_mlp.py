@@ -3,11 +3,11 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ._mlp_common import DenseStack, MLPArtifact, candidates, explain, fit_mlp, predict, save
+from ._mlp_common import DenseStack, candidates, explain, fit_mlp, predict, save
 from .spec import ModelSpec
 
 
-class SharedScorerMLP(nn.Module):
+class AntisymmetricMLP(nn.Module):
     """Shared detector scorer with exact swap antisymmetry g(s1) - g(s2)."""
 
     def __init__(self, input_samples: int, architecture, activation: str):
@@ -17,7 +17,7 @@ class SharedScorerMLP(nn.Module):
     def forward(self, pair: torch.Tensor) -> torch.Tensor:
         if pair.ndim != 3 or pair.shape[1] != 2:
             raise ValueError(
-                f"mlp expects [event, detector=2, time], got {tuple(pair.shape)}"
+                f"antisymmetric_mlp expects [event, detector=2, time], got {tuple(pair.shape)}"
             )
         return self.scorer(pair[:, 0, :]) - self.scorer(pair[:, 1, :])
 
@@ -31,8 +31,8 @@ def fit(
     config,
 ):
     return fit_mlp(
-        model_name="mlp",
-        model_factory=SharedScorerMLP,
+        model_name="antisymmetric_mlp",
+        model_factory=AntisymmetricMLP,
         params=params,
         train_x=train_x,
         train_target=train_target,
@@ -47,7 +47,7 @@ def fit(
 
 
 MODEL_SPEC = ModelSpec(
-    name="mlp",
+    name="antisymmetric_mlp",
     candidates=candidates,
     fit=fit,
     predict=predict,

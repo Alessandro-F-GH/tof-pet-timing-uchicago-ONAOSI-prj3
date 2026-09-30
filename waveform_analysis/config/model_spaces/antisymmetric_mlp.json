@@ -1,11 +1,8 @@
 {
-  "model": "mlp",
+  "model": "antisymmetric_mlp",
   "parameters": {
     "architecture": [
-      [
-        128,
-        64
-      ]
+      [128, 64]
     ],
     "activation": [
       "relu"
