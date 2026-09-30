@@ -1,12 +1,12 @@
 # Waveform ML pipeline
 
-The waveform analysis uses a fixed-control, repeated-holdout protocol. A resolved run is one `dataset + mode + model + window`; a batch only generates and organizes those runs.
+The waveform analysis uses a fixed-control, repeated-holdout protocol. A resolved run is one `dataset + mode + model + window`; a batch generates and organizes those runs while owning model-independent experiment artifacts.
 
 ## Statistical protocol
 
 For every repeated-holdout replica, preprocessing and LED selection remain fixed, candidate selection uses only train/validation data, the winning model is refit on train+validation, and the blind split is evaluated once. CTR extraction is a point estimate on each replica: the CTR fit itself is not bootstrapped. Study variation is estimated from the distribution across replica seeds.
 
-Cross-model paired bootstrap is allowed only when analysis dataset, resolved population identity, mode, window, and replica seed match. Energy and timing modes are never pooled.
+Cross-model paired bootstrap is allowed only when analysis dataset, resolved analysis-protocol identity, mode, window, and replica seed match. Energy and timing modes are never pooled.
 
 ## Compact batch configuration
 
@@ -48,6 +48,14 @@ Comparison studies should normally use one batch JSON instead of one JSON per mo
 
 Optional `sweep.exclude` entries remove exceptional combinations without enumerating the remaining runs. Legacy explicit study-list batches remain readable; legacy `resampling.n_bootstrap` is interpreted as `n_replicas`, while `fit.bootstrap_samples` is ignored because fit-level bootstrap is no longer part of the ML pipeline.
 
+## Shared batch artifacts
+
+A compact batch stores model-independent artifacts once under `artifacts/populations/`. A population is identified by the resolved analysis protocol; each replica stores one positional `split.npz`, one blind LED reference, and one LED baseline point estimate. Every model using that same population and seed reuses those files. Model run directories therefore keep only model-specific results, residuals/predictions, fitted models, and diagnostics.
+
+The event-population identity and analysis-protocol identity are distinct. Split generation is tied to the event population, while paired model comparison requires the stricter analysis-protocol identity so studies with coincidentally identical event IDs but different preprocessing/control definitions are not treated as paired.
+
+Control LED-selection cache identity includes the mode-specific CTR fit definition. This makes the energy/timing LED threshold selection independent of batch execution order. When preprocessing is explicitly rebuilt, the batch rebuilds each shared control/mode/window scope once rather than once per model.
+
 ## Commands
 
 Validate a batch:
@@ -78,4 +86,4 @@ python -m waveform_analysis.cli report \
 
 Reports are grouped by model, mode, and window. They contain seed-level mean/std summaries, replica-level paired bootstrap comparisons where pairing is valid, one paired LED-to-ML improvement plot per mode/window, and one model CTR comparison plot per mode/window.
 
-A compact batch writes a root `manifest.json` and `runs.csv`. Each resolved run stores its own `manifest.json`, `resolved_config.json`, `results.csv`, candidates, exact split/event IDs, models, and plots.
+A compact batch writes a root `manifest.json`, `runs.csv`, and shared `artifacts/`. Each resolved model run stores its own `manifest.json`, `resolved_config.json`, `results.csv`, candidates, fitted models, model-dependent blind residuals, and plots; it references the shared replica artifacts instead of duplicating split and LED arrays.

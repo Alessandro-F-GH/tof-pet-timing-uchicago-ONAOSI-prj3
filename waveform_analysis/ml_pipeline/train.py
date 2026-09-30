@@ -41,6 +41,26 @@ class FeatureTransformCache:
         if logger is not None:logger.info("Feature transform fitted | %s | id=%s | params=%s | events=%d | features=%s",spec.name,identity[:12],transform_parameters,transformed.shape[0],tuple(transformed.shape[1:]))
         return wrapper,transformed
 
+@dataclass(frozen=True)
+class PreparedFitInput:
+    x:np.ndarray
+    y:np.ndarray
+    time_ps:np.ndarray
+    sample_mask:np.ndarray
+    scope_key:str
+
+class FitInputCache:
+    def __init__(self):self._items={}
+    def prepare(self,spec,dataset,mode,indices):
+        idx=np.asarray(indices,np.int64);protocol_identity=str(dataset.manifest.get("analysis_protocol_identity") or dataset.manifest["analysis_population_identity"])
+        key=canonical_hash({"protocol":protocol_identity,"mode":mode,"indices":idx.tolist(),"preserve_temporal_grid":bool(spec.preserve_temporal_grid)})
+        cached=self._items.get(key)
+        if cached is not None:return cached
+        view=waveform_view(dataset,mode,idx);xfull=view.materialize();mask=np.ones(xfull.shape[-1],bool) if spec.preserve_temporal_grid else training_sample_mask(xfull)
+        x=apply_sample_mask(xfull,mask);time=apply_sample_mask_to_time(view.time_ps,mask);y=model_target(dataset,mode)[idx]
+        scope_key=canonical_hash({"protocol":protocol_identity,"mode":mode,"indices":idx.tolist(),"sample_mask":np.asarray(mask,bool).tolist()})
+        prepared=PreparedFitInput(np.asarray(x,np.float32),np.asarray(y,np.float64),np.asarray(time,np.float64),np.asarray(mask,bool),scope_key);self._items[key]=prepared;return prepared
+
 @dataclass
 class FittedModel:
     artifact:Any
@@ -55,18 +75,16 @@ def _fit_once(spec,model_config,parameters,x,y,*,seed,output_limit,input_time_ps
     artifact=spec.fit(parameters,np.asarray(x,np.float32),np.asarray(y,np.float64),seed=int(seed),config=cfg);metadata=dict(getattr(artifact,"metadata",{}) or {});metadata["estimator_formulation"]=spec.estimator_formulation
     return FittedModel(artifact,metadata,float(output_limit),np.asarray(sample_mask,bool))
 
-def _mask(spec,train_x):return np.ones(train_x.shape[-1],bool) if spec.preserve_temporal_grid else training_sample_mask(train_x)
-
-def fit_on_indices(spec,model_config,config,dataset,indices,parameters,*,seed,transform_seed_base=None,feature_transform_cache=None,logger=None):
-    idx=np.asarray(indices,np.int64);view=waveform_view(dataset,config["mode"],idx);xfull=view.materialize();mask=_mask(spec,xfull);x=apply_sample_mask(xfull,mask);time=apply_sample_mask_to_time(view.time_ps,mask);y=model_target(dataset,config["mode"])[idx]
+def fit_on_indices(spec,model_config,config,dataset,indices,parameters,*,seed,transform_seed_base=None,feature_transform_cache=None,fit_input_cache=None,logger=None):
+    cache=fit_input_cache if fit_input_cache is not None else FitInputCache();prepared=cache.prepare(spec,dataset,config["mode"],indices)
+    x=prepared.x;y=prepared.y;time=prepared.time_ps;mask=prepared.sample_mask
     cfg=copy.deepcopy(model_config);cfg["_early_stopping_seed"]=int(seed);cfg["_input_time_ps"]=np.asarray(time,np.float64)
     if logger is not None:cfg["_logger"]=logger
     feature_transform=None
     if spec.feature_transform is not None:
-        cache=feature_transform_cache if feature_transform_cache is not None else FeatureTransformCache();scope_key=canonical_hash({"population":dataset.manifest["analysis_population_identity"],"mode":config["mode"],"indices":idx.tolist(),"sample_mask":np.asarray(mask,bool).tolist()})
-        feature_transform,x=cache.prepare(spec.feature_transform,parameters,x,seed_base=int(seed if transform_seed_base is None else transform_seed_base),scope_key=scope_key,config=cfg)
+        transform_cache=feature_transform_cache if feature_transform_cache is not None else FeatureTransformCache();feature_transform,x=transform_cache.prepare(spec.feature_transform,parameters,x,seed_base=int(seed if transform_seed_base is None else transform_seed_base),scope_key=prepared.scope_key,config=cfg)
     fitted=_fit_once(spec,cfg,dict(parameters or {}),x,y,seed=seed,output_limit=config["ml_output"]["max_abs_ps"],input_time_ps=time,sample_mask=mask,logger=logger);fitted.feature_transform=feature_transform
-    fitted.metadata.update({"training_events":int(idx.size),"sample_mask_training_events":int(idx.size),"input_samples_before_mask":int(mask.size),"input_samples_after_mask":int(mask.sum())})
+    fitted.metadata.update({"training_events":int(y.size),"sample_mask_training_events":int(y.size),"input_samples_before_mask":int(mask.size),"input_samples_after_mask":int(mask.sum())})
     if feature_transform is not None:fitted.metadata.update({"feature_transform":feature_transform.spec.name,"feature_transform_identity":feature_transform.identity,"feature_transform_parameters":feature_transform.parameters,"feature_transform_seed":int(feature_transform.seed)})
     return fitted
 
@@ -75,7 +93,8 @@ def _model_input(fitted,dataset,mode,indices,*,swapped=False):
     if swapped:pair=pair[:,::-1,:]
     pair=np.ascontiguousarray(pair)
     if fitted.feature_transform is None:return pair
-    key=canonical_hash({"population":dataset.manifest["analysis_population_identity"],"mode":mode,"indices":idx.tolist(),"swapped":bool(swapped)})
+    protocol_identity=str(dataset.manifest.get("analysis_protocol_identity") or dataset.manifest["analysis_population_identity"])
+    key=canonical_hash({"protocol":protocol_identity,"mode":mode,"indices":idx.tolist(),"swapped":bool(swapped)})
     return fitted.feature_transform.apply(pair,key)
 
 def _prediction_from_input(spec,fitted,values):
@@ -97,19 +116,16 @@ def save_model(spec,fitted,directory,parameters):
     if fitted.sample_mask is not None:np.save(directory/"sample_mask.npy",np.asarray(fitted.sample_mask,bool))
 
 def load_fitted_model(spec,directory,parameters,config):
-    """Reload a selected saved model for inference-only postprocessing."""
     directory=Path(directory);mask=np.load(directory/"sample_mask.npy").astype(bool);output_limit=float(config["ml_output"]["max_abs_ps"])
     if spec.name=="minirocket":
         with (directory/"model.pkl").open("rb") as s:artifact=pickle.load(s)
-        feature_transform=None
-        tpath=directory/"feature_transform"/"transform.pkl"
+        feature_transform=None;tpath=directory/"feature_transform"/"transform.pkl"
         if tpath.is_file():
             with tpath.open("rb") as s:tartifact=pickle.load(s)
             feature_transform=FittedFeatureTransform(spec.feature_transform,tartifact,"reloaded",{},0,{})
         return FittedModel(artifact,dict(getattr(artifact,"metadata",{}) or {}),output_limit,mask,feature_transform)
     import torch
-    device=torch.device("cuda" if torch.cuda.is_available() else "cpu");payload=torch.load(directory/"model.pt",map_location=device,weights_only=False);metadata=dict(payload.get("metadata",{}) or {});n=int(mask.sum())
-    p=dict(parameters or {})
+    device=torch.device("cuda" if torch.cuda.is_available() else "cpu");payload=torch.load(directory/"model.pt",map_location=device,weights_only=False);metadata=dict(payload.get("metadata",{}) or {});n=int(mask.sum());p=dict(parameters or {})
     if spec.name=="mlp":
         from .models.mlp import SharedScorerMLP
         from .models._mlp_common import MLPArtifact
@@ -125,13 +141,11 @@ def load_fitted_model(spec,directory,parameters,config):
     elif spec.name in {"shared_cnn1d","independent_cnn1d"}:
         from .models._cnn1d_common import IndependentCNN1D,SharedCNN1D
         from .models._mlp_common import MLPArtifact
-        cls=SharedCNN1D if spec.name=="shared_cnn1d" else IndependentCNN1D
-        model=cls(n,p["architecture"],p["activation"],conv_channels=p["conv_channels"],kernel_samples=p["kernel_samples"]);artifact_type=MLPArtifact
+        cls=SharedCNN1D if spec.name=="shared_cnn1d" else IndependentCNN1D;model=cls(n,p["architecture"],p["activation"],conv_channels=p["conv_channels"],kernel_samples=p["kernel_samples"]);artifact_type=MLPArtifact
     elif spec.name=="onishi_cnn":
         from .models.onishi_cnn import OnishiPairedCNN,OnishiCNNArtifact
         model=OnishiPairedCNN(config["model"]["space"].get("architecture",{}));
         with torch.no_grad():model(torch.zeros((1,2,n),dtype=torch.float32))
         artifact_type=OnishiCNNArtifact
     else:raise ValueError(f"Inference reload is not implemented for model {spec.name}")
-    model.load_state_dict(payload["state_dict"]);model.to(device);model.eval();artifact=artifact_type(model,str(device),metadata)
-    return FittedModel(artifact,metadata,output_limit,mask,None)
+    model.load_state_dict(payload["state_dict"]);model.to(device);model.eval();artifact=artifact_type(model,str(device),metadata);return FittedModel(artifact,metadata,output_limit,mask,None)

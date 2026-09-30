@@ -18,8 +18,6 @@ def rmse_ps(values: np.ndarray) -> float:
 
 @dataclass(frozen=True)
 class PairedCTRImprovement:
-    """One LED-vs-ML point estimate on one blind repeated-holdout replica."""
-
     corrected_ctr_ps: float
     led_ctr_ps: float
     improvement_ps: float
@@ -34,8 +32,6 @@ class PairedCTRImprovement:
 
 @dataclass(frozen=True)
 class PairedReplicaSummary:
-    """Paired uncertainty summary using replicas, never events, as the unit."""
-
     n_pairs: int
     reference_mean: float
     candidate_mean: float
@@ -45,120 +41,35 @@ class PairedReplicaSummary:
     ci_high: float
 
 
-def paired_ctr_improvement(
-    corrected_ps: np.ndarray,
-    led_ps: np.ndarray,
-    fit_cfg: dict,
-    *,
-    seed: int | None = None,
-) -> PairedCTRImprovement:
-    """Evaluate LED and ML on one blind split without resampling events.
-
-    The repeated-holdout replica is the statistical unit.  This function only
-    computes the point estimate for that replica; study-level variation is
-    estimated later from the collection of replica seeds.
-    """
-    corrected = np.asarray(corrected_ps, dtype=np.float64).reshape(-1)
-    led = np.asarray(led_ps, dtype=np.float64).reshape(-1)
-    if corrected.shape != led.shape:
-        raise ValueError("paired comparison requires equal-length residual arrays")
-    finite = np.isfinite(corrected) & np.isfinite(led)
-    corrected = corrected[finite]
-    led = led[finite]
-    if corrected.size < 5:
-        raise ValueError("paired comparison requires at least 5 finite event pairs")
-
-    corrected_point = ctr_estimate(corrected, fit_cfg, seed=seed, bootstrap=False)
-    led_point = ctr_estimate(led, fit_cfg, seed=seed, bootstrap=False)
-    ctr_improvement = float(led_point.ctr_ps - corrected_point.ctr_ps)
-    ctr_fraction = ctr_improvement / float(led_point.ctr_ps) if led_point.ctr_ps != 0 else float("nan")
-
-    corrected_rmse = rmse_ps(corrected)
-    led_rmse = rmse_ps(led)
-    rmse_improvement = float(led_rmse - corrected_rmse)
-    rmse_fraction = rmse_improvement / led_rmse if led_rmse != 0 else float("nan")
-
-    return PairedCTRImprovement(
-        corrected_ctr_ps=float(corrected_point.ctr_ps),
-        led_ctr_ps=float(led_point.ctr_ps),
-        improvement_ps=ctr_improvement,
-        improvement_fraction=float(ctr_fraction),
-        improvement_percent=float(100.0 * ctr_fraction),
-        corrected_rmse_ps=corrected_rmse,
-        led_rmse_ps=led_rmse,
-        rmse_improvement_ps=rmse_improvement,
-        rmse_improvement_fraction=float(rmse_fraction),
-        rmse_improvement_percent=float(100.0 * rmse_fraction),
-    )
+def paired_ctr_improvement(corrected_ps: np.ndarray,led_ps: np.ndarray,fit_cfg: dict,*,seed: int | None = None,led_ctr_ps: float | None = None,led_rmse_ps: float | None = None) -> PairedCTRImprovement:
+    corrected=np.asarray(corrected_ps,dtype=np.float64).reshape(-1);led=np.asarray(led_ps,dtype=np.float64).reshape(-1)
+    if corrected.shape!=led.shape:raise ValueError("paired comparison requires equal-length residual arrays")
+    finite=np.isfinite(corrected)&np.isfinite(led);corrected=corrected[finite];led=led[finite]
+    if corrected.size<5:raise ValueError("paired comparison requires at least 5 finite event pairs")
+    corrected_point=ctr_estimate(corrected,fit_cfg,seed=seed,bootstrap=False)
+    led_ctr=float(ctr_estimate(led,fit_cfg,seed=seed,bootstrap=False).ctr_ps) if led_ctr_ps is None else float(led_ctr_ps)
+    ctr_improvement=float(led_ctr-corrected_point.ctr_ps);ctr_fraction=ctr_improvement/led_ctr if led_ctr!=0 else float("nan")
+    corrected_rmse=rmse_ps(corrected);led_rmse=float(rmse_ps(led) if led_rmse_ps is None else led_rmse_ps)
+    rmse_improvement=float(led_rmse-corrected_rmse);rmse_fraction=rmse_improvement/led_rmse if led_rmse!=0 else float("nan")
+    return PairedCTRImprovement(float(corrected_point.ctr_ps),led_ctr,ctr_improvement,float(ctr_fraction),float(100.0*ctr_fraction),corrected_rmse,led_rmse,rmse_improvement,float(rmse_fraction),float(100.0*rmse_fraction))
 
 
-def paired_replica_difference(
-    reference_values: np.ndarray,
-    candidate_values: np.ndarray,
-    *,
-    seed: int = 1729,
-    n_bootstrap: int = 5000,
-    confidence: float = 0.90,
-) -> PairedReplicaSummary:
-    """Bootstrap paired *replica-level* differences.
-
-    Inputs must already be aligned by repeated-holdout seed and must refer to the
-    same analysis dataset, mode, and waveform window.  Positive difference means
-    ``reference - candidate > 0``.
-    """
-    reference = np.asarray(reference_values, dtype=np.float64).reshape(-1)
-    candidate = np.asarray(candidate_values, dtype=np.float64).reshape(-1)
-    if reference.shape != candidate.shape:
-        raise ValueError("paired replica arrays must have the same shape")
-    finite = np.isfinite(reference) & np.isfinite(candidate)
-    reference = reference[finite]
-    candidate = candidate[finite]
-    if not reference.size:
-        raise ValueError("paired replica comparison requires at least one finite pair")
-    if not 0.0 < confidence < 1.0:
-        raise ValueError("confidence must lie in (0, 1)")
-    if n_bootstrap < 1:
-        raise ValueError("n_bootstrap must be >= 1")
-
-    differences = reference - candidate
-    rng = np.random.default_rng(int(seed))
-    draw = rng.integers(0, differences.size, size=(int(n_bootstrap), differences.size))
-    bootstrap_means = differences[draw].mean(axis=1)
-    alpha = 1.0 - float(confidence)
-
-    return PairedReplicaSummary(
-        n_pairs=int(differences.size),
-        reference_mean=float(np.mean(reference)),
-        candidate_mean=float(np.mean(candidate)),
-        difference_mean=float(np.mean(differences)),
-        difference_std=float(np.std(differences, ddof=1)) if differences.size > 1 else 0.0,
-        ci_low=float(np.quantile(bootstrap_means, alpha / 2.0)),
-        ci_high=float(np.quantile(bootstrap_means, 1.0 - alpha / 2.0)),
-    )
+def paired_replica_difference(reference_values: np.ndarray,candidate_values: np.ndarray,*,seed: int = 1729,n_bootstrap: int = 5000,confidence: float = 0.90) -> PairedReplicaSummary:
+    reference=np.asarray(reference_values,dtype=np.float64).reshape(-1);candidate=np.asarray(candidate_values,dtype=np.float64).reshape(-1)
+    if reference.shape!=candidate.shape:raise ValueError("paired replica arrays must have the same shape")
+    finite=np.isfinite(reference)&np.isfinite(candidate);reference=reference[finite];candidate=candidate[finite]
+    if not reference.size:raise ValueError("paired replica comparison requires at least one finite pair")
+    if not 0.0<confidence<1.0:raise ValueError("confidence must lie in (0, 1)")
+    if n_bootstrap<1:raise ValueError("n_bootstrap must be >= 1")
+    differences=reference-candidate;rng=np.random.default_rng(int(seed));draw=rng.integers(0,differences.size,size=(int(n_bootstrap),differences.size));bootstrap_means=differences[draw].mean(axis=1);alpha=1.0-float(confidence)
+    return PairedReplicaSummary(int(differences.size),float(np.mean(reference)),float(np.mean(candidate)),float(np.mean(differences)),float(np.std(differences,ddof=1)) if differences.size>1 else 0.0,float(np.quantile(bootstrap_means,alpha/2.0)),float(np.quantile(bootstrap_means,1.0-alpha/2.0)))
 
 
 def residual_summary(values_ps: np.ndarray) -> dict[str, float | int]:
-    values = np.asarray(values_ps, dtype=np.float64).reshape(-1)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return {
-            "n_total": int(values.size), "n_finite": 0, "rmse_ps": float("nan"),
-            "mean_ps": float("nan"), "std_ps": float("nan"), "min_ps": float("nan"),
-            "max_ps": float("nan"), "q01_ps": float("nan"), "q99_ps": float("nan"),
-        }
-    return {
-        "n_total": int(values.size), "n_finite": int(finite.size), "rmse_ps": rmse_ps(finite),
-        "mean_ps": float(np.mean(finite)), "std_ps": float(np.std(finite)),
-        "min_ps": float(np.min(finite)), "max_ps": float(np.max(finite)),
-        "q01_ps": float(np.quantile(finite, 0.01)), "q99_ps": float(np.quantile(finite, 0.99)),
-    }
+    values=np.asarray(values_ps,dtype=np.float64).reshape(-1);finite=values[np.isfinite(values)]
+    if finite.size==0:return {"n_total":int(values.size),"n_finite":0,"rmse_ps":float("nan"),"mean_ps":float("nan"),"std_ps":float("nan"),"min_ps":float("nan"),"max_ps":float("nan"),"q01_ps":float("nan"),"q99_ps":float("nan")}
+    return {"n_total":int(values.size),"n_finite":int(finite.size),"rmse_ps":rmse_ps(finite),"mean_ps":float(np.mean(finite)),"std_ps":float(np.std(finite)),"min_ps":float(np.min(finite)),"max_ps":float(np.max(finite)),"q01_ps":float(np.quantile(finite,0.01)),"q99_ps":float(np.quantile(finite,0.99))}
 
 
 def format_residual_summary(summary: dict[str, float | int]) -> str:
-    return (
-        f"n={summary['n_finite']}/{summary['n_total']} | "
-        f"RMSE={summary['rmse_ps']:.3f} ps | mean={summary['mean_ps']:.3f} ps | "
-        f"std={summary['std_ps']:.3f} ps | q01={summary['q01_ps']:.3f} ps | "
-        f"q99={summary['q99_ps']:.3f} ps | min={summary['min_ps']:.3f} ps | "
-        f"max={summary['max_ps']:.3f} ps"
-    )
+    return (f"n={summary['n_finite']}/{summary['n_total']} | RMSE={summary['rmse_ps']:.3f} ps | mean={summary['mean_ps']:.3f} ps | "f"std={summary['std_ps']:.3f} ps | q01={summary['q01_ps']:.3f} ps | q99={summary['q99_ps']:.3f} ps | min={summary['min_ps']:.3f} ps | max={summary['max_ps']:.3f} ps")
