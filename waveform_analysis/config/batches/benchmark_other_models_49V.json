@@ -12,6 +12,7 @@
     }
   },
   "output_dir": "results/studies/FBK/benchmark_test",
+  "save_models": "first",
   "protocol": {
     "preprocessing_config": "../preprocessing/default_ctr.json",
     "resampling": {
