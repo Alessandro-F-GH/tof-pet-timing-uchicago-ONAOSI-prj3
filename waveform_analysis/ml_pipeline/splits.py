@@ -33,13 +33,14 @@ class ReplicaSplit:
     seed: int
     replica_index: int
 
-    def validate(self, n_events: int) -> None:
+    def validate(self, resampling_pool: np.ndarray) -> None:
+        pool = set(map(int, np.asarray(resampling_pool, dtype=np.int64)))
         train = set(map(int, self.train))
         test = set(map(int, self.test))
         if train & test:
             raise AssertionError("replica train and blind test overlap")
-        if train | test != set(range(int(n_events))):
-            raise AssertionError("replica train/test must cover the prepared population exactly")
+        if train | test != pool:
+            raise AssertionError("replica train/test must partition the non-validation resampling pool exactly")
 
 
 def _sample(values: np.ndarray, n_selected: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
@@ -98,13 +99,12 @@ def make_replica_split(
     n_test = int(round(n_events * blind_fraction))
     if not 0 < n_test < pool.size:
         raise ValueError(
-            "blind_fraction must leave a non-empty variable training subset outside the fixed validation set"
+            "blind_fraction must leave a non-empty replica training subset after excluding fixed validation"
         )
 
     seed = semantic_seed(int(batch_seed), "bootstrap_replica", analysis_identity, replica_index)
     rng = np.random.default_rng(seed)
-    variable_train, test = _sample(pool, n_test, rng)
-    train = np.sort(np.concatenate([np.asarray(fixed_split.validation, dtype=np.int64), variable_train]))
+    train, test = _sample(pool, n_test, rng)
     split = ReplicaSplit(train=train, test=test, seed=seed, replica_index=replica_index)
-    split.validate(n_events)
+    split.validate(pool)
     return split
