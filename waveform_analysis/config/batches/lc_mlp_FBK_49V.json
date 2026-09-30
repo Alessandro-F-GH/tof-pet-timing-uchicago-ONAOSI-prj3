@@ -1,4 +1,5 @@
 {
+  "name": "lc_mlp_FBK_49V",
   "reference_dataset": "../datasets/control.json",
   "analysis_dataset": {
     "root_file": "processed_data/converted_runs_07-13/49V-490mV.root",
@@ -10,10 +11,30 @@
       "timing_polarities": [1, 1]
     }
   },
-  "studies": [
-    "../studies/lc_mlp/energy_onishi.json",
-    "../studies/lc_mlp/energy_wide.json",
-    "../studies/lc_mlp/timing_onishi.json",
-    "../studies/lc_mlp/timing_wide.json"
-  ]
+  "output_dir": "results/studies/FBK/lc_mlp_49V",
+  "protocol": {
+    "preprocessing_config": "../preprocessing/default_ctr.json",
+    "resampling": {
+      "policy": "repeated_holdout",
+      "seed": 1001,
+      "n_replicas": 10,
+      "validation_fraction": 0.2,
+      "test_fraction": 0.5,
+      "minimum_events_per_split": 50
+    },
+    "fit": {
+      "energy_to_energy": {"histogram_bin_width_ps": 20.0},
+      "timing_to_timing": {"histogram_bin_width_ps": 10.0}
+    },
+    "ml_input": {"subsampling": 1},
+    "ml_output": {"max_abs_ps": 2000.0}
+  },
+  "sweep": {
+    "models": ["locally_connected_mlp"],
+    "modes": ["energy_to_energy", "timing_to_timing"],
+    "windows": {
+      "onishi": {"start": -1.5, "end": 2.0},
+      "wide": {"start": -2.0, "end": 30.0}
+    }
+  }
 }

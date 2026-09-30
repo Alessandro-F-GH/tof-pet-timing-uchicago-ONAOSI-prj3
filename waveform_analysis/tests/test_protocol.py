@@ -1,15 +1,19 @@
 from __future__ import annotations
+
 import inspect
 import json
+from pathlib import Path
+
 import numpy as np
 import pytest
-from waveform_analysis.ml_pipeline import batch,prepared_data,study
-from waveform_analysis.ml_pipeline.config import ConfigError,load_config
+
+from waveform_analysis.ml_pipeline import batch, prepared_data, study
+from waveform_analysis.ml_pipeline.config import ConfigError, load_batch_config, load_config
 from waveform_analysis.ml_pipeline.event_selection import baseline_quality
 from waveform_analysis.ml_pipeline.hyperparameter_plot import plot_hyperparameter_validation
-from waveform_analysis.ml_pipeline.search import candidate_id,candidate_manifest
+from waveform_analysis.ml_pipeline.search import candidate_id, candidate_manifest
 from waveform_analysis.ml_pipeline.splits import make_resampling_split
-from waveform_analysis.ml_pipeline.storage import RESULT_FIELDS,RunStore
+from waveform_analysis.ml_pipeline.storage import RESULT_FIELDS, RunStore
 
 
 def test_split_pairing_invariant():
@@ -25,11 +29,11 @@ def test_seed_changes_split_reproducibly():
     assert not np.array_equal(a.test,b.test);np.testing.assert_array_equal(b.test,c.test)
 
 
-def test_bootstrap_seeds_are_deterministic_from_one_base_seed():
-    cfg={"seed":1001,"n_bootstrap":10}
+def test_replica_seeds_are_deterministic_from_one_base_seed():
+    cfg={"seed":1001,"n_replicas":10}
     first=study._resampling_seeds(cfg);second=study._resampling_seeds(cfg)
     assert first==second and len(first)==10 and len(set(first))==10
-    assert first!=study._resampling_seeds({"seed":1002,"n_bootstrap":10})
+    assert first!=study._resampling_seeds({"seed":1002,"n_replicas":10})
 
 
 def test_candidate_ids_stable_under_grid_reordering():
@@ -47,21 +51,19 @@ def test_baseline_clipping_checks_both_boundaries(waveform,expected):
 
 def test_partial_results_resume_without_duplicates(tmp_path):
     store=RunStore(tmp_path/"run")
-    row={"seed":1,"stage":"validation","candidate_id":"abc","selected":False,"ctr_ps":60.0,"ctr_uncertainty_ps":float("nan"),"uncorrected_ctr_ps":90.0,"n":50,"rmse_ps":25.0}
+    row={"seed":1,"stage":"validation","candidate_id":"abc","selected":False,"ctr_ps":60.0,"uncorrected_ctr_ps":90.0,"n":50,"rmse_ps":25.0}
     store.upsert_result(row);store.upsert_result(dict(row,ctr_ps=59.0));rows=RunStore(tmp_path/"run",resume=True).read_results()
     assert len(rows)==1 and float(rows[0]["ctr_ps"])==59.0
 
 
-def test_results_schema_has_no_legacy_scan_columns():
+def test_results_schema_is_replica_point_estimates_only():
     assert "voltage" not in RESULT_FIELDS
     assert "threshold" not in RESULT_FIELDS
     assert "hyperparameters" not in RESULT_FIELDS
-    required=(
-        "seed","stage","model","estimator_formulation","mode","population_identity","candidate_id",
-        "ctr_ps","ctr_uncertainty_ps","uncorrected_ctr_ps",
-        "rmse_ps","rmse_uncertainty_ps","uncorrected_rmse_ps","rmse_improvement_ps",
-        "n","swap_rmse_ps",
-    )
+    assert "ctr_uncertainty_ps" not in RESULT_FIELDS
+    assert "improvement_uncertainty_ps" not in RESULT_FIELDS
+    assert "paired_bootstrap_successful" not in RESULT_FIELDS
+    required=("seed","stage","model","estimator_formulation","mode","population_identity","candidate_id","ctr_ps","uncorrected_ctr_ps","improvement_ps","rmse_ps","uncorrected_rmse_ps","rmse_improvement_ps","n","swap_rmse_ps")
     assert set(required)<=set(RESULT_FIELDS)
 
 
@@ -90,13 +92,26 @@ def test_old_experiment_schema_is_rejected_before_resolution(tmp_path):
 
 def test_batch_execution_is_sequential(monkeypatch,tmp_path):
     calls=[]
-    def fake_run(cfg,**kwargs):
-        calls.append(cfg["name"]);return tmp_path/cfg["name"]
+    def fake_run(cfg,**kwargs):calls.append(cfg["name"]);return tmp_path/cfg["name"]
     monkeypatch.setattr(batch,"run_study",fake_run)
     configs=[{"name":"first"},{"name":"second"},{"name":"third"}]
     outputs=batch.run_batch(configs)
     assert calls==["first","second","third"]
     assert [p.name for p in outputs]==calls
+
+
+def test_compact_benchmark_expands_model_mode_window_product_without_fit_bootstrap():
+    package_root=Path(study.__file__).resolve().parents[1]
+    config_path=package_root/"config"/"batches"/"benchmark_other_models_49V.json"
+    resolved=load_batch_config(config_path,project_root=package_root)
+    assert len(resolved.runs)==6*2*2
+    assert {cfg["mode"] for cfg in resolved.runs}=={"energy_to_energy","timing_to_timing"}
+    assert {cfg["window_name"] for cfg in resolved.runs}=={"onishi","wide"}
+    assert {cfg["resampling"]["n_replicas"] for cfg in resolved.runs}=={5}
+    assert all("bootstrap_samples" not in cfg["fit"] for cfg in resolved.runs)
+    assert {cfg["fit"]["histogram_bin_width_ps"] for cfg in resolved.runs if cfg["mode"]=="energy_to_energy"}=={20.0}
+    assert {cfg["fit"]["histogram_bin_width_ps"] for cfg in resolved.runs if cfg["mode"]=="timing_to_timing"}=={10.0}
+    assert all(Path(cfg["output_dir"]).is_relative_to(Path(resolved.output_dir)) for cfg in resolved.runs)
 
 
 def test_prepared_data_uses_control_led_and_window_scoped_population():
@@ -109,16 +124,19 @@ def test_prepared_data_uses_control_led_and_window_scoped_population():
 
 def test_orchestration_has_generic_candidate_policy_and_no_concrete_model_branching():
     source=inspect.getsource(study.run_study)
-    assert 'if len(candidates)==1' in source
-    assert 'np.concatenate([split.train,split.validation])' in source
-    assert 'dataset,split.train,params' in source
-    assert 'dataset,config["mode"],split.validation' in source
+    assert 'if len(candidates) == 1' in source
+    assert 'np.concatenate([split.train, split.validation])' in source
+    assert 'dataset, split.train, params' in source
+    assert 'dataset, config["mode"], split.validation' in source
     assert "onishi_cnn" not in source
     assert "locally_connected_mlp" not in source
     assert "model_name ==" not in source
 
 
-def test_study_manifest_contains_resolved_preprocessing_configuration():
+def test_study_manifest_declares_replica_statistics_and_no_fit_bootstrap():
     source=inspect.getsource(study.run_study)
-    assert '"preprocessing":config["preprocessing"]' in source
+    assert '"preprocessing": config["preprocessing"]' in source
     assert '"preprocessing_fingerprint"' in source
+    assert '"statistical_unit": "repeated_holdout_replica"' in source
+    assert '"fit_bootstrap": False' in source
+    assert '"event_level_bootstrap": False' in source

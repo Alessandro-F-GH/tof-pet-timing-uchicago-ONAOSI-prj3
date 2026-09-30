@@ -1,4 +1,5 @@
 {
+  "name": "onishi_cnn_49V_test",
   "reference_dataset": "../datasets/control.json",
   "analysis_dataset": {
     "root_file": "processed_data/converted_runs_07-13/49V-490mV.root",
@@ -10,7 +11,24 @@
       "timing_polarities": [1, 1]
     }
   },
-  "studies": [
-    "../studies/onishi_cnn/energy_onishi.json"
-  ]
+  "output_dir": "results/studies/FBK/onishi_cnn_49V_test",
+  "protocol": {
+    "preprocessing_config": "../preprocessing/default_ctr.json",
+    "resampling": {
+      "policy": "repeated_holdout",
+      "seed": 1001,
+      "n_replicas": 50,
+      "validation_fraction": 0.2,
+      "test_fraction": 0.5,
+      "minimum_events_per_split": 50
+    },
+    "fit": {"histogram_bin_width_ps": 20.0},
+    "ml_input": {"subsampling": 1},
+    "ml_output": {"max_abs_ps": 2000.0}
+  },
+  "sweep": {
+    "models": ["onishi_cnn"],
+    "modes": ["energy_to_energy"],
+    "windows": {"onishi": {"start": -1.5, "end": 2.0}}
+  }
 }
