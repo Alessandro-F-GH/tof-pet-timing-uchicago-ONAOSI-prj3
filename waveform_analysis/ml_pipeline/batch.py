@@ -20,19 +20,19 @@ def _log_gpu_status(logger):
     except Exception as exc:logger.warning("GPU check | CUDA detected but smoke test failed | %s",exc)
 
 
-def _run_index(batch: BatchConfig):
+def _run_index(batch:BatchConfig):
     root=Path(batch.output_dir).resolve();rows=[]
     for cfg in batch.runs:
         path=Path(cfg["output_dir"]).resolve()
         try:relative=str(path.relative_to(root))
         except ValueError:relative=str(path)
-        rows.append({"run_id":cfg.get("run_id",cfg["name"]),"name":cfg["name"],"model":cfg["model"]["name"],"mode":cfg["mode"],"window":cfg.get("window_name",""),"window_start_ns":cfg["window_ns"]["start"],"window_end_ns":cfg["window_ns"]["end"],"status":"pending","path":relative,"config_fingerprint":cfg["_config_fingerprint"]})
+        rows.append({"run_id":cfg.get("run_id",cfg["name"]),"name":cfg["name"],"model":cfg["model"]["name"],"mode":cfg["mode"],"window":cfg.get("window_name",""),"window_start_ns":cfg["window_ns"]["start"],"window_end_ns":cfg["window_ns"]["end"],"save_models":cfg.get("save_models","all"),"status":"pending","path":relative,"config_fingerprint":cfg["_config_fingerprint"]})
     return rows
 
 
 def _write_batch_state(batch,rows,status):
-    root=Path(batch.output_dir).resolve();root.mkdir(parents=True,exist_ok=True)
-    manifest={"schema_version":2,"name":batch.name,"status":status,"source_config":batch.source_path,"protocol":batch.protocol,"axes":batch.axes,"comparison_unit":"repeated_holdout_replica","fit_bootstrap":False,"pairing_rule":"same analysis protocol + mode + window + replica seed","shared_artifact_root":str((root/"artifacts").resolve()),"runs":rows}
+    root=Path(batch.output_dir).resolve();root.mkdir(parents=True,exist_ok=True);save_models=batch.runs[0].get("save_models","all") if batch.runs else "all"
+    manifest={"schema_version":3,"name":batch.name,"status":status,"source_config":batch.source_path,"protocol":batch.protocol,"axes":batch.axes,"save_models":save_models,"comparison_unit":"repeated_holdout_replica","fit_bootstrap":False,"pairing_rule":"same analysis protocol + resampling definition + mode + window + replica seed","shared_artifact_root":str((root/"artifacts").resolve()),"runs":rows}
     atomic_json(root/"manifest.json",manifest);write_csv(root/"runs.csv",rows)
 
 
