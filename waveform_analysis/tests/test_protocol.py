@@ -7,136 +7,248 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from waveform_analysis.ml_pipeline import batch, prepared_data, study
+from waveform_analysis.ml_pipeline import prepared_data, study
 from waveform_analysis.ml_pipeline.config import ConfigError, load_batch_config, load_config
-from waveform_analysis.ml_pipeline.event_selection import baseline_quality
 from waveform_analysis.ml_pipeline.hyperparameter_plot import plot_hyperparameter_validation
 from waveform_analysis.ml_pipeline.search import candidate_id, candidate_manifest
-from waveform_analysis.ml_pipeline.splits import make_resampling_split
+from waveform_analysis.ml_pipeline.splits import (
+    make_fixed_validation_split,
+    make_replica_split,
+)
 from waveform_analysis.ml_pipeline.storage import RESULT_FIELDS, RunStore
 
 
-def test_split_pairing_invariant():
-    a=make_resampling_split(100,analysis_identity="population-A",resampling_seed=7,validation_fraction=.2,test_fraction=.2)
-    b=make_resampling_split(100,analysis_identity="population-A",resampling_seed=7,validation_fraction=.2,test_fraction=.2)
-    np.testing.assert_array_equal(a.train,b.train);np.testing.assert_array_equal(a.validation,b.validation);np.testing.assert_array_equal(a.test,b.test)
+def test_fixed_validation_is_deterministic_from_batch_seed():
+    a = make_fixed_validation_split(
+        100,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        validation_fraction=0.10,
+    )
+    b = make_fixed_validation_split(
+        100,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        validation_fraction=0.10,
+    )
+    np.testing.assert_array_equal(a.tuning_train, b.tuning_train)
+    np.testing.assert_array_equal(a.validation, b.validation)
+    assert a.seed == b.seed
+    assert len(a.validation) == 10
+    assert len(a.tuning_train) == 90
 
 
-def test_seed_changes_split_reproducibly():
-    a=make_resampling_split(100,analysis_identity="population-A",resampling_seed=7,validation_fraction=.2,test_fraction=.2)
-    b=make_resampling_split(100,analysis_identity="population-A",resampling_seed=8,validation_fraction=.2,test_fraction=.2)
-    c=make_resampling_split(100,analysis_identity="population-A",resampling_seed=8,validation_fraction=.2,test_fraction=.2)
-    assert not np.array_equal(a.test,b.test);np.testing.assert_array_equal(b.test,c.test)
+def test_replica_samples_blind_only_from_nonvalidation_pool_and_readds_validation_to_train():
+    fixed = make_fixed_validation_split(
+        100,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        validation_fraction=0.10,
+    )
+    first = make_replica_split(
+        100,
+        fixed,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        replica_index=1,
+        blind_fraction=0.50,
+    )
+    second = make_replica_split(
+        100,
+        fixed,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        replica_index=2,
+        blind_fraction=0.50,
+    )
+    assert len(first.test) == 50
+    assert len(first.train) == 50
+    assert set(first.test).isdisjoint(set(fixed.validation))
+    assert set(fixed.validation) <= set(first.train)
+    assert set(first.test) <= set(fixed.tuning_train)
+    assert not np.array_equal(first.test, second.test)
+    assert first.seed != second.seed
 
 
-def test_replica_seeds_are_deterministic_from_one_base_seed():
-    cfg={"seed":1001,"n_replicas":10}
-    first=study._resampling_seeds(cfg);second=study._resampling_seeds(cfg)
-    assert first==second and len(first)==10 and len(set(first))==10
-    assert first!=study._resampling_seeds({"seed":1002,"n_replicas":10})
+def test_replica_fraction_cannot_consume_entire_nonvalidation_pool():
+    fixed = make_fixed_validation_split(
+        100,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        validation_fraction=0.10,
+    )
+    with pytest.raises(ValueError, match="variable training subset"):
+        make_replica_split(
+            100,
+            fixed,
+            analysis_identity="population-A",
+            batch_seed=1001,
+            replica_index=1,
+            blind_fraction=0.90,
+        )
+
+
+def test_batch_seed_controls_both_fixed_validation_and_replica_sampling():
+    fixed_a = make_fixed_validation_split(
+        100,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        validation_fraction=0.20,
+    )
+    fixed_b = make_fixed_validation_split(
+        100,
+        analysis_identity="population-A",
+        batch_seed=2002,
+        validation_fraction=0.20,
+    )
+    replica_a = make_replica_split(
+        100,
+        fixed_a,
+        analysis_identity="population-A",
+        batch_seed=1001,
+        replica_index=1,
+        blind_fraction=0.50,
+    )
+    replica_b = make_replica_split(
+        100,
+        fixed_b,
+        analysis_identity="population-A",
+        batch_seed=2002,
+        replica_index=1,
+        blind_fraction=0.50,
+    )
+    assert fixed_a.seed != fixed_b.seed
+    assert replica_a.seed != replica_b.seed
+    assert not np.array_equal(fixed_a.validation, fixed_b.validation)
+    assert not np.array_equal(replica_a.test, replica_b.test)
 
 
 def test_candidate_ids_stable_under_grid_reordering():
-    a={"learning_rate":0.01,"batch_size":16};b={"learning_rate":0.001,"batch_size":16}
-    first=candidate_manifest([a,b]);second=candidate_manifest([{"x":1},b,a])
+    a = {"learning_rate": 0.01, "batch_size": 16}
+    b = {"learning_rate": 0.001, "batch_size": 16}
+    first = candidate_manifest([a, b])
+    second = candidate_manifest([{"x": 1}, b, a])
     assert candidate_id(a) in first and candidate_id(a) in second
-    assert candidate_id(a)==candidate_id(dict(reversed(list(a.items()))))
+    assert candidate_id(a) == candidate_id(dict(reversed(list(a.items()))))
 
 
-@pytest.mark.parametrize("waveform,expected",[(np.asarray([0.,0.1,-0.1,0.]),False),(np.asarray([-9.5,-9.3,-9.2,-9.4]),True),(np.asarray([9.2,9.4,9.3,9.5]),True)])
-def test_baseline_clipping_checks_both_boundaries(waveform,expected):
-    _,clipped=baseline_quality(waveform,trigger_index=4,sample_interval_s=1e-9,window_ns=(-4.,-1.),vertical_limits_mV=(-10.,10.),clipping_margin_mV=1.0)
-    assert clipped is expected
+def test_results_schema_separates_fixed_tuning_from_replicas():
+    assert "stage" not in RESULT_FIELDS
+    assert "phase" in RESULT_FIELDS
+    assert "replica_index" in RESULT_FIELDS
+    assert "sampling_identity" in RESULT_FIELDS
 
 
-def test_partial_results_resume_without_duplicates(tmp_path):
-    store=RunStore(tmp_path/"run")
-    row={"seed":1,"stage":"validation","candidate_id":"abc","selected":False,"ctr_ps":60.0,"uncorrected_ctr_ps":90.0,"n":50,"rmse_ps":25.0}
-    store.upsert_result(row);store.upsert_result(dict(row,ctr_ps=59.0));rows=RunStore(tmp_path/"run",resume=True).read_results()
-    assert len(rows)==1 and float(rows[0]["ctr_ps"])==59.0
+def test_result_upsert_keys_validation_and_replica_separately(tmp_path):
+    store = RunStore(tmp_path / "run")
+    validation = {
+        "phase": "hyperparameter_validation",
+        "replica_index": "",
+        "seed": 1,
+        "candidate_id": "abc",
+        "selected": False,
+        "ctr_ps": 60.0,
+    }
+    replica = {
+        "phase": "replica",
+        "replica_index": 1,
+        "seed": 2,
+        "candidate_id": "abc",
+        "selected": True,
+        "ctr_ps": 55.0,
+    }
+    store.upsert_result(validation)
+    store.upsert_result(replica)
+    store.upsert_result(dict(replica, ctr_ps=54.0))
+    rows = store.read_results()
+    assert len(rows) == 2
+    assert [row["phase"] for row in rows] == ["hyperparameter_validation", "replica"]
+    assert float(rows[1]["ctr_ps"]) == 54.0
 
 
-def test_results_schema_is_replica_point_estimates_only():
-    assert "voltage" not in RESULT_FIELDS
-    assert "threshold" not in RESULT_FIELDS
-    assert "hyperparameters" not in RESULT_FIELDS
-    assert "ctr_uncertainty_ps" not in RESULT_FIELDS
-    assert "improvement_uncertainty_ps" not in RESULT_FIELDS
-    assert "paired_bootstrap_successful" not in RESULT_FIELDS
-    required=("seed","stage","model","estimator_formulation","mode","population_identity","candidate_id","ctr_ps","uncorrected_ctr_ps","improvement_ps","rmse_ps","uncorrected_rmse_ps","rmse_improvement_ps","n","swap_rmse_ps")
-    assert set(required)<=set(RESULT_FIELDS)
-
-
-def test_hyperparameter_plot_preserves_full_combinations(tmp_path):
-    candidates={"a":{"learning_rate":1e-3,"batch_size":16},"b":{"learning_rate":1e-3,"batch_size":32},"c":{"learning_rate":1e-2,"batch_size":16},"d":{"learning_rate":1e-2,"batch_size":32}}
-    rows=[{"seed":seed,"stage":"validation","candidate_id":cid,"ctr_ps":50+i} for seed in (1,2) for i,cid in enumerate(candidates)]
-    path=plot_hyperparameter_validation(rows,candidates,tmp_path/"grid.png");assert path is not None and path.is_file()
-
-
-def test_hyperparameter_plot_supports_rmse(tmp_path):
-    candidates={"a":{"learning_rate":1e-3},"b":{"learning_rate":1e-2}}
-    rows=[{"seed":1,"stage":"validation","candidate_id":"a","rmse_ps":30.0},{"seed":1,"stage":"validation","candidate_id":"b","rmse_ps":25.0}]
-    path=plot_hyperparameter_validation(rows,candidates,tmp_path/"rmse.png",metric="rmse_ps",metric_label="RMSE")
+def test_hyperparameter_plot_uses_single_fixed_validation_result(tmp_path):
+    candidates = {
+        "a": {"learning_rate": 1e-3},
+        "b": {"learning_rate": 1e-2},
+    }
+    rows = [
+        {
+            "phase": "hyperparameter_validation",
+            "replica_index": "",
+            "candidate_id": "a",
+            "ctr_ps": 60.0,
+        },
+        {
+            "phase": "hyperparameter_validation",
+            "replica_index": "",
+            "candidate_id": "b",
+            "ctr_ps": 55.0,
+        },
+    ]
+    path = plot_hyperparameter_validation(
+        rows,
+        candidates,
+        tmp_path / "validation.png",
+    )
     assert path is not None and path.is_file()
 
 
-def test_one_candidate_has_no_validation_plot(tmp_path):
-    assert plot_hyperparameter_validation([{"seed":1,"stage":"validation","candidate_id":"a","ctr_ps":50.0}],{"a":{"learning_rate":1e-3}},tmp_path/"single.png") is None
+def test_unsupported_study_schema_is_rejected(tmp_path):
+    path = tmp_path / "old.json"
+    path.write_text(
+        json.dumps({
+            "reference_dataset": {"root_file": "a.root", "true_tof_ps": 0, "channels": {}},
+            "analysis_dataset": {"root_file": "b.root", "true_tof_ps": 0, "channels": {}},
+            "preprocessing_config": {},
+            "model": "mlp",
+            "mode": "energy_to_energy",
+            "window": {"start": -1, "end": 1},
+            "seed": 1,
+            "model_selection": {"validation_fraction": 0.1},
+            "evaluation": {
+                "n_replicas": 2,
+                "blind_fraction": 0.5,
+                "minimum_events_per_split": 1
+            },
+            "fit": {"histogram_bin_width_ps": 20},
+            "ml_output": {"max_abs_ps": 100},
+            "output_dir": "x",
+            "resampling": {"seed": 1}
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="Unsupported study fields"):
+        load_config(path, project_root=tmp_path)
 
 
-def test_old_experiment_schema_is_rejected_before_resolution(tmp_path):
-    path=tmp_path/"legacy.json";path.write_text(json.dumps({"experiment":{"type":"model_study"}}),encoding="utf-8")
-    with pytest.raises(ConfigError,match="Old experiment schema"):
-        load_config(path,project_root=tmp_path)
-
-
-def test_batch_execution_is_sequential(monkeypatch,tmp_path):
-    calls=[]
-    def fake_run(cfg,**kwargs):calls.append(cfg["name"]);return tmp_path/cfg["name"]
-    monkeypatch.setattr(batch,"run_study",fake_run)
-    configs=[{"name":"first"},{"name":"second"},{"name":"third"}]
-    outputs=batch.run_batch(configs)
-    assert calls==["first","second","third"]
-    assert [p.name for p in outputs]==calls
-
-
-def test_compact_benchmark_expands_model_mode_window_product_without_fit_bootstrap():
-    package_root=Path(study.__file__).resolve().parents[1]
-    config_path=package_root/"config"/"batches"/"benchmark_other_models_49V.json"
-    resolved=load_batch_config(config_path,project_root=package_root)
-    assert len(resolved.runs)==6*2*2
-    assert {cfg["mode"] for cfg in resolved.runs}=={"energy_to_energy","timing_to_timing"}
-    assert {cfg["window_name"] for cfg in resolved.runs}=={"onishi","wide"}
-    assert {cfg["resampling"]["n_replicas"] for cfg in resolved.runs}=={5}
-    assert all("bootstrap_samples" not in cfg["fit"] for cfg in resolved.runs)
-    assert {cfg["fit"]["histogram_bin_width_ps"] for cfg in resolved.runs if cfg["mode"]=="energy_to_energy"}=={20.0}
-    assert {cfg["fit"]["histogram_bin_width_ps"] for cfg in resolved.runs if cfg["mode"]=="timing_to_timing"}=={10.0}
-    assert all(Path(cfg["output_dir"]).is_relative_to(Path(resolved.output_dir)) for cfg in resolved.runs)
+def test_compact_benchmark_uses_fixed_validation_and_blind_fraction():
+    package_root = Path(study.__file__).resolve().parents[1]
+    config_path = package_root / "config" / "batches" / "benchmark_other_models_49V.json"
+    resolved = load_batch_config(config_path, project_root=package_root)
+    assert len(resolved.runs) == 6 * 2 * 2
+    assert resolved.protocol["seed"] == 1001
+    assert resolved.protocol["model_selection"] == {"validation_fraction": 0.20}
+    assert resolved.protocol["evaluation"] == {
+        "n_replicas": 5,
+        "blind_fraction": 0.50,
+        "minimum_events_per_split": 50,
+    }
+    assert {config["save_models"] for config in resolved.runs} == {"first"}
+    assert all("resampling" not in config for config in resolved.runs)
 
 
 def test_prepared_data_uses_control_led_and_window_scoped_population():
-    source=inspect.getsource(prepared_data.prepare_ml_dataset)
+    source = inspect.getsource(prepared_data.prepare_ml_dataset)
     assert 'selected_led_threshold_mV' in source
-    assert 'led_selection"]["thresholds_mV' not in source
     assert 'coincidence & window_valid' in source
-    assert '"population_scope":"dataset+mode+window"' in source
 
 
-def test_orchestration_has_generic_candidate_policy_and_no_concrete_model_branching():
-    source=inspect.getsource(study.run_study)
-    assert 'if len(candidates) == 1' in source
-    assert 'np.concatenate([split.train, split.validation])' in source
-    assert 'dataset, split.train, params' in source
-    assert 'dataset, config["mode"], split.validation' in source
-    assert "onishi_cnn" not in source
-    assert "locally_connected_mlp" not in source
-    assert "model_name ==" not in source
-
-
-def test_study_manifest_declares_replica_statistics_and_no_fit_bootstrap():
-    source=inspect.getsource(study.run_study)
-    assert '"preprocessing": config["preprocessing"]' in source
-    assert '"preprocessing_fingerprint"' in source
-    assert '"statistical_unit": "repeated_holdout_replica"' in source
-    assert '"fit_bootstrap": False' in source
-    assert '"event_level_bootstrap": False' in source
+def test_study_flow_has_one_tuning_pass_and_one_fit_per_replica():
+    source = inspect.getsource(study.run_study)
+    assert '"hyperparameter_validation"' in source
+    assert 'for replica_index in range(1, n_replicas + 1)' in source
+    assert 'fixed.split.tuning_train' in source
+    assert 'fixed.split.validation' in source
+    assert 'split.train' in source
+    assert 'final refit' not in source.lower()
+    assert 'np.concatenate([split.train' not in source

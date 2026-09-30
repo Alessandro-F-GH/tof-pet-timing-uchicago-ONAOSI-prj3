@@ -1,40 +1,110 @@
 from __future__ import annotations
+
 import hashlib
 from dataclasses import dataclass
+
 import numpy as np
 
-def semantic_seed(base:int,*parts:object)->int:
-    payload="|".join(map(str,(int(base),*parts))).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:4],"little") & 0x7fffffff
+
+def semantic_seed(base: int, *parts: object) -> int:
+    payload = "|".join(map(str, (int(base), *parts))).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:4], "little") & 0x7FFFFFFF
+
 
 @dataclass(frozen=True)
-class ResamplingSplit:
-    train: np.ndarray
+class FixedValidationSplit:
+    tuning_train: np.ndarray
     validation: np.ndarray
+    seed: int
+
+    def validate(self, n_events: int) -> None:
+        train = set(map(int, self.tuning_train))
+        validation = set(map(int, self.validation))
+        if train & validation:
+            raise AssertionError("fixed tuning train and validation overlap")
+        if train | validation != set(range(int(n_events))):
+            raise AssertionError("fixed tuning split must cover the prepared population exactly")
+
+
+@dataclass(frozen=True)
+class ReplicaSplit:
+    train: np.ndarray
     test: np.ndarray
-    def validate(self,n_events:int)->None:
-        groups=[set(map(int,x)) for x in (self.train,self.validation,self.test)]
-        if groups[0]&groups[1] or groups[0]&groups[2] or groups[1]&groups[2]:
-            raise AssertionError("resampling partitions overlap")
-        if groups[0]|groups[1]|groups[2] != set(range(int(n_events))):
-            raise AssertionError("resampling partitions must cover the prepared population exactly")
+    seed: int
+    replica_index: int
 
-def _split(values:np.ndarray,fraction:float,rng:np.random.Generator):
-    values=np.asarray(values,dtype=np.int64)
-    if values.size<2: raise ValueError("Need at least two events to split")
-    if not 0<float(fraction)<1: raise ValueError("split fraction must be in (0,1)")
-    perm=rng.permutation(values)
-    n_right=min(values.size-1,max(1,int(round(values.size*float(fraction)))))
-    return np.sort(perm[n_right:]),np.sort(perm[:n_right])
+    def validate(self, n_events: int) -> None:
+        train = set(map(int, self.train))
+        test = set(map(int, self.test))
+        if train & test:
+            raise AssertionError("replica train and blind test overlap")
+        if train | test != set(range(int(n_events))):
+            raise AssertionError("replica train/test must cover the prepared population exactly")
 
-def make_resampling_split(n_events:int,*,analysis_identity:str,resampling_seed:int,
-                          validation_fraction:float,test_fraction:float)->ResamplingSplit:
-    if n_events<3: raise ValueError("Need at least three prepared events")
-    if validation_fraction<=0 or test_fraction<=0 or validation_fraction+test_fraction>=1:
-        raise ValueError("validation_fraction and test_fraction must be positive and sum to <1")
-    rng=np.random.default_rng(semantic_seed(int(resampling_seed),"repeated_holdout",analysis_identity))
-    all_idx=np.arange(int(n_events),dtype=np.int64)
-    development,test=_split(all_idx,float(test_fraction),rng)
-    relative_validation=float(validation_fraction)/(1.0-float(test_fraction))
-    train,validation=_split(development,relative_validation,rng)
-    out=ResamplingSplit(train,validation,test); out.validate(n_events); return out
+
+def _sample(values: np.ndarray, n_selected: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(values, dtype=np.int64)
+    n_selected = int(n_selected)
+    if not 0 < n_selected < values.size:
+        raise ValueError("sample size must be between 1 and pool_size - 1")
+    perm = rng.permutation(values)
+    selected = np.sort(perm[:n_selected])
+    remaining = np.sort(perm[n_selected:])
+    return remaining, selected
+
+
+def make_fixed_validation_split(
+    n_events: int,
+    *,
+    analysis_identity: str,
+    batch_seed: int,
+    validation_fraction: float,
+) -> FixedValidationSplit:
+    n_events = int(n_events)
+    validation_fraction = float(validation_fraction)
+    if n_events < 3:
+        raise ValueError("Need at least three prepared events")
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must lie in (0, 1)")
+    n_validation = int(round(n_events * validation_fraction))
+    n_validation = min(n_events - 2, max(1, n_validation))
+    seed = semantic_seed(int(batch_seed), "fixed_validation", analysis_identity)
+    rng = np.random.default_rng(seed)
+    tuning_train, validation = _sample(np.arange(n_events, dtype=np.int64), n_validation, rng)
+    split = FixedValidationSplit(tuning_train=tuning_train, validation=validation, seed=seed)
+    split.validate(n_events)
+    return split
+
+
+def make_replica_split(
+    n_events: int,
+    fixed_split: FixedValidationSplit,
+    *,
+    analysis_identity: str,
+    batch_seed: int,
+    replica_index: int,
+    blind_fraction: float,
+) -> ReplicaSplit:
+    n_events = int(n_events)
+    replica_index = int(replica_index)
+    blind_fraction = float(blind_fraction)
+    if replica_index < 1:
+        raise ValueError("replica_index must be >= 1")
+    if not 0.0 < blind_fraction < 1.0:
+        raise ValueError("blind_fraction must lie in (0, 1)")
+    fixed_split.validate(n_events)
+
+    pool = np.asarray(fixed_split.tuning_train, dtype=np.int64)
+    n_test = int(round(n_events * blind_fraction))
+    if not 0 < n_test < pool.size:
+        raise ValueError(
+            "blind_fraction must leave a non-empty variable training subset outside the fixed validation set"
+        )
+
+    seed = semantic_seed(int(batch_seed), "bootstrap_replica", analysis_identity, replica_index)
+    rng = np.random.default_rng(seed)
+    variable_train, test = _sample(pool, n_test, rng)
+    train = np.sort(np.concatenate([np.asarray(fixed_split.validation, dtype=np.int64), variable_train]))
+    split = ReplicaSplit(train=train, test=test, seed=seed, replica_index=replica_index)
+    split.validate(n_events)
+    return split

@@ -11,7 +11,6 @@ from .storage import RunStore
 
 
 def remake_study_plots(config, *, logger=None):
-    """Regenerate plots from saved study outputs without preprocessing or training."""
     run_dir = Path(config["output_dir"]).resolve()
     if not run_dir.is_dir() or not (run_dir / "results.csv").is_file():
         raise FileNotFoundError(f"No completed study results found in {run_dir}")
@@ -25,14 +24,22 @@ def remake_study_plots(config, *, logger=None):
     candidates_path = run_dir / "candidates.json"
     if candidates_path.is_file():
         candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
-        if len(candidates) > 1 and any(r.get("stage") == "validation" for r in rows):
+        if any(row.get("phase") == "hyperparameter_validation" for row in rows):
             plot_hyperparameter_validation(
-                rows, candidates, run_dir / "hyperparameter_validation_ctr.png", log,
-                metric="ctr_ps", metric_label="CTR",
+                rows,
+                candidates,
+                run_dir / "hyperparameter_validation_ctr.png",
+                log,
+                metric="ctr_ps",
+                metric_label="CTR",
             )
             plot_hyperparameter_validation(
-                rows, candidates, run_dir / "hyperparameter_validation_rmse.png", log,
-                metric="rmse_ps", metric_label="RMSE",
+                rows,
+                candidates,
+                run_dir / "hyperparameter_validation_rmse.png",
+                log,
+                metric="rmse_ps",
+                metric_label="RMSE",
             )
 
     plots = make_study_result_plots(
@@ -47,11 +54,14 @@ def remake_study_plots(config, *, logger=None):
 
 
 def remake_batch_plots(batch, *, logger=None):
-    configs = batch.runs if isinstance(batch, BatchConfig) else batch
+    if not isinstance(batch, BatchConfig):
+        raise TypeError("remake_batch_plots requires a BatchConfig")
     outputs = []
-    total = len(configs)
-    for i, config in enumerate(configs, 1):
+    total = len(batch.runs)
+    for index, config in enumerate(batch.runs, 1):
         if logger:
-            logger.info("Remake plots %d/%d | %s", i, total, config["name"])
-        outputs.append((Path(config["output_dir"]).resolve(), remake_study_plots(config, logger=logger)))
+            logger.info("Remake plots %d/%d | %s", index, total, config["name"])
+        outputs.append(
+            (Path(config["output_dir"]).resolve(), remake_study_plots(config, logger=logger))
+        )
     return outputs

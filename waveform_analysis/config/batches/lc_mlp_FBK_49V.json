@@ -12,14 +12,14 @@
     }
   },
   "output_dir": "results/studies/FBK/lc_mlp_49V",
+  "save_models": "all",
   "protocol": {
+    "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
-    "resampling": {
-      "policy": "repeated_holdout",
-      "seed": 1001,
+    "model_selection": {"validation_fraction": 0.2},
+    "evaluation": {
       "n_replicas": 10,
-      "validation_fraction": 0.2,
-      "test_fraction": 0.5,
+      "blind_fraction": 0.5,
       "minimum_events_per_split": 50
     },
     "fit": {
