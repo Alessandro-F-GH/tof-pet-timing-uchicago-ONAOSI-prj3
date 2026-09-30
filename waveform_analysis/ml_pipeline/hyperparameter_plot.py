@@ -33,8 +33,8 @@ def plot_hyperparameter_validation(
     output_path,
     logger=None,
     *,
-    metric="ctr_ps",
-    metric_label="CTR",
+    metric="rmse_ps",
+    metric_label="RMSE",
 ):
     varied = _varied(candidates)
     if not varied:
@@ -120,7 +120,7 @@ def plot_hyperparameter_validation(
 
     if logger:
         logger.info(
-            "Hyperparameter plot uses one fixed validation result per candidate; no replica averaging"
+            "Hyperparameter plot uses fixed-validation RMSE for one result per candidate; no CTR selection and no replica averaging"
         )
 
     fig.tight_layout()

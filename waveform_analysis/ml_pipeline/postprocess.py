@@ -28,18 +28,8 @@ def remake_study_plots(config, *, logger=None):
             plot_hyperparameter_validation(
                 rows,
                 candidates,
-                run_dir / "hyperparameter_validation_ctr.png",
-                log,
-                metric="ctr_ps",
-                metric_label="CTR",
-            )
-            plot_hyperparameter_validation(
-                rows,
-                candidates,
                 run_dir / "hyperparameter_validation_rmse.png",
                 log,
-                metric="rmse_ps",
-                metric_label="RMSE",
             )
 
     plots = make_study_result_plots(

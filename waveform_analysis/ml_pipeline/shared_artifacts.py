@@ -13,6 +13,9 @@ from .splits import FixedValidationSplit, ReplicaSplit, make_fixed_validation_sp
 from .stats import ctr_estimate, rmse_ps
 
 
+SAMPLING_PROTOCOL = "fixed_validation_excluded_from_replicas_v3"
+
+
 @dataclass(frozen=True)
 class SharedValidationArtifacts:
     directory: Path
@@ -67,6 +70,7 @@ class ExperimentArtifactStore:
 
     def _sampling_identity(self, dataset, config) -> str:
         return canonical_hash({
+            "sampling_protocol": SAMPLING_PROTOCOL,
             "event_population_identity": str(dataset.manifest["event_population_identity"]),
             "batch_seed": int(config["seed"]),
             "validation_fraction": float(config["model_selection"]["validation_fraction"]),
@@ -83,7 +87,7 @@ class ExperimentArtifactStore:
         sampling_dir.mkdir(parents=True, exist_ok=True)
 
         population_manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "analysis_protocol_identity": protocol_identity,
             "event_population_identity": event_identity,
             "prepared_dataset": str(Path(dataset.directory).resolve()),
@@ -139,7 +143,8 @@ class ExperimentArtifactStore:
             )
 
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
+            "sampling_protocol": SAMPLING_PROTOCOL,
             "sampling_identity": sampling_identity,
             "batch_seed": int(config["seed"]),
             "fixed_validation_seed": int(split.seed),
@@ -148,6 +153,7 @@ class ExperimentArtifactStore:
             "n_events": int(dataset.n_events),
             "n_tuning_train": int(len(split.tuning_train)),
             "n_validation": int(len(split.validation)),
+            "replica_pool_excludes_validation": True,
             "split_path": str(split_path.resolve()),
         }
         atomic_json(sampling_dir / "manifest.json", manifest)
@@ -179,6 +185,10 @@ class ExperimentArtifactStore:
             raise RuntimeError(
                 f"Replica {replica_index} violates minimum_events_per_split={minimum}"
             )
+        if set(map(int, split.train)) & set(map(int, fixed.split.validation)):
+            raise AssertionError("fixed validation must never enter replica training")
+        if set(map(int, split.test)) & set(map(int, fixed.split.validation)):
+            raise AssertionError("fixed validation must never enter replica blind evaluation")
 
         replica_dir = (
             fixed.directory
@@ -234,12 +244,15 @@ class ExperimentArtifactStore:
             atomic_json(baseline_path, baseline)
 
         replica_manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
+            "sampling_protocol": SAMPLING_PROTOCOL,
             "replica_index": int(replica_index),
             "seed": int(split.seed),
             "sampling_identity": fixed.sampling_identity,
             "n_train": int(len(split.train)),
             "n_test": int(len(split.test)),
+            "n_excluded_validation": int(len(fixed.split.validation)),
+            "fixed_validation_excluded": True,
             "split_path": str(split_path.resolve()),
         }
         atomic_json(replica_dir / "manifest.json", replica_manifest)

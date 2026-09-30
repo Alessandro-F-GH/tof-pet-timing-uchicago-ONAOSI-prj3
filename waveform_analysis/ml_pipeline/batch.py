@@ -69,7 +69,7 @@ def _write_batch_state(batch, rows, status):
     root = Path(batch.output_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "name": batch.name,
         "status": status,
         "source_config": batch.source_path,
@@ -77,7 +77,8 @@ def _write_batch_state(batch, rows, status):
         "axes": batch.axes,
         "save_models": batch.runs[0]["save_models"],
         "statistical_unit": "replica",
-        "hyperparameter_selection": "one fixed validation split, performed once before replicas",
+        "hyperparameter_selection": "one fixed validation split, RMSE selection, performed once before replicas",
+        "fixed_validation_used_in_replicas": False,
         "pairing_rule": "same analysis protocol + sampling identity + mode + window + replica index",
         "shared_artifact_root": str((root / "artifacts").resolve()),
         "runs": rows,
