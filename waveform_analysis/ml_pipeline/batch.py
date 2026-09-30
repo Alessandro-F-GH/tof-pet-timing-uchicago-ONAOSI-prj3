@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 from .common import atomic_json, canonical_hash, write_csv
 from .config import BatchConfig
+from .control_preprocessing import fit_control_artifact
+from .event_selection import apply_selection_rules
 from .study import run_study
+
+
+_SELECTION_DIAGNOSTIC_FILES = (
+    "photopeak_selection.png",
+    "baseline_noise.png",
+    "baseline_clipping.png",
+    "timing_tot_selection.png",
+    "selection_summary.csv",
+)
 
 
 def _log_gpu_status(logger):
@@ -49,19 +61,21 @@ def _run_index(batch: BatchConfig):
             relative = str(path.relative_to(root))
         except ValueError:
             relative = str(path)
-        rows.append({
-            "run_id": config.get("run_id", config["name"]),
-            "name": config["name"],
-            "model": config["model"]["name"],
-            "mode": config["mode"],
-            "window": config.get("window_name", ""),
-            "window_start_ns": config["window_ns"]["start"],
-            "window_end_ns": config["window_ns"]["end"],
-            "save_models": config["save_models"],
-            "status": "pending",
-            "path": relative,
-            "config_fingerprint": config["_config_fingerprint"],
-        })
+        rows.append(
+            {
+                "run_id": config.get("run_id", config["name"]),
+                "name": config["name"],
+                "model": config["model"]["name"],
+                "mode": config["mode"],
+                "window": config.get("window_name", ""),
+                "window_start_ns": config["window_ns"]["start"],
+                "window_end_ns": config["window_ns"]["end"],
+                "save_models": config["save_models"],
+                "status": "pending",
+                "path": relative,
+                "config_fingerprint": config["_config_fingerprint"],
+            }
+        )
     return rows
 
 
@@ -81,6 +95,7 @@ def _write_batch_state(batch, rows, status):
         "fixed_validation_used_in_replicas": False,
         "pairing_rule": "same analysis protocol + sampling identity + mode + window + replica index",
         "shared_artifact_root": str((root / "artifacts").resolve()),
+        "preprocessing_diagnostics_root": str((root / "preprocessing").resolve()),
         "runs": rows,
     }
     atomic_json(root / "manifest.json", manifest)
@@ -109,7 +124,9 @@ def _runtime_configs(configs, batch_root, rebuild_preprocessing=False):
     for index, config in enumerate(configs):
         runtime = dict(config)
         runtime["_batch_artifact_root"] = artifact_root
-        runtime["_control_fit_by_mode"] = {key: dict(value) for key, value in fit_by_mode.items()}
+        runtime["_control_fit_by_mode"] = {
+            key: dict(value) for key, value in fit_by_mode.items()
+        }
         runtime["_control_modes"] = modes
         mode = str(config["mode"])
         population_key = (
@@ -119,7 +136,9 @@ def _runtime_configs(configs, batch_root, rebuild_preprocessing=False):
             canonical_hash(config.get("ml_input", {})),
         )
         runtime["_rebuild_control"] = bool(rebuild_preprocessing and index == 0)
-        runtime["_rebuild_analysis"] = bool(rebuild_preprocessing and mode not in seen_modes)
+        runtime["_rebuild_analysis"] = bool(
+            rebuild_preprocessing and mode not in seen_modes
+        )
         runtime["_rebuild_prepared"] = bool(
             rebuild_preprocessing and population_key not in seen_populations
         )
@@ -129,7 +148,98 @@ def _runtime_configs(configs, batch_root, rebuild_preprocessing=False):
     return output
 
 
-def run_batch(batch, *, overwrite=False, resume=False, rebuild_preprocessing=False, logger=None):
+def _publish_batch_selection_diagnostics(
+    config,
+    batch_root,
+    *,
+    force=False,
+    logger=None,
+):
+    """Copy the cached analysis-selection diagnostics into the batch output once."""
+    mode = str(config["mode"])
+    output_dir = Path(batch_root).resolve() / "preprocessing" / mode
+    metadata_path = output_dir / "selection_manifest.json"
+
+    control, _ = fit_control_artifact(
+        config["reference"]["root_file"],
+        config["reference"],
+        config["preprocessing"],
+        config["fit"],
+        fit_by_mode=config.get("_control_fit_by_mode"),
+        modes=config.get("_control_modes") or [mode],
+        cache_root=config["preprocessing"]["cache_dir"],
+        rebuild=False,
+        logger=logger,
+    )
+    selection = apply_selection_rules(
+        config["analysis"]["root_file"],
+        config["analysis"],
+        config["preprocessing"],
+        control["selection_rules"],
+        mode,
+        cache_dir=Path(config["preprocessing"]["cache_dir"]) / "analysis_selection",
+        rebuild=False,
+        logger=logger,
+    )
+
+    if metadata_path.is_file() and not force:
+        try:
+            existing = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if existing.get("fingerprint") == selection.manifest.get("fingerprint"):
+                if logger:
+                    logger.info(
+                        "Batch preprocessing diagnostics already current | mode=%s | %s",
+                        mode,
+                        output_dir,
+                    )
+                return output_dir
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = []
+    for name in _SELECTION_DIAGNOSTIC_FILES:
+        source = Path(selection.directory) / name
+        if source.is_file():
+            shutil.copy2(source, output_dir / name)
+            copied.append(name)
+
+    atomic_json(
+        metadata_path,
+        {
+            "fingerprint": selection.manifest["fingerprint"],
+            "source_selection_artifact": str(Path(selection.directory).resolve()),
+            "analysis_source": str(Path(config["analysis"]["root_file"]).resolve()),
+            "mode": mode,
+            "family": selection.manifest.get("family"),
+            "n_raw": selection.manifest.get("n_raw"),
+            "n_selected": selection.manifest.get("n_selected"),
+            "stage_counts": selection.manifest.get("stage_counts"),
+            "files": copied,
+            "selection_rules_fingerprint": selection.manifest.get("rules_fingerprint"),
+        },
+    )
+    if logger:
+        logger.info(
+            "Batch preprocessing diagnostics published | mode=%s | files=%d | %s",
+            mode,
+            len(copied),
+            output_dir,
+        )
+    return output_dir
+
+
+def run_batch(
+    batch,
+    *,
+    overwrite=False,
+    resume=False,
+    rebuild_preprocessing=False,
+    logger=None,
+):
     if not isinstance(batch, BatchConfig):
         raise TypeError("run_batch requires a resolved BatchConfig")
 
@@ -148,6 +258,7 @@ def run_batch(batch, *, overwrite=False, resume=False, rebuild_preprocessing=Fal
         shutil.rmtree(root)
     _write_batch_state(batch, rows, "running")
 
+    published_modes = set()
     for index, config in enumerate(configs, 1):
         if logger:
             logger.info("Batch run %d/%d | %s", index, total, config["name"])
@@ -159,6 +270,17 @@ def run_batch(batch, *, overwrite=False, resume=False, rebuild_preprocessing=Fal
                 rebuild_preprocessing=False,
             )
             outputs.append(output)
+
+            mode = str(config["mode"])
+            if mode not in published_modes:
+                _publish_batch_selection_diagnostics(
+                    config,
+                    root,
+                    force=bool(rebuild_preprocessing),
+                    logger=logger,
+                )
+                published_modes.add(mode)
+
             rows[index - 1]["status"] = "complete"
             _write_batch_state(batch, rows, "running")
             if logger:

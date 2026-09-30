@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from waveform_analysis.ml_pipeline import batch as batch_module
 from waveform_analysis.ml_pipeline.config import ConfigError, _save_models, load_batch_config
 from waveform_analysis.ml_pipeline.report import model_output_correlations
 from waveform_analysis.ml_pipeline.study import _should_save_model
@@ -25,6 +27,18 @@ def test_benchmark_batch_uses_first_replica_model_persistence():
     config_path = package_root / "config" / "batches" / "benchmark_other_models_49V.json"
     batch = load_batch_config(config_path, project_root=package_root)
     assert {run["save_models"] for run in batch.runs} == {"first"}
+
+
+def test_batch_publishes_cached_selection_diagnostics_once_per_mode():
+    source = inspect.getsource(batch_module.run_batch)
+    helper = inspect.getsource(batch_module._publish_batch_selection_diagnostics)
+    assert "published_modes = set()" in source
+    assert "if mode not in published_modes" in source
+    assert "_publish_batch_selection_diagnostics" in source
+    assert "apply_selection_rules" in helper
+    assert "rebuild=False" in helper
+    assert 'root / "preprocessing" / mode' in helper
+    assert "selection_manifest.json" in helper
 
 
 def _record(tmp_path, *, model, mode, replica, output, led):
@@ -68,11 +82,32 @@ def test_model_output_correlation_is_replica_paired_and_mode_separated(tmp_path)
     records = []
     for mode in ("energy_to_energy", "timing_to_timing"):
         for replica in (1, 2):
-            records.append(_record(tmp_path, model="model_a", mode=mode, replica=replica, output=[1, 2, 3, 4, 5], led=led))
-            records.append(_record(tmp_path, model="model_b", mode=mode, replica=replica, output=[2, 4, 6, 8, 10], led=led))
+            records.append(
+                _record(
+                    tmp_path,
+                    model="model_a",
+                    mode=mode,
+                    replica=replica,
+                    output=[1, 2, 3, 4, 5],
+                    led=led,
+                )
+            )
+            records.append(
+                _record(
+                    tmp_path,
+                    model="model_b",
+                    mode=mode,
+                    replica=replica,
+                    output=[2, 4, 6, 8, 10],
+                    led=led,
+                )
+            )
     outputs, rows = model_output_correlations(records, tmp_path / "report")
     assert len(rows) == 2
-    assert {row["mode"] for row in rows} == {"energy_to_energy", "timing_to_timing"}
+    assert {row["mode"] for row in rows} == {
+        "energy_to_energy",
+        "timing_to_timing",
+    }
     assert all(row["n_paired_replicas"] == 2 for row in rows)
     assert all(row["pearson_r_fisher_mean"] > 0.999 for row in rows)
     assert any(path.suffix == ".png" for path in outputs)
