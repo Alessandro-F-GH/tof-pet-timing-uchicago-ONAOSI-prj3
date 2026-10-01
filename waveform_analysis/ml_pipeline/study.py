@@ -383,6 +383,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     )
 
     progress = ProgressTracker(logger, {"replica": n_replicas})
+    replica_protocol_logged = False
     for replica_index in range(1, n_replicas + 1):
         replica = shared_store.prepare_replica(
             dataset,
@@ -399,13 +400,19 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             progress.complete("replica", f"replica {replica_index}", announce=False)
             continue
 
+        if not replica_protocol_logged:
+            logger.info(
+                "Replica protocol | fit=once per replica | train=%d | blind=%d | fixed validation excluded | model_save=%s",
+                len(split.train),
+                len(split.test),
+                config["save_models"],
+            )
+            replica_protocol_logged = True
         logger.info(
-            "Replica %d/%d | seed=%d | fit once | train=%d | blind=%d | fixed validation excluded",
+            "Replica %d/%d | seed=%d",
             replica_index,
             n_replicas,
             int(split.seed),
-            len(split.train),
-            len(split.test),
         )
         replica_transform_cache = FeatureTransformCache()
         replica_fit_input_cache = FitInputCache()
@@ -459,11 +466,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                 store.model_dir(replica_index, split.seed, selected_candidate),
                 selected_params,
             )
-            logger.info(
-                "Replica model saved | replica=%d | policy=%s",
-                replica_index,
-                config["save_models"],
-            )
+            logger.info("Replica model saved | replica=%d", replica_index)
 
         logger.info(
             "Replica result | replica=%d | CTR=%.3f ps | LED CTR=%.3f ps | improvement=%.3f ps (%.2f%%) | RMSE=%.3f ps",
