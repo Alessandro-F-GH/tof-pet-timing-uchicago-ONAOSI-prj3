@@ -7,6 +7,12 @@ from waveform_analysis.ml_pipeline.report import (
     plot_led_improvements,
     study_summary,
 )
+from waveform_analysis.ml_pipeline.report_metrics import (
+    _extend_summary_with_rmse_reference,
+    plot_rmse_comparisons,
+    plot_rmse_ctr_correlation,
+    plot_window_model_comparisons,
+)
 
 
 def _row(*, study, dataset, population, sampling, model, mode, window, replica, ctr, led):
@@ -87,3 +93,55 @@ def test_led_improvement_plot_is_separate_per_mode_and_window(tmp_path):
     outputs = plot_led_improvements(study_summary(rows), tmp_path)
     assert len(outputs) == 4
     assert all(path.is_file() for path in outputs)
+
+
+def test_extended_metric_plots_are_separated_by_mode_and_window(tmp_path):
+    rows = []
+    for mode, population, sampling in (
+        ("energy_to_energy", "pe", "se"),
+        ("timing_to_timing", "pt", "st"),
+    ):
+        for window_index, window in enumerate(((-1.5, 2.0), (-2.0, 30.0))):
+            for model_index, model in enumerate(("model_a", "model_b")):
+                for replica in (1, 2):
+                    rows.append(
+                        _row(
+                            study="s",
+                            dataset="d",
+                            population=population,
+                            sampling=sampling,
+                            model=model,
+                            mode=mode,
+                            window=window,
+                            replica=replica,
+                            ctr=60 + replica + model_index - 2 * window_index,
+                            led=90 + replica,
+                        )
+                    )
+
+    summary = _extend_summary_with_rmse_reference(rows, study_summary(rows))
+    assert all("led_rmse_mean_ps" in row for row in summary)
+    assert all("paired_led_rmse_improvement_ci_low_ps" in row for row in summary)
+
+    rmse_outputs = plot_rmse_comparisons(summary, tmp_path / "rmse")
+    scatter_outputs = plot_rmse_ctr_correlation(summary, tmp_path / "rmse_ctr")
+    window_ctr_outputs = plot_window_model_comparisons(
+        summary, tmp_path / "window_ctr", metric="ctr"
+    )
+    window_rmse_outputs = plot_window_model_comparisons(
+        summary, tmp_path / "window_rmse", metric="rmse"
+    )
+
+    assert len(rmse_outputs) == 4
+    assert len(scatter_outputs) == 4
+    assert len(window_ctr_outputs) == 2
+    assert len(window_rmse_outputs) == 2
+    assert all(
+        path.is_file()
+        for path in (
+            rmse_outputs
+            + scatter_outputs
+            + window_ctr_outputs
+            + window_rmse_outputs
+        )
+    )
