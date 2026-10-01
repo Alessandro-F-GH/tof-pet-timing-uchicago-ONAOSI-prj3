@@ -10,6 +10,7 @@ from .ml_pipeline.binning_scan import run_ctr_binning_scan
 from .ml_pipeline.config import load_batch_config, load_config, public_batch_config, public_config
 from .ml_pipeline.postprocess import remake_batch_plots, remake_study_plots
 from .ml_pipeline.report import batch_result_dirs, generate_report
+from .ml_pipeline.report_metrics import augment_report
 from .ml_pipeline.study import run_study
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -115,7 +116,9 @@ def main():
         else:
             paths = [Path(path).expanduser().resolve() for path in args.studies]
             output_dir = args.output_dir or (PROJECT_ROOT / "results" / "reports" / "comparison")
-        print(generate_report(paths, output_dir, logger=logger))
+        report_root = generate_report(paths, output_dir, logger=logger)
+        augment_report(paths, report_root, logger=logger)
+        print(report_root)
         return
 
     if args.command == "ctr-binning-scan":
