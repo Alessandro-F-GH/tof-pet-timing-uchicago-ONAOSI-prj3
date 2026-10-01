@@ -3,7 +3,7 @@
   "parameters": {
     "architecture": [
       [
-        32
+        128
       ]
     ],
     "activation": [
@@ -22,16 +22,10 @@
       1
     ],
     "max_correction_ps": [
-      150
+      20, 60, 150
     ],
-    "learning_rate": [
-      0.01,
-      0.001
-    ],
-    "batch_size": [
-      32,
-      128
-    ]
+    "learning_rate": [1e-2, 3e-3, 1e-3, 3e-4, 1e-4],
+    "batch_size": [16,32,128,256]
   },
   "training": {
     "device": "auto",
