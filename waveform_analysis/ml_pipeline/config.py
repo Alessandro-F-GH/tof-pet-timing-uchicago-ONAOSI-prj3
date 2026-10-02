@@ -194,7 +194,7 @@ def validate_config(config):
     if int(config["ml_input"].get("subsampling", 1)) <= 0:
         raise ConfigError("ml_input.subsampling must be positive")
     if float(config["ml_output"]["max_abs_ps"]) <= 0:
-        raise ConfigError("ml_output.max_abs_ps must be positive")
+        raise ConfigError("invalid fit settings")
     if float(config["fit"]["histogram_bin_width_ps"]) <= 0:
         raise ConfigError("invalid fit settings")
     config["save_models"] = _save_models(config.get("save_models", "all"))
@@ -260,6 +260,12 @@ def load_config(path, project_root=None):
 
 def _mode_tag(mode):
     return "energy" if mode == "energy_to_energy" else "timing"
+
+
+def _model_family(model_name):
+    from .models import get_model
+
+    return f"{get_model(model_name).estimator_formulation}_models"
 
 
 def _excluded(model, mode, window, rules):
@@ -328,6 +334,7 @@ def load_batch_config(path, project_root=None):
         model_name = model_raw if isinstance(model_raw, str) else str(model_raw.get("name", ""))
         if not model_name:
             raise ConfigError("every sweep model needs a name")
+        model_root = output / "models" / _model_family(model_name) / model_name
         for mode_raw in modes:
             mode = str(mode_raw)
             if mode not in CHANNEL_MODES:
@@ -353,7 +360,7 @@ def load_batch_config(path, project_root=None):
                     "fit": _protocol_value(protocol, "fit", mode),
                     "ml_input": _protocol_value(protocol, "ml_input", mode) if "ml_input" in protocol else {"subsampling": 1},
                     "ml_output": _protocol_value(protocol, "ml_output", mode),
-                    "output_dir": str(output / model_name / _mode_tag(mode) / str(window_name)),
+                    "output_dir": str(model_root / _mode_tag(mode) / str(window_name)),
                     "save_models": save_models,
                 }
                 runs.append(_resolve(source, item, root))
