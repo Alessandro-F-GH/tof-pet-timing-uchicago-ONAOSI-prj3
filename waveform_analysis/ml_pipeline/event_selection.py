@@ -137,8 +137,8 @@ def baseline_quality(signal_mV,trigger_index,sample_interval_s,window_ns,vertica
     center=float(np.mean(v));rms=float(np.sqrt(np.mean((v-center)**2)));low,high=map(float,np.sort(np.asarray(vertical_limits_mV,float)));margin=float(clipping_margin_mV)
     return rms,bool(np.any(v<=low+margin) or np.any(v>=high-margin))
 def _scan_baseline(root,dataset,preprocessing,candidate,triggers,n,family):
-    rms=np.full((n,2),np.nan);clipped=np.ones((n,2),dtype=bool);row=0;noise=preprocessing["selection"]["baseline_noise"];clip=preprocessing["selection"]["baseline_clipping"]
-    window=noise["window_ns"];limits=_limits(preprocessing[family]["vertical_scale_limit_mV"]);margin=float(clip["margin_mV"])
+    rms=np.full((n,2),np.nan);clipped=np.ones((n,2),dtype=bool);row=0;selection=preprocessing["selection"];noise=selection["baseline_noise"];clip=selection["baseline_clipping"]
+    window=selection["baseline_window_ns"];limits=_limits(preprocessing[family]["vertical_scale_limit_mV"]);margin=float(clip["margin_mV"])
     for chunk in iterate_energy_chunks(root,**_io_args(dataset,preprocessing,family=="timing")):
         for local in range(chunk.event_index.size):
             if row>=n:break
@@ -173,7 +173,7 @@ def fit_selection_rules(reference_file,reference_dataset,preprocessing,*,output_
         for family,counts in control_counts.items():
             raw=max(1,int(counts["raw"]));rows.extend({"mode_family":family,"stage":stage,"remaining":int(count),"fraction":float(count)/raw} for stage,count in counts.items() if stage!="raw")
         write_csv(Path(output_dir)/"reference_selection_summary.csv",rows)
-    return {"format_version":SELECTION_RULES_VERSION,"fingerprint":rules_fingerprint(root,reference_dataset,preprocessing),"reference_source":str(root),"photopeak_fits":pp_fits,"photopeak_intervals_mV":pp_intervals,"timing_tot":tot,"baseline_noise_limits_mV":noise_limits,"baseline_clipping_rule":{"window_ns":list(preprocessing["selection"]["baseline_noise"]["window_ns"]),"margin_mV":float(preprocessing["selection"]["baseline_clipping"]["margin_mV"]),"coordinate":"decode_oriented mV; both configured vertical boundaries tested"},"trigger_threshold_mV":{f:list(map(float,_two(preprocessing[f]["trigger_threshold_mV"]))) for f in families},"control_stage_counts":control_counts}
+    return {"format_version":SELECTION_RULES_VERSION,"fingerprint":rules_fingerprint(root,reference_dataset,preprocessing),"reference_source":str(root),"photopeak_fits":pp_fits,"photopeak_intervals_mV":pp_intervals,"timing_tot":tot,"baseline_noise_limits_mV":noise_limits,"baseline_clipping_rule":{"window_ns":list(preprocessing["selection"]["baseline_window_ns"]),"margin_mV":float(preprocessing["selection"]["baseline_clipping"]["margin_mV"]),"coordinate":"decode_oriented mV; both configured vertical boundaries tested"},"trigger_threshold_mV":{f:list(map(float,_two(preprocessing[f]["trigger_threshold_mV"]))) for f in families},"control_stage_counts":control_counts}
 def _summary(path,counts,n):
     with path.open("w",encoding="utf-8",newline="") as s:
         w=csv.DictWriter(s,fieldnames=["stage","remaining","fraction"]);w.writeheader()
