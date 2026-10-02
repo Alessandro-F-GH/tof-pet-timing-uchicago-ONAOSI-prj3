@@ -4,7 +4,8 @@
   "energy": {"trigger_threshold_mV": [20.0, 20.0], "vertical_scale_limit_mV": [[-50.0, 600.0], [-50.0, 600.0]]},
   "timing": {"trigger_threshold_mV": [120.0, 120.0], "vertical_scale_limit_mV": [[-20.0, 140.0], [-20.0, 140.0]], "rising_edge_before_trigger_ns": 1.0},
   "selection": {
-    "baseline_noise": {"window_ns": [-4.0, -1.0], "lambda_mad": 5.0},
+    "baseline_window_ns": [-4.0, -1.0],
+    "baseline_noise": {"lambda_mad": 5.0},
     "baseline_clipping": {"margin_mV": 1.0}
   },
   "photopeak": {"histogram_bin_mV": 1.0, "search_quantile_min": 0.2, "smoothing_sigma_bins": 2.0, "initial_half_width_mV": 15.0, "iteration_sigma": 2.5, "max_iterations": 6, "convergence_tolerance_mV": 0.01, "selection_sigma_low": -2.0, "selection_sigma_high": 4.0},
