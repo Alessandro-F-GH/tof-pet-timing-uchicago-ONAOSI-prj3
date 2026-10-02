@@ -7,17 +7,24 @@ import logging
 import re
 import shutil
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from .common import atomic_json, canonical_hash, write_csv
 from .config import BatchConfig
+from .reporting_config import formulation_style, load_reporting_config, plot_style, rc_params
 from .stats import paired_replica_difference
 
 REPORT_BOOTSTRAP_REPLICATES = 5000
 REPORT_CONFIDENCE = 0.90
+_LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S,%f"
+_REPLICA_START = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).*\| Replica (?P<replica>\d+)/\d+ \|")
+_REPLICA_RESULT = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).*\| Replica result \| replica=(?P<replica>\d+) \|")
 
 
 def _finite(value):
@@ -35,6 +42,27 @@ def _safe(value):
 
 def _window_label(start, end, name=None):
     return str(name) if name else f"{start:g}_{end:g}ns"
+
+
+def _window_key(row):
+    return str(row["window"]), float(row["window_start_ns"]), float(row["window_end_ns"])
+
+
+def _context_key(row):
+    return (
+        str(row["study"]),
+        str(row["dataset_key"]),
+        str(row["dataset"]),
+        str(row["population_identity"]),
+        str(row["sampling_identity"]),
+    )
+
+
+def _group(rows, key_fn):
+    groups = defaultdict(list)
+    for row in rows:
+        groups[key_fn(row)].append(row)
+    return groups
 
 
 def _read_rows(path):
@@ -66,18 +94,41 @@ def batch_result_dirs(batch: BatchConfig):
     return [Path(config["output_dir"]).resolve() for config in batch.runs]
 
 
+def replica_wall_times(run_dir):
+    path = Path(run_dir) / "study.log"
+    if not path.is_file():
+        return {}
+    pending = {}
+    completed = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _REPLICA_START.search(line)
+        if match:
+            pending[int(match.group("replica"))] = datetime.strptime(match.group("time"), _LOG_TIMESTAMP_FORMAT)
+            continue
+        match = _REPLICA_RESULT.search(line)
+        if not match:
+            continue
+        replica = int(match.group("replica"))
+        start = pending.pop(replica, None)
+        if start is None:
+            continue
+        finish = datetime.strptime(match.group("time"), _LOG_TIMESTAMP_FORMAT)
+        duration = (finish - start).total_seconds()
+        if duration >= 0:
+            completed[replica] = float(duration)
+    return completed
+
+
 def collect_results(paths):
     run_dirs = []
     for path in paths:
         run_dirs.extend(_expand_result_path(path))
-
     unique = []
     seen = set()
     for path in run_dirs:
         if str(path) not in seen:
             seen.add(str(path))
             unique.append(path)
-
     records = []
     for run_dir in unique:
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -86,6 +137,9 @@ def collect_results(paths):
         analysis = manifest["analysis"]
         dataset_key = canonical_hash(analysis)
         model = str(manifest["model"])
+        formulation = str(manifest["estimator_formulation"]).strip().lower()
+        if formulation not in {"shared", "direct"}:
+            raise RuntimeError(f"Invalid estimator formulation in {run_dir}: {formulation}")
         mode = str(manifest["mode"])
         window = manifest["window_ns"]
         window_name = manifest.get("window_name")
@@ -93,40 +147,39 @@ def collect_results(paths):
         protocol_identity = str(manifest["analysis_protocol_identity"])
         sampling_identity = str(manifest["sampling_identity"])
         shared = manifest.get("shared_replicas") or {}
-
+        timings = replica_wall_times(run_dir)
         for row in _read_rows(run_dir / "results.csv"):
             if row.get("phase") != "replica":
                 continue
             replica_index = int(row["replica_index"])
             seed = int(row["seed"])
-            records.append(
-                {
-                    "study": study_name,
-                    "source_run": str(run_dir),
-                    "dataset_key": dataset_key,
-                    "dataset": str(analysis.get("root_file", "")),
-                    "population_identity": protocol_identity,
-                    "sampling_identity": sampling_identity,
-                    "model": model,
-                    "mode": mode,
-                    "window": _window_label(
-                        float(window["start"]), float(window["end"]), window_name
-                    ),
-                    "window_start_ns": float(window["start"]),
-                    "window_end_ns": float(window["end"]),
-                    "replica_index": replica_index,
-                    "seed": seed,
-                    "candidate_id": str(row["candidate_id"]),
-                    "shared_replica": str(shared.get(str(replica_index), "")),
-                    "ctr_ps": _finite(row.get("ctr_ps")),
-                    "led_ctr_ps": _finite(row.get("uncorrected_ctr_ps")),
-                    "improvement_ps": _finite(row.get("improvement_ps")),
-                    "improvement_percent": _finite(row.get("improvement_percent")),
-                    "rmse_ps": _finite(row.get("rmse_ps")),
-                    "led_rmse_ps": _finite(row.get("uncorrected_rmse_ps")),
-                    "rmse_improvement_ps": _finite(row.get("rmse_improvement_ps")),
-                }
-            )
+            records.append({
+                "study": study_name,
+                "source_run": str(run_dir),
+                "dataset_key": dataset_key,
+                "dataset": str(analysis.get("root_file", "")),
+                "population_identity": protocol_identity,
+                "sampling_identity": sampling_identity,
+                "model": model,
+                "estimator_formulation": formulation,
+                "mode": mode,
+                "window": _window_label(float(window["start"]), float(window["end"]), window_name),
+                "window_start_ns": float(window["start"]),
+                "window_end_ns": float(window["end"]),
+                "replica_index": replica_index,
+                "seed": seed,
+                "candidate_id": str(row["candidate_id"]),
+                "shared_replica": str(shared.get(str(replica_index), "")),
+                "ctr_ps": _finite(row.get("ctr_ps")),
+                "led_ctr_ps": _finite(row.get("uncorrected_ctr_ps")),
+                "improvement_ps": _finite(row.get("improvement_ps")),
+                "improvement_percent": _finite(row.get("improvement_percent")),
+                "rmse_ps": _finite(row.get("rmse_ps")),
+                "led_rmse_ps": _finite(row.get("uncorrected_rmse_ps")),
+                "rmse_improvement_ps": _finite(row.get("rmse_improvement_ps")),
+                "rmse_improvement_percent": _finite(row.get("rmse_improvement_percent")),
+                "replica_wall_time_s": _finite(timings.get(replica_index)),
+            })
     if not records:
         raise RuntimeError("No replica rows were found in the supplied studies")
     return records
@@ -137,151 +190,98 @@ def _mean_std(values):
     values = values[np.isfinite(values)]
     if not values.size:
         return float("nan"), float("nan"), 0
-    return (
-        float(np.mean(values)),
-        float(np.std(values, ddof=1)) if values.size > 1 else 0.0,
-        int(values.size),
-    )
+    return float(np.mean(values)), float(np.std(values, ddof=1)) if values.size > 1 else 0.0, int(values.size)
+
+
+def _paired_reference_stats(rows, candidate_key, reference_key, seed_payload):
+    candidate_mean, candidate_std, n = _mean_std([row[candidate_key] for row in rows])
+    reference_mean, reference_std, _ = _mean_std([row[reference_key] for row in rows])
+    differences = np.asarray([row[reference_key] - row[candidate_key] for row in rows], dtype=float)
+    diff_mean, diff_std, _ = _mean_std(differences)
+    percentages = np.asarray([
+        100.0 * (row[reference_key] - row[candidate_key]) / row[reference_key]
+        if np.isfinite(row[reference_key]) and row[reference_key] != 0.0 else float("nan")
+        for row in rows
+    ], dtype=float)
+    pct_mean, pct_std, _ = _mean_std(percentages)
+    reference = np.asarray([row[reference_key] for row in rows], float)
+    candidate = np.asarray([row[candidate_key] for row in rows], float)
+    finite = np.isfinite(reference) & np.isfinite(candidate)
+    if np.any(finite):
+        paired = paired_replica_difference(
+            reference[finite], candidate[finite],
+            seed=int(canonical_hash(seed_payload)[:8], 16),
+            n_bootstrap=REPORT_BOOTSTRAP_REPLICATES,
+            confidence=REPORT_CONFIDENCE,
+        )
+        ci_low, ci_high = paired.ci_low, paired.ci_high
+    else:
+        ci_low = ci_high = float("nan")
+    return {
+        "candidate_mean": candidate_mean, "candidate_std": candidate_std,
+        "reference_mean": reference_mean, "reference_std": reference_std,
+        "difference_mean": diff_mean, "difference_std": diff_std,
+        "difference_percent_mean": pct_mean, "difference_percent_std": pct_std,
+        "ci_low": ci_low, "ci_high": ci_high, "n": n,
+    }
 
 
 def study_summary(records):
-    groups = defaultdict(list)
-    for row in records:
-        key = (
-            row["study"],
-            row["dataset_key"],
-            row["dataset"],
-            row["population_identity"],
-            row["sampling_identity"],
-            row["model"],
-            row["mode"],
-            row["window"],
-            row["window_start_ns"],
-            row["window_end_ns"],
-        )
-        groups[key].append(row)
-
+    groups = _group(records, lambda row: (*_context_key(row), row["model"], row["estimator_formulation"], row["mode"], *_window_key(row)))
     output = []
     for key, rows in sorted(groups.items()):
-        (
-            study,
-            dataset_key,
-            dataset,
-            population_identity,
-            sampling_identity,
-            model,
-            mode,
-            window,
-            start,
-            end,
-        ) = key
-        ctr_mean, ctr_std, n = _mean_std([row["ctr_ps"] for row in rows])
-        led_mean, led_std, _ = _mean_std([row["led_ctr_ps"] for row in rows])
-        imp_mean, imp_std, _ = _mean_std([row["improvement_ps"] for row in rows])
-        valid = [
-            row
-            for row in rows
-            if np.isfinite(row["led_ctr_ps"]) and np.isfinite(row["ctr_ps"])
-        ]
-        if valid:
-            paired = paired_replica_difference(
-                np.asarray([row["led_ctr_ps"] for row in valid], float),
-                np.asarray([row["ctr_ps"] for row in valid], float),
-                seed=int(
-                    canonical_hash(
-                        {
-                            "study": study,
-                            "dataset": dataset_key,
-                            "population": population_identity,
-                            "sampling": sampling_identity,
-                            "model": model,
-                            "mode": mode,
-                            "window": [start, end],
-                            "comparison": "led_vs_ml",
-                        }
-                    )[:8],
-                    16,
-                ),
-                n_bootstrap=REPORT_BOOTSTRAP_REPLICATES,
-                confidence=REPORT_CONFIDENCE,
-            )
-            ci_low, ci_high = paired.ci_low, paired.ci_high
-        else:
-            ci_low = ci_high = float("nan")
-        imp_pct_mean, imp_pct_std, _ = _mean_std(
-            [row["improvement_percent"] for row in rows]
-        )
-        rmse_mean, rmse_std, _ = _mean_std([row["rmse_ps"] for row in rows])
-        output.append(
-            {
-                "study": study,
-                "dataset_key": dataset_key,
-                "dataset": dataset,
-                "population_identity": population_identity,
-                "sampling_identity": sampling_identity,
-                "model": model,
-                "mode": mode,
-                "window": window,
-                "window_start_ns": start,
-                "window_end_ns": end,
-                "n_replicas": n,
-                "ctr_mean_ps": ctr_mean,
-                "ctr_std_ps": ctr_std,
-                "led_ctr_mean_ps": led_mean,
-                "led_ctr_std_ps": led_std,
-                "paired_led_improvement_mean_ps": imp_mean,
-                "paired_led_improvement_std_ps": imp_std,
-                "paired_led_improvement_ci_low_ps": ci_low,
-                "paired_led_improvement_ci_high_ps": ci_high,
-                "paired_led_improvement_bootstrap_confidence": REPORT_CONFIDENCE,
-                "paired_led_improvement_mean_percent": imp_pct_mean,
-                "paired_led_improvement_std_percent": imp_pct_std,
-                "rmse_mean_ps": rmse_mean,
-                "rmse_std_ps": rmse_std,
-            }
-        )
+        study, dataset_key, dataset, population_identity, sampling_identity, model, formulation, mode, window, start, end = key
+        seed_base = {
+            "study": study, "dataset": dataset_key, "population": population_identity,
+            "sampling": sampling_identity, "model": model, "mode": mode, "window": [start, end],
+        }
+        ctr = _paired_reference_stats(rows, "ctr_ps", "led_ctr_ps", {**seed_base, "comparison": "led_vs_ml_ctr"})
+        rmse = _paired_reference_stats(rows, "rmse_ps", "led_rmse_ps", {**seed_base, "comparison": "led_vs_ml_rmse"})
+        time_mean, time_std, n_timed = _mean_std([row["replica_wall_time_s"] for row in rows])
+        output.append({
+            "study": study, "dataset_key": dataset_key, "dataset": dataset,
+            "population_identity": population_identity, "sampling_identity": sampling_identity,
+            "model": model, "estimator_formulation": formulation, "mode": mode,
+            "window": window, "window_start_ns": start, "window_end_ns": end,
+            "n_replicas": ctr["n"], "ctr_mean_ps": ctr["candidate_mean"], "ctr_std_ps": ctr["candidate_std"],
+            "led_ctr_mean_ps": ctr["reference_mean"], "led_ctr_std_ps": ctr["reference_std"],
+            "paired_led_improvement_mean_ps": ctr["difference_mean"], "paired_led_improvement_std_ps": ctr["difference_std"],
+            "paired_led_improvement_ci_low_ps": ctr["ci_low"], "paired_led_improvement_ci_high_ps": ctr["ci_high"],
+            "paired_led_improvement_bootstrap_confidence": REPORT_CONFIDENCE,
+            "paired_led_improvement_mean_percent": ctr["difference_percent_mean"], "paired_led_improvement_std_percent": ctr["difference_percent_std"],
+            "rmse_mean_ps": rmse["candidate_mean"], "rmse_std_ps": rmse["candidate_std"],
+            "led_rmse_mean_ps": rmse["reference_mean"], "led_rmse_std_ps": rmse["reference_std"],
+            "paired_led_rmse_improvement_mean_ps": rmse["difference_mean"], "paired_led_rmse_improvement_std_ps": rmse["difference_std"],
+            "paired_led_rmse_improvement_ci_low_ps": rmse["ci_low"], "paired_led_rmse_improvement_ci_high_ps": rmse["ci_high"],
+            "paired_led_rmse_improvement_bootstrap_confidence": REPORT_CONFIDENCE,
+            "paired_led_rmse_improvement_mean_percent": rmse["difference_percent_mean"], "paired_led_rmse_improvement_std_percent": rmse["difference_percent_std"],
+            "replica_wall_time_mean_s": time_mean, "replica_wall_time_std_s": time_std, "n_timed_replicas": n_timed,
+        })
     return output
 
 
 def _unique_replica_map(rows):
-    by_replica = defaultdict(list)
-    for row in rows:
-        by_replica[row["replica_index"]].append(row)
+    by_replica = _group(rows, lambda row: row["replica_index"])
     if any(len(values) != 1 for values in by_replica.values()):
         return None
     return {replica: values[0] for replica, values in by_replica.items()}
 
 
-def paired_model_comparisons(records):
-    groups = defaultdict(list)
-    for row in records:
-        key = (
-            row["dataset_key"],
-            row["dataset"],
-            row["population_identity"],
-            row["sampling_identity"],
-            row["mode"],
-            row["window"],
-            row["window_start_ns"],
-            row["window_end_ns"],
-        )
-        groups[key].append(row)
+def _paired_model_metric(map_a, map_b, replicas, metric_key, seed_payload):
+    a = np.asarray([map_a[index][metric_key] for index in replicas], float)
+    b = np.asarray([map_b[index][metric_key] for index in replicas], float)
+    finite = np.isfinite(a) & np.isfinite(b)
+    if not np.any(finite):
+        return None
+    return paired_replica_difference(a[finite], b[finite], seed=int(canonical_hash(seed_payload)[:8], 16), n_bootstrap=REPORT_BOOTSTRAP_REPLICATES, confidence=REPORT_CONFIDENCE)
 
+
+def paired_model_comparisons(records):
+    groups = _group(records, lambda row: (*_context_key(row), row["mode"], *_window_key(row)))
     output = []
     for key, rows in sorted(groups.items()):
-        (
-            dataset_key,
-            dataset,
-            population_identity,
-            sampling_identity,
-            mode,
-            window,
-            start,
-            end,
-        ) = key
-        by_model = defaultdict(list)
-        for row in rows:
-            by_model[row["model"]].append(row)
+        study, dataset_key, dataset, population_identity, sampling_identity, mode, window, start, end = key
+        by_model = _group(rows, lambda row: row["model"])
         for model_a, model_b in itertools.combinations(sorted(by_model), 2):
             map_a = _unique_replica_map(by_model[model_a])
             map_b = _unique_replica_map(by_model[model_b])
@@ -290,232 +290,389 @@ def paired_model_comparisons(records):
             replicas = sorted(set(map_a) & set(map_b))
             if not replicas:
                 continue
-            a = np.asarray([map_a[index]["ctr_ps"] for index in replicas], float)
-            b = np.asarray([map_b[index]["ctr_ps"] for index in replicas], float)
-            summary = paired_replica_difference(
-                a,
-                b,
-                seed=int(
-                    canonical_hash(
-                        {
-                            "dataset": dataset_key,
-                            "population": population_identity,
-                            "sampling": sampling_identity,
-                            "mode": mode,
-                            "window": [start, end],
-                            "models": [model_a, model_b],
-                        }
-                    )[:8],
-                    16,
-                ),
-                n_bootstrap=REPORT_BOOTSTRAP_REPLICATES,
-                confidence=REPORT_CONFIDENCE,
-            )
-            output.append(
-                {
-                    "dataset_key": dataset_key,
-                    "dataset": dataset,
-                    "population_identity": population_identity,
-                    "sampling_identity": sampling_identity,
-                    "mode": mode,
-                    "window": window,
-                    "window_start_ns": start,
-                    "window_end_ns": end,
-                    "reference_model": model_a,
-                    "candidate_model": model_b,
-                    "n_paired_replicas": summary.n_pairs,
-                    "reference_ctr_mean_ps": summary.reference_mean,
-                    "candidate_ctr_mean_ps": summary.candidate_mean,
-                    "ctr_difference_reference_minus_candidate_ps": summary.difference_mean,
-                    "ctr_difference_std_ps": summary.difference_std,
-                    "paired_bootstrap_ci_low_ps": summary.ci_low,
-                    "paired_bootstrap_ci_high_ps": summary.ci_high,
-                    "paired_bootstrap_confidence": REPORT_CONFIDENCE,
-                }
-            )
+            seed_base = {"study": study, "dataset": dataset_key, "population": population_identity, "sampling": sampling_identity, "mode": mode, "window": [start, end], "models": [model_a, model_b]}
+            ctr = _paired_model_metric(map_a, map_b, replicas, "ctr_ps", {**seed_base, "metric": "ctr"})
+            rmse = _paired_model_metric(map_a, map_b, replicas, "rmse_ps", {**seed_base, "metric": "rmse"})
+            if ctr is None:
+                continue
+            output.append({
+                "study": study, "dataset_key": dataset_key, "dataset": dataset,
+                "population_identity": population_identity, "sampling_identity": sampling_identity,
+                "mode": mode, "window": window, "window_start_ns": start, "window_end_ns": end,
+                "reference_model": model_a, "reference_formulation": map_a[replicas[0]]["estimator_formulation"],
+                "candidate_model": model_b, "candidate_formulation": map_b[replicas[0]]["estimator_formulation"],
+                "n_paired_replicas": ctr.n_pairs,
+                "reference_ctr_mean_ps": ctr.reference_mean, "candidate_ctr_mean_ps": ctr.candidate_mean,
+                "ctr_difference_reference_minus_candidate_ps": ctr.difference_mean, "ctr_difference_std_ps": ctr.difference_std,
+                "ctr_paired_bootstrap_ci_low_ps": ctr.ci_low, "ctr_paired_bootstrap_ci_high_ps": ctr.ci_high,
+                "paired_bootstrap_confidence": REPORT_CONFIDENCE,
+                "reference_rmse_mean_ps": float("nan") if rmse is None else rmse.reference_mean,
+                "candidate_rmse_mean_ps": float("nan") if rmse is None else rmse.candidate_mean,
+                "rmse_difference_reference_minus_candidate_ps": float("nan") if rmse is None else rmse.difference_mean,
+                "rmse_difference_std_ps": float("nan") if rmse is None else rmse.difference_std,
+                "rmse_paired_bootstrap_ci_low_ps": float("nan") if rmse is None else rmse.ci_low,
+                "rmse_paired_bootstrap_ci_high_ps": float("nan") if rmse is None else rmse.ci_high,
+            })
     return output
 
 
-def _group_summary_for_plot(summary):
-    groups = defaultdict(list)
-    for row in summary:
-        groups[
-            (
-                row["mode"],
-                row["window"],
-                row["window_start_ns"],
-                row["window_end_ns"],
-            )
-        ].append(row)
-    return groups
+def _plot_group_key(row):
+    return (*_context_key(row), row["mode"], *_window_key(row))
 
 
-def _save(fig, path):
+def _mode_group_key(row):
+    return (*_context_key(row), row["mode"])
+
+
+def _context_suffix(context, multiple_contexts):
+    if not multiple_contexts:
+        return ""
+    study, _, _, population, _ = context
+    return f"__{_safe(study)}__{_safe(population[:10])}"
+
+
+def _multiple_contexts(rows):
+    return len({_context_key(row) for row in rows}) > 1
+
+
+def _formulation_order(row):
+    return 0 if row["estimator_formulation"] == "shared" else 1, row["model"]
+
+
+def _formulation_handles(reporting, formulations):
+    handles = []
+    for formulation in ("shared", "direct"):
+        if formulation not in formulations:
+            continue
+        style = formulation_style(reporting, formulation)
+        handles.append(Line2D([0], [0], marker=style["marker"], color="none", markerfacecolor=style["color"], markeredgecolor=style["color"], label=style["label"], markersize=7))
+    return handles
+
+
+def _apply_axes_style(ax, reporting, *, grid_axis="y"):
+    style = reporting["global"]
+    if bool(style.get("grid", True)):
+        ax.grid(True, axis=grid_axis, alpha=float(style["grid_alpha"]), linestyle=style["grid_linestyle"])
+        ax.set_axisbelow(True)
+
+
+def _save(fig, path, reporting, *, tight=True):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
-    fig.savefig(path)
+    if tight:
+        fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def _study_led_reference(rows, study):
-    selected = [row for row in rows if row["study"] == study]
-    means = np.asarray(
-        [
-            row["led_ctr_mean_ps"]
-            for row in selected
-            if np.isfinite(row["led_ctr_mean_ps"])
-        ],
-        float,
-    )
-    stds = np.asarray(
-        [
-            row["led_ctr_std_ps"]
-            for row in selected
-            if np.isfinite(row["led_ctr_std_ps"])
-        ],
-        float,
-    )
+def _reference_value(rows, mean_key, std_key):
+    means = np.asarray([row[mean_key] for row in rows if np.isfinite(row[mean_key])], float)
+    stds = np.asarray([row[std_key] for row in rows if np.isfinite(row[std_key])], float)
     if not means.size:
         return float("nan"), float("nan")
     if not np.allclose(means, means[0], rtol=1e-7, atol=1e-9):
-        raise RuntimeError(
-            f"Inconsistent LED CTR reference across models for study {study}: {means.tolist()}"
-        )
+        raise RuntimeError(f"Inconsistent reference values across models: {means.tolist()}")
     if stds.size and not np.allclose(stds, stds[0], rtol=1e-7, atol=1e-9):
-        raise RuntimeError(
-            f"Inconsistent LED CTR spread across models for study {study}: {stds.tolist()}"
-        )
+        raise RuntimeError(f"Inconsistent reference spread across models: {stds.tolist()}")
     return float(means[0]), float(stds[0]) if stds.size else float("nan")
 
 
-def _study_colors(studies):
-    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
-    if not colors:
-        return {study: None for study in studies}
-    return {
-        study: colors[index % len(colors)] for index, study in enumerate(studies)
-    }
-
-
-def plot_led_improvements(summary, output_dir):
+def plot_metric_comparisons(summary, output_dir, *, metric, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    if metric == "ctr":
+        mean_key, std_key, ref_mean_key, ref_std_key, ylabel, title_metric = "ctr_mean_ps", "ctr_std_ps", "led_ctr_mean_ps", "led_ctr_std_ps", "Blind CTR [ps]", "CTR"
+    elif metric == "rmse":
+        mean_key, std_key, ref_mean_key, ref_std_key, ylabel, title_metric = "rmse_mean_ps", "rmse_std_ps", "led_rmse_mean_ps", "led_rmse_std_ps", "Blind RMSE [ps]", "RMSE"
+    else:
+        raise ValueError(f"Unsupported metric: {metric}")
+    style = plot_style(reporting, "comparison")
+    groups = _group(summary, _plot_group_key)
+    multi_context = _multiple_contexts(summary)
     outputs = []
-    for (mode, window, start, end), rows in sorted(
-        _group_summary_for_plot(summary).items()
-    ):
-        models = sorted({row["model"] for row in rows})
-        studies = sorted({row["study"] for row in rows})
-        colors = _study_colors(studies)
-        x_lookup = {model: index for index, model in enumerate(models)}
-        offsets = np.linspace(-0.18, 0.18, max(1, len(studies)))
-        offset_lookup = {
-            study: offsets[index] for index, study in enumerate(studies)
-        }
-        fig, ax = plt.subplots(figsize=(max(6.0, 1.2 * len(models)), 4.5))
-        for row in rows:
-            x = x_lookup[row["model"]] + offset_lookup[row["study"]]
-            ax.errorbar(
-                [x],
-                [row["paired_led_improvement_mean_ps"]],
-                yerr=[row["paired_led_improvement_std_ps"]],
-                fmt="o",
-                capsize=3,
-                color=colors[row["study"]],
-                label=(
-                    row["study"]
-                    if len(studies) > 1 and row["model"] == models[0]
-                    else None
-                ),
-            )
-        ax.axhline(
-            0.0,
-            linestyle="--",
-            linewidth=1,
-            label="LED reference",
-        )
-        ax.set_xticks(range(len(models)), models, rotation=25, ha="right")
-        ax.set_ylabel("Paired CTR improvement, LED - ML [ps]")
-        ax.set_title(
-            f"Paired LED improvement | {mode} | {window} [{start:g}, {end:g}] ns"
-        )
-        ax.legend(title="Reference" if len(studies) == 1 else None)
-        outputs.append(
-            _save(
-                fig,
-                Path(output_dir)
-                / f"paired_led_improvement__{_safe(mode)}__{_safe(window)}.png",
-            )
-        )
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode, window, start, end = key[5:]
+        rows = sorted(rows, key=_formulation_order)
+        categories = ["LED", *[row["model"] for row in rows]]
+        width = max(float(style["figure_width_min"]), float(style["width_per_category"]) * len(categories))
+        fig, ax = plt.subplots(figsize=(width, float(style["figure_height"])))
+        reference = reporting["reference"]
+        ref_mean, ref_std = _reference_value(rows, ref_mean_key, ref_std_key)
+        if np.isfinite(ref_mean):
+            ax.errorbar([0], [ref_mean], yerr=[ref_std] if np.isfinite(ref_std) else None, fmt=reference["marker"], color=reference["color"], capsize=float(reporting["global"]["error_capsize"]), markersize=float(style["marker_size"]))
+        for index, row in enumerate(rows, start=1):
+            family = formulation_style(reporting, row["estimator_formulation"])
+            ax.errorbar([index], [row[mean_key]], yerr=[row[std_key]], fmt=family["marker"], color=family["color"], capsize=float(reporting["global"]["error_capsize"]), markersize=float(style["marker_size"]))
+        ax.set_xticks(range(len(categories)), categories, rotation=float(style["x_label_rotation"]), ha="right")
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{title_metric} model comparison | {mode} | {window} [{start:g}, {end:g}] ns")
+        formulations = {row["estimator_formulation"] for row in rows}
+        handles = [Line2D([0], [0], marker=reference["marker"], color="none", markerfacecolor=reference["color"], markeredgecolor=reference["color"], label=reference["label"], markersize=7), *_formulation_handles(reporting, formulations)]
+        ax.legend(handles=handles)
+        _apply_axes_style(ax, reporting)
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"{metric}_comparison__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
     return outputs
 
 
-def plot_ctr_comparisons(summary, output_dir):
+def plot_ctr_comparisons(summary, output_dir, reporting=None):
+    return plot_metric_comparisons(summary, output_dir, metric="ctr", reporting=reporting)
+
+
+def plot_rmse_comparisons(summary, output_dir, reporting=None):
+    return plot_metric_comparisons(summary, output_dir, metric="rmse", reporting=reporting)
+
+
+def plot_led_improvements(summary, output_dir, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    style = plot_style(reporting, "comparison")
+    groups = _group(summary, _plot_group_key)
+    multi_context = _multiple_contexts(summary)
     outputs = []
-    for (mode, window, start, end), rows in sorted(
-        _group_summary_for_plot(summary).items()
-    ):
-        models = sorted({row["model"] for row in rows})
-        studies = sorted({row["study"] for row in rows})
-        colors = _study_colors(studies)
-        categories = ["LED", *models]
-        x_lookup = {name: index for index, name in enumerate(categories)}
-        offsets = np.linspace(-0.18, 0.18, max(1, len(studies)))
-        offset_lookup = {
-            study: offsets[index] for index, study in enumerate(studies)
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode, window, start, end = key[5:]
+        rows = sorted(rows, key=_formulation_order)
+        width = max(float(style["figure_width_min"]), float(style["width_per_category"]) * len(rows))
+        fig, ax = plt.subplots(figsize=(width, float(style["figure_height"])))
+        for index, row in enumerate(rows):
+            family = formulation_style(reporting, row["estimator_formulation"])
+            ax.errorbar([index], [row["paired_led_improvement_mean_ps"]], yerr=[row["paired_led_improvement_std_ps"]], fmt=family["marker"], color=family["color"], capsize=float(reporting["global"]["error_capsize"]), markersize=float(style["marker_size"]))
+        reference = reporting["reference"]
+        ax.axhline(0.0, color=reference["color"], linestyle=reference["linestyle"])
+        ax.set_xticks(range(len(rows)), [row["model"] for row in rows], rotation=float(style["x_label_rotation"]), ha="right")
+        ax.set_ylabel("Paired CTR improvement, LED - ML [ps]")
+        ax.set_title(f"Paired LED improvement | {mode} | {window} [{start:g}, {end:g}] ns")
+        ax.legend(handles=_formulation_handles(reporting, {row["estimator_formulation"] for row in rows}))
+        _apply_axes_style(ax, reporting)
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"paired_led_improvement__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
+    return outputs
+
+
+def plot_rmse_ctr_correlation(summary, output_dir, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    style = plot_style(reporting, "scatter")
+    groups = _group(summary, _plot_group_key)
+    multi_context = _multiple_contexts(summary)
+    outputs = []
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode, window, start, end = key[5:]
+        points = [row for row in sorted(rows, key=_formulation_order) if np.isfinite(row["ctr_mean_ps"]) and np.isfinite(row["rmse_mean_ps"])]
+        if not points:
+            continue
+        fig, ax = plt.subplots(figsize=tuple(style["figsize"]))
+        for row in points:
+            family = formulation_style(reporting, row["estimator_formulation"])
+            ax.scatter([row["ctr_mean_ps"]], [row["rmse_mean_ps"]], s=float(style["marker_size"]), marker=family["marker"], color=family["color"])
+            ax.annotate(row["model"], (row["ctr_mean_ps"], row["rmse_mean_ps"]), xytext=tuple(style["annotation_offset"]), textcoords="offset points", fontsize=float(reporting["global"]["annotation_size"]))
+        ctr_values = np.asarray([row["ctr_mean_ps"] for row in points], float)
+        rmse_values = np.asarray([row["rmse_mean_ps"] for row in points], float)
+        correlation = float("nan")
+        if len(points) >= 2 and np.std(ctr_values) > 0 and np.std(rmse_values) > 0:
+            correlation = float(np.corrcoef(ctr_values, rmse_values)[0, 1])
+        label = f"Pearson r={correlation:.3f}" if np.isfinite(correlation) else "Pearson r=n/a"
+        ax.set_xlabel("Blind CTR [ps]")
+        ax.set_ylabel("Blind RMSE [ps]")
+        ax.set_title(f"RMSE vs CTR | {mode} | {window} [{start:g}, {end:g}] ns\n{label}")
+        ax.legend(handles=_formulation_handles(reporting, {row["estimator_formulation"] for row in points}))
+        _apply_axes_style(ax, reporting, grid_axis="both")
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"rmse_vs_ctr__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
+    return outputs
+
+
+def _unique_reference_values(rows, metric_key):
+    unique = {}
+    for row in rows:
+        value = float(row[metric_key])
+        if np.isfinite(value):
+            unique[_window_key(row)] = value
+    return np.asarray(list(unique.values()), dtype=float)
+
+
+def plot_window_model_comparisons(summary, output_dir, *, metric, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    if metric == "ctr":
+        mean_key, std_key, led_key, ylabel, title_metric = "ctr_mean_ps", "ctr_std_ps", "led_ctr_mean_ps", "Blind CTR [ps]", "CTR"
+    elif metric == "rmse":
+        mean_key, std_key, led_key, ylabel, title_metric = "rmse_mean_ps", "rmse_std_ps", "led_rmse_mean_ps", "Blind RMSE [ps]", "RMSE"
+    else:
+        raise ValueError(f"Unsupported metric: {metric}")
+    style = plot_style(reporting, "bar")
+    groups = _group(summary, _mode_group_key)
+    multi_context = _multiple_contexts(summary)
+    outputs = []
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode = key[5]
+        models = sorted({row["model"] for row in rows}, key=lambda model: _formulation_order(next(row for row in rows if row["model"] == model)))
+        windows = sorted({_window_key(row) for row in rows}, key=lambda item: (item[1], item[2], item[0]))
+        if not models or len(windows) < 2:
+            continue
+        width = max(float(style["figure_width_min"]), float(style["width_per_category"]) * len(models))
+        fig, ax = plt.subplots(figsize=(width, float(style["figure_height"])))
+        x = np.arange(len(models), dtype=float)
+        bar_width = float(style["group_width"]) / len(windows)
+        hatches = list(style["window_hatches"])
+        by_model_window = {(row["model"], _window_key(row)): row for row in rows}
+        model_formulation = {row["model"]: row["estimator_formulation"] for row in rows}
+        for window_index, window_key in enumerate(windows):
+            offset = (window_index - (len(windows) - 1) / 2.0) * bar_width
+            for model_index, model in enumerate(models):
+                row = by_model_window.get((model, window_key))
+                if row is None or not np.isfinite(row[mean_key]):
+                    continue
+                family = formulation_style(reporting, model_formulation[model])
+                ax.bar(x[model_index] + offset, row[mean_key], width=bar_width, yerr=row[std_key] if np.isfinite(row[std_key]) else None, capsize=float(reporting["global"]["error_capsize"]), color=family["color"], hatch=hatches[window_index % len(hatches)], edgecolor=style["edge_color"], linewidth=float(style["edge_line_width"]))
+        led_values = _unique_reference_values(rows, led_key)
+        reference = reporting["reference"]
+        if led_values.size:
+            led_median = float(np.median(led_values))
+            ax.axhline(led_median, color=reference["color"], linestyle=reference["linestyle"])
+        ax.set_xticks(x, models, rotation=25, ha="right")
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{title_metric} across waveform windows | {mode}")
+        handles = [*_formulation_handles(reporting, set(model_formulation.values())), *[
+            Patch(facecolor="white", edgecolor=style["edge_color"], hatch=hatches[index % len(hatches)], label=f"{window[0]} [{window[1]:g}, {window[2]:g}] ns")
+            for index, window in enumerate(windows)
+        ]]
+        if led_values.size:
+            handles.append(Line2D([0], [0], color=reference["color"], linestyle=reference["linestyle"], label="Median LED reference"))
+        ax.legend(handles=handles)
+        _apply_axes_style(ax, reporting)
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"{metric}_by_window__{_safe(mode)}{suffix}.png", reporting))
+    return outputs
+
+
+def best_by_formulation(summary):
+    groups = _group(summary, _plot_group_key)
+    output = []
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode, window, start, end = key[5:]
+        selected = {}
+        for formulation in ("shared", "direct"):
+            candidates = [row for row in rows if row["estimator_formulation"] == formulation and np.isfinite(row["ctr_mean_ps"])]
+            if candidates:
+                selected[formulation] = min(candidates, key=lambda row: row["ctr_mean_ps"])
+        base = {
+            "study": context[0], "dataset_key": context[1], "dataset": context[2],
+            "population_identity": context[3], "sampling_identity": context[4],
+            "mode": mode, "window": window, "window_start_ns": start, "window_end_ns": end,
         }
-        fig, ax = plt.subplots(figsize=(max(6.5, 1.2 * len(categories)), 4.5))
+        for formulation in ("shared", "direct"):
+            row = selected.get(formulation)
+            base.update({
+                f"best_{formulation}_model": "" if row is None else row["model"],
+                f"best_{formulation}_ctr_mean_ps": float("nan") if row is None else row["ctr_mean_ps"],
+                f"best_{formulation}_ctr_std_ps": float("nan") if row is None else row["ctr_std_ps"],
+                f"best_{formulation}_rmse_mean_ps": float("nan") if row is None else row["rmse_mean_ps"],
+                f"best_{formulation}_replica_wall_time_mean_s": float("nan") if row is None else row["replica_wall_time_mean_s"],
+            })
+        shared_ctr, direct_ctr = base["best_shared_ctr_mean_ps"], base["best_direct_ctr_mean_ps"]
+        base["direct_minus_shared_ctr_ps"] = float(direct_ctr - shared_ctr) if np.isfinite(shared_ctr) and np.isfinite(direct_ctr) else float("nan")
+        output.append(base)
+    return output
 
-        for study in studies:
-            led_mean, led_std = _study_led_reference(rows, study)
-            if np.isfinite(led_mean):
-                ax.errorbar(
-                    [x_lookup["LED"] + offset_lookup[study]],
-                    [led_mean],
-                    yerr=[led_std] if np.isfinite(led_std) else None,
-                    fmt="s",
-                    capsize=3,
-                    color=colors[study],
-                    label=study if len(studies) > 1 else "LED reference",
-                )
 
-        for row in rows:
-            x = x_lookup[row["model"]] + offset_lookup[row["study"]]
-            ax.errorbar(
-                [x],
-                [row["ctr_mean_ps"]],
-                yerr=[row["ctr_std_ps"]],
-                fmt="o",
-                capsize=3,
-                color=colors[row["study"]],
-            )
-
-        ax.set_xticks(range(len(categories)), categories, rotation=25, ha="right")
+def plot_best_by_formulation(best_rows, output_dir, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    style = plot_style(reporting, "bar")
+    groups = _group(best_rows, _mode_group_key)
+    multi_context = _multiple_contexts(best_rows)
+    outputs = []
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode = key[5]
+        rows = sorted(rows, key=lambda row: (row["window_start_ns"], row["window_end_ns"], row["window"]))
+        x = np.arange(len(rows), dtype=float)
+        formulations = ("shared", "direct")
+        bar_width = float(style["group_width"]) / len(formulations)
+        width = max(float(style["figure_width_min"]), float(style["width_per_category"]) * len(rows))
+        fig, ax = plt.subplots(figsize=(width, float(style["figure_height"])))
+        for form_index, formulation in enumerate(formulations):
+            family = formulation_style(reporting, formulation)
+            offset = (form_index - 0.5) * bar_width
+            for index, row in enumerate(rows):
+                value = row[f"best_{formulation}_ctr_mean_ps"]
+                if not np.isfinite(value):
+                    continue
+                error = row[f"best_{formulation}_ctr_std_ps"]
+                bar = ax.bar(x[index] + offset, value, width=bar_width, yerr=error if np.isfinite(error) else None, capsize=float(reporting["global"]["error_capsize"]), color=family["color"], edgecolor=style["edge_color"], linewidth=float(style["edge_line_width"]))[0]
+                ax.annotate(row[f"best_{formulation}_model"], (bar.get_x() + bar.get_width() / 2.0, bar.get_height()), xytext=(0, float(style["annotation_offset_points"])), textcoords="offset points", ha="center", va="bottom", fontsize=float(reporting["global"]["annotation_size"]), rotation=20)
+        labels = [f"{row['window']}\n[{row['window_start_ns']:g}, {row['window_end_ns']:g}] ns" for row in rows]
+        ax.set_xticks(x, labels)
         ax.set_ylabel("Blind CTR [ps]")
-        ax.set_title(
-            f"Model comparison with LED reference | {mode} | {window} [{start:g}, {end:g}] ns"
+        ax.set_title(f"Best shared vs best direct model | {mode}")
+        ax.legend(handles=_formulation_handles(reporting, set(formulations)))
+        _apply_axes_style(ax, reporting)
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"best_shared_vs_direct__{_safe(mode)}{suffix}.png", reporting))
+    return outputs
+
+
+def pareto_frontier(points, *, x_key, y_key):
+    finite = [index for index, point in enumerate(points) if np.isfinite(point[x_key]) and np.isfinite(point[y_key])]
+    frontier = []
+    for index in finite:
+        x, y = float(points[index][x_key]), float(points[index][y_key])
+        dominated = any(
+            other != index
+            and float(points[other][x_key]) <= x
+            and float(points[other][y_key]) <= y
+            and (float(points[other][x_key]) < x or float(points[other][y_key]) < y)
+            for other in finite
         )
-        if len(studies) > 1:
-            ax.legend(title="Study")
-        outputs.append(
-            _save(
-                fig,
-                Path(output_dir)
-                / f"ctr_comparison__{_safe(mode)}__{_safe(window)}.png",
-            )
-        )
+        if not dominated:
+            frontier.append(index)
+    return frontier
+
+
+def plot_ctr_vs_time(summary, output_dir, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    style = plot_style(reporting, "pareto")
+    scatter_style = plot_style(reporting, "scatter")
+    groups = _group(summary, _plot_group_key)
+    multi_context = _multiple_contexts(summary)
+    outputs = []
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode, window, start, end = key[5:]
+        points = [row for row in sorted(rows, key=_formulation_order) if np.isfinite(row["ctr_mean_ps"]) and np.isfinite(row["replica_wall_time_mean_s"]) and row["replica_wall_time_mean_s"] > 0]
+        if not points:
+            continue
+        frontier_indices = pareto_frontier(points, x_key="replica_wall_time_mean_s", y_key="ctr_mean_ps")
+        fig, ax = plt.subplots(figsize=tuple(style["figsize"]))
+        for row in points:
+            family = formulation_style(reporting, row["estimator_formulation"])
+            ax.scatter([row["replica_wall_time_mean_s"]], [row["ctr_mean_ps"]], s=float(style["marker_size"]), marker=family["marker"], color=family["color"])
+            ax.annotate(row["model"], (row["replica_wall_time_mean_s"], row["ctr_mean_ps"]), xytext=tuple(scatter_style["annotation_offset"]), textcoords="offset points", fontsize=float(reporting["global"]["annotation_size"]))
+        if frontier_indices:
+            frontier = sorted([points[index] for index in frontier_indices], key=lambda row: row["replica_wall_time_mean_s"])
+            ax.plot([row["replica_wall_time_mean_s"] for row in frontier], [row["ctr_mean_ps"] for row in frontier], color=style["frontier_line_color"], linestyle=style["frontier_line_style"], linewidth=float(style["frontier_line_width"]))
+            ax.scatter([row["replica_wall_time_mean_s"] for row in frontier], [row["ctr_mean_ps"] for row in frontier], s=float(style["pareto_marker_size"]), marker=style["pareto_marker"], facecolors="none", edgecolors=style["pareto_edge_color"], linewidths=float(style["pareto_edge_width"]))
+        ax.set_xscale("log")
+        ax.set_xlabel("Mean replica wall time [s] (log scale)")
+        ax.set_ylabel("Blind CTR [ps]")
+        ax.set_title(f"CTR vs computation time | {mode} | {window} [{start:g}, {end:g}] ns")
+        handles = _formulation_handles(reporting, {row["estimator_formulation"] for row in points})
+        handles.append(Line2D([0], [0], marker=style["pareto_marker"], color="none", markerfacecolor="none", markeredgecolor=style["pareto_edge_color"], label="Pareto-optimal", markersize=9))
+        ax.legend(handles=handles)
+        _apply_axes_style(ax, reporting, grid_axis="both")
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"ctr_vs_time__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
     return outputs
 
 
 def _load_model_output(record, cache):
-    key = (record["source_run"], record["seed"], record["candidate_id"])
+    key = record["source_run"], record["seed"], record["candidate_id"]
     if key in cache:
         return cache[key]
-    residual_path = (
-        Path(record["source_run"])
-        / "blind_residuals"
-        / f"seed_{int(record['seed'])}_{record['candidate_id']}.npz"
-    )
+    residual_path = Path(record["source_run"]) / "blind_residuals" / f"seed_{int(record['seed'])}_{record['candidate_id']}.npz"
     if not residual_path.is_file() or not record["shared_replica"]:
         return None
     with np.load(residual_path) as data:
@@ -528,24 +685,19 @@ def _load_model_output(record, cache):
         led = np.asarray(data["led_ps"], float)
     if corrected.shape != led.shape or event_index.size != led.size:
         raise RuntimeError(f"Blind output/reference size mismatch: {residual_path}")
-    output = np.asarray(led - corrected, float)
-    cache[key] = (event_index, output)
+    cache[key] = event_index, np.asarray(led - corrected, float)
     return cache[key]
 
 
 def _replica_output_correlation(a, b):
     event_a, out_a = a
     event_b, out_b = b
-    common, ia, ib = np.intersect1d(
-        event_a, event_b, assume_unique=False, return_indices=True
-    )
+    common, ia, ib = np.intersect1d(event_a, event_b, assume_unique=False, return_indices=True)
     if common.size < 2:
         return float("nan")
-    x = np.asarray(out_a[ia], float)
-    y = np.asarray(out_b[ib], float)
+    x, y = np.asarray(out_a[ia], float), np.asarray(out_b[ib], float)
     finite = np.isfinite(x) & np.isfinite(y)
-    x = x[finite]
-    y = y[finite]
+    x, y = x[finite], y[finite]
     if x.size < 2 or np.std(x) == 0 or np.std(y) == 0:
         return float("nan")
     return float(np.corrcoef(x, y)[0, 1])
@@ -556,9 +708,7 @@ def _fisher_mean(values):
     values = values[np.isfinite(values)]
     if not values.size:
         return float("nan")
-    return float(
-        np.tanh(np.mean(np.arctanh(np.clip(values, -0.999999, 0.999999))))
-    )
+    return float(np.tanh(np.mean(np.arctanh(np.clip(values, -0.999999, 0.999999)))))
 
 
 def _write_matrix(path, labels, matrix):
@@ -572,39 +722,20 @@ def _write_matrix(path, labels, matrix):
     return path
 
 
-def model_output_correlations(records, output_dir, plot_dir=None):
+def model_output_correlations(records, output_dir, plot_dir=None, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
     table_dir = Path(output_dir)
     plot_dir = table_dir if plot_dir is None else Path(plot_dir)
-    groups = defaultdict(list)
-    for row in records:
-        key = (
-            row["dataset_key"],
-            row["population_identity"],
-            row["sampling_identity"],
-            row["mode"],
-            row["window"],
-            row["window_start_ns"],
-            row["window_end_ns"],
-        )
-        groups[key].append(row)
-
-    cache = {}
-    long_rows = []
-    outputs = []
+    groups = _group(records, _plot_group_key)
+    multi_context = _multiple_contexts(records)
+    style = plot_style(reporting, "correlation_heatmap")
+    cache, long_rows, outputs = {}, [], []
     for key, rows in sorted(groups.items()):
-        (
-            dataset_key,
-            population_identity,
-            sampling_identity,
-            mode,
-            window,
-            start,
-            end,
-        ) = key
-        by_model = defaultdict(list)
-        for row in rows:
-            by_model[row["model"]].append(row)
-        models = sorted(by_model)
+        context = key[:5]
+        mode, window, start, end = key[5:]
+        by_model = _group(rows, lambda row: row["model"])
+        model_formulation = {model: values[0]["estimator_formulation"] for model, values in by_model.items()}
+        models = sorted(by_model, key=lambda model: (0 if model_formulation[model] == "shared" else 1, model))
         if len(models) < 2:
             continue
         matrix = np.eye(len(models), dtype=float)
@@ -625,58 +756,42 @@ def model_output_correlations(records, output_dir, plot_dir=None):
                     output_b = _load_model_output(map_b[replica_index], cache)
                     if output_a is None or output_b is None:
                         continue
-                    r = _replica_output_correlation(output_a, output_b)
-                    if np.isfinite(r):
-                        replica_rs.append(r)
+                    value = _replica_output_correlation(output_a, output_b)
+                    if np.isfinite(value):
+                        replica_rs.append(value)
                 value = _fisher_mean(replica_rs)
                 matrix[i, j] = matrix[j, i] = value
                 counts[i, j] = counts[j, i] = len(replica_rs)
-                long_rows.append(
-                    {
-                        "dataset_key": dataset_key,
-                        "population_identity": population_identity,
-                        "sampling_identity": sampling_identity,
-                        "mode": mode,
-                        "window": window,
-                        "window_start_ns": start,
-                        "window_end_ns": end,
-                        "model_a": model_a,
-                        "model_b": model_b,
-                        "pearson_r_fisher_mean": value,
-                        "n_paired_replicas": len(replica_rs),
-                    }
-                )
-
-        stem = (
-            f"model_output_correlation__{_safe(mode)}__{_safe(window)}__"
-            f"{population_identity[:10]}"
-        )
+                long_rows.append({
+                    "study": context[0], "dataset_key": context[1], "population_identity": context[3], "sampling_identity": context[4],
+                    "mode": mode, "window": window, "window_start_ns": start, "window_end_ns": end,
+                    "model_a": model_a, "formulation_a": model_formulation[model_a], "model_b": model_b, "formulation_b": model_formulation[model_b],
+                    "pearson_r_fisher_mean": value, "n_paired_replicas": len(replica_rs),
+                })
+        suffix = _context_suffix(context, multi_context)
+        stem = f"model_output_correlation__{_safe(mode)}__{_safe(window)}{suffix}"
         matrix_path = _write_matrix(table_dir / f"{stem}.csv", models, matrix)
-        count_path = _write_matrix(
-            table_dir / f"{stem}__n_replicas.csv", models, counts
-        )
-        fig, ax = plt.subplots(
-            figsize=(max(5.5, 0.9 * len(models)), max(4.8, 0.8 * len(models)))
-        )
-        image = ax.imshow(matrix, vmin=-1.0, vmax=1.0, cmap="coolwarm")
-        ax.set_xticks(range(len(models)), models, rotation=35, ha="right")
+        count_path = _write_matrix(table_dir / f"{stem}__n_replicas.csv", models, counts)
+        min_width, min_height = style["min_figsize"]
+        per_width, per_height = style["per_model"]
+        fig, ax = plt.subplots(figsize=(max(float(min_width), float(per_width) * len(models)), max(float(min_height), float(per_height) * len(models))), constrained_layout=True)
+        image = ax.imshow(matrix, vmin=float(style["vmin"]), vmax=float(style["vmax"]), cmap=style["cmap"])
+        ax.set_xticks(range(len(models)), models, rotation=float(style["x_label_rotation"]), ha="right")
         ax.set_yticks(range(len(models)), models)
         ax.set_title(f"Model output correlation | {mode} | {window}")
-        fig.colorbar(image, ax=ax, label="Pearson r (Fisher-z mean across replicas)")
+        colorbar = fig.colorbar(image, ax=ax, fraction=float(style["colorbar_fraction"]), pad=float(style["colorbar_pad"]), shrink=float(style["colorbar_shrink"]))
+        colorbar.set_label("Pearson r (Fisher-z mean across replicas)")
         for i in range(len(models)):
             for j in range(len(models)):
                 if np.isfinite(matrix[i, j]):
-                    ax.text(
-                        j,
-                        i,
-                        f"{matrix[i, j]:.2f}",
-                        ha="center",
-                        va="center",
-                        fontsize=8,
-                    )
-        plot_path = _save(fig, plot_dir / f"{stem}.png")
+                    ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center", fontsize=float(style["cell_text_size"]))
+        shared_count = sum(model_formulation[model] == "shared" for model in models)
+        if 0 < shared_count < len(models):
+            boundary = shared_count - 0.5
+            ax.axvline(boundary, color=style["separator_color"], linewidth=float(style["separator_line_width"]))
+            ax.axhline(boundary, color=style["separator_color"], linewidth=float(style["separator_line_width"]))
+        plot_path = _save(fig, plot_dir / f"{stem}.png", reporting, tight=False)
         outputs.extend([matrix_path, count_path, plot_path])
-
     if long_rows:
         long_path = table_dir / "model_output_correlations.csv"
         write_csv(long_path, long_rows)
@@ -690,28 +805,19 @@ def _prepare_report_layout(output_dir):
         path = root / name
         if path.exists():
             shutil.rmtree(path)
-
-    legacy_patterns = (
-        "study_summary.csv",
-        "paired_model_comparisons.csv",
-        "model_output_correlations.csv",
-        "ctr_comparison__*.png",
-        "paired_led_improvement__*.png",
-        "model_output_correlation__*.png",
-        "model_output_correlation__*.csv",
-    )
-    for pattern in legacy_patterns:
-        for path in root.glob(pattern):
-            if path.is_file():
-                path.unlink()
-
     layout = {
         "root": root,
         "tables": root / "tables",
         "correlation_tables": root / "tables" / "correlations",
         "ctr_plots": root / "plots" / "ctr",
+        "rmse_plots": root / "plots" / "rmse",
         "led_improvement_plots": root / "plots" / "led_improvement",
         "correlation_plots": root / "plots" / "correlations",
+        "rmse_ctr_plots": root / "plots" / "tradeoffs" / "rmse_vs_ctr",
+        "ctr_time_plots": root / "plots" / "tradeoffs" / "ctr_vs_time",
+        "window_ctr_plots": root / "plots" / "window_comparison" / "ctr",
+        "window_rmse_plots": root / "plots" / "window_comparison" / "rmse",
+        "architecture_plots": root / "plots" / "architecture" / "best_shared_vs_direct",
     }
     for key, path in layout.items():
         if key != "root":
@@ -720,64 +826,55 @@ def _prepare_report_layout(output_dir):
     return layout
 
 
-def generate_report(paths, output_dir, *, logger=None):
+def generate_report(paths, output_dir, *, logger=None, report_config=None):
     log = logger or logging.getLogger("waveform-report")
+    reporting = load_reporting_config(report_config)
     layout = _prepare_report_layout(output_dir)
     root = layout["root"]
-
     records = collect_results(paths)
     summary = study_summary(records)
     comparisons = paired_model_comparisons(records)
-
+    best_rows = best_by_formulation(summary)
     summary_path = layout["tables"] / "study_summary.csv"
     write_csv(summary_path, summary)
-    table_outputs = [summary_path]
+    outputs = [summary_path]
     if comparisons:
         comparison_path = layout["tables"] / "paired_model_comparisons.csv"
         write_csv(comparison_path, comparisons)
-        table_outputs.append(comparison_path)
-
-    led_plots = plot_led_improvements(summary, layout["led_improvement_plots"])
-    ctr_plots = plot_ctr_comparisons(summary, layout["ctr_plots"])
-    correlation_outputs, correlation_rows = model_output_correlations(
-        records,
-        layout["correlation_tables"],
-        plot_dir=layout["correlation_plots"],
-    )
-    outputs = table_outputs + led_plots + ctr_plots + correlation_outputs
-
+        outputs.append(comparison_path)
+    if best_rows:
+        best_path = layout["tables"] / "best_by_formulation.csv"
+        write_csv(best_path, best_rows)
+        outputs.append(best_path)
+    resolved_style_path = root / "reporting_config_resolved.json"
+    atomic_json(resolved_style_path, reporting)
+    outputs.append(resolved_style_path)
+    with plt.rc_context(rc_params(reporting)):
+        outputs.extend(plot_ctr_comparisons(summary, layout["ctr_plots"], reporting))
+        outputs.extend(plot_rmse_comparisons(summary, layout["rmse_plots"], reporting))
+        outputs.extend(plot_led_improvements(summary, layout["led_improvement_plots"], reporting))
+        outputs.extend(plot_rmse_ctr_correlation(summary, layout["rmse_ctr_plots"], reporting))
+        outputs.extend(plot_ctr_vs_time(summary, layout["ctr_time_plots"], reporting))
+        outputs.extend(plot_window_model_comparisons(summary, layout["window_ctr_plots"], metric="ctr", reporting=reporting))
+        outputs.extend(plot_window_model_comparisons(summary, layout["window_rmse_plots"], metric="rmse", reporting=reporting))
+        outputs.extend(plot_best_by_formulation(best_rows, layout["architecture_plots"], reporting))
+        correlation_outputs, correlation_rows = model_output_correlations(records, layout["correlation_tables"], plot_dir=layout["correlation_plots"], reporting=reporting)
+        outputs.extend(correlation_outputs)
     manifest = {
-        "schema_version": 3,
+        "schema_version": 5,
         "sources": sorted({row["source_run"] for row in records}),
-        "n_replica_rows": len(records),
-        "n_summary_rows": len(summary),
-        "n_paired_model_comparisons": len(comparisons),
-        "n_model_output_correlations": len(correlation_rows),
-        "statistical_unit": "replica",
-        "fit_bootstrap": False,
-        "paired_bootstrap_unit": "replica",
-        "pairing_rule": "same dataset + analysis protocol + sampling identity + mode + window + replica index",
-        "mode_pooling": False,
-        "ctr_plots_include_led_reference": True,
-        "led_improvement_zero_line": "LED reference",
-        "layout": {
-            "tables": "tables",
-            "correlation_tables": "tables/correlations",
-            "ctr_plots": "plots/ctr",
-            "led_improvement_plots": "plots/led_improvement",
-            "correlation_plots": "plots/correlations",
-        },
-        "plots_and_tables": [
-            str(Path(path).resolve().relative_to(root)) for path in outputs
-        ],
+        "n_replica_rows": len(records), "n_summary_rows": len(summary),
+        "n_paired_model_comparisons": len(comparisons), "n_model_output_correlations": len(correlation_rows),
+        "statistical_unit": "replica", "fit_bootstrap": False, "paired_bootstrap_unit": "replica",
+        "pairing_rule": "same study + dataset + analysis protocol + sampling identity + mode + window + replica index",
+        "mode_pooling": False, "formulation_field": "estimator_formulation", "formulation_classes": ["shared", "direct"],
+        "timing_metric": "replica wall time parsed from study.log between replica start and Replica result",
+        "timing_scope": "fit + blind prediction/evaluation + diagnostics + residual/model serialization performed before Replica result",
+        "pareto_objectives": ["minimize mean replica wall time", "minimize blind CTR"],
+        "reporting_config": "reporting_config_resolved.json",
+        "layout": {key: str(path.relative_to(root)) for key, path in layout.items() if key != "root"},
+        "plots_and_tables": [str(Path(path).resolve().relative_to(root)) for path in outputs],
     }
     atomic_json(root / "manifest.json", manifest)
-    log.info(
-        "Report complete | sources=%d | summary=%d | paired=%d | output-correlations=%d | %s",
-        len(manifest["sources"]),
-        len(summary),
-        len(comparisons),
-        len(correlation_rows),
-        root,
-    )
+    log.info("Report complete | sources=%d | summary=%d | paired=%d | output-correlations=%d | %s", len(manifest["sources"]), len(summary), len(comparisons), len(correlation_rows), root)
     return root
