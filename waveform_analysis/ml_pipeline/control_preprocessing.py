@@ -36,7 +36,7 @@ def _family(mode):return "energy" if mode=="energy_to_energy" else "timing"
 
 def _select_led(preprocessed,mode,reference_dataset,preprocessing,fit_cfg):
     family=_family(mode);candidates=np.asarray(preprocessing["led_selection"]["thresholds_mV"],float)
-    baseline_window=preprocessing["selection"]["baseline_noise"]["window_ns"]
+    baseline_window=preprocessing["selection"]["baseline_window_ns"]
     grid=led_grid(preprocessed,family,np.arange(preprocessed.n_events),candidates,baseline_window_ns=baseline_window)
     true=float(reference_dataset["true_tof_ps"]);window_ps=1000.0*float(preprocessing["led_selection"]["coincidence_window_ns"])
     min_eff=float(preprocessing["led_selection"]["minimum_crossing_efficiency"]);rows=[]
