@@ -56,6 +56,96 @@ def _should_save_model(policy, replica_index):
     raise ValueError(f"Unknown model save policy: {policy}")
 
 
+def _format_log_value(value):
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "None"
+    if isinstance(value, (bool, np.bool_)):
+        return "true" if bool(value) else "false"
+    if isinstance(value, np.generic):
+        value = value.item()
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _parameter_log_schema(candidates):
+    parameter_sets = list(candidates.values())
+    if not parameter_sets:
+        return {}, {}, {}
+
+    keys = list(parameter_sets[0])
+    for params in parameter_sets[1:]:
+        for key in params:
+            if key not in keys:
+                keys.append(key)
+
+    fixed = {}
+    varying = {}
+    for key in keys:
+        values = [params.get(key) for params in parameter_sets]
+        encoded = [_format_log_value(value) for value in values]
+        if len(set(encoded)) == 1:
+            fixed[key] = values[0]
+            continue
+        unique_values = []
+        seen = set()
+        for value, token in zip(values, encoded):
+            if token in seen:
+                continue
+            seen.add(token)
+            unique_values.append(value)
+        varying[key] = unique_values
+
+    codes = {key: index for index, key in enumerate(varying, 1)}
+    return fixed, varying, codes
+
+
+def _format_parameter_pairs(params):
+    if not params:
+        return "none"
+    return " | ".join(f"{key}={_format_log_value(value)}" for key, value in params.items())
+
+
+def _format_candidate_codes(params, codes):
+    if not codes:
+        return "fixed configuration"
+    return " | ".join(
+        f"{code}={_format_log_value(params.get(key))}" for key, code in codes.items()
+    )
+
+
+def _log_hyperparameter_space(logger, candidates):
+    fixed, varying, codes = _parameter_log_schema(candidates)
+    logger.info("Hyperparameter fixed | %s", _format_parameter_pairs(fixed))
+    if varying:
+        logger.info(
+            "Hyperparameter search | %s",
+            " | ".join(
+                f"{codes[key]}={key} values={_format_log_value(values)}"
+                for key, values in varying.items()
+            ),
+        )
+    else:
+        logger.info("Hyperparameter search | no optimized hyperparameters")
+    return codes
+
+
+def _selection_stage_summary(selection):
+    counts = dict(selection.manifest.get("stage_counts") or {})
+    labels = {
+        "initial_valid": "valid_waveforms",
+        "photopeak": "photopeak",
+        "main_hit": "main_hit",
+        "main_hit_tot": "timing_tot",
+        "baseline_noise": "baseline_noise",
+        "baseline_clipping": "baseline_clipping",
+    }
+    parts = [f"raw={int(selection.manifest.get('n_raw', 0))}"]
+    for key, value in counts.items():
+        parts.append(f"{labels.get(key, key)}={int(value)}")
+    return " | ".join(parts)
+
+
 def _validation_row(
     *,
     seed,
@@ -216,16 +306,35 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     rebuild_control = bool(config.get("_rebuild_control", rebuild_preprocessing))
     rebuild_analysis = bool(config.get("_rebuild_analysis", rebuild_preprocessing))
     rebuild_prepared = bool(config.get("_rebuild_prepared", rebuild_preprocessing))
+    control_modes = config.get("_control_modes") or [config["mode"]]
+    logger.info(
+        "Reference preprocessing | start | source=%s | modes=%s",
+        Path(config["reference"]["root_file"]).name,
+        ",".join(map(str, control_modes)),
+    )
     control, control_dir = fit_control_artifact(
         config["reference"]["root_file"],
         config["reference"],
         config["preprocessing"],
         config["fit"],
         fit_by_mode=config.get("_control_fit_by_mode"),
-        modes=config.get("_control_modes") or [config["mode"]],
+        modes=control_modes,
         cache_root=config["preprocessing"]["cache_dir"],
         rebuild=rebuild_control,
-        logger=logger,
+        logger=None,
+    )
+    logger.info(
+        "Reference preprocessing | complete | %s",
+        " | ".join(
+            f"{mode} LED={float(control['selected_led_threshold_mV'][mode]):.6g} mV"
+            for mode in control_modes
+        ),
+    )
+
+    logger.info(
+        "Analysis preprocessing | event selection | start | source=%s | mode=%s",
+        Path(config["analysis"]["root_file"]).name,
+        config["mode"],
     )
     selection = apply_selection_rules(
         config["analysis"]["root_file"],
@@ -235,7 +344,19 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         config["mode"],
         cache_dir=Path(config["preprocessing"]["cache_dir"]) / "analysis_selection",
         rebuild=rebuild_analysis,
-        logger=logger,
+        logger=None,
+    )
+    logger.info(
+        "Analysis preprocessing | event selection | complete | source=%s | mode=%s | %s",
+        Path(config["analysis"]["root_file"]).name,
+        config["mode"],
+        _selection_stage_summary(selection),
+    )
+
+    logger.info(
+        "Analysis preprocessing | waveform materialization | start | source=%s | mode=%s",
+        Path(config["analysis"]["root_file"]).name,
+        config["mode"],
     )
     native = preprocess_selected(
         config["analysis"]["root_file"],
@@ -245,7 +366,19 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         config["mode"],
         cache_dir=Path(config["preprocessing"]["cache_dir"]) / "analysis_native",
         rebuild=rebuild_analysis,
-        logger=logger,
+        logger=None,
+    )
+    logger.info(
+        "Analysis preprocessing | waveform materialization | complete | source=%s | mode=%s | n=%d",
+        Path(config["analysis"]["root_file"]).name,
+        config["mode"],
+        native.n_events,
+    )
+
+    logger.info(
+        "ML input preparation | start | mode=%s | window=%s",
+        config["mode"],
+        config["window_ns"],
     )
     dataset = prepare_ml_dataset(
         native,
@@ -253,7 +386,16 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         config,
         cache_dir=config["preprocessing"]["cache_dir"],
         rebuild=rebuild_prepared,
-        logger=logger,
+        logger=None,
+    )
+    prepared_manifest = dataset.manifest
+    logger.info(
+        "ML input preparation | complete | LED=%.6g mV | coincidence=%d/%d | window_dropped=%d | final=%d",
+        float(prepared_manifest["fixed_led_threshold_mV"]),
+        int(prepared_manifest["n_after_fixed_led"]),
+        int(prepared_manifest["n_before_fixed_led"]),
+        int(prepared_manifest["n_dropped_window"]),
+        int(prepared_manifest["n_final"]),
     )
 
     event_identity = str(dataset.manifest["event_population_identity"])
@@ -290,6 +432,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         len(fixed.split.tuning_train),
         len(fixed.split.validation),
     )
+    parameter_codes = _log_hyperparameter_space(logger, candidates)
 
     transform_cache = FeatureTransformCache()
     fit_input_cache = FitInputCache()
@@ -315,7 +458,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             "Hyperparameter candidate %d/%d | %s",
             index,
             len(candidates),
-            candidate_id,
+            _format_candidate_codes(params, parameter_codes),
         )
         fitted = fit_on_indices(
             spec,
@@ -353,11 +496,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         )
         store.upsert_result(row)
         scores.append(CandidateScore(candidate_id, float(row["rmse_ps"])))
-        logger.info(
-            "Hyperparameter validation | candidate=%s | RMSE=%.3f ps",
-            candidate_id,
-            row["rmse_ps"],
-        )
+        logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
 
     best = choose_best(scores)
     selected_candidate = best.candidate_id
@@ -377,8 +516,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "validation_reused_in_replicas": False,
     })
     logger.info(
-        "Hyperparameter selection complete | candidate=%s | validation RMSE=%.3f ps | configuration frozen for all replicas",
-        selected_candidate,
+        "Hyperparameter selection complete | %s | validation RMSE=%.3f ps | selected configuration used for replica evaluation",
+        _format_candidate_codes(selected_params, parameter_codes),
         float(best.score),
     )
 
@@ -524,8 +663,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     })
     store.write_manifest(manifest)
     logger.info(
-        "Study complete | selected=%s | validation RMSE=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
-        selected_candidate,
+        "Study complete | validation RMSE=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
         float(best.score),
         manifest["replica_count"],
         manifest["blind_ctr_mean_ps"],
