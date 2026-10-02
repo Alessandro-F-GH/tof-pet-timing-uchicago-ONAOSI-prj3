@@ -169,7 +169,7 @@ def _publish_batch_selection_diagnostics(
         modes=config.get("_control_modes") or [mode],
         cache_root=config["preprocessing"]["cache_dir"],
         rebuild=False,
-        logger=logger,
+        logger=None,
     )
     selection = apply_selection_rules(
         config["analysis"]["root_file"],
@@ -179,7 +179,7 @@ def _publish_batch_selection_diagnostics(
         mode,
         cache_dir=Path(config["preprocessing"]["cache_dir"]) / "analysis_selection",
         rebuild=False,
-        logger=logger,
+        logger=None,
     )
 
     if metadata_path.is_file() and not force:
