@@ -10,7 +10,6 @@ from .ml_pipeline.binning_scan import run_ctr_binning_scan
 from .ml_pipeline.config import load_batch_config, load_config, public_batch_config, public_config
 from .ml_pipeline.postprocess import remake_batch_plots, remake_study_plots
 from .ml_pipeline.report import batch_result_dirs, generate_report
-from .ml_pipeline.report_metrics import augment_report
 from .ml_pipeline.study import run_study
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -58,12 +57,17 @@ def _parser():
 
     report = sub.add_parser(
         "report",
-        help="Compare completed replica results by model, mode, and window",
+        help="Compare completed replica results by model, formulation, mode, and window",
     )
     source = report.add_mutually_exclusive_group(required=True)
     source.add_argument("--batch-config", type=Path)
     source.add_argument("--studies", type=Path, nargs="+")
     report.add_argument("--output-dir", type=Path)
+    report.add_argument(
+        "--report-config",
+        type=Path,
+        help="Optional partial JSON override for waveform_analysis/config/reporting.json",
+    )
 
     scan = sub.add_parser(
         "ctr-binning-scan",
@@ -116,8 +120,13 @@ def main():
         else:
             paths = [Path(path).expanduser().resolve() for path in args.studies]
             output_dir = args.output_dir or (PROJECT_ROOT / "results" / "reports" / "comparison")
-        report_root = generate_report(paths, output_dir, logger=logger)
-        augment_report(paths, report_root, logger=logger)
+        report_config = None if args.report_config is None else _config_path(args.report_config)
+        report_root = generate_report(
+            paths,
+            output_dir,
+            logger=logger,
+            report_config=report_config,
+        )
         print(report_root)
         return
 
