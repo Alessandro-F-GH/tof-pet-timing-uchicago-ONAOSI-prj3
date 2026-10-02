@@ -33,7 +33,7 @@ def prepare_ml_dataset(preprocessed,control_artifact,config,*,cache_dir,rebuild=
     family=mode_family(config["mode"]);waves=preprocessed.energy_windows_mV if family=="energy" else preprocessed.timing_windows_mV
     intervals=preprocessed.energy_sample_interval_s if family=="energy" else preprocessed.timing_sample_interval_s
     if waves is None or intervals is None:raise ValueError(f"{family} waveforms unavailable")
-    threshold=float(control_artifact["selected_led_threshold_mV"][config["mode"]]);baseline=config["preprocessing"]["selection"]["baseline_noise"]["window_ns"]
+    threshold=float(control_artifact["selected_led_threshold_mV"][config["mode"]]);baseline=config["preprocessing"]["selection"]["baseline_window_ns"]
     led=led_grid(preprocessed,family,np.arange(preprocessed.n_events),np.asarray([threshold]),baseline_window_ns=baseline)[:,:,0]
     true=float(config["analysis"]["true_tof_ps"]);window_ps=1000.0*float(config["preprocessing"]["led_selection"]["coincidence_window_ns"])
     residual=pair_delta(led)-true;finite_led=np.all(np.isfinite(led),axis=1)&np.isfinite(residual);coincidence=finite_led&(np.abs(residual)<=window_ps)
