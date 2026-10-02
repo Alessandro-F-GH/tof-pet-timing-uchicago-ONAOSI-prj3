@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from waveform_analysis.ml_pipeline import prepared_data, study
+from waveform_analysis.ml_pipeline import event_selection, prepared_data, study
 from waveform_analysis.ml_pipeline.config import ConfigError, load_batch_config, load_config
 from waveform_analysis.ml_pipeline.hyperparameter_plot import plot_hyperparameter_validation
 from waveform_analysis.ml_pipeline.search import candidate_id, candidate_manifest
@@ -126,6 +126,22 @@ def test_compact_benchmark_uses_fixed_validation_and_blind_fraction():
     assert resolved.protocol["evaluation"] == {"n_replicas": 5, "blind_fraction": 0.50, "minimum_events_per_split": 50}
     assert {config["save_models"] for config in resolved.runs} == {"first"}
     assert all("resampling" not in config for config in resolved.runs)
+
+
+def test_default_preprocessing_uses_one_shared_baseline_window():
+    package_root = Path(study.__file__).resolve().parents[1]
+    config_path = package_root / "config" / "batches" / "benchmark_other_models_49V.json"
+    resolved = load_batch_config(config_path, project_root=package_root)
+    selection = resolved.runs[0]["preprocessing"]["selection"]
+    assert selection == {
+        "baseline_window_ns": [-4.0, -1.0],
+        "baseline_noise": {"lambda_mad": 5.0},
+        "baseline_clipping": {"margin_mV": 1.0},
+    }
+    assert "window_ns" not in selection["baseline_noise"]
+    source = inspect.getsource(event_selection._scan_baseline)
+    assert 'selection["baseline_window_ns"]' in source
+    assert 'noise["window_ns"]' not in source
 
 
 def test_prepared_data_uses_control_led_and_window_scoped_population():
