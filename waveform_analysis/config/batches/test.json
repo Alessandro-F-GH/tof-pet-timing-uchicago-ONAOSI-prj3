@@ -1,8 +1,8 @@
 {
-  "name": "benchmark_other_models_48V",
+  "name": "benchmark_all_models_49V",
   "reference_dataset": "../datasets/control.json",
   "analysis_dataset": {
-    "root_file": "processed_data/converted_runs_07-13/48V-480mV.root",
+    "root_file": "processed_data/converted_Finn/49V-150mV.root",
     "true_tof_ps": 0.0,
     "channels": {
       "energy": [1, 2],
@@ -11,7 +11,7 @@
       "timing_polarities": [1, 1]
     }
   },
-  "output_dir": "results/studies/FBK/full_benchmark_test_48V",
+  "output_dir": "results/studies/UC/full_benchmark_test_49V",
   "save_models": "none",
   "protocol": {
     "seed": 1001,
