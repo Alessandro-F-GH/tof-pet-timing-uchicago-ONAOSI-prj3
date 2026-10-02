@@ -175,12 +175,23 @@ def validate_config(config):
     for key in ("materialized_window_ns", "energy", "timing", "selection", "photopeak", "tot_peak", "led_selection", "io"):
         if key not in preprocessing:
             raise ConfigError(f"preprocessing.{key} is required")
-    clipping = preprocessing["selection"].get("baseline_clipping")
-    if not isinstance(clipping, dict) or "margin_mV" not in clipping or float(clipping["margin_mV"]) < 0:
+    selection = preprocessing["selection"]
+    if not isinstance(selection, dict):
+        raise ConfigError("preprocessing.selection must be an object")
+    required_selection = {"baseline_window_ns", "baseline_noise", "baseline_clipping"}
+    if set(selection) != required_selection:
+        raise ConfigError(
+            "selection must contain exactly baseline_window_ns, baseline_noise and baseline_clipping"
+        )
+    baseline_window = selection["baseline_window_ns"]
+    if len(baseline_window) != 2 or float(baseline_window[1]) > 0:
+        raise ConfigError("selection.baseline_window_ns must contain two values before trigger")
+    noise = selection["baseline_noise"]
+    if not isinstance(noise, dict) or set(noise) != {"lambda_mad"} or float(noise["lambda_mad"]) < 0:
+        raise ConfigError("selection.baseline_noise.lambda_mad must be non-negative")
+    clipping = selection["baseline_clipping"]
+    if not isinstance(clipping, dict) or set(clipping) != {"margin_mV"} or float(clipping["margin_mV"]) < 0:
         raise ConfigError("selection.baseline_clipping.margin_mV must be non-negative")
-    noise = preprocessing["selection"]["baseline_noise"]
-    if len(noise["window_ns"]) != 2 or float(noise["window_ns"][1]) > 0:
-        raise ConfigError("baseline window must lie before trigger")
     led = preprocessing["led_selection"]
     if not led.get("thresholds_mV"):
         raise ConfigError("led_selection.thresholds_mV must be non-empty")
