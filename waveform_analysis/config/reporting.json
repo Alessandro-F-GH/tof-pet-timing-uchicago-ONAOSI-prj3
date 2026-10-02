@@ -1,0 +1,84 @@
+{
+  "global": {
+    "font_family": "DejaVu Sans",
+    "font_size": 10,
+    "title_size": 11,
+    "label_size": 10,
+    "tick_size": 9,
+    "legend_size": 9,
+    "annotation_size": 8,
+    "dpi": 160,
+    "grid": true,
+    "grid_alpha": 0.22,
+    "grid_linestyle": ":",
+    "line_width": 1.2,
+    "error_capsize": 3.0
+  },
+  "formulations": {
+    "shared": {
+      "label": "Shared antisymmetric",
+      "color": "#1f77b4",
+      "marker": "o"
+    },
+    "direct": {
+      "label": "Direct / non-shared",
+      "color": "#d95f02",
+      "marker": "^"
+    }
+  },
+  "reference": {
+    "label": "LED reference",
+    "color": "#666666",
+    "marker": "s",
+    "linestyle": "--"
+  },
+  "plots": {
+    "comparison": {
+      "figure_width_min": 6.8,
+      "figure_height": 4.7,
+      "width_per_category": 1.1,
+      "marker_size": 6.5,
+      "x_label_rotation": 25
+    },
+    "scatter": {
+      "figsize": [6.4, 5.0],
+      "marker_size": 60,
+      "annotation_offset": [5, 5]
+    },
+    "bar": {
+      "figure_width_min": 7.2,
+      "figure_height": 4.8,
+      "width_per_category": 1.25,
+      "group_width": 0.78,
+      "window_hatches": ["", "//", "\\\\", "xx", "..", "++"],
+      "edge_color": "#333333",
+      "edge_line_width": 0.6,
+      "annotation_offset_points": 3
+    },
+    "correlation_heatmap": {
+      "min_figsize": [6.8, 5.4],
+      "per_model": [0.95, 0.82],
+      "cmap": "coolwarm",
+      "vmin": -1.0,
+      "vmax": 1.0,
+      "x_label_rotation": 35,
+      "cell_text_size": 8,
+      "colorbar_fraction": 0.04,
+      "colorbar_pad": 0.12,
+      "colorbar_shrink": 0.88,
+      "separator_color": "#444444",
+      "separator_line_width": 1.4
+    },
+    "pareto": {
+      "figsize": [6.6, 5.1],
+      "marker_size": 64,
+      "pareto_marker": "P",
+      "pareto_marker_size": 125,
+      "pareto_edge_color": "#111111",
+      "pareto_edge_width": 1.2,
+      "frontier_line_color": "#555555",
+      "frontier_line_style": "--",
+      "frontier_line_width": 1.1
+    }
+  }
+}
