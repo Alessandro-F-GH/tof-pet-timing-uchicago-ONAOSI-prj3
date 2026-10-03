@@ -400,6 +400,13 @@ def plot_metric_comparisons(summary, output_dir, *, metric, reporting=None):
         reference = reporting["reference"]
         ref_mean, ref_std = _reference_value(rows, ref_mean_key, ref_std_key)
         if np.isfinite(ref_mean):
+            if metric == "ctr":
+                ax.axhline(
+                    ref_mean,
+                    color=reference["color"],
+                    linestyle=reference["linestyle"],
+                    linewidth=float(reporting["global"]["line_width"]),
+                )
             ax.errorbar([0], [ref_mean], yerr=[ref_std] if np.isfinite(ref_std) else None, fmt=reference["marker"], color=reference["color"], capsize=float(reporting["global"]["error_capsize"]), markersize=float(style["marker_size"]))
         for index, row in enumerate(rows, start=1):
             family = formulation_style(reporting, row["estimator_formulation"])
@@ -408,7 +415,17 @@ def plot_metric_comparisons(summary, output_dir, *, metric, reporting=None):
         ax.set_ylabel(ylabel)
         ax.set_title(f"{title_metric} model comparison | {mode} | {window} [{start:g}, {end:g}] ns")
         formulations = {row["estimator_formulation"] for row in rows}
-        handles = [Line2D([0], [0], marker=reference["marker"], color="none", markerfacecolor=reference["color"], markeredgecolor=reference["color"], label=reference["label"], markersize=7), *_formulation_handles(reporting, formulations)]
+        reference_handle = Line2D(
+            [0], [0],
+            marker=reference["marker"],
+            color=reference["color"] if metric == "ctr" else "none",
+            linestyle=reference["linestyle"] if metric == "ctr" else "None",
+            markerfacecolor=reference["color"],
+            markeredgecolor=reference["color"],
+            label=reference["label"],
+            markersize=7,
+        )
+        handles = [reference_handle, *_formulation_handles(reporting, formulations)]
         ax.legend(handles=handles)
         _apply_axes_style(ax, reporting)
         suffix = _context_suffix(context, multi_context)
@@ -704,13 +721,12 @@ def plot_ctr_vs_time(summary, output_dir, reporting=None):
         if frontier_indices:
             frontier = sorted([points[index] for index in frontier_indices], key=lambda row: row["replica_wall_time_mean_s"])
             ax.plot([row["replica_wall_time_mean_s"] for row in frontier], [row["ctr_mean_ps"] for row in frontier], color=style["frontier_line_color"], linestyle=style["frontier_line_style"], linewidth=float(style["frontier_line_width"]))
-            ax.scatter([row["replica_wall_time_mean_s"] for row in frontier], [row["ctr_mean_ps"] for row in frontier], s=float(style["pareto_marker_size"]), marker=style["pareto_marker"], facecolors="none", edgecolors=style["pareto_edge_color"], linewidths=float(style["pareto_edge_width"]))
         ax.set_xscale("log")
         ax.set_xlabel("Mean replica wall time [s] (log scale)")
         ax.set_ylabel("Blind CTR [ps]")
         ax.set_title(f"CTR vs computation time | {mode} | {window} [{start:g}, {end:g}] ns")
         handles = _formulation_handles(reporting, {row["estimator_formulation"] for row in points})
-        handles.append(Line2D([0], [0], marker=style["pareto_marker"], color="none", markerfacecolor="none", markeredgecolor=style["pareto_edge_color"], label="Pareto-optimal", markersize=9))
+        handles.append(Line2D([0], [0], color=style["frontier_line_color"], linestyle=style["frontier_line_style"], linewidth=float(style["frontier_line_width"]), label="Pareto frontier"))
         ax.legend(handles=handles)
         _apply_axes_style(ax, reporting, grid_axis="both")
         suffix = _context_suffix(context, multi_context)
