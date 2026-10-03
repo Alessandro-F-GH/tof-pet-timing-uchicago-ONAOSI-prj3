@@ -22,9 +22,9 @@
       1
     ],
     "max_correction_ps": [
-      20, 60, 150
+      60, 120, 200
     ],
-    "learning_rate": [1e-2, 3e-3, 1e-3, 3e-4, 1e-4],
+    "learning_rate": [1e-2, 3e-3, 1e-3, 3e-4],
     "batch_size": [16,32,128,256]
   },
   "training": {
