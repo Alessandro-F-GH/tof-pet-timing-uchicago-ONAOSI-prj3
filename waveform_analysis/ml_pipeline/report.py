@@ -615,6 +615,56 @@ def plot_best_by_formulation(best_rows, output_dir, reporting=None):
     return outputs
 
 
+def plot_best_models_by_mode(summary, output_dir, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    style = plot_style(reporting, "scatter")
+    groups = _group(summary, _mode_group_key)
+    multi_context = _multiple_contexts(summary)
+    outputs = []
+    for key, rows in sorted(groups.items()):
+        context = key[:5]
+        mode = key[5]
+        points = [row for row in rows if np.isfinite(row["ctr_mean_ps"])]
+        if not points:
+            continue
+        windows = sorted({_window_key(row) for row in points}, key=lambda item: (item[1], item[2], item[0]))
+        models = sorted(
+            {row["model"] for row in points},
+            key=lambda model: _formulation_order(next(row for row in points if row["model"] == model)),
+        )
+        window_positions = {window: index for index, window in enumerate(windows)}
+        if len(models) == 1:
+            model_offsets = {models[0]: 0.0}
+        else:
+            model_offsets = dict(zip(models, np.linspace(-0.28, 0.28, len(models))))
+        fig, ax = plt.subplots(figsize=tuple(style["figsize"]))
+        for row in sorted(points, key=lambda item: (_window_key(item)[1], _window_key(item)[2], _formulation_order(item))):
+            family = formulation_style(reporting, row["estimator_formulation"])
+            x = window_positions[_window_key(row)] + model_offsets[row["model"]]
+            ax.scatter([x], [row["ctr_mean_ps"]], s=float(style["marker_size"]), marker=family["marker"], color=family["color"])
+            if np.isfinite(row["ctr_std_ps"]):
+                ax.errorbar(
+                    [x], [row["ctr_mean_ps"]], yerr=[row["ctr_std_ps"]], fmt="none",
+                    ecolor=family["color"], capsize=float(reporting["global"]["error_capsize"]),
+                    linewidth=float(reporting["global"]["line_width"]),
+                )
+            ax.annotate(
+                row["model"], (x, row["ctr_mean_ps"]),
+                xytext=tuple(style["annotation_offset"]), textcoords="offset points",
+                fontsize=float(reporting["global"]["annotation_size"]),
+            )
+        labels = [f"{window[0]}\n[{window[1]:g}, {window[2]:g}] ns" for window in windows]
+        ax.set_xticks(range(len(windows)), labels)
+        ax.set_xlabel("Waveform window")
+        ax.set_ylabel("Blind CTR [ps]")
+        ax.set_title(f"Model and waveform-window comparison | {mode}")
+        ax.legend(handles=_formulation_handles(reporting, {row["estimator_formulation"] for row in points}))
+        _apply_axes_style(ax, reporting)
+        suffix = _context_suffix(context, multi_context)
+        outputs.append(_save(fig, Path(output_dir) / f"best_model_by_mode__{_safe(mode)}{suffix}.png", reporting))
+    return outputs
+
+
 def pareto_frontier(points, *, x_key, y_key):
     finite = [index for index, point in enumerate(points) if np.isfinite(point[x_key]) and np.isfinite(point[y_key])]
     frontier = []
@@ -813,11 +863,11 @@ def _prepare_report_layout(output_dir):
         "rmse_plots": root / "plots" / "rmse",
         "led_improvement_plots": root / "plots" / "led_improvement",
         "correlation_plots": root / "plots" / "correlations",
-        "rmse_ctr_plots": root / "plots" / "tradeoffs" / "rmse_vs_ctr",
-        "ctr_time_plots": root / "plots" / "tradeoffs" / "ctr_vs_time",
+        "rmse_ctr_plots": root / "plots" / "rmse_vs_ctr",
+        "ctr_time_plots": root / "plots" / "ctr_vs_time",
         "window_ctr_plots": root / "plots" / "window_comparison" / "ctr",
         "window_rmse_plots": root / "plots" / "window_comparison" / "rmse",
-        "architecture_plots": root / "plots" / "architecture" / "best_shared_vs_direct",
+        "best_model_plots": root / "plots" / "best_model_by_mode",
     }
     for key, path in layout.items():
         if key != "root":
@@ -857,7 +907,7 @@ def generate_report(paths, output_dir, *, logger=None, report_config=None):
         outputs.extend(plot_ctr_vs_time(summary, layout["ctr_time_plots"], reporting))
         outputs.extend(plot_window_model_comparisons(summary, layout["window_ctr_plots"], metric="ctr", reporting=reporting))
         outputs.extend(plot_window_model_comparisons(summary, layout["window_rmse_plots"], metric="rmse", reporting=reporting))
-        outputs.extend(plot_best_by_formulation(best_rows, layout["architecture_plots"], reporting))
+        outputs.extend(plot_best_models_by_mode(summary, layout["best_model_plots"], reporting))
         correlation_outputs, correlation_rows = model_output_correlations(records, layout["correlation_tables"], plot_dir=layout["correlation_plots"], reporting=reporting)
         outputs.extend(correlation_outputs)
     manifest = {
