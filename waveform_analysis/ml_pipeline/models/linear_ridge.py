@@ -113,8 +113,8 @@ def fit(params, train_x, train_target, *, seed, config):
     if max_iter is not None and max_iter < 1:
         raise ValueError("linear_ridge training.max_iter must be >= 1 when provided")
 
-    # fit_intercept=False is essential: swapping the two detectors negates the
-    # difference features, therefore the prediction is exactly antisymmetric.
+    # No intercept: swapping the two detectors negates the difference features,
+    # so this is exactly the shared linear scorer g(s1)-g(s2), g(s)=w^T s.
     regressor = Ridge(
         alpha=alpha,
         fit_intercept=False,
@@ -128,7 +128,7 @@ def fit(params, train_x, train_target, *, seed, config):
         regressor=regressor,
         metadata={
             "input_definition": "cached sample-wise difference of normalized detector waveforms: s1-s2",
-            "prediction_definition": "ridge linear correction w^T(s1-s2) [ps]",
+            "prediction_definition": "ridge linear correction w^T(s1-s2) = g(s1)-g(s2) [ps]",
             "detector_swap_antisymmetry_enforced": True,
             "equivalent_formulation": "shared linear scorer g(s1)-g(s2), with g(s)=w^T s",
             "ridge_alpha": alpha,
@@ -179,6 +179,6 @@ MODEL_SPEC = ModelSpec(
     save=save,
     explain=explain,
     preserve_temporal_grid=True,
-    estimator_formulation="direct",
+    estimator_formulation="shared",
     feature_transform=DIFFERENCE_TRANSFORM,
 )
