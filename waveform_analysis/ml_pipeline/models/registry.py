@@ -5,6 +5,7 @@ from dataclasses import replace
 from .antisymmetric_mlp import MODEL_SPEC as ANTISYMMETRIC_MLP_SPEC
 from .direct_mlp import MODEL_SPEC as DIRECT_MLP_SPEC
 from .independent_cnn1d import MODEL_SPEC as INDEPENDENT_CNN1D_SPEC
+from .linear_ridge import MODEL_SPEC as LINEAR_RIDGE_SPEC
 from .locally_connected_mlp import MODEL_SPEC as LOCALLY_CONNECTED_MLP_SPEC
 from .minirocket import MODEL_SPEC as MINIROCKET_SPEC
 from .onishi_cnn import MODEL_SPEC as _ONISHI_CNN_SPEC
@@ -21,6 +22,7 @@ _REGISTRY: dict[str, ModelSpec] = {
     INDEPENDENT_CNN1D_SPEC.name: INDEPENDENT_CNN1D_SPEC,
     ONISHI_CNN_SPEC.name: ONISHI_CNN_SPEC,
     MINIROCKET_SPEC.name: MINIROCKET_SPEC,
+    LINEAR_RIDGE_SPEC.name: LINEAR_RIDGE_SPEC,
 }
 
 
