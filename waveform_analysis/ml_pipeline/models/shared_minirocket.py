@@ -82,14 +82,14 @@ def _pair(values: np.ndarray) -> np.ndarray:
         raise ValueError(
             f"shared_minirocket expects [event, detector=2, time], got {x.shape}"
         )
-    if x.shape[-1] < 9:
-        raise ValueError("shared_minirocket requires at least 9 temporal samples")
     return x
 
 
 def fit_transform(parameters, train_x, *, seed, config):
     del config
     pair = _pair(train_x)
+    if pair.shape[-1] < 9:
+        raise ValueError("shared_minirocket requires at least 9 temporal samples")
 
     # Fit exactly one univariate MiniRocket on the pooled detector waveforms so
     # both detectors use the same fitted random-feature map phi.
