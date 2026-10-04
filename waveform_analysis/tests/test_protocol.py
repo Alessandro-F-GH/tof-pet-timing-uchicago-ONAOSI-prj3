@@ -120,7 +120,7 @@ def test_compact_benchmark_uses_fixed_validation_and_blind_fraction():
     package_root = Path(study.__file__).resolve().parents[1]
     config_path = package_root / "config" / "batches" / "benchmark_other_models_49V.json"
     resolved = load_batch_config(config_path, project_root=package_root)
-    assert len(resolved.runs) == 7 * 2 * 2
+    assert len(resolved.runs) == 8 * 2 * 2
     assert resolved.protocol["seed"] == 1001
     assert resolved.protocol["model_selection"] == {"validation_fraction": 0.20}
     assert resolved.protocol["evaluation"] == {"n_replicas": 5, "blind_fraction": 0.50, "minimum_events_per_split": 50}
