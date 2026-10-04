@@ -31,13 +31,15 @@
   },
   "sweep": {
     "models": [
+      "linear_ridge",
       "antisymmetric_mlp",
       "locally_connected_mlp",
       "shared_cnn1d",
+      "shared_minirocket",
       "direct_mlp",
       "independent_cnn1d",
-      "minirocket",
-      "linear_ridge"
+      "onishi_cnn",
+      "direct_minirocket"
     ],
     "modes": ["energy_to_energy", "timing_to_timing"],
     "windows": {
