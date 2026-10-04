@@ -117,12 +117,17 @@ def save_model(spec,fitted,directory,parameters):
 
 def load_fitted_model(spec,directory,parameters,config):
     directory=Path(directory);mask=np.load(directory/"sample_mask.npy").astype(bool);output_limit=float(config["ml_output"]["max_abs_ps"])
-    if spec.name=="minirocket":
+    if spec.name in {"minirocket","linear_ridge"}:
         with (directory/"model.pkl").open("rb") as s:artifact=pickle.load(s)
-        feature_transform=None;tpath=directory/"feature_transform"/"transform.pkl"
-        if tpath.is_file():
-            with tpath.open("rb") as s:tartifact=pickle.load(s)
-            feature_transform=FittedFeatureTransform(spec.feature_transform,tartifact,"reloaded",{},0,{})
+        feature_transform=None
+        if spec.name=="minirocket":
+            tpath=directory/"feature_transform"/"transform.pkl"
+            if tpath.is_file():
+                with tpath.open("rb") as s:tartifact=pickle.load(s)
+                feature_transform=FittedFeatureTransform(spec.feature_transform,tartifact,"reloaded",{},0,{})
+        elif spec.name=="linear_ridge":
+            from .models.linear_ridge import DifferenceTransformArtifact
+            feature_transform=FittedFeatureTransform(spec.feature_transform,DifferenceTransformArtifact({}),"reloaded",{},0,{})
         return FittedModel(artifact,dict(getattr(artifact,"metadata",{}) or {}),output_limit,mask,feature_transform)
     import torch
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu");payload=torch.load(directory/"model.pt",map_location=device,weights_only=False);metadata=dict(payload.get("metadata",{}) or {});n=int(mask.sum());p=dict(parameters or {})
