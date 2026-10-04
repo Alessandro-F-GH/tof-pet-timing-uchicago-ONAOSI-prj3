@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from waveform_analysis.ml_pipeline import event_selection, prepared_data, study
+from waveform_analysis.ml_pipeline import batch, event_selection, prepared_data, preprocessing_plots, study
 from waveform_analysis.ml_pipeline.config import ConfigError, load_batch_config, load_config
 from waveform_analysis.ml_pipeline.hyperparameter_plot import plot_hyperparameter_validation
 from waveform_analysis.ml_pipeline.search import candidate_id, candidate_manifest
@@ -142,6 +142,52 @@ def test_default_preprocessing_uses_one_shared_baseline_window():
     source = inspect.getsource(event_selection._scan_baseline)
     assert 'selection["baseline_window_ns"]' in source
     assert 'noise["window_ns"]' not in source
+
+
+def test_baseline_clipping_clearance_preserves_original_rule():
+    signal = np.asarray([0.0, 0.5, 1.0, 8.5, 9.0], float)
+    rms, clipped, clearance = event_selection._baseline_quality_metrics(
+        signal,
+        trigger_index=4,
+        sample_interval_s=1e-9,
+        window_ns=[-4.0, 0.0],
+        vertical_limits_mV=[-1.0, 10.0],
+        clipping_margin_mV=1.0,
+    )
+    assert np.isfinite(rms)
+    assert clipped is True
+    assert clearance == pytest.approx(1.0)
+    public_rms, public_clipped = event_selection.baseline_quality(
+        signal,
+        trigger_index=4,
+        sample_interval_s=1e-9,
+        window_ns=[-4.0, 0.0],
+        vertical_limits_mV=[-1.0, 10.0],
+        clipping_margin_mV=1.0,
+    )
+    assert public_rms == pytest.approx(rms)
+    assert public_clipped is clipped
+
+
+def test_preprocessing_histograms_fill_selected_region_without_margin_lines():
+    for function in (
+        preprocessing_plots.plot_photopeak,
+        preprocessing_plots.plot_baseline_noise,
+        preprocessing_plots.plot_tot,
+    ):
+        source = inspect.getsource(function)
+        assert "_hist_with_selection" in source
+        assert "axvline" not in source
+    clipping_source = inspect.getsource(preprocessing_plots.plot_baseline_clipping)
+    assert "_hist_with_selection" in clipping_source
+    assert "ax.bar" not in clipping_source
+
+
+def test_batch_publishes_materialized_waveform_example_for_each_mode():
+    source = inspect.getsource(batch._publish_batch_selection_diagnostics)
+    assert "preprocess_selected" in source
+    assert "plot_materialized_event" in source
+    assert 'f"{family}_selected_event_waveform.png"' in source
 
 
 def test_prepared_data_uses_control_led_and_window_scoped_population():
