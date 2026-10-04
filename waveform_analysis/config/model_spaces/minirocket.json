@@ -5,8 +5,8 @@
   },
   "parameters": {
     "num_kernels": {
-      "type": "categorical",
-      "choices": [1000, 3000, 10000]
+      "type": "fixed",
+      "value": 10000
     },
     "ridge_alpha": {
       "type": "categorical",
