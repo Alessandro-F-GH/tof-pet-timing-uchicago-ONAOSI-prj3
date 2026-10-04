@@ -15,7 +15,16 @@ from .models import get_model
 from .prepared_data import prepare_ml_dataset
 from .progress import ProgressTracker
 from .result_plots import blind_rmse_ctr_correlation, make_study_result_plots
-from .search import CandidateScore, candidate_manifest, choose_best
+from .search import (
+    CandidateScore,
+    candidate_id,
+    candidate_manifest,
+    choose_best,
+    fixed_parameters,
+    grid_candidates,
+    optimization_config,
+    suggest_parameters,
+)
 from .shared_artifacts import ExperimentArtifactStore
 from .splits import semantic_seed
 from .stats import paired_ctr_improvement, rmse_ps
@@ -108,7 +117,7 @@ def _format_parameter_pairs(params):
 
 def _format_candidate_codes(params, codes):
     if not codes:
-        return "fixed configuration"
+        return _format_parameter_pairs(params)
     return " | ".join(
         f"{code}={_format_log_value(params.get(key))}" for key, code in codes.items()
     )
@@ -249,11 +258,25 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     store.write_resolved_config(public_config)
 
     spec = get_model(config["model"]["name"])
-    candidates = candidate_manifest(list(spec.candidates(config["model"]["space"])))
+    model_space = config["model"]["space"]
+    optimization = optimization_config(model_space)
     n_replicas = int(config["evaluation"]["n_replicas"])
 
+    if optimization.strategy == "fixed":
+        candidates = candidate_manifest([fixed_parameters(model_space)])
+    elif optimization.strategy == "grid":
+        candidates = candidate_manifest(grid_candidates(model_space))
+    else:
+        candidates = {}
+        existing_candidates = run_dir / "candidates.json"
+        if resume and existing_candidates.is_file():
+            loaded = json.loads(existing_candidates.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                candidates = {str(key): dict(value) for key, value in loaded.items()}
+
+    selection_metric = None if optimization.strategy == "fixed" else "fixed_validation_rmse_ps"
     manifest = {
-        "schema_version": 40,
+        "schema_version": 41,
         "status": "running",
         "name": config["name"],
         "study_name": config.get("study_name", config["name"]),
@@ -269,6 +292,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "feature_transform": None if spec.feature_transform is None else spec.feature_transform.name,
         "batch_seed": int(config["seed"]),
         "model_selection": config["model_selection"],
+        "optimization": model_space["optimization"],
+        "optimization_strategy": optimization.strategy,
         "evaluation": config["evaluation"],
         "save_models": config["save_models"],
         "preprocessing": config["preprocessing"],
@@ -277,26 +302,30 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "fit_bootstrap": False,
         "event_level_bootstrap": False,
         "hyperparameter_selection_repeated": False,
-        "hyperparameter_selection_metric": "fixed_validation_rmse_ps",
+        "hyperparameter_selection_metric": selection_metric,
+        "validation_skipped": optimization.strategy == "fixed",
         "fixed_validation_used_in_replicas": False,
     }
     if resume and (run_dir / "manifest.json").is_file():
         old = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-        if int(old.get("schema_version", 0)) != 40:
+        if int(old.get("schema_version", 0)) != 41:
             raise RuntimeError("Cannot resume results from a different pipeline schema")
-        if old.get("hyperparameter_selection_metric") != "fixed_validation_rmse_ps" or old.get("fixed_validation_used_in_replicas") is not False:
-            raise RuntimeError("Cannot resume results from the previous fixed-validation replica protocol")
+        if old.get("optimization_strategy") != optimization.strategy:
+            raise RuntimeError("Cannot resume with a different optimization strategy")
+        if old.get("fixed_validation_used_in_replicas") is not False:
+            raise RuntimeError("Cannot resume results from an incompatible validation protocol")
         if old.get("config_fingerprint") != config["_config_fingerprint"]:
             raise RuntimeError("Cannot resume with a different resolved configuration")
 
     store.write_manifest(manifest)
-    store.write_candidates(candidates)
+    if candidates:
+        store.write_candidates(candidates)
     logger.info(
-        "Study | model=%s | mode=%s | window=%s | candidates=%d | replicas=%d | batch_seed=%d | fixed_validation=%.3f | blind=%.3f | selection=RMSE",
+        "Study | model=%s | mode=%s | window=%s | strategy=%s | replicas=%d | batch_seed=%d | fixed_validation=%.3f | blind=%.3f",
         spec.name,
         config["mode"],
         config["window_ns"],
-        len(candidates),
+        optimization.strategy,
         n_replicas,
         int(config["seed"]),
         float(config["model_selection"]["validation_fraction"]),
@@ -424,102 +453,189 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     })
     store.write_manifest(manifest)
 
-    validation_target = np.asarray(target[fixed.split.validation], float)
-    raw_validation_rmse = float(rmse_ps(validation_target))
-    logger.info(
-        "Hyperparameter tuning | fixed split seed=%d | tuning_train=%d | validation=%d | metric=RMSE | validation excluded from every replica",
-        int(fixed.split.seed),
-        len(fixed.split.tuning_train),
-        len(fixed.split.validation),
-    )
-    parameter_codes = _log_hyperparameter_space(logger, candidates)
+    selected_validation_rmse = None
+    parameter_codes = {}
 
-    transform_cache = FeatureTransformCache()
-    fit_input_cache = FitInputCache()
-    transform_seed_base = semantic_seed(
-        int(config["seed"]), "hyperparameter_tuning", spec.name, protocol_identity
-    )
-    scores = []
-    for index, (candidate_id, params) in enumerate(candidates.items(), 1):
-        existing = next(
-            (
-                row
-                for row in store.read_results()
-                if row.get("phase") == "hyperparameter_validation"
-                and row.get("candidate_id") == candidate_id
-            ),
-            None,
-        )
-        if existing is not None:
-            scores.append(CandidateScore(candidate_id, float(existing["rmse_ps"])))
-            continue
-
+    if optimization.strategy == "fixed":
+        selected_candidate, selected_params = next(iter(candidates.items()))
+        store.write_selected_hyperparameters({
+            "candidate_id": selected_candidate,
+            "parameters": selected_params,
+            "selection_metric": None,
+            "selected_validation_rmse_ps": None,
+            "validation_seed": None,
+            "validation_fraction": None,
+            "validation_skipped": True,
+            "validation_reused_in_replicas": False,
+        })
         logger.info(
-            "Hyperparameter candidate %d/%d | %s",
-            index,
-            len(candidates),
-            _format_candidate_codes(params, parameter_codes),
+            "Fixed configuration | validation fit/evaluation skipped | %s",
+            _format_parameter_pairs(selected_params),
         )
-        fitted = fit_on_indices(
-            spec,
-            config["model"]["space"],
-            config,
-            dataset,
-            fixed.split.tuning_train,
-            params,
-            seed=semantic_seed(fixed.split.seed, spec.name, candidate_id, "tuning_fit"),
-            transform_seed_base=transform_seed_base,
-            feature_transform_cache=transform_cache,
-            fit_input_cache=fit_input_cache,
-            logger=logger,
+    else:
+        validation_target = np.asarray(target[fixed.split.validation], float)
+        raw_validation_rmse = float(rmse_ps(validation_target))
+        logger.info(
+            "Hyperparameter tuning | strategy=%s | fixed split seed=%d | tuning_train=%d | validation=%d | metric=RMSE | validation excluded from every replica",
+            optimization.strategy,
+            int(fixed.split.seed),
+            len(fixed.split.tuning_train),
+            len(fixed.split.validation),
         )
-        prediction = predict_indices(
-            spec,
-            fitted,
-            dataset,
-            config["mode"],
-            fixed.split.validation,
-        )
-        corrected = validation_target - prediction
-        row = _validation_row(
-            seed=fixed.split.seed,
-            candidate_id=candidate_id,
-            selected=False,
-            corrected=corrected,
-            raw_validation_rmse=raw_validation_rmse,
-            spec=spec,
-            config=config,
-            event_identity=event_identity,
-            protocol_identity=protocol_identity,
-            sampling_identity=fixed.sampling_identity,
-            train_n=len(fixed.split.tuning_train),
-        )
-        store.upsert_result(row)
-        scores.append(CandidateScore(candidate_id, float(row["rmse_ps"])))
-        logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
 
-    best = choose_best(scores)
-    selected_candidate = best.candidate_id
-    selected_params = candidates[selected_candidate]
-    rows = store.read_results()
-    for row in rows:
-        if row.get("phase") == "hyperparameter_validation":
-            row["selected"] = row.get("candidate_id") == selected_candidate
-    store._atomic_rows(rows)
-    store.write_selected_hyperparameters({
-        "candidate_id": selected_candidate,
-        "parameters": selected_params,
-        "selection_metric": "fixed_validation_rmse_ps",
-        "selected_validation_rmse_ps": float(best.score),
-        "validation_seed": int(fixed.split.seed),
-        "validation_fraction": float(config["model_selection"]["validation_fraction"]),
-        "validation_reused_in_replicas": False,
-    })
-    logger.info(
-        "Hyperparameter selection complete | %s | validation RMSE=%.3f ps | selected configuration used for replica evaluation",
-        _format_candidate_codes(selected_params, parameter_codes),
-        float(best.score),
-    )
+        if optimization.strategy == "grid":
+            parameter_codes = _log_hyperparameter_space(logger, candidates)
+        else:
+            logger.info(
+                "Optuna TPE | trials=%d | startup_trials=%d",
+                int(optimization.n_trials),
+                int(optimization.n_startup_trials),
+            )
+
+        transform_cache = FeatureTransformCache()
+        fit_input_cache = FitInputCache()
+        transform_seed_base = semantic_seed(
+            int(config["seed"]), "hyperparameter_tuning", spec.name, protocol_identity
+        )
+
+        def evaluate_candidate(params, label):
+            nonlocal candidates
+            params = dict(params)
+            identifier = candidate_id(params)
+            candidates[identifier] = params
+            candidates = candidate_manifest(candidates.values())
+            store.write_candidates(candidates)
+
+            existing = next(
+                (
+                    row
+                    for row in store.read_results()
+                    if row.get("phase") == "hyperparameter_validation"
+                    and row.get("candidate_id") == identifier
+                ),
+                None,
+            )
+            if existing is not None:
+                return float(existing["rmse_ps"])
+
+            logger.info("Hyperparameter candidate %s | %s", label, _format_parameter_pairs(params))
+            fitted = fit_on_indices(
+                spec,
+                model_space,
+                config,
+                dataset,
+                fixed.split.tuning_train,
+                params,
+                seed=semantic_seed(fixed.split.seed, spec.name, identifier, "tuning_fit"),
+                transform_seed_base=transform_seed_base,
+                feature_transform_cache=transform_cache,
+                fit_input_cache=fit_input_cache,
+                logger=logger,
+            )
+            prediction = predict_indices(
+                spec,
+                fitted,
+                dataset,
+                config["mode"],
+                fixed.split.validation,
+            )
+            corrected = validation_target - prediction
+            row = _validation_row(
+                seed=fixed.split.seed,
+                candidate_id=identifier,
+                selected=False,
+                corrected=corrected,
+                raw_validation_rmse=raw_validation_rmse,
+                spec=spec,
+                config=config,
+                event_identity=event_identity,
+                protocol_identity=protocol_identity,
+                sampling_identity=fixed.sampling_identity,
+                train_n=len(fixed.split.tuning_train),
+            )
+            store.upsert_result(row)
+            logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
+            return float(row["rmse_ps"])
+
+        if optimization.strategy == "grid":
+            for index, (_, params) in enumerate(list(candidates.items()), 1):
+                evaluate_candidate(params, f"{index}/{len(candidates)}")
+        else:
+            try:
+                import optuna
+            except ImportError as exc:
+                raise ImportError(
+                    "Optuna optimization requires the 'optuna' package from waveform_analysis/requirements.txt"
+                ) from exc
+
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            sampler_seed = (
+                int(optimization.seed)
+                if optimization.seed is not None
+                else semantic_seed(int(config["seed"]), "optuna_tpe", spec.name, protocol_identity)
+            )
+            sampler = optuna.samplers.TPESampler(
+                seed=sampler_seed,
+                n_startup_trials=int(optimization.n_startup_trials),
+            )
+            storage_path = (run_dir / "optuna_study.db").resolve()
+            study = optuna.create_study(
+                study_name="hyperparameter_optimization",
+                direction="minimize",
+                sampler=sampler,
+                storage=f"sqlite:///{storage_path.as_posix()}",
+                load_if_exists=True,
+            )
+
+            def objective(trial):
+                params = suggest_parameters(trial, model_space)
+                return evaluate_candidate(params, f"trial={trial.number + 1}/{optimization.n_trials}")
+
+            remaining = max(0, int(optimization.n_trials) - len(study.trials))
+            if remaining:
+                study.optimize(objective, n_trials=remaining, gc_after_trial=True)
+            logger.info(
+                "Optuna TPE complete | trials=%d/%d | sampler_seed=%d",
+                len(study.trials),
+                int(optimization.n_trials),
+                sampler_seed,
+            )
+
+        scores = []
+        for row in store.read_results():
+            identifier = row.get("candidate_id")
+            if (
+                row.get("phase") == "hyperparameter_validation"
+                and identifier in candidates
+                and str(row.get("rmse_ps", "")) not in ("", "nan")
+            ):
+                scores.append(CandidateScore(identifier, float(row["rmse_ps"])))
+
+        best = choose_best(scores)
+        selected_candidate = best.candidate_id
+        selected_params = candidates[selected_candidate]
+        selected_validation_rmse = float(best.score)
+        rows = store.read_results()
+        for row in rows:
+            if row.get("phase") == "hyperparameter_validation":
+                row["selected"] = row.get("candidate_id") == selected_candidate
+        store._atomic_rows(rows)
+        store.write_selected_hyperparameters({
+            "candidate_id": selected_candidate,
+            "parameters": selected_params,
+            "selection_metric": "fixed_validation_rmse_ps",
+            "selected_validation_rmse_ps": selected_validation_rmse,
+            "validation_seed": int(fixed.split.seed),
+            "validation_fraction": float(config["model_selection"]["validation_fraction"]),
+            "validation_skipped": False,
+            "validation_reused_in_replicas": False,
+            "optimization_strategy": optimization.strategy,
+        })
+        logger.info(
+            "Hyperparameter selection complete | %s | validation RMSE=%.3f ps | selected configuration used for replica evaluation",
+            _format_candidate_codes(selected_params, parameter_codes),
+            selected_validation_rmse,
+        )
 
     progress = ProgressTracker(logger, {"replica": n_replicas})
     replica_protocol_logged = False
@@ -557,7 +673,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         replica_fit_input_cache = FitInputCache()
         fitted = fit_on_indices(
             spec,
-            config["model"]["space"],
+            model_space,
             config,
             dataset,
             split.train,
@@ -644,7 +760,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "status": "complete",
         "selected_candidate_id": selected_candidate,
         "selected_hyperparameters": selected_params,
-        "selected_validation_rmse_ps": float(best.score),
+        "selected_validation_rmse_ps": selected_validation_rmse,
         "replica_count": len(replica_rows),
         "blind_ctr_mean_ps": float(np.mean(blind_ctr)) if blind_ctr else None,
         "blind_ctr_std_ps": float(np.std(blind_ctr, ddof=1)) if len(blind_ctr) > 1 else 0.0,
@@ -662,11 +778,19 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         },
     })
     store.write_manifest(manifest)
-    logger.info(
-        "Study complete | validation RMSE=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
-        float(best.score),
-        manifest["replica_count"],
-        manifest["blind_ctr_mean_ps"],
-        manifest["blind_ctr_std_ps"],
-    )
+    if selected_validation_rmse is None:
+        logger.info(
+            "Study complete | fixed configuration | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
+            manifest["replica_count"],
+            manifest["blind_ctr_mean_ps"],
+            manifest["blind_ctr_std_ps"],
+        )
+    else:
+        logger.info(
+            "Study complete | validation RMSE=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
+            selected_validation_rmse,
+            manifest["replica_count"],
+            manifest["blind_ctr_mean_ps"],
+            manifest["blind_ctr_std_ps"],
+        )
     return run_dir
