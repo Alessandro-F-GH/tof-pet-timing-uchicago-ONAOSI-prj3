@@ -155,24 +155,27 @@ def test_best_by_formulation_uses_lowest_mean_ctr():
     assert best[0]["direct_minus_shared_ctr_ps"] < 0
 
 
-def test_report_layout_flattens_tradeoff_plots_and_removes_architecture(tmp_path):
+def test_report_layout_uses_compact_hierarchy(tmp_path):
     layout = _prepare_report_layout(tmp_path / "report")
     root = layout["root"]
     assert layout["rmse_ctr_plots"] == root / "plots" / "rmse_vs_ctr"
     assert layout["ctr_time_plots"] == root / "plots" / "ctr_vs_time"
-    assert layout["best_model_plots"] == root / "plots" / "best_model_by_mode"
+    assert layout["window_plots"] == root / "plots" / "window_comparison"
+    assert layout["best_model_plots"] == root / "plots" / "best_model"
     assert not (root / "plots" / "tradeoffs").exists()
     assert not (root / "plots" / "architecture").exists()
 
 
-def test_metric_plots_are_separated_by_mode_and_window(tmp_path):
+def test_cross_window_plots_group_window_specific_identities(tmp_path):
     rows = []
     models = (("shared_model", "shared"), ("direct_model", "direct"))
-    for mode, population, sampling in (
+    for mode, base_population, base_sampling in (
         ("energy_to_energy", "pe", "se"),
         ("timing_to_timing", "pt", "st"),
     ):
         for window_index, window in enumerate(((-1.5, 2.0), (-2.0, 30.0))):
+            population = f"{base_population}_window_{window_index}"
+            sampling = f"{base_sampling}_window_{window_index}"
             for model_index, (model, formulation) in enumerate(models):
                 for replica in (1, 2):
                     rows.append(
@@ -200,18 +203,20 @@ def test_metric_plots_are_separated_by_mode_and_window(tmp_path):
     rmse_outputs = plot_rmse_comparisons(summary, tmp_path / "rmse")
     scatter_outputs = plot_rmse_ctr_correlation(summary, tmp_path / "rmse_ctr")
     time_outputs = plot_ctr_vs_time(summary, tmp_path / "ctr_time")
-    window_ctr_outputs = plot_window_model_comparisons(summary, tmp_path / "window_ctr", metric="ctr")
-    window_rmse_outputs = plot_window_model_comparisons(summary, tmp_path / "window_rmse", metric="rmse")
+    window_outputs = plot_window_model_comparisons(summary, tmp_path / "window", metric="ctr")
+    window_rmse_outputs = plot_window_model_comparisons(summary, tmp_path / "window", metric="rmse")
     best_outputs = plot_best_models_by_mode(summary, tmp_path / "best")
 
     assert len(led_outputs) == 4
     assert len(rmse_outputs) == 4
     assert len(scatter_outputs) == 4
     assert len(time_outputs) == 4
-    assert len(window_ctr_outputs) == 2
+    assert len(window_outputs) == 2
     assert len(window_rmse_outputs) == 2
     assert len(best_outputs) == 2
-    assert all(path.name.startswith("best_model_by_mode__") for path in best_outputs)
+    assert {path.name for path in best_outputs} == {"energy_to_energy.png", "timing_to_timing.png"}
+    assert {path.name for path in window_outputs} == {"ctr.png"}
+    assert {path.name for path in window_rmse_outputs} == {"rmse.png"}
     assert all(
         path.is_file()
         for path in (
@@ -219,7 +224,7 @@ def test_metric_plots_are_separated_by_mode_and_window(tmp_path):
             + rmse_outputs
             + scatter_outputs
             + time_outputs
-            + window_ctr_outputs
+            + window_outputs
             + window_rmse_outputs
             + best_outputs
         )
