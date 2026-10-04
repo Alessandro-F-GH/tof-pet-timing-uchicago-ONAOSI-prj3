@@ -251,8 +251,9 @@ def suggest_parameters(trial, space: dict[str, Any]) -> dict[str, Any]:
             if all(_is_optuna_categorical_scalar(choice) for choice in choices):
                 value = trial.suggest_categorical(name, choices)
             else:
-                index = trial.suggest_int(f"{name}__choice_index", 0, len(choices) - 1)
-                value = copy.deepcopy(choices[index])
+                tokens = [str(index) for index in range(len(choices))]
+                token = trial.suggest_categorical(f"{name}__choice", tokens)
+                value = copy.deepcopy(choices[int(token)])
         elif kind == "int":
             value = trial.suggest_int(
                 name,
