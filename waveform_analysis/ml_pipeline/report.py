@@ -58,6 +58,10 @@ def _context_key(row):
     )
 
 
+def _report_context_key(row):
+    return str(row["study"]), str(row["dataset_key"]), str(row["dataset"])
+
+
 def _group(rows, key_fn):
     groups = defaultdict(list)
     for row in rows:
@@ -321,18 +325,23 @@ def _plot_group_key(row):
 
 
 def _mode_group_key(row):
-    return (*_context_key(row), row["mode"])
+    return (*_report_context_key(row), str(row["mode"]))
 
 
-def _context_suffix(context, multiple_contexts):
-    if not multiple_contexts:
-        return ""
-    study, _, _, population, _ = context
-    return f"__{_safe(study)}__{_safe(population[:10])}"
+def _multiple_report_contexts(rows):
+    return len({_report_context_key(row) for row in rows}) > 1
 
 
-def _multiple_contexts(rows):
-    return len({_context_key(row) for row in rows}) > 1
+def _context_dir(output_dir, report_context, multiple_contexts):
+    path = Path(output_dir)
+    if multiple_contexts:
+        study, dataset_key, _ = report_context
+        path = path / _safe(study) / _safe(dataset_key[:10])
+    return path
+
+
+def _window_output_path(output_dir, strict_context, mode, window, multiple_contexts):
+    return _context_dir(output_dir, strict_context[:3], multiple_contexts) / _safe(mode) / f"{_safe(window)}.png"
 
 
 def _formulation_order(row):
@@ -388,7 +397,7 @@ def plot_metric_comparisons(summary, output_dir, *, metric, reporting=None):
         raise ValueError(f"Unsupported metric: {metric}")
     style = plot_style(reporting, "comparison")
     groups = _group(summary, _plot_group_key)
-    multi_context = _multiple_contexts(summary)
+    multiple_contexts = _multiple_report_contexts(summary)
     outputs = []
     for key, rows in sorted(groups.items()):
         context = key[:5]
@@ -425,11 +434,9 @@ def plot_metric_comparisons(summary, output_dir, *, metric, reporting=None):
             label=reference["label"],
             markersize=7,
         )
-        handles = [reference_handle, *_formulation_handles(reporting, formulations)]
-        ax.legend(handles=handles)
+        ax.legend(handles=[reference_handle, *_formulation_handles(reporting, formulations)])
         _apply_axes_style(ax, reporting)
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"{metric}_comparison__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
+        outputs.append(_save(fig, _window_output_path(output_dir, context, mode, window, multiple_contexts), reporting))
     return outputs
 
 
@@ -445,7 +452,7 @@ def plot_led_improvements(summary, output_dir, reporting=None):
     reporting = load_reporting_config() if reporting is None else reporting
     style = plot_style(reporting, "comparison")
     groups = _group(summary, _plot_group_key)
-    multi_context = _multiple_contexts(summary)
+    multiple_contexts = _multiple_report_contexts(summary)
     outputs = []
     for key, rows in sorted(groups.items()):
         context = key[:5]
@@ -463,8 +470,7 @@ def plot_led_improvements(summary, output_dir, reporting=None):
         ax.set_title(f"Paired LED improvement | {mode} | {window} [{start:g}, {end:g}] ns")
         ax.legend(handles=_formulation_handles(reporting, {row["estimator_formulation"] for row in rows}))
         _apply_axes_style(ax, reporting)
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"paired_led_improvement__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
+        outputs.append(_save(fig, _window_output_path(output_dir, context, mode, window, multiple_contexts), reporting))
     return outputs
 
 
@@ -472,7 +478,7 @@ def plot_rmse_ctr_correlation(summary, output_dir, reporting=None):
     reporting = load_reporting_config() if reporting is None else reporting
     style = plot_style(reporting, "scatter")
     groups = _group(summary, _plot_group_key)
-    multi_context = _multiple_contexts(summary)
+    multiple_contexts = _multiple_report_contexts(summary)
     outputs = []
     for key, rows in sorted(groups.items()):
         context = key[:5]
@@ -496,8 +502,7 @@ def plot_rmse_ctr_correlation(summary, output_dir, reporting=None):
         ax.set_title(f"RMSE vs CTR | {mode} | {window} [{start:g}, {end:g}] ns\n{label}")
         ax.legend(handles=_formulation_handles(reporting, {row["estimator_formulation"] for row in points}))
         _apply_axes_style(ax, reporting, grid_axis="both")
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"rmse_vs_ctr__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
+        outputs.append(_save(fig, _window_output_path(output_dir, context, mode, window, multiple_contexts), reporting))
     return outputs
 
 
@@ -520,11 +525,11 @@ def plot_window_model_comparisons(summary, output_dir, *, metric, reporting=None
         raise ValueError(f"Unsupported metric: {metric}")
     style = plot_style(reporting, "bar")
     groups = _group(summary, _mode_group_key)
-    multi_context = _multiple_contexts(summary)
+    multiple_contexts = _multiple_report_contexts(summary)
     outputs = []
     for key, rows in sorted(groups.items()):
-        context = key[:5]
-        mode = key[5]
+        report_context = key[:3]
+        mode = key[3]
         models = sorted({row["model"] for row in rows}, key=lambda model: _formulation_order(next(row for row in rows if row["model"] == model)))
         windows = sorted({_window_key(row) for row in rows}, key=lambda item: (item[1], item[2], item[0]))
         if not models or len(windows) < 2:
@@ -547,8 +552,7 @@ def plot_window_model_comparisons(summary, output_dir, *, metric, reporting=None
         led_values = _unique_reference_values(rows, led_key)
         reference = reporting["reference"]
         if led_values.size:
-            led_median = float(np.median(led_values))
-            ax.axhline(led_median, color=reference["color"], linestyle=reference["linestyle"])
+            ax.axhline(float(np.median(led_values)), color=reference["color"], linestyle=reference["linestyle"])
         ax.set_xticks(x, models, rotation=25, ha="right")
         ax.set_ylabel(ylabel)
         ax.set_title(f"{title_metric} across waveform windows | {mode}")
@@ -560,8 +564,8 @@ def plot_window_model_comparisons(summary, output_dir, *, metric, reporting=None
             handles.append(Line2D([0], [0], color=reference["color"], linestyle=reference["linestyle"], label="Median LED reference"))
         ax.legend(handles=handles)
         _apply_axes_style(ax, reporting)
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"{metric}_by_window__{_safe(mode)}{suffix}.png", reporting))
+        path = _context_dir(output_dir, report_context, multiple_contexts) / _safe(mode) / f"{metric}.png"
+        outputs.append(_save(fig, path, reporting))
     return outputs
 
 
@@ -596,51 +600,15 @@ def best_by_formulation(summary):
     return output
 
 
-def plot_best_by_formulation(best_rows, output_dir, reporting=None):
-    reporting = load_reporting_config() if reporting is None else reporting
-    style = plot_style(reporting, "bar")
-    groups = _group(best_rows, _mode_group_key)
-    multi_context = _multiple_contexts(best_rows)
-    outputs = []
-    for key, rows in sorted(groups.items()):
-        context = key[:5]
-        mode = key[5]
-        rows = sorted(rows, key=lambda row: (row["window_start_ns"], row["window_end_ns"], row["window"]))
-        x = np.arange(len(rows), dtype=float)
-        formulations = ("shared", "direct")
-        bar_width = float(style["group_width"]) / len(formulations)
-        width = max(float(style["figure_width_min"]), float(style["width_per_category"]) * len(rows))
-        fig, ax = plt.subplots(figsize=(width, float(style["figure_height"])))
-        for form_index, formulation in enumerate(formulations):
-            family = formulation_style(reporting, formulation)
-            offset = (form_index - 0.5) * bar_width
-            for index, row in enumerate(rows):
-                value = row[f"best_{formulation}_ctr_mean_ps"]
-                if not np.isfinite(value):
-                    continue
-                error = row[f"best_{formulation}_ctr_std_ps"]
-                bar = ax.bar(x[index] + offset, value, width=bar_width, yerr=error if np.isfinite(error) else None, capsize=float(reporting["global"]["error_capsize"]), color=family["color"], edgecolor=style["edge_color"], linewidth=float(style["edge_line_width"]))[0]
-                ax.annotate(row[f"best_{formulation}_model"], (bar.get_x() + bar.get_width() / 2.0, bar.get_height()), xytext=(0, float(style["annotation_offset_points"])), textcoords="offset points", ha="center", va="bottom", fontsize=float(reporting["global"]["annotation_size"]), rotation=20)
-        labels = [f"{row['window']}\n[{row['window_start_ns']:g}, {row['window_end_ns']:g}] ns" for row in rows]
-        ax.set_xticks(x, labels)
-        ax.set_ylabel("Blind CTR [ps]")
-        ax.set_title(f"Best shared vs best direct model | {mode}")
-        ax.legend(handles=_formulation_handles(reporting, set(formulations)))
-        _apply_axes_style(ax, reporting)
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"best_shared_vs_direct__{_safe(mode)}{suffix}.png", reporting))
-    return outputs
-
-
 def plot_best_models_by_mode(summary, output_dir, reporting=None):
     reporting = load_reporting_config() if reporting is None else reporting
     style = plot_style(reporting, "scatter")
     groups = _group(summary, _mode_group_key)
-    multi_context = _multiple_contexts(summary)
+    multiple_contexts = _multiple_report_contexts(summary)
     outputs = []
     for key, rows in sorted(groups.items()):
-        context = key[:5]
-        mode = key[5]
+        report_context = key[:3]
+        mode = key[3]
         points = [row for row in rows if np.isfinite(row["ctr_mean_ps"])]
         if not points:
             continue
@@ -677,8 +645,8 @@ def plot_best_models_by_mode(summary, output_dir, reporting=None):
         ax.set_title(f"Model and waveform-window comparison | {mode}")
         ax.legend(handles=_formulation_handles(reporting, {row["estimator_formulation"] for row in points}))
         _apply_axes_style(ax, reporting)
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"best_model_by_mode__{_safe(mode)}{suffix}.png", reporting))
+        path = _context_dir(output_dir, report_context, multiple_contexts) / f"{_safe(mode)}.png"
+        outputs.append(_save(fig, path, reporting))
     return outputs
 
 
@@ -704,7 +672,7 @@ def plot_ctr_vs_time(summary, output_dir, reporting=None):
     style = plot_style(reporting, "pareto")
     scatter_style = plot_style(reporting, "scatter")
     groups = _group(summary, _plot_group_key)
-    multi_context = _multiple_contexts(summary)
+    multiple_contexts = _multiple_report_contexts(summary)
     outputs = []
     for key, rows in sorted(groups.items()):
         context = key[:5]
@@ -729,8 +697,7 @@ def plot_ctr_vs_time(summary, output_dir, reporting=None):
         handles.append(Line2D([0], [0], color=style["frontier_line_color"], linestyle=style["frontier_line_style"], linewidth=float(style["frontier_line_width"]), label="Pareto frontier"))
         ax.legend(handles=handles)
         _apply_axes_style(ax, reporting, grid_axis="both")
-        suffix = _context_suffix(context, multi_context)
-        outputs.append(_save(fig, Path(output_dir) / f"ctr_vs_time__{_safe(mode)}__{_safe(window)}{suffix}.png", reporting))
+        outputs.append(_save(fig, _window_output_path(output_dir, context, mode, window, multiple_contexts), reporting))
     return outputs
 
 
@@ -793,7 +760,7 @@ def model_output_correlations(records, output_dir, plot_dir=None, reporting=None
     table_dir = Path(output_dir)
     plot_dir = table_dir if plot_dir is None else Path(plot_dir)
     groups = _group(records, _plot_group_key)
-    multi_context = _multiple_contexts(records)
+    multiple_contexts = _multiple_report_contexts(records)
     style = plot_style(reporting, "correlation_heatmap")
     cache, long_rows, outputs = {}, [], []
     for key, rows in sorted(groups.items()):
@@ -834,10 +801,10 @@ def model_output_correlations(records, output_dir, plot_dir=None, reporting=None
                     "model_a": model_a, "formulation_a": model_formulation[model_a], "model_b": model_b, "formulation_b": model_formulation[model_b],
                     "pearson_r_fisher_mean": value, "n_paired_replicas": len(replica_rs),
                 })
-        suffix = _context_suffix(context, multi_context)
-        stem = f"model_output_correlation__{_safe(mode)}__{_safe(window)}{suffix}"
-        matrix_path = _write_matrix(table_dir / f"{stem}.csv", models, matrix)
-        count_path = _write_matrix(table_dir / f"{stem}__n_replicas.csv", models, counts)
+        table_base = _context_dir(table_dir, context[:3], multiple_contexts) / _safe(mode)
+        plot_base = _context_dir(plot_dir, context[:3], multiple_contexts) / _safe(mode)
+        matrix_path = _write_matrix(table_base / f"{_safe(window)}.csv", models, matrix)
+        count_path = _write_matrix(table_base / f"{_safe(window)}_n.csv", models, counts)
         min_width, min_height = style["min_figsize"]
         per_width, per_height = style["per_model"]
         fig, ax = plt.subplots(figsize=(max(float(min_width), float(per_width) * len(models)), max(float(min_height), float(per_height) * len(models))), constrained_layout=True)
@@ -856,7 +823,7 @@ def model_output_correlations(records, output_dir, plot_dir=None, reporting=None
             boundary = shared_count - 0.5
             ax.axvline(boundary, color=style["separator_color"], linewidth=float(style["separator_line_width"]))
             ax.axhline(boundary, color=style["separator_color"], linewidth=float(style["separator_line_width"]))
-        plot_path = _save(fig, plot_dir / f"{stem}.png", reporting, tight=False)
+        plot_path = _save(fig, plot_base / f"{_safe(window)}.png", reporting, tight=False)
         outputs.extend([matrix_path, count_path, plot_path])
     if long_rows:
         long_path = table_dir / "model_output_correlations.csv"
@@ -881,9 +848,8 @@ def _prepare_report_layout(output_dir):
         "correlation_plots": root / "plots" / "correlations",
         "rmse_ctr_plots": root / "plots" / "rmse_vs_ctr",
         "ctr_time_plots": root / "plots" / "ctr_vs_time",
-        "window_ctr_plots": root / "plots" / "window_comparison" / "ctr",
-        "window_rmse_plots": root / "plots" / "window_comparison" / "rmse",
-        "best_model_plots": root / "plots" / "best_model_by_mode",
+        "window_plots": root / "plots" / "window_comparison",
+        "best_model_plots": root / "plots" / "best_model",
     }
     for key, path in layout.items():
         if key != "root":
@@ -921,18 +887,19 @@ def generate_report(paths, output_dir, *, logger=None, report_config=None):
         outputs.extend(plot_led_improvements(summary, layout["led_improvement_plots"], reporting))
         outputs.extend(plot_rmse_ctr_correlation(summary, layout["rmse_ctr_plots"], reporting))
         outputs.extend(plot_ctr_vs_time(summary, layout["ctr_time_plots"], reporting))
-        outputs.extend(plot_window_model_comparisons(summary, layout["window_ctr_plots"], metric="ctr", reporting=reporting))
-        outputs.extend(plot_window_model_comparisons(summary, layout["window_rmse_plots"], metric="rmse", reporting=reporting))
+        outputs.extend(plot_window_model_comparisons(summary, layout["window_plots"], metric="ctr", reporting=reporting))
+        outputs.extend(plot_window_model_comparisons(summary, layout["window_plots"], metric="rmse", reporting=reporting))
         outputs.extend(plot_best_models_by_mode(summary, layout["best_model_plots"], reporting))
         correlation_outputs, correlation_rows = model_output_correlations(records, layout["correlation_tables"], plot_dir=layout["correlation_plots"], reporting=reporting)
         outputs.extend(correlation_outputs)
     manifest = {
-        "schema_version": 5,
+        "schema_version": 6,
         "sources": sorted({row["source_run"] for row in records}),
         "n_replica_rows": len(records), "n_summary_rows": len(summary),
         "n_paired_model_comparisons": len(comparisons), "n_model_output_correlations": len(correlation_rows),
         "statistical_unit": "replica", "fit_bootstrap": False, "paired_bootstrap_unit": "replica",
         "pairing_rule": "same study + dataset + analysis protocol + sampling identity + mode + window + replica index",
+        "window_comparison_grouping": "same study + dataset + mode; population and sampling identities may differ because they are window-specific",
         "mode_pooling": False, "formulation_field": "estimator_formulation", "formulation_classes": ["shared", "direct"],
         "timing_metric": "replica wall time parsed from study.log between replica start and Replica result",
         "timing_scope": "fit + blind prediction/evaluation + diagnostics + residual/model serialization performed before Replica result",
