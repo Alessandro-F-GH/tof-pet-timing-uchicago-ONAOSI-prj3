@@ -15,6 +15,7 @@ class RegistryTests(unittest.TestCase):
                 "independent_cnn1d",
                 "onishi_cnn",
                 "minirocket",
+                "linear_ridge",
             },
         )
 
