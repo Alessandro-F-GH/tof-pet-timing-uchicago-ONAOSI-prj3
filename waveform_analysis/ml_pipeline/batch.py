@@ -7,7 +7,9 @@ from pathlib import Path
 from .common import atomic_json, canonical_hash, write_csv
 from .config import BatchConfig
 from .control_preprocessing import fit_control_artifact
+from .data import preprocess_selected
 from .event_selection import apply_selection_rules
+from .preprocessing_plots import plot_materialized_event
 from .study import run_study
 
 
@@ -155,7 +157,7 @@ def _publish_batch_selection_diagnostics(
     force=False,
     logger=None,
 ):
-    """Copy the cached analysis-selection diagnostics into the batch output once."""
+    """Publish cached selection diagnostics and one materialized event for this mode."""
     mode = str(config["mode"])
     output_dir = Path(batch_root).resolve() / "preprocessing" / mode
     metadata_path = output_dir / "selection_manifest.json"
@@ -207,6 +209,28 @@ def _publish_batch_selection_diagnostics(
             shutil.copy2(source, output_dir / name)
             copied.append(name)
 
+    family = str(selection.manifest["family"])
+    native = preprocess_selected(
+        config["analysis"]["root_file"],
+        selection,
+        config["analysis"],
+        config["preprocessing"],
+        mode,
+        cache_dir=Path(config["preprocessing"]["cache_dir"]) / "analysis_native",
+        rebuild=False,
+        logger=None,
+    )
+    waveform_name = f"{family}_selected_event_waveform.png"
+    waveform_path = plot_materialized_event(
+        native,
+        family,
+        config["analysis"]["channels"][family],
+        output_dir / waveform_name,
+        f"Selected {family}-channel event",
+    )
+    if waveform_path is not None:
+        copied.append(waveform_name)
+
     atomic_json(
         metadata_path,
         {
@@ -214,7 +238,7 @@ def _publish_batch_selection_diagnostics(
             "source_selection_artifact": str(Path(selection.directory).resolve()),
             "analysis_source": str(Path(config["analysis"]["root_file"]).resolve()),
             "mode": mode,
-            "family": selection.manifest.get("family"),
+            "family": family,
             "n_raw": selection.manifest.get("n_raw"),
             "n_selected": selection.manifest.get("n_selected"),
             "stage_counts": selection.manifest.get("stage_counts"),
