@@ -8,7 +8,12 @@ from typing import Any
 import numpy as np
 from sklearn.linear_model import Ridge
 
-from .spec import ModelSpec
+from .spec import FeatureTransformSpec, ModelSpec
+
+
+@dataclass
+class DifferenceTransformArtifact:
+    metadata: dict[str, Any]
 
 
 @dataclass
@@ -58,14 +63,41 @@ def _difference(pair: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(difference)
 
 
+def _difference_parameters(params, config):
+    del params, config
+    return {}
+
+
+def fit_difference_transform(parameters, train_x, *, seed, config):
+    del parameters, seed, config
+    difference = _difference(train_x)
+    artifact = DifferenceTransformArtifact(
+        metadata={
+            "definition": "deterministic sample-wise detector difference s1-s2",
+            "feature_count": int(difference.shape[1]),
+            "training_events": int(difference.shape[0]),
+        }
+    )
+    return artifact, difference
+
+
+def transform_difference(artifact: DifferenceTransformArtifact, pair: np.ndarray) -> np.ndarray:
+    del artifact
+    return _difference(pair)
+
+
 def fit(params, train_x, train_target, *, seed, config):
-    del seed  # deterministic closed-form/iterative linear fit
-    x = _difference(train_x)
+    del seed
+    x = np.asarray(train_x, dtype=np.float64)
     y = np.asarray(train_target, dtype=np.float64).reshape(-1)
+    if x.ndim != 2:
+        raise ValueError(
+            f"linear_ridge expects cached [event, time] difference features, got {x.shape}"
+        )
     if x.shape[0] != y.size:
         raise ValueError("linear_ridge input and target must contain the same number of events")
-    if not np.all(np.isfinite(y)):
-        raise ValueError("linear_ridge target contains non-finite values")
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError("linear_ridge input/target contains non-finite values")
 
     alpha = float(params["ridge_alpha"])
     if not np.isfinite(alpha) or alpha <= 0:
@@ -81,7 +113,8 @@ def fit(params, train_x, train_target, *, seed, config):
     if max_iter is not None and max_iter < 1:
         raise ValueError("linear_ridge training.max_iter must be >= 1 when provided")
 
-    # No intercept: f(s1-s2) is then exactly odd under detector exchange.
+    # fit_intercept=False is essential: swapping the two detectors negates the
+    # difference features, therefore the prediction is exactly antisymmetric.
     regressor = Ridge(
         alpha=alpha,
         fit_intercept=False,
@@ -94,7 +127,7 @@ def fit(params, train_x, train_target, *, seed, config):
     return LinearRidgeArtifact(
         regressor=regressor,
         metadata={
-            "input_definition": "sample-wise difference of the two normalized detector waveforms: s1 - s2",
+            "input_definition": "cached sample-wise difference of normalized detector waveforms: s1-s2",
             "prediction_definition": "ridge linear correction w^T(s1-s2) [ps]",
             "detector_swap_antisymmetry_enforced": True,
             "equivalent_formulation": "shared linear scorer g(s1)-g(s2), with g(s)=w^T s",
@@ -104,19 +137,22 @@ def fit(params, train_x, train_target, *, seed, config):
             "tol": tol,
             "max_iter": max_iter,
             "training_events": int(y.size),
-            "input_samples": int(x.shape[1]),
+            "feature_count": int(x.shape[1]),
         },
     )
 
 
-def predict(artifact: LinearRidgeArtifact, pair: np.ndarray) -> np.ndarray:
-    prediction = artifact.regressor.predict(_difference(pair))
-    return np.asarray(prediction, dtype=np.float64).reshape(-1)
+def predict(artifact: LinearRidgeArtifact, features: np.ndarray) -> np.ndarray:
+    x = np.asarray(features, dtype=np.float64)
+    if x.ndim != 2:
+        raise ValueError(f"linear_ridge expects [event, time] features, got {x.shape}")
+    return np.asarray(artifact.regressor.predict(x), dtype=np.float64).reshape(-1)
 
 
-def explain(artifact: LinearRidgeArtifact, pair: np.ndarray) -> np.ndarray:
-    # The coefficient magnitude is the exact global linear sensitivity per retained sample.
-    _difference(pair)  # validate the same input contract used for prediction
+def explain(artifact: LinearRidgeArtifact, features: np.ndarray) -> np.ndarray:
+    x = np.asarray(features, dtype=np.float64)
+    if x.ndim != 2:
+        raise ValueError(f"linear_ridge expects [event, time] features, got {x.shape}")
     coefficients = np.asarray(artifact.regressor.coef_, dtype=np.float64).reshape(-1)
     return np.abs(coefficients)
 
@@ -127,6 +163,14 @@ def save(artifact: LinearRidgeArtifact, path: Path) -> None:
         pickle.dump(artifact, stream, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+DIFFERENCE_TRANSFORM = FeatureTransformSpec(
+    name="paired_waveform_difference",
+    parameters=_difference_parameters,
+    fit_transform=fit_difference_transform,
+    transform=transform_difference,
+)
+
+
 MODEL_SPEC = ModelSpec(
     name="linear_ridge",
     candidates=candidates,
@@ -134,8 +178,7 @@ MODEL_SPEC = ModelSpec(
     predict=predict,
     save=save,
     explain=explain,
-    # Although implemented from the pair difference, this is mathematically
-    # g(s1)-g(s2) with one shared linear scorer g. Keep it in the shared family
-    # so shared/direct reporting reflects the actual hypothesis class.
-    estimator_formulation="shared",
+    preserve_temporal_grid=True,
+    estimator_formulation="direct",
+    feature_transform=DIFFERENCE_TRANSFORM,
 )
