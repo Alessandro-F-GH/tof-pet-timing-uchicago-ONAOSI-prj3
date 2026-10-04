@@ -36,7 +36,8 @@
       "shared_cnn1d",
       "direct_mlp",
       "independent_cnn1d",
-      "minirocket"
+      "minirocket",
+      "linear_ridge"
     ],
     "modes": ["energy_to_energy", "timing_to_timing"],
     "windows": {
