@@ -4,13 +4,14 @@ import torch
 from waveform_analysis.ml_pipeline.models import get_model, model_names
 from waveform_analysis.ml_pipeline.models._cnn1d_common import IndependentCNN1D, SharedCNN1D
 from waveform_analysis.ml_pipeline.models.direct_mlp import DirectPairMLP
+from waveform_analysis.ml_pipeline.models.linear_ridge import candidates as linear_ridge_candidates
 from waveform_analysis.ml_pipeline.models.minirocket import candidates as minirocket_candidates
 from waveform_analysis.ml_pipeline.models.spec import FeatureTransformSpec
 from waveform_analysis.ml_pipeline.train import FeatureTransformCache
 
 
 def test_benchmark_registry_contains_all_model_families():
-    expected={"mlp","locally_connected_mlp","shared_cnn1d","direct_mlp","independent_cnn1d","onishi_cnn","minirocket"}
+    expected={"mlp","locally_connected_mlp","shared_cnn1d","direct_mlp","independent_cnn1d","onishi_cnn","minirocket","linear_ridge"}
     assert expected <= set(model_names())
     assert get_model("mlp").estimator_formulation=="shared"
     assert get_model("locally_connected_mlp").estimator_formulation=="shared"
@@ -19,7 +20,9 @@ def test_benchmark_registry_contains_all_model_families():
     assert get_model("independent_cnn1d").estimator_formulation=="direct"
     assert get_model("onishi_cnn").estimator_formulation=="direct"
     assert get_model("minirocket").estimator_formulation=="direct"
+    assert get_model("linear_ridge").estimator_formulation=="direct"
     assert get_model("minirocket").feature_transform is not None
+    assert get_model("linear_ridge").feature_transform is not None
 
 
 def test_shared_cnn1d_is_exactly_antisymmetric():
@@ -58,6 +61,43 @@ def test_minirocket_candidates_separate_transform_and_ridge_parameters():
     transform=get_model("minirocket").feature_transform
     assert transform.parameters(rows[0],{"transform":{"n_jobs":-1}})=={"num_kernels":10000,"n_jobs":-1}
     assert transform.parameters(rows[2],{"transform":{"n_jobs":-1}})=={"num_kernels":10000,"n_jobs":-1}
+
+
+def test_linear_ridge_uses_cached_detector_difference_and_alpha_grid():
+    rows=linear_ridge_candidates({"parameters":{"ridge_alpha":[0.1,1.0,10.0]}})
+    assert rows==[
+        {"ridge_alpha":0.1},
+        {"ridge_alpha":1.0},
+        {"ridge_alpha":10.0},
+    ]
+    transform=get_model("linear_ridge").feature_transform
+    pair=np.asarray([
+        [[1.0,2.0,3.0],[0.5,1.0,1.5]],
+        [[4.0,3.0,2.0],[1.0,1.0,1.0]],
+    ],dtype=np.float32)
+    artifact,difference=transform.fit_transform({},pair,seed=7,config={})
+    np.testing.assert_allclose(difference,pair[:,0,:]-pair[:,1,:])
+    np.testing.assert_allclose(transform.transform(artifact,pair[:,::-1,:]),-difference)
+    assert transform.parameters(rows[0],{})=={}
+    assert transform.parameters(rows[2],{})=={}
+
+
+def test_linear_ridge_is_exactly_antisymmetric_without_intercept():
+    spec=get_model("linear_ridge")
+    pair=np.asarray([
+        [[1.0,2.0,3.0],[0.5,1.0,1.5]],
+        [[4.0,3.0,2.0],[1.0,1.0,1.0]],
+        [[0.0,1.0,0.0],[1.0,0.0,1.0]],
+        [[2.0,1.0,4.0],[0.0,2.0,1.0]],
+    ],dtype=np.float32)
+    target=np.asarray([1.0,2.0,-1.0,0.5])
+    transform=spec.feature_transform
+    _,features=transform.fit_transform({},pair,seed=1,config={})
+    artifact=spec.fit({"ridge_alpha":1.0},features,target,seed=1,config={"training":{"solver":"lsqr","tol":1e-8}})
+    forward=spec.predict(artifact,features)
+    reverse=spec.predict(artifact,transform.transform(None,pair[:,::-1,:]))
+    np.testing.assert_allclose(forward,-reverse,rtol=1e-10,atol=1e-10)
+    assert artifact.regressor.fit_intercept is False
 
 
 def test_feature_transform_cache_reuses_same_transform_across_downstream_candidates():
