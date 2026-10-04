@@ -38,7 +38,6 @@
       "shared_minirocket",
       "direct_mlp",
       "independent_cnn1d",
-      "onishi_cnn",
       "direct_minirocket"
     ],
     "modes": ["energy_to_energy", "timing_to_timing"],
