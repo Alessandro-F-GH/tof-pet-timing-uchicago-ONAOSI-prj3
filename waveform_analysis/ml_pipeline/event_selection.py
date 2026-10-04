@@ -11,7 +11,7 @@ from .preprocessing_plots import plot_photopeak,plot_baseline_noise,plot_baselin
 from .energy_io import energy_event_count,iterate_energy_chunks
 
 SELECTION_RULES_VERSION=10
-SELECTION_APPLY_VERSION=10
+SELECTION_APPLY_VERSION=11
 
 @dataclass(frozen=True)
 class SelectionData:
@@ -130,14 +130,19 @@ def _choose_hits(hits,photo_mask,family,tot_rule=None):
             i,h=valid[0];chosen[r,d]=i;trig[r,d]=h.leading_index;stop[r,d]=h.stop_index
     return ok,chosen,trig,stop
 
-def baseline_quality(signal_mV,trigger_index,sample_interval_s,window_ns,vertical_limits_mV,clipping_margin_mV):
+def _baseline_quality_metrics(signal_mV,trigger_index,sample_interval_s,window_ns,vertical_limits_mV,clipping_margin_mV):
     y=np.asarray(signal_mV,float);dt=float(sample_interval_s)*1e9;a0,b0=map(float,window_ns)
     a=max(0,int(trigger_index)+int(np.floor(a0/dt)));b=min(y.size,int(trigger_index)+int(np.ceil(b0/dt))+1);v=y[a:b];v=v[np.isfinite(v)]
-    if v.size<2:return float("nan"),False
+    if v.size<2:return float("nan"),False,float("nan")
     center=float(np.mean(v));rms=float(np.sqrt(np.mean((v-center)**2)));low,high=map(float,np.sort(np.asarray(vertical_limits_mV,float)));margin=float(clipping_margin_mV)
-    return rms,bool(np.any(v<=low+margin) or np.any(v>=high-margin))
+    clearance=float(min(np.min(v)-low,high-np.max(v)))
+    return rms,bool(clearance<=margin),clearance
+
+def baseline_quality(signal_mV,trigger_index,sample_interval_s,window_ns,vertical_limits_mV,clipping_margin_mV):
+    rms,clipped,_=_baseline_quality_metrics(signal_mV,trigger_index,sample_interval_s,window_ns,vertical_limits_mV,clipping_margin_mV)
+    return rms,clipped
 def _scan_baseline(root,dataset,preprocessing,candidate,triggers,n,family):
-    rms=np.full((n,2),np.nan);clipped=np.ones((n,2),dtype=bool);row=0;selection=preprocessing["selection"];noise=selection["baseline_noise"];clip=selection["baseline_clipping"]
+    rms=np.full((n,2),np.nan);clipped=np.ones((n,2),dtype=bool);clearance=np.full((n,2),np.nan);row=0;selection=preprocessing["selection"];noise=selection["baseline_noise"];clip=selection["baseline_clipping"]
     window=selection["baseline_window_ns"];limits=_limits(preprocessing[family]["vertical_scale_limit_mV"]);margin=float(clip["margin_mV"])
     for chunk in iterate_energy_chunks(root,**_io_args(dataset,preprocessing,family=="timing")):
         for local in range(chunk.event_index.size):
@@ -145,9 +150,9 @@ def _scan_baseline(root,dataset,preprocessing,candidate,triggers,n,family):
             if candidate[row]:
                 raw,gain,off,interval=_family_arrays(chunk,family);pol=_polarity(dataset,family);assert raw is not None and gain is not None and off is not None and interval is not None
                 for d in range(2):
-                    s=decode_oriented(raw[d][local],gain[local,d],off[local,d],int(pol[d]));rms[row,d],clipped[row,d]=baseline_quality(s,int(triggers[row,d]),interval[local,d],window,limits[d],margin)
+                    s=decode_oriented(raw[d][local],gain[local,d],off[local,d],int(pol[d]));rms[row,d],clipped[row,d],clearance[row,d]=_baseline_quality_metrics(s,int(triggers[row,d]),interval[local,d],window,limits[d],margin)
             row+=1
-    return rms,clipped
+    return rms,clipped,clearance
 def rules_fingerprint(reference_file,reference_dataset,preprocessing):
     return canonical_hash({"format_version":SELECTION_RULES_VERSION,"source":source_signature(reference_file),"channels":reference_dataset["channels"],"true_tof_ps":reference_dataset["true_tof_ps"],"preprocessing":preprocessing})
 def fit_selection_rules(reference_file,reference_dataset,preprocessing,*,output_dir=None,logger=None):
@@ -157,15 +162,16 @@ def fit_selection_rules(reference_file,reference_dataset,preprocessing,*,output_
     families=_families(reference_dataset);hits=_scan_hits(root,reference_dataset,preprocessing,photo,n,families);tot=_fit_tot(hits,photo,preprocessing)
     if output_dir is not None and tot is not None:plot_tot(hits["timing"],photo,tot["limits_ns"],Path(output_dir)/"timing_tot_selection.png","Reference timing ToT selection")
     noise_limits={};control_counts={}
+    clipping_margin=float(preprocessing["selection"]["baseline_clipping"]["margin_mV"])
     for family in families:
-        main,chosen,triggers,stops=_choose_hits(hits,photo,family,tot if family=="timing" else None);rms,clipped=_scan_baseline(root,reference_dataset,preprocessing,main,triggers,n,family);limits=[];lam=float(preprocessing["selection"]["baseline_noise"]["lambda_mad"])
+        main,chosen,triggers,stops=_choose_hits(hits,photo,family,tot if family=="timing" else None);rms,clipped,clearance=_scan_baseline(root,reference_dataset,preprocessing,main,triggers,n,family);limits=[];lam=float(preprocessing["selection"]["baseline_noise"]["lambda_mad"])
         for d in range(2):
             c,s=robust_center_scale(rms[main & ~np.any(clipped,axis=1),d])
             if not np.isfinite(c):raise RuntimeError(f"No control baseline RMS for {family} detector {d+1}")
             limits.append(float(c+lam*max(0.0,s if np.isfinite(s) else 0.0)))
         noise_limits[family]=limits
         if output_dir is not None:
-            plot_baseline_noise(rms,main,limits,Path(output_dir)/f"{family}_baseline_noise.png",f"Reference {family} baseline noise");plot_baseline_clipping(clipped,main,Path(output_dir)/f"{family}_baseline_clipping.png",f"Reference {family} baseline clipping")
+            plot_baseline_noise(rms,main,limits,Path(output_dir)/f"{family}_baseline_noise.png",f"Reference {family} baseline noise");plot_baseline_clipping(clearance,main,clipping_margin,Path(output_dir)/f"{family}_baseline_clipping.png",f"Reference {family} baseline clipping")
         final=main & np.all(np.isfinite(rms)&(rms<=np.asarray(limits)[None,:]),axis=1) & ~np.any(clipped,axis=1)
         control_counts[family]={"raw":n,"photopeak":int(photo.sum()),"main_hit":int(main.sum()),"baseline_noise":int((main&np.all(np.isfinite(rms)&(rms<=np.asarray(limits)[None,:]),axis=1)).sum()),"baseline_clipping":int(final.sum())}
     if output_dir is not None:
@@ -190,10 +196,11 @@ def apply_selection_rules(root_file,dataset,preprocessing,rules,mode,*,cache_dir
         except (ValueError,FileNotFoundError):pass
     if base.exists():shutil.rmtree(base)
     base.mkdir(parents=True);total=energy_event_count(root);mx=int(preprocessing.get("io",{}).get("max_events",0));n=min(total,mx) if mx>0 else total
-    event_index,amps=_scan_amplitudes(root,dataset,preprocessing,n);photo=_photo_mask(amps,rules);hits=_scan_hits(root,dataset,preprocessing,photo,n,(family,));main,chosen,triggers,stops=_choose_hits(hits,photo,family,rules.get("timing_tot") if family=="timing" else None);rms,clipped=_scan_baseline(root,dataset,preprocessing,main,triggers,n,family);lim=np.asarray(rules["baseline_noise_limits_mV"][family],float);noise=main & np.all(np.isfinite(rms)&(rms<=lim[None,:]),axis=1);final=noise & ~np.any(clipped,axis=1)
+    event_index,amps=_scan_amplitudes(root,dataset,preprocessing,n);photo=_photo_mask(amps,rules);hits=_scan_hits(root,dataset,preprocessing,photo,n,(family,));main,chosen,triggers,stops=_choose_hits(hits,photo,family,rules.get("timing_tot") if family=="timing" else None);rms,clipped,clearance=_scan_baseline(root,dataset,preprocessing,main,triggers,n,family);lim=np.asarray(rules["baseline_noise_limits_mV"][family],float);noise=main & np.all(np.isfinite(rms)&(rms<=lim[None,:]),axis=1);final=noise & ~np.any(clipped,axis=1)
     if not np.any(final):raise RuntimeError("No events remain after frozen preprocessing")
     rows=np.flatnonzero(final);entries=np.arange(n,dtype=np.int64);np.save(base/"entry_index.npy",entries[rows]);np.save(base/"event_index.npy",event_index[rows]);np.save(base/"main_trigger.npy",triggers[rows]);np.save(base/"main_hit.npy",chosen[rows]);np.save(base/"main_stop.npy",stops[rows])
-    plot_photopeak(amps,rules["photopeak_intervals_mV"],base/"photopeak_selection.png","Analysis photopeak with frozen reference limits");plot_baseline_noise(rms,main,lim,base/"baseline_noise.png","Analysis baseline noise with frozen reference limits");plot_baseline_clipping(clipped,main,base/"baseline_clipping.png","Analysis baseline clipping")
+    clipping_margin=float(rules["baseline_clipping_rule"]["margin_mV"])
+    plot_photopeak(amps,rules["photopeak_intervals_mV"],base/"photopeak_selection.png","Analysis photopeak with frozen reference limits");plot_baseline_noise(rms,main,lim,base/"baseline_noise.png","Analysis baseline noise with frozen reference limits");plot_baseline_clipping(clearance,main,clipping_margin,base/"baseline_clipping.png","Analysis baseline clipping")
     if family=="timing" and rules.get("timing_tot") is not None:plot_tot(hits["timing"],photo,rules["timing_tot"]["limits_ns"],base/"timing_tot_selection.png","Analysis timing ToT with frozen reference limits")
     counts={"initial_valid":int(np.all(np.isfinite(amps),axis=1).sum()),"photopeak":int(photo.sum()),"main_hit_tot" if family=="timing" else "main_hit":int(main.sum()),"baseline_noise":int(noise.sum()),"baseline_clipping":int(final.sum())};_summary(base/"selection_summary.csv",counts,n)
     manifest={"format_version":SELECTION_APPLY_VERSION,"fingerprint":application_fingerprint(root,dataset,preprocessing,rules,mode),"source":str(root),"mode":mode,"family":family,"rules_fingerprint":rules["fingerprint"],"n_raw":n,"n_selected":int(rows.size),"stage_counts":counts};atomic_json(base/"manifest.json",manifest)
