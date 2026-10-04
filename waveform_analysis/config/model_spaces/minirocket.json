@@ -1,8 +1,17 @@
 {
   "model": "minirocket",
+  "optimization": {
+    "strategy": "grid"
+  },
   "parameters": {
-    "num_kernels": [1000, 3000, 10000],
-    "ridge_alpha": [0.1, 1.0, 10.0,100,1e4,1e5,1e6]
+    "num_kernels": {
+      "type": "categorical",
+      "choices": [1000, 3000, 10000]
+    },
+    "ridge_alpha": {
+      "type": "categorical",
+      "choices": [0.1, 1.0, 10.0, 100.0, 10000.0, 100000.0, 1000000.0]
+    }
   },
   "transform": {
     "n_jobs": -1
