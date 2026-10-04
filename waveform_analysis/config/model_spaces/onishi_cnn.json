@@ -1,34 +1,28 @@
 {
   "model": "onishi_cnn",
+  "optimization": {
+    "strategy": "fixed"
+  },
   "architecture": {
-    "channels": [
-      32,
-      32,
-      64
-    ],
-    "kernels": [
-      5,
-      3,
-      3
-    ],
+    "channels": [32, 32, 64],
+    "kernels": [5, 3, 3],
     "dense_units": 256
   },
   "parameters": {
-    "learning_rate": [
-      0.001
-    ],
-    "batch_size": [
-      128
-    ]
+    "learning_rate": {
+      "type": "fixed",
+      "value": 0.001
+    },
+    "batch_size": {
+      "type": "fixed",
+      "value": 128
+    }
   },
   "training": {
     "device": "auto",
     "epochs": 600,
     "batch_size": 128,
-    "lr_decay_epochs": [
-      180,
-      360
-    ],
+    "lr_decay_epochs": [180, 360],
     "lr_decay_factor": 0.1
   },
   "verbose": false
