@@ -1,0 +1,17 @@
+{
+  "model": "linear_ridge",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "ridge_alpha": {
+      "type": "categorical",
+      "choices": [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0]
+    }
+  },
+  "training": {
+    "solver": "lsqr",
+    "tol": 1e-6
+  },
+  "verbose": false
+}
