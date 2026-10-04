@@ -11,11 +11,12 @@ class RegistryTests(unittest.TestCase):
                 "antisymmetric_mlp",
                 "locally_connected_mlp",
                 "shared_cnn1d",
+                "shared_minirocket",
+                "linear_ridge",
                 "direct_mlp",
                 "independent_cnn1d",
                 "onishi_cnn",
-                "minirocket",
-                "linear_ridge",
+                "direct_minirocket",
             },
         )
 
