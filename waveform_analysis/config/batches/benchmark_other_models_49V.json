@@ -32,7 +32,8 @@
   },
   "sweep": {
     "models": [
-      "linear_ridge",
+      "shared_linear_ridge",
+      "direct_linear_ridge",
       "antisymmetric_mlp",
       "locally_connected_mlp",
       "shared_cnn1d",
