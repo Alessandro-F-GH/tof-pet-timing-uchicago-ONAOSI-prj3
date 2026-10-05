@@ -66,7 +66,7 @@ def _transformer(parameters, seed):
 def _array(features) -> np.ndarray:
     if hasattr(features, "to_numpy"):
         features = features.to_numpy()
-    return np.asarray(features, dtype=np.float64)
+    return np.asarray(features, dtype=np.float32)
 
 
 def fit_transform(parameters, train_x, *, seed, config):
@@ -82,7 +82,8 @@ def fit_transform(parameters, train_x, *, seed, config):
     transformer = _transformer(parameters, seed)
     features = _array(transformer.fit_transform(x))
     scaler = StandardScaler(with_mean=False)
-    scaled = np.asarray(scaler.fit_transform(features), dtype=np.float64)
+    scaler.fit(features)
+    scaled = np.asarray(scaler.transform(features, copy=False), dtype=np.float32)
     artifact = DirectMiniRocketTransformArtifact(
         transformer=transformer,
         scaler=scaler,
@@ -91,6 +92,7 @@ def fit_transform(parameters, train_x, *, seed, config):
             "num_kernels": int(parameters["num_kernels"]),
             "n_jobs": int(parameters.get("n_jobs", -1)),
             "feature_count": int(scaled.shape[1]),
+            "feature_dtype": str(scaled.dtype),
             "training_events": int(scaled.shape[0]),
             "training_seed": int(seed),
         },
@@ -104,7 +106,7 @@ def transform(
 ) -> np.ndarray:
     x = np.asarray(normalized_pair, dtype=np.float32)
     features = _array(artifact.transformer.transform(x))
-    return np.asarray(artifact.scaler.transform(features), dtype=np.float64)
+    return np.asarray(artifact.scaler.transform(features, copy=False), dtype=np.float32)
 
 
 def save_transform(artifact: DirectMiniRocketTransformArtifact, path: Path) -> None:
@@ -115,7 +117,7 @@ def save_transform(artifact: DirectMiniRocketTransformArtifact, path: Path) -> N
 
 def fit(params, train_x, train_target, *, seed, config):
     del seed, config
-    features = np.asarray(train_x, dtype=np.float64)
+    features = np.asarray(train_x, dtype=np.float32)
     y = np.asarray(train_target, dtype=np.float64)
     if features.ndim != 2:
         raise ValueError(
@@ -139,13 +141,14 @@ def fit(params, train_x, train_target, *, seed, config):
             "ridge_alpha": float(params["ridge_alpha"]),
             "training_events": int(y.size),
             "feature_count": int(features.shape[1]),
+            "feature_dtype": str(features.dtype),
         },
     )
 
 
 def predict(artifact: DirectMiniRocketArtifact, features: np.ndarray) -> np.ndarray:
     return np.asarray(
-        artifact.regressor.predict(np.asarray(features, dtype=np.float64)),
+        artifact.regressor.predict(np.asarray(features, dtype=np.float32)),
         dtype=np.float64,
     )
 
