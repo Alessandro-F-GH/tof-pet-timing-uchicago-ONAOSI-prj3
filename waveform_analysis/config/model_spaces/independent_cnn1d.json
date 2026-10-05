@@ -46,5 +46,8 @@
     "gradient_min_norm": 0.00001,
     "gradient_patience": 4
   },
+  "diagnostics": {
+    "detector_swap": false
+  },
   "verbose": false
 }
