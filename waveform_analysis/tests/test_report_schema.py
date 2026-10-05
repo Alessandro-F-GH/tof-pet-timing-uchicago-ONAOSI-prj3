@@ -67,7 +67,8 @@ def _write_run(tmp_path, *, schema, model, formulation):
     [
         ("direct_minirocket", "direct"),
         ("shared_minirocket", "shared"),
-        ("linear_ridge", "shared"),
+        ("direct_linear_ridge", "direct"),
+        ("shared_linear_ridge", "shared"),
     ],
 )
 def test_collect_results_uses_current_schema_and_model_registry(
@@ -90,8 +91,19 @@ def test_collect_results_rejects_noncurrent_schema(tmp_path):
     run_dir = _write_run(
         tmp_path,
         schema=CURRENT_RESULT_SCHEMA - 1,
-        model="linear_ridge",
+        model="shared_linear_ridge",
         formulation="shared",
     )
     with pytest.raises(RuntimeError, match="current code requires schema"):
+        collect_results([run_dir])
+
+
+def test_collect_results_rejects_removed_model_name(tmp_path):
+    run_dir = _write_run(
+        tmp_path,
+        schema=CURRENT_RESULT_SCHEMA,
+        model="linear_ridge",
+        formulation="shared",
+    )
+    with pytest.raises(RuntimeError, match="Unregistered model"):
         collect_results([run_dir])
