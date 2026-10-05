@@ -11,7 +11,7 @@
       "timing_polarities": [1, 1]
     }
   },
-  "output_dir": "results/studies/UC/linear_benchmark_48V",
+  "output_dir": "results/studies/UC/full_benchmark_48V_R1",
   "save_models": "none",
   "protocol": {
     "seed": 1001,
@@ -34,8 +34,17 @@
     "models": [
       "direct_minirocket",
       "shared_minirocket",
+
       "direct_linear_ridge",
-      "shared_linear_ridge"
+      "shared_linear_ridge",
+
+      "onishi_cnn",
+      "shared_cnn1d",
+      "independent_cnn1d",
+
+      "direct_mlp",
+      "antisymmetric_mlp",
+      "locally_connected_mlp"
     ],
     "modes": ["energy_to_energy", "timing_to_timing"],
     "windows": {
