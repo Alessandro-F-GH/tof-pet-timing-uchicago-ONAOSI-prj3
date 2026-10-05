@@ -1,6 +1,6 @@
 {
   "model": "onishi_cnn",
-   "optimization": {
+  "optimization": {
     "strategy": "grid"
   },
   "architecture": {
@@ -11,11 +11,11 @@
   "parameters": {
     "learning_rate": {
       "type": "categorical",
-      "value": [ 1e-3, 1e-4, 1e-5] 
+      "choices": [1e-3, 1e-4, 1e-5]
     },
     "batch_size": {
       "type": "categorical",
-      "value": [32, 128]
+      "choices": [32, 128]
     }
   },
   "training": {
