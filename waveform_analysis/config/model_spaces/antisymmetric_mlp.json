@@ -3,8 +3,8 @@
   "optimization": {
     "strategy": "optuna",
     "sampler": "tpe",
-    "n_trials": 50,
-    "n_startup_trials": 10
+    "n_trials": 20,
+    "n_startup_trials": 5
   },
   "parameters": {
     "architecture": {
@@ -23,7 +23,7 @@
     },
     "batch_size": {
       "type": "categorical",
-      "choices": [16, 32, 128, 256, 1024]
+      "choices": [32, 128, 1024]
     }
   },
   "training": {

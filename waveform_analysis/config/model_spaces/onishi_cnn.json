@@ -4,25 +4,25 @@
     "strategy": "fixed"
   },
   "architecture": {
-    "channels": [32, 32, 64],
-    "kernels": [5, 3, 3],
+    "channels": [32, 64],
+    "kernels": [5, 3],
     "dense_units": 256
   },
   "parameters": {
     "learning_rate": {
       "type": "fixed",
-      "value": 0.001
+      "value": 1e-4
     },
     "batch_size": {
       "type": "fixed",
-      "value": 128
+      "value": 32
     }
   },
   "training": {
     "device": "auto",
-    "epochs": 600,
-    "batch_size": 128,
-    "lr_decay_epochs": [180, 360],
+    "epochs": 50,
+    "batch_size": 32,
+    "lr_decay_epochs": [15, 30],
     "lr_decay_factor": 0.1
   },
   "verbose": false
