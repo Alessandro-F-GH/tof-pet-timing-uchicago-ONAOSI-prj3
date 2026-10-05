@@ -118,9 +118,16 @@ def test_all_repository_model_spaces_declare_valid_strategy():
         strategies[path.stem] = optimization_config(space).strategy
 
     assert strategies["onishi_cnn"] == "fixed"
-    assert strategies["minirocket"] == "grid"
+    grid_models = {
+        "direct_minirocket",
+        "shared_minirocket",
+        "direct_linear_ridge",
+        "shared_linear_ridge",
+    }
+    for name in grid_models:
+        assert strategies[name] == "grid"
     assert all(
         strategy == "optuna"
         for name, strategy in strategies.items()
-        if name not in {"onishi_cnn", "minirocket"}
+        if name not in {"onishi_cnn", *grid_models}
     )
