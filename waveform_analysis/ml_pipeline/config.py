@@ -9,6 +9,7 @@ from .common import canonical_hash
 
 CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
 MODEL_SAVE_POLICIES = ("all", "first", "none")
+MODEL_SELECTION_METRICS = ("rmse", "ctr")
 DEFAULT_PREDICTION_CHUNK_SIZE = 4096
 
 
@@ -134,9 +135,13 @@ def _save_models(raw):
 
 def _selection(raw):
     value = copy.deepcopy(raw)
-    if not isinstance(value, dict) or set(value) != {"validation_fraction"}:
-        raise ConfigError("model_selection must contain only validation_fraction")
+    required = {"validation_fraction", "metric"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise ConfigError("model_selection must contain exactly validation_fraction and metric")
     value["validation_fraction"] = float(value["validation_fraction"])
+    value["metric"] = str(value["metric"]).strip().lower()
+    if value["metric"] not in MODEL_SELECTION_METRICS:
+        raise ConfigError(f"model_selection.metric must be one of {MODEL_SELECTION_METRICS}")
     return value
 
 
@@ -171,6 +176,8 @@ def validate_config(config):
 
     int(config["seed"])
     validation_fraction = float(config["model_selection"]["validation_fraction"])
+    if str(config["model_selection"]["metric"]) not in MODEL_SELECTION_METRICS:
+        raise ConfigError(f"model_selection.metric must be one of {MODEL_SELECTION_METRICS}")
     blind_fraction = float(config["evaluation"]["blind_fraction"])
     if not 0.0 < validation_fraction < 1.0:
         raise ConfigError("model_selection.validation_fraction must lie in (0, 1)")
