@@ -580,6 +580,9 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
     selected_validation_rmse = None
     parameter_codes = {}
+    shared_transform_seed_base = semantic_seed(
+        int(config["seed"]), "hyperparameter_tuning", spec.name, protocol_identity
+    )
 
     if optimization.strategy == "fixed":
         selected_candidate, selected_params = next(iter(candidates.items()))
@@ -622,9 +625,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
         transform_cache = FeatureTransformCache()
         fit_input_cache = FitInputCache()
-        transform_seed_base = semantic_seed(
-            int(config["seed"]), "hyperparameter_tuning", spec.name, protocol_identity
-        )
+        transform_seed_base = shared_transform_seed_base
 
         def evaluate_candidate(params, label):
             nonlocal candidates
@@ -780,9 +781,6 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
     fixed_minirocket_transform = None
     if spec.name in {"direct_minirocket", "shared_minirocket"}:
-        fixed_transform_seed = semantic_seed(
-            int(config["seed"]), "fixed_minirocket_transform", spec.name, protocol_identity
-        )
         fixed_minirocket_transform = _fit_fixed_feature_transform(
             spec,
             model_space,
@@ -790,7 +788,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             dataset,
             tuning_train,
             selected_params,
-            transform_seed_base=fixed_transform_seed,
+            transform_seed_base=shared_transform_seed_base,
             logger=logger,
         )
         manifest["fixed_feature_transform_identity"] = fixed_minirocket_transform.identity
