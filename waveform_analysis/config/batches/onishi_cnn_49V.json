@@ -16,7 +16,7 @@
   "protocol": {
     "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
-    "model_selection": {"validation_fraction": 0.2},
+    "model_selection": {"validation_fraction": 0.2, "metric": "ctr"},
     "evaluation": {
       "n_replicas": 50,
       "blind_fraction": 0.5,
