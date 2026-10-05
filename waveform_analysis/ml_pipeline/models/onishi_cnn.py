@@ -31,26 +31,38 @@ class OnishiPairedCNN(nn.Module):
         kernels = [int(v) for v in architecture.get("kernels", [5, 3, 3])]
         dense_units = int(architecture.get("dense_units", 256))
 
-        if channels != [32, 32, 64]:
-            raise ValueError("onishi_cnn reference architecture requires channels=[32, 32, 64]")
-        if kernels != [5, 3, 3]:
-            raise ValueError("onishi_cnn reference architecture requires kernels=[5, 3, 3]")
-        if dense_units != 256:
-            raise ValueError("onishi_cnn reference architecture requires dense_units=256")
+        if not channels:
+            raise ValueError("onishi_cnn architecture requires at least one convolutional layer")
+        if len(channels) != len(kernels):
+            raise ValueError("onishi_cnn channels and kernels must have the same length")
+        if any(value < 1 for value in channels):
+            raise ValueError("onishi_cnn convolution channels must be positive")
+        if any(value < 1 for value in kernels):
+            raise ValueError("onishi_cnn convolution kernels must be positive")
+        if dense_units < 1:
+            raise ValueError("onishi_cnn dense_units must be positive")
 
-        self.features = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=(2, 5)),
-            nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=(1, 3)),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=(1, 3)),
-            nn.ReLU(),
-        )
+        layers = []
+        in_channels = 1
+        for index, (out_channels, kernel) in enumerate(zip(channels, kernels)):
+            kernel_height = 2 if index == 0 else 1
+            layers.extend(
+                [
+                    nn.Conv2d(
+                        in_channels,
+                        out_channels,
+                        kernel_size=(kernel_height, kernel),
+                    ),
+                    nn.ReLU(),
+                ]
+            )
+            in_channels = out_channels
+        self.features = nn.Sequential(*layers)
         self.head = nn.Sequential(
             nn.Flatten(),
-            nn.LazyLinear(256),
+            nn.LazyLinear(dense_units),
             nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.Linear(dense_units, 1),
         )
 
     def forward(self, pair: torch.Tensor) -> torch.Tensor:
