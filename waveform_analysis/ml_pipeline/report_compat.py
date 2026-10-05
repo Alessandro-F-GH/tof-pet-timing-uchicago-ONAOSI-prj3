@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import report as _report
 from .common import canonical_hash
 from .models import get_model, model_names
-from . import report as _report
+from .study_cached import _SCHEMA_VERSION as CURRENT_RESULT_SCHEMA
 
 
-SUPPORTED_RESULT_SCHEMAS = frozenset({40, 41, 42, 43})
 _REQUIRED_MANIFEST_FIELDS = {
     "analysis",
     "model",
@@ -23,10 +23,10 @@ def _validated_manifest(run_dir: Path) -> dict:
     manifest_path = Path(run_dir) / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     schema = int(manifest.get("schema_version", 0))
-    if schema not in SUPPORTED_RESULT_SCHEMAS:
+    if schema != CURRENT_RESULT_SCHEMA:
         raise RuntimeError(
             f"Unsupported result schema {schema} in {run_dir}; "
-            f"supported schemas are {sorted(SUPPORTED_RESULT_SCHEMAS)}"
+            f"current code requires schema {CURRENT_RESULT_SCHEMA}"
         )
     missing = sorted(_REQUIRED_MANIFEST_FIELDS - set(manifest))
     if missing:
