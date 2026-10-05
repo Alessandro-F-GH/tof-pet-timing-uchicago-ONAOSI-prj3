@@ -76,7 +76,13 @@ def _should_save_model(policy, replica_index):
     raise ValueError(f"Unknown model save policy: {policy}")
 
 
-def _format_log_value(value):
+def _parameter_config(model_space, key):
+    parameters = model_space.get("parameters", {}) if isinstance(model_space, dict) else {}
+    value = parameters.get(key, {}) if isinstance(parameters, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _format_log_value(value, *, scientific=False):
     if isinstance(value, str):
         return value
     if value is None:
@@ -85,7 +91,19 @@ def _format_log_value(value):
         return "true" if bool(value) else "false"
     if isinstance(value, np.generic):
         value = value.item()
+    if scientific and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{float(value):.1e}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(
+            _format_log_value(item, scientific=scientific) for item in value
+        ) + "]"
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _format_parameter_value(model_space, key, value):
+    definition = _parameter_config(model_space, key)
+    scientific = bool(definition.get("log", False))
+    return _format_log_value(value, scientific=scientific)
 
 
 def _parameter_log_schema(candidates):
@@ -116,28 +134,32 @@ def _parameter_log_schema(candidates):
     return fixed, varying, {key: index for index, key in enumerate(varying, 1)}
 
 
-def _format_parameter_pairs(params):
+def _format_parameter_pairs(params, model_space):
     if not params:
         return "none"
-    return " | ".join(f"{key}={_format_log_value(value)}" for key, value in params.items())
-
-
-def _format_candidate_codes(params, codes):
-    if not codes:
-        return _format_parameter_pairs(params)
     return " | ".join(
-        f"{code}={_format_log_value(params.get(key))}" for key, code in codes.items()
+        f"{key}={_format_parameter_value(model_space, key, value)}"
+        for key, value in params.items()
     )
 
 
-def _log_hyperparameter_space(logger, candidates):
+def _format_candidate_codes(params, codes, model_space):
+    if not codes:
+        return _format_parameter_pairs(params, model_space)
+    return " | ".join(
+        f"{code}={_format_parameter_value(model_space, key, params.get(key))}"
+        for key, code in codes.items()
+    )
+
+
+def _log_hyperparameter_space(logger, candidates, model_space):
     fixed, varying, codes = _parameter_log_schema(candidates)
-    logger.info("Hyperparameter fixed | %s", _format_parameter_pairs(fixed))
+    logger.info("Hyperparameter fixed | %s", _format_parameter_pairs(fixed, model_space))
     if varying:
         logger.info(
             "Hyperparameter search | %s",
             " | ".join(
-                f"{codes[key]}={key} values={_format_log_value(values)}"
+                f"{codes[key]}={key} values={_format_parameter_value(model_space, key, values)}"
                 for key, values in varying.items()
             ),
         )
@@ -758,7 +780,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         })
         logger.info(
             "Fixed configuration | validation fit/evaluation skipped | %s",
-            _format_parameter_pairs(selected_params),
+            _format_parameter_pairs(selected_params, model_space),
         )
     else:
         validation_target = np.asarray(target[fixed.split.validation], float)
@@ -781,7 +803,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             selection_label,
         )
         if optimization.strategy == "grid":
-            parameter_codes = _log_hyperparameter_space(logger, candidates)
+            parameter_codes = _log_hyperparameter_space(logger, candidates, model_space)
         else:
             logger.info(
                 "Optuna TPE | trials=%d | startup_trials=%d",
@@ -811,7 +833,11 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             if existing is not None:
                 return float(existing[selection_field])
 
-            logger.info("Hyperparameter candidate %s | %s", label, _format_parameter_pairs(params))
+            logger.info(
+                "Hyperparameter candidate %s | %s",
+                label,
+                _format_parameter_pairs(params, model_space),
+            )
             fitted = prediction = corrected = None
             try:
                 if minirocket:
@@ -879,7 +905,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                 store.upsert_result(row)
                 score = float(row[selection_field])
                 logger.info(
-                    "Hyperparameter validation | CTR=%.3f ps | RMSE=%.3f ps | selection=%s=%.3f ps",
+                    "Hyperparameter validation | CTR=%.0f ps | RMSE=%.0f ps | selection=%s=%.0f ps",
                     row["ctr_ps"],
                     row["rmse_ps"],
                     selection_label,
@@ -979,8 +1005,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             "tuning_train_seed": int(tuning_train_seed),
         })
         logger.info(
-            "Hyperparameter selection complete | %s | selected by validation %s=%.3f ps | CTR=%.3f ps | RMSE=%.3f ps | selected configuration used for replica evaluation",
-            _format_candidate_codes(selected_params, parameter_codes),
+            "Hyperparameter selection complete | %s | selected by validation %s=%.0f ps | CTR=%.0f ps | RMSE=%.0f ps | selected configuration used for replica evaluation",
+            _format_candidate_codes(selected_params, parameter_codes, model_space),
             selection_label,
             selected_validation_score,
             selected_validation_ctr,
@@ -1140,7 +1166,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                 )
                 logger.info("Replica model saved | replica=%d", replica_index)
             logger.info(
-                "Replica result | replica=%d | CTR=%.3f ps | LED CTR=%.3f ps | improvement=%.3f ps (%.2f%%) | RMSE=%.3f ps",
+                "Replica result | replica=%d | CTR=%.0f ps | LED CTR=%.0f ps | improvement=%.0f ps (%.2f%%) | RMSE=%.0f ps",
                 replica_index,
                 row["ctr_ps"],
                 row["uncorrected_ctr_ps"],
@@ -1204,14 +1230,14 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     store.write_manifest(manifest)
     if selected_validation_score is None:
         logger.info(
-            "Study complete | fixed configuration | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
+            "Study complete | fixed configuration | replicas=%d | blind CTR mean=%.0f ± %.0f ps",
             manifest["replica_count"],
             manifest["blind_ctr_mean_ps"],
             manifest["blind_ctr_std_ps"],
         )
     else:
         logger.info(
-            "Study complete | selected validation %s=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
+            "Study complete | selected validation %s=%.0f ps | replicas=%d | blind CTR mean=%.0f ± %.0f ps",
             selection_label,
             selected_validation_score,
             manifest["replica_count"],
