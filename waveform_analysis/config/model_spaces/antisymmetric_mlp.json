@@ -28,8 +28,8 @@
   },
   "training": {
     "device": "auto",
-    "epochs": 1000,
-    "patience": 50,
+    "epochs": 300,
+    "patience": 10,
     "min_delta": 0.1,
     "gradient_clip_norm": 10,
     "early_stopping_fraction": 0.2,

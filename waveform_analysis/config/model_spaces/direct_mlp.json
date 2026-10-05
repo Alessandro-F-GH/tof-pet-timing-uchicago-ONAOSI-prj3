@@ -29,7 +29,7 @@
   "training": {
     "device": "auto",
     "optimizer": "adam",
-    "epochs": 1000,
+    "epochs": 300,
     "patience": 10,
     "min_delta": 0.1,
     "gradient_clip_norm": 10,
