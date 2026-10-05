@@ -34,7 +34,8 @@
     "models": [
       "direct_minirocket",
       "shared_minirocket",
-      "linear_ridge"
+      "direct_linear_ridge",
+      "shared_linear_ridge"
     ],
     "modes": ["energy_to_energy", "timing_to_timing"],
     "windows": {
