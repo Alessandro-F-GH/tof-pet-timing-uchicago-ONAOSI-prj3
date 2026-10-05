@@ -33,7 +33,7 @@ from .search import (
 )
 from .shared_artifacts import ExperimentArtifactStore
 from .splits import semantic_seed
-from .stats import paired_ctr_improvement, rmse_ps
+from .stats import ctr_estimate, paired_ctr_improvement, rmse_ps
 from .storage import RunStore
 from .train import (
     FeatureTransformCache,
@@ -48,7 +48,7 @@ from .train import (
 from .view import model_target, waveform_view
 
 
-_SCHEMA_VERSION = 43
+_SCHEMA_VERSION = 44
 
 
 def _logger(run_dir):
@@ -169,6 +169,7 @@ def _validation_row(
     selected,
     corrected,
     raw_validation_rmse,
+    raw_validation_ctr,
     spec,
     config,
     event_identity,
@@ -178,11 +179,22 @@ def _validation_row(
 ):
     corrected = np.asarray(corrected, float)
     if not corrected.size or not np.all(np.isfinite(corrected)):
-        raise RuntimeError("Fixed-validation RMSE requires one finite residual per validation event")
+        raise RuntimeError("Fixed-validation scoring requires one finite residual per validation event")
     corrected_rmse = float(rmse_ps(corrected))
+    corrected_ctr = float(
+        ctr_estimate(
+            corrected,
+            config["fit"],
+            seed=int(seed),
+            bootstrap=False,
+        ).ctr_ps
+    )
     raw_rmse = float(raw_validation_rmse)
-    improvement = raw_rmse - corrected_rmse
-    improvement_percent = 100.0 * improvement / raw_rmse if raw_rmse != 0 else float("nan")
+    raw_ctr = float(raw_validation_ctr)
+    ctr_improvement = raw_ctr - corrected_ctr
+    ctr_improvement_percent = 100.0 * ctr_improvement / raw_ctr if raw_ctr != 0 else float("nan")
+    rmse_improvement = raw_rmse - corrected_rmse
+    rmse_improvement_percent = 100.0 * rmse_improvement / raw_rmse if raw_rmse != 0 else float("nan")
     return {
         "phase": "hyperparameter_validation",
         "replica_index": "",
@@ -198,14 +210,14 @@ def _validation_row(
         "sampling_identity": sampling_identity,
         "candidate_id": candidate_id,
         "selected": bool(selected),
-        "ctr_ps": float("nan"),
-        "uncorrected_ctr_ps": float("nan"),
-        "improvement_ps": float("nan"),
-        "improvement_percent": float("nan"),
+        "ctr_ps": corrected_ctr,
+        "uncorrected_ctr_ps": raw_ctr,
+        "improvement_ps": ctr_improvement,
+        "improvement_percent": ctr_improvement_percent,
         "rmse_ps": corrected_rmse,
         "uncorrected_rmse_ps": raw_rmse,
-        "rmse_improvement_ps": improvement,
-        "rmse_improvement_percent": improvement_percent,
+        "rmse_improvement_ps": rmse_improvement,
+        "rmse_improvement_percent": rmse_improvement_percent,
         "n": int(corrected.size),
         "train_n": int(train_n),
         "swap_rmse_ps": float("nan"),
@@ -469,6 +481,14 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     prediction_chunk_size = int(config["runtime"]["prediction_chunk_size"])
     detector_swap_enabled = _detector_swap_enabled(model_space)
     minirocket = is_minirocket_transform(spec.feature_transform)
+    selection_name = str(config["model_selection"]["metric"])
+    selection_field = "ctr_ps" if selection_name == "ctr" else "rmse_ps"
+    selection_label = "CTR" if selection_name == "ctr" else "RMSE"
+    selection_metric = (
+        None
+        if optimization.strategy == "fixed"
+        else f"fixed_validation_{selection_name}_ps"
+    )
 
     if optimization.strategy == "fixed":
         candidates = candidate_manifest([fixed_parameters(model_space)])
@@ -482,7 +502,6 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             if isinstance(loaded, dict):
                 candidates = {str(key): dict(value) for key, value in loaded.items()}
 
-    selection_metric = None if optimization.strategy == "fixed" else "fixed_validation_rmse_ps"
     manifest = {
         "schema_version": _SCHEMA_VERSION,
         "status": "running",
@@ -512,6 +531,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "event_level_bootstrap": False,
         "hyperparameter_selection_repeated": False,
         "hyperparameter_selection_metric": selection_metric,
+        "hyperparameter_selection_ctr_bootstrap": False,
         "validation_skipped": optimization.strategy == "fixed",
         "fixed_validation_used_in_replicas": False,
         "hyperparameter_tuning_train_sampling": "fixed_random_subset_matching_replica_train_size",
@@ -535,11 +555,12 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     if candidates:
         store.write_candidates(candidates)
     logger.info(
-        "Study | model=%s | mode=%s | window=%s | strategy=%s | replicas=%d | batch_seed=%d | fixed_validation=%.3f | blind=%.3f | prediction_chunk=%d | detector_swap=%s",
+        "Study | model=%s | mode=%s | window=%s | strategy=%s | selection_metric=%s | replicas=%d | batch_seed=%d | fixed_validation=%.3f | blind=%.3f | prediction_chunk=%d | detector_swap=%s",
         spec.name,
         config["mode"],
         config["window_ns"],
         optimization.strategy,
+        selection_label,
         n_replicas,
         int(config["seed"]),
         float(config["model_selection"]["validation_fraction"]),
@@ -676,6 +697,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     })
     store.write_manifest(manifest)
 
+    selected_validation_score = None
+    selected_validation_ctr = None
     selected_validation_rmse = None
     parameter_codes = {}
     feature_caches = {}
@@ -723,6 +746,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             "candidate_id": selected_candidate,
             "parameters": selected_params,
             "selection_metric": None,
+            "selected_validation_score_ps": None,
+            "selected_validation_ctr_ps": None,
             "selected_validation_rmse_ps": None,
             "validation_seed": None,
             "validation_fraction": None,
@@ -738,13 +763,22 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     else:
         validation_target = np.asarray(target[fixed.split.validation], float)
         raw_validation_rmse = float(rmse_ps(validation_target))
+        raw_validation_ctr = float(
+            ctr_estimate(
+                validation_target,
+                config["fit"],
+                seed=semantic_seed(fixed.split.seed, "validation_reference_ctr"),
+                bootstrap=False,
+            ).ctr_ps
+        )
         logger.info(
-            "Hyperparameter tuning | strategy=%s | fixed split seed=%d | tuning_train=%d/%d sampled to match replica train | validation=%d | metric=RMSE | validation excluded from every replica",
+            "Hyperparameter tuning | strategy=%s | fixed split seed=%d | tuning_train=%d/%d sampled to match replica train | validation=%d | selection_metric=%s | CTR bootstrap=disabled | validation excluded from every replica",
             optimization.strategy,
             int(fixed.split.seed),
             len(tuning_train),
             len(fixed.split.tuning_train),
             len(fixed.split.validation),
+            selection_label,
         )
         if optimization.strategy == "grid":
             parameter_codes = _log_hyperparameter_space(logger, candidates)
@@ -775,7 +809,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                 None,
             )
             if existing is not None:
-                return float(existing["rmse_ps"])
+                return float(existing[selection_field])
 
             logger.info("Hyperparameter candidate %s | %s", label, _format_parameter_pairs(params))
             fitted = prediction = corrected = None
@@ -834,6 +868,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                     selected=False,
                     corrected=corrected,
                     raw_validation_rmse=raw_validation_rmse,
+                    raw_validation_ctr=raw_validation_ctr,
                     spec=spec,
                     config=config,
                     event_identity=event_identity,
@@ -842,8 +877,15 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                     train_n=len(tuning_train),
                 )
                 store.upsert_result(row)
-                logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
-                return float(row["rmse_ps"])
+                score = float(row[selection_field])
+                logger.info(
+                    "Hyperparameter validation | CTR=%.3f ps | RMSE=%.3f ps | selection=%s=%.3f ps",
+                    row["ctr_ps"],
+                    row["rmse_ps"],
+                    selection_label,
+                    score,
+                )
+                return score
             finally:
                 del corrected, prediction, fitted
                 release_training_memory()
@@ -885,34 +927,48 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             if remaining:
                 study.optimize(objective, n_trials=remaining, gc_after_trial=True)
             logger.info(
-                "Optuna TPE complete | trials=%d/%d | sampler_seed=%d",
+                "Optuna TPE complete | trials=%d/%d | sampler_seed=%d | selection_metric=%s",
                 len(study.trials),
                 int(optimization.n_trials),
                 sampler_seed,
+                selection_label,
             )
 
         scores = []
         for row in store.read_results():
             identifier = row.get("candidate_id")
+            value = row.get(selection_field, "")
             if (
                 row.get("phase") == "hyperparameter_validation"
                 and identifier in candidates
-                and str(row.get("rmse_ps", "")) not in ("", "nan")
+                and str(value) not in ("", "nan")
             ):
-                scores.append(CandidateScore(identifier, float(row["rmse_ps"])))
+                score = float(value)
+                if np.isfinite(score):
+                    scores.append(CandidateScore(identifier, score))
         best = choose_best(scores)
         selected_candidate = best.candidate_id
         selected_params = candidates[selected_candidate]
-        selected_validation_rmse = float(best.score)
+        selected_validation_score = float(best.score)
         rows = store.read_results()
+        selected_row = None
         for row in rows:
             if row.get("phase") == "hyperparameter_validation":
-                row["selected"] = row.get("candidate_id") == selected_candidate
+                is_selected = row.get("candidate_id") == selected_candidate
+                row["selected"] = is_selected
+                if is_selected:
+                    selected_row = row
+        if selected_row is None:
+            raise RuntimeError("Selected hyperparameter candidate has no validation result")
+        selected_validation_ctr = float(selected_row["ctr_ps"])
+        selected_validation_rmse = float(selected_row["rmse_ps"])
         store._atomic_rows(rows)
         store.write_selected_hyperparameters({
             "candidate_id": selected_candidate,
             "parameters": selected_params,
-            "selection_metric": "fixed_validation_rmse_ps",
+            "selection_metric": selection_metric,
+            "selected_validation_score_ps": selected_validation_score,
+            "selected_validation_ctr_ps": selected_validation_ctr,
             "selected_validation_rmse_ps": selected_validation_rmse,
             "validation_seed": int(fixed.split.seed),
             "validation_fraction": float(config["model_selection"]["validation_fraction"]),
@@ -923,8 +979,11 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             "tuning_train_seed": int(tuning_train_seed),
         })
         logger.info(
-            "Hyperparameter selection complete | %s | validation RMSE=%.3f ps | selected configuration used for replica evaluation",
+            "Hyperparameter selection complete | %s | selected by validation %s=%.3f ps | CTR=%.3f ps | RMSE=%.3f ps | selected configuration used for replica evaluation",
             _format_candidate_codes(selected_params, parameter_codes),
+            selection_label,
+            selected_validation_score,
+            selected_validation_ctr,
             selected_validation_rmse,
         )
         transform_cache.clear()
@@ -1101,8 +1160,10 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     plot_hyperparameter_validation(
         rows,
         candidates,
-        run_dir / "hyperparameter_validation_rmse.png",
+        run_dir / f"hyperparameter_validation_{selection_name}.png",
         logger,
+        metric=selection_field,
+        metric_label=selection_label,
     )
     plots = make_study_result_plots(
         rows,
@@ -1121,6 +1182,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "status": "complete",
         "selected_candidate_id": selected_candidate,
         "selected_hyperparameters": selected_params,
+        "selected_validation_score_ps": selected_validation_score,
+        "selected_validation_ctr_ps": selected_validation_ctr,
         "selected_validation_rmse_ps": selected_validation_rmse,
         "replica_count": len(replica_rows),
         "blind_ctr_mean_ps": float(np.mean(blind_ctr)) if blind_ctr else None,
@@ -1139,7 +1202,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         },
     })
     store.write_manifest(manifest)
-    if selected_validation_rmse is None:
+    if selected_validation_score is None:
         logger.info(
             "Study complete | fixed configuration | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
             manifest["replica_count"],
@@ -1148,8 +1211,9 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         )
     else:
         logger.info(
-            "Study complete | validation RMSE=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
-            selected_validation_rmse,
+            "Study complete | selected validation %s=%.3f ps | replicas=%d | blind CTR mean=%.3f ± %.3f ps",
+            selection_label,
+            selected_validation_score,
             manifest["replica_count"],
             manifest["blind_ctr_mean_ps"],
             manifest["blind_ctr_std_ps"],
