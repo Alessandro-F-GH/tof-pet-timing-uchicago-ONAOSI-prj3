@@ -86,26 +86,35 @@ class OnishiCNNArtifact:
 
 
 def candidates(config):
-    p = config.get("parameters", {})
+    """Legacy candidate factory; current studies use the generic search-space engine."""
+    parameters = config.get("parameters", {})
     training = config.get("training", {})
-    learning_rates = [float(v) for v in p.get("learning_rate", [1e-3])]
-    batches = [int(v) for v in p.get("batch_size", [128])]
-    if learning_rates != [1e-3] or batches != [128]:
-        raise ValueError(
-            "onishi_cnn uses the fixed paper hyperparameters: "
-            "learning_rate=[1e-3], batch_size=[128]"
-        )
-    if int(training.get("epochs", 600)) != 600:
-        raise ValueError("onishi_cnn fixed paper training requires epochs=600")
-    if [int(v) for v in training.get("lr_decay_epochs", [180, 360])] != [180, 360]:
-        raise ValueError(
-            "onishi_cnn fixed paper training requires lr_decay_epochs=[180, 360]"
-        )
-    if float(training.get("lr_decay_factor", 0.1)) != 0.1:
-        raise ValueError(
-            "onishi_cnn fixed paper training requires lr_decay_factor=0.1"
-        )
-    return [{"learning_rate": 1e-3, "batch_size": 128}]
+
+    def values(name, default):
+        raw = parameters.get(name)
+        if raw is None:
+            return [default]
+        if isinstance(raw, dict):
+            kind = str(raw.get("type", "")).strip().lower()
+            if kind == "fixed":
+                return [raw.get("value")]
+            if kind == "categorical":
+                return list(raw.get("choices", []))
+            return [default]
+        if isinstance(raw, (list, tuple)):
+            return list(raw)
+        return [raw]
+
+    learning_rates = values("learning_rate", training.get("learning_rate", 1e-3))
+    batch_sizes = values("batch_size", training.get("batch_size", 128))
+    return [
+        {
+            "learning_rate": float(learning_rate),
+            "batch_size": int(batch_size),
+        }
+        for learning_rate in learning_rates
+        for batch_size in batch_sizes
+    ]
 
 
 def _mse_loss(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -154,7 +163,7 @@ def fit(
 
     if verbose and logger is not None:
         logger.info(
-            "onishi_cnn training | Onishi 2022 reference | loss=MSE | optimizer=Adam | "
+            "onishi_cnn training | configurable Onishi-style CNN | loss=MSE | optimizer=Adam | "
             "lr=%.6g | batch=%d | epochs=%d | lr_decay_epochs=%s | "
             "lr_decay_factor=%.6g | train=%d | device=%s",
             learning_rate,
@@ -223,7 +232,7 @@ def fit(
             else float(output_limit),
             "training_seed": training_seed,
             "deterministic_algorithms": True,
-            "architecture_reference": "Onishi et al., Phys Med Biol 67 (2022) 04NT01, Fig. 2 and Sec. 2.2.3",
+            "architecture_reference": "Onishi-style paired waveform CNN; depth, widths, kernels, and training settings are configurable",
             "input_definition": "paired normalized detector waveforms stacked as [2,time]",
             "prediction_definition": "joint CNN correction f_theta([s1;s2]) [ps]",
             "detector_axis_policy": "first 2x5 convolution fuses the two detector rows immediately",
