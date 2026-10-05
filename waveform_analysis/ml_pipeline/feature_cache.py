@@ -209,6 +209,7 @@ def build_feature_cache(
     parameters,
     feature_transform: FittedFeatureTransform,
     *,
+    seed_base,
     fit_features=None,
     logger=None,
 ):
@@ -230,7 +231,7 @@ def build_feature_cache(
         config["mode"],
         idx_fit,
         parameters,
-        seed_base=int(config["_feature_transform_seed_base"]),
+        seed_base=int(seed_base),
         logger=logger,
     )
     if existing is not None:
