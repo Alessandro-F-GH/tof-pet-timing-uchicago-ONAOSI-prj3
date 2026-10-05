@@ -1,7 +1,10 @@
 {
   "model": "onishi_cnn",
-  "optimization": {
-    "strategy": "fixed"
+   "optimization": {
+    "strategy": "optuna",
+    "sampler": "tpe",
+    "n_trials": 10,
+    "n_startup_trials": 5
   },
   "architecture": {
     "channels": [32, 64],
@@ -10,12 +13,14 @@
   },
   "parameters": {
     "learning_rate": {
-      "type": "fixed",
-      "value": 1e-4
+      "type": "float",
+      "low": 1e-5,
+      "high": 1e-2,
+      "log": true
     },
     "batch_size": {
-      "type": "fixed",
-      "value": 32
+      "type": "categorical",
+      "value": [32, 128]
     }
   },
   "training": {
