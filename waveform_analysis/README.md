@@ -12,21 +12,22 @@ Scientifically, each study:
 6. compares corrected timing against the LED reference using CTR and RMSE;
 7. produces per-study plots and cross-model reports.
 
-The code supports only the current configuration and result formats. Old result schemas are not migrated or interpreted.
+The code supports only the current configuration and result formats. Old result schemas and removed model names are not migrated or interpreted.
 
 ## Models
 
 Current registered models include:
 
-- `linear_ridge`
-- `antisymmetric_mlp`
-- `locally_connected_mlp`
-- `shared_cnn1d`
-- `shared_minirocket`
-- `direct_mlp`
-- `independent_cnn1d`
-- `onishi_cnn`
-- `direct_minirocket`
+- `shared_linear_ridge`: linear shared/antisymmetric correction, using `s1 - s2`;
+- `direct_linear_ridge`: unconstrained linear correction on concatenated `[s1, s2]`;
+- `antisymmetric_mlp`;
+- `locally_connected_mlp`;
+- `shared_cnn1d`;
+- `shared_minirocket`;
+- `direct_mlp`;
+- `independent_cnn1d`;
+- `onishi_cnn`;
+- `direct_minirocket`.
 
 Models are classified as either **shared/antisymmetric** or **direct/non-shared** formulations and are compared on the same event population, validation split, and replica seeds whenever the study context matches.
 
