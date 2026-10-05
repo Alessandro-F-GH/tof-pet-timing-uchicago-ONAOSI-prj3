@@ -81,6 +81,27 @@ def _run_index(batch: BatchConfig):
     return rows
 
 
+def _existing_study_state(config):
+    path = Path(config["output_dir"]).resolve()
+    if not path.exists() or not any(path.iterdir()):
+        return "missing"
+
+    manifest_path = path / "manifest.json"
+    if not manifest_path.is_file():
+        return "unreadable"
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "unreadable"
+
+    if manifest.get("config_fingerprint") != config["_config_fingerprint"]:
+        return "mismatch"
+    if manifest.get("status") == "complete":
+        return "matching_complete"
+    return "matching_incomplete"
+
+
 def _write_batch_state(batch, rows, status):
     root = Path(batch.output_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -278,8 +299,6 @@ def run_batch(
     rows = _run_index(batch)
 
     root = Path(batch.output_dir).resolve()
-    if overwrite and root.exists():
-        shutil.rmtree(root)
     _write_batch_state(batch, rows, "running")
 
     published_modes = set()
@@ -287,10 +306,64 @@ def run_batch(
         if logger:
             logger.info("Batch run %d/%d | %s", index, total, config["name"])
         try:
+            study_overwrite = bool(overwrite)
+            study_resume = bool(resume)
+
+            if overwrite:
+                state = _existing_study_state(config)
+                if state == "matching_complete":
+                    output = Path(config["output_dir"]).resolve()
+                    outputs.append(output)
+                    rows[index - 1]["status"] = "complete"
+                    _write_batch_state(batch, rows, "running")
+                    if logger:
+                        logger.info(
+                            "Batch reused | %s | matching resolved configuration | %s",
+                            config["name"],
+                            output,
+                        )
+
+                    mode = str(config["mode"])
+                    if mode not in published_modes:
+                        _publish_batch_selection_diagnostics(
+                            config,
+                            root,
+                            force=bool(rebuild_preprocessing),
+                            logger=logger,
+                        )
+                        published_modes.add(mode)
+                    continue
+
+                if state == "matching_incomplete":
+                    study_overwrite = False
+                    study_resume = True
+                    if logger:
+                        logger.info(
+                            "Batch selective resume | %s | matching configuration with incomplete study",
+                            config["name"],
+                        )
+                elif state in {"mismatch", "unreadable"}:
+                    study_overwrite = True
+                    study_resume = False
+                    if logger:
+                        reason = (
+                            "resolved configuration changed"
+                            if state == "mismatch"
+                            else "existing study metadata is unreadable"
+                        )
+                        logger.info(
+                            "Batch selective overwrite | %s | %s",
+                            config["name"],
+                            reason,
+                        )
+                else:
+                    study_overwrite = False
+                    study_resume = False
+
             output = run_study(
                 config,
-                overwrite=overwrite,
-                resume=resume,
+                overwrite=study_overwrite,
+                resume=study_resume,
                 rebuild_preprocessing=False,
             )
             outputs.append(output)
