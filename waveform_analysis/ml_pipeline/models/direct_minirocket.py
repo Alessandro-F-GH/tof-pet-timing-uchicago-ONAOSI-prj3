@@ -129,7 +129,7 @@ def fit(params, train_x, train_target, *, seed, config):
             "direct_minirocket transformed input and target must contain the same number of events"
         )
 
-    regressor = Ridge(alpha=float(params["ridge_alpha"]))
+    regressor = Ridge(alpha=float(params["ridge_alpha"]), solver="lsqr", tol=1e-4)
     regressor.fit(features, y)
     return DirectMiniRocketArtifact(
         regressor=regressor,
