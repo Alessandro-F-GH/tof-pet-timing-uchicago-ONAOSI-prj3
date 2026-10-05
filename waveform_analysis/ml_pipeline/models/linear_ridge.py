@@ -87,7 +87,7 @@ def transform_difference(artifact: DifferenceTransformArtifact, pair: np.ndarray
 
 
 def fit(params, train_x, train_target, *, seed, config):
-    del seed
+    del seed, config
     x = np.asarray(train_x, dtype=np.float64)
     y = np.asarray(train_target, dtype=np.float64).reshape(-1)
     if x.ndim != 2:
@@ -103,24 +103,13 @@ def fit(params, train_x, train_target, *, seed, config):
     if not np.isfinite(alpha) or alpha <= 0:
         raise ValueError("linear_ridge ridge_alpha must be finite and positive")
 
-    training = config.get("training", {})
-    solver = str(training.get("solver", "lsqr")).strip().lower()
-    tol = float(training.get("tol", 1e-6))
-    max_iter_raw = training.get("max_iter")
-    max_iter = None if max_iter_raw is None else int(max_iter_raw)
-    if tol <= 0 or not np.isfinite(tol):
-        raise ValueError("linear_ridge training.tol must be finite and positive")
-    if max_iter is not None and max_iter < 1:
-        raise ValueError("linear_ridge training.max_iter must be >= 1 when provided")
-
     # No intercept: swapping the two detectors negates the difference features,
     # so this is exactly the shared linear scorer g(s1)-g(s2), g(s)=w^T s.
     regressor = Ridge(
         alpha=alpha,
         fit_intercept=False,
-        solver=solver,
-        tol=tol,
-        max_iter=max_iter,
+        solver="lsqr",
+        tol=1e-4,
     )
     regressor.fit(x, y)
 
@@ -133,9 +122,8 @@ def fit(params, train_x, train_target, *, seed, config):
             "equivalent_formulation": "shared linear scorer g(s1)-g(s2), with g(s)=w^T s",
             "ridge_alpha": alpha,
             "fit_intercept": False,
-            "solver": solver,
-            "tol": tol,
-            "max_iter": max_iter,
+            "solver": "lsqr",
+            "tol": 1e-4,
             "training_events": int(y.size),
             "feature_count": int(x.shape[1]),
         },
