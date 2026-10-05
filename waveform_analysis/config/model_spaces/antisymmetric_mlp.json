@@ -3,13 +3,13 @@
   "optimization": {
     "strategy": "optuna",
     "sampler": "tpe",
-    "n_trials": 40,
+    "n_trials": 50,
     "n_startup_trials": 10
   },
   "parameters": {
     "architecture": {
       "type": "categorical",
-      "choices": [[64], [128, 64]]
+      "choices": [[16], [128], [128, 64], [16, 16, 16]]
     },
     "activation": {
       "type": "fixed",
@@ -17,13 +17,13 @@
     },
     "learning_rate": {
       "type": "float",
-      "low": 0.0003,
-      "high": 0.01,
+      "low": 1e-5,
+      "high": 1e-2,
       "log": true
     },
     "batch_size": {
       "type": "categorical",
-      "choices": [16, 32, 128]
+      "choices": [16, 32, 128, 256, 1024]
     }
   },
   "training": {
@@ -34,7 +34,7 @@
     "gradient_clip_norm": 10,
     "early_stopping_fraction": 0.2,
     "gradient_early_stop": true,
-    "gradient_min_norm": 0.00001,
+    "gradient_min_norm": 1e-6,
     "gradient_patience": 4,
     "momentum": 0.9
   },

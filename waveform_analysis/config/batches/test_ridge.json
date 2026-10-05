@@ -1,0 +1,44 @@
+{
+  "name": "benchmark_all_models_48V",
+  "reference_dataset": "../datasets/control.json",
+  "analysis_dataset": {
+    "root_file": "processed_data/10-03/48V-R1.root",
+    "true_tof_ps": 0.0,
+    "channels": {
+      "energy": [1, 2],
+      "polarities": [1, 1],
+      "timing": [3, 4],
+      "timing_polarities": [1, 1]
+    }
+  },
+  "output_dir": "results/studies/UC/linear_ridge_48V",
+  "save_models": "none",
+  "protocol": {
+    "seed": 1001,
+    "preprocessing_config": "../preprocessing/default_ctr.json",
+    "model_selection": {"validation_fraction": 0.1, "metric": "ctr"},
+    "evaluation": {
+      "n_replicas": 10,
+      "blind_fraction": 0.5,
+      "minimum_events_per_split": 50
+    },
+    "fit": {
+      "energy_to_energy": {"histogram_bin_width_ps": 10.0},
+      "timing_to_timing": {"histogram_bin_width_ps": 5.0}
+    },
+    "ml_input": {"subsampling": 1},
+    "ml_output": {"max_abs_ps": 2000.0},
+    "runtime": {"prediction_chunk_size": 4096}
+  },
+  "sweep": {
+    "models": [
+      "direct_linear_ridge",
+      "shared_linear_ridge"
+    ],
+    "modes": ["energy_to_energy", "timing_to_timing"],
+    "windows": {
+      "onishi": {"start": -1.5, "end": 2.0},
+      "wide": {"start": -2.0, "end": 30.0}
+    }
+  }
+}
