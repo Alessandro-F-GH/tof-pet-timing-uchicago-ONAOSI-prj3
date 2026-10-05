@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -32,6 +33,7 @@ from .storage import RunStore
 from .train import (
     FeatureTransformCache,
     FitInputCache,
+    FittedModel,
     detector_swap_rmse,
     fit_on_indices,
     predict_indices,
@@ -251,6 +253,119 @@ def _replica_row(
     }
 
 
+def _replica_train_size(dataset, fixed, config):
+    n_test = int(round(int(dataset.n_events) * float(config["evaluation"]["blind_fraction"])))
+    n_train = int(len(fixed.split.tuning_train) - n_test)
+    if n_train < 1:
+        raise RuntimeError("Replica protocol leaves no events for model training")
+    return n_train
+
+
+def _tuning_train_subset(dataset, fixed, config, event_identity):
+    pool = np.asarray(fixed.split.tuning_train, dtype=np.int64)
+    n_train = _replica_train_size(dataset, fixed, config)
+    if n_train > pool.size:
+        raise RuntimeError("Requested tuning subset is larger than the fixed tuning pool")
+    seed = semantic_seed(int(config["seed"]), "hyperparameter_train_subset", event_identity)
+    if n_train == pool.size:
+        return np.sort(pool.copy()), seed
+    rng = np.random.default_rng(seed)
+    selected = np.sort(rng.choice(pool, size=n_train, replace=False).astype(np.int64))
+    return selected, seed
+
+
+def _fit_fixed_feature_transform(
+    spec,
+    model_space,
+    config,
+    dataset,
+    indices,
+    parameters,
+    *,
+    transform_seed_base,
+    logger,
+):
+    if spec.feature_transform is None:
+        return None
+    fit_cache = FitInputCache()
+    prepared = fit_cache.prepare(spec, dataset, config["mode"], indices)
+    cfg = copy.deepcopy(model_space)
+    cfg["_input_time_ps"] = np.asarray(prepared.time_ps, np.float64)
+    if logger is not None:
+        cfg["_logger"] = logger
+    transform_cache = FeatureTransformCache()
+    transform, _ = transform_cache.prepare(
+        spec.feature_transform,
+        parameters,
+        prepared.x,
+        seed_base=int(transform_seed_base),
+        scope_key=prepared.scope_key,
+        config=cfg,
+    )
+    transform.cache.clear()
+    fit_cache.clear()
+    transform_cache.clear()
+    release_training_memory()
+    return transform
+
+
+def _fit_with_fixed_feature_transform(
+    spec,
+    model_space,
+    config,
+    dataset,
+    indices,
+    parameters,
+    *,
+    seed,
+    feature_transform,
+    logger,
+):
+    fit_cache = FitInputCache()
+    prepared = fit_cache.prepare(spec, dataset, config["mode"], indices)
+    transformed = feature_transform.apply(prepared.x)
+    cfg = copy.deepcopy(model_space)
+    cfg["_early_stopping_seed"] = int(seed)
+    cfg["_input_time_ps"] = np.asarray(prepared.time_ps, np.float64)
+    cfg["_prediction_max_abs_ps"] = float(config["ml_output"]["max_abs_ps"])
+    if logger is not None:
+        cfg["_logger"] = logger
+    artifact = spec.fit(
+        dict(parameters or {}),
+        np.asarray(transformed, np.float32),
+        np.asarray(prepared.y, np.float64),
+        seed=int(seed),
+        config=cfg,
+    )
+    metadata = dict(getattr(artifact, "metadata", {}) or {})
+    metadata.update(
+        {
+            "estimator_formulation": spec.estimator_formulation,
+            "training_events": int(prepared.y.size),
+            "sample_mask_training_events": int(prepared.y.size),
+            "input_samples_before_mask": int(prepared.sample_mask.size),
+            "input_samples_after_mask": int(prepared.sample_mask.sum()),
+            "prediction_chunk_size": int(config["runtime"]["prediction_chunk_size"]),
+            "feature_transform": feature_transform.spec.name,
+            "feature_transform_identity": feature_transform.identity,
+            "feature_transform_parameters": feature_transform.parameters,
+            "feature_transform_seed": int(feature_transform.seed),
+            "feature_transform_reused_across_replicas": True,
+        }
+    )
+    fitted = FittedModel(
+        artifact=artifact,
+        metadata=metadata,
+        output_max_abs_ps=float(config["ml_output"]["max_abs_ps"]),
+        sample_mask=np.asarray(prepared.sample_mask, bool),
+        feature_transform=feature_transform,
+    )
+    fit_cache.clear()
+    del transformed
+    release_training_memory()
+    return fitted
+
+
 def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=False):
     run_dir = Path(config["output_dir"]).resolve()
     store = RunStore(run_dir, overwrite=overwrite, resume=resume)
@@ -278,7 +393,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
     selection_metric = None if optimization.strategy == "fixed" else "fixed_validation_rmse_ps"
     manifest = {
-        "schema_version": 41,
+        "schema_version": 42,
         "status": "running",
         "name": config["name"],
         "study_name": config.get("study_name", config["name"]),
@@ -308,10 +423,12 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "hyperparameter_selection_metric": selection_metric,
         "validation_skipped": optimization.strategy == "fixed",
         "fixed_validation_used_in_replicas": False,
+        "hyperparameter_tuning_train_sampling": "fixed_random_subset_matching_replica_train_size",
+        "minirocket_transform_reused_across_replicas": spec.name in {"direct_minirocket", "shared_minirocket"},
     }
     if resume and (run_dir / "manifest.json").is_file():
         old = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-        if int(old.get("schema_version", 0)) != 41:
+        if int(old.get("schema_version", 0)) != 42:
             raise RuntimeError("Cannot resume results from a different pipeline schema")
         if old.get("optimization_strategy") != optimization.strategy:
             raise RuntimeError("Cannot resume with a different optimization strategy")
@@ -437,6 +554,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     shared_store = ExperimentArtifactStore(artifact_root)
     fixed = shared_store.prepare_fixed_validation(dataset, config)
     target = model_target(dataset, config["mode"])
+    tuning_train, tuning_train_seed = _tuning_train_subset(dataset, fixed, config, event_identity)
 
     manifest.update({
         "control_artifact": str(control_dir),
@@ -453,6 +571,9 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "sampling_identity": fixed.sampling_identity,
         "fixed_validation_artifact": str(fixed.directory),
         "fixed_validation_seed": int(fixed.split.seed),
+        "hyperparameter_tuning_train_size": int(len(tuning_train)),
+        "hyperparameter_tuning_train_seed": int(tuning_train_seed),
+        "replica_train_size": int(_replica_train_size(dataset, fixed, config)),
         "shared_replicas": {},
     })
     store.write_manifest(manifest)
@@ -471,6 +592,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             "validation_fraction": None,
             "validation_skipped": True,
             "validation_reused_in_replicas": False,
+            "tuning_train_size": int(len(tuning_train)),
+            "tuning_train_seed": int(tuning_train_seed),
         })
         logger.info(
             "Fixed configuration | validation fit/evaluation skipped | %s",
@@ -480,9 +603,10 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         validation_target = np.asarray(target[fixed.split.validation], float)
         raw_validation_rmse = float(rmse_ps(validation_target))
         logger.info(
-            "Hyperparameter tuning | strategy=%s | fixed split seed=%d | tuning_train=%d | validation=%d | metric=RMSE | validation excluded from every replica",
+            "Hyperparameter tuning | strategy=%s | fixed split seed=%d | tuning_train=%d/%d sampled to match replica train | validation=%d | metric=RMSE | validation excluded from every replica",
             optimization.strategy,
             int(fixed.split.seed),
+            len(tuning_train),
             len(fixed.split.tuning_train),
             len(fixed.split.validation),
         )
@@ -530,7 +654,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                     model_space,
                     config,
                     dataset,
-                    fixed.split.tuning_train,
+                    tuning_train,
                     params,
                     seed=semantic_seed(fixed.split.seed, spec.name, identifier, "tuning_fit"),
                     transform_seed_base=transform_seed_base,
@@ -558,7 +682,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                     event_identity=event_identity,
                     protocol_identity=protocol_identity,
                     sampling_identity=fixed.sampling_identity,
-                    train_n=len(fixed.split.tuning_train),
+                    train_n=len(tuning_train),
                 )
                 store.upsert_result(row)
                 logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
@@ -640,6 +764,8 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             "validation_skipped": False,
             "validation_reused_in_replicas": False,
             "optimization_strategy": optimization.strategy,
+            "tuning_train_size": int(len(tuning_train)),
+            "tuning_train_seed": int(tuning_train_seed),
         })
         logger.info(
             "Hyperparameter selection complete | %s | validation RMSE=%.3f ps | selected configuration used for replica evaluation",
@@ -647,11 +773,36 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             selected_validation_rmse,
         )
 
-        # Keep no tuning transform or training matrix alive during replicas.
         transform_cache.clear()
         fit_input_cache.clear()
         del transform_cache, fit_input_cache, validation_target
         release_training_memory()
+
+    fixed_minirocket_transform = None
+    if spec.name in {"direct_minirocket", "shared_minirocket"}:
+        fixed_transform_seed = semantic_seed(
+            int(config["seed"]), "fixed_minirocket_transform", spec.name, protocol_identity
+        )
+        fixed_minirocket_transform = _fit_fixed_feature_transform(
+            spec,
+            model_space,
+            config,
+            dataset,
+            tuning_train,
+            selected_params,
+            transform_seed_base=fixed_transform_seed,
+            logger=logger,
+        )
+        manifest["fixed_feature_transform_identity"] = fixed_minirocket_transform.identity
+        manifest["fixed_feature_transform_seed"] = int(fixed_minirocket_transform.seed)
+        manifest["fixed_feature_transform_fit_events"] = int(len(tuning_train))
+        store.write_manifest(manifest)
+        logger.info(
+            "MiniRocket transform fixed for all replicas | id=%s | fit_events=%d | seed=%d",
+            fixed_minirocket_transform.identity[:12],
+            len(tuning_train),
+            int(fixed_minirocket_transform.seed),
+        )
 
     progress = ProgressTracker(logger, {"replica": n_replicas})
     replica_protocol_logged = False
@@ -674,9 +825,10 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
         if not replica_protocol_logged:
             logger.info(
-                "Replica protocol | fit=once per replica | train=%d | blind=%d | fixed validation excluded | model_save=%s | prediction_chunk=%d",
+                "Replica protocol | fit=once per replica | train=%d | blind=%d | fixed validation excluded | feature_transform=%s | model_save=%s | prediction_chunk=%d",
                 len(split.train),
                 len(split.test),
+                "fixed across replicas" if fixed_minirocket_transform is not None else "fit with model",
                 config["save_models"],
                 prediction_chunk_size,
             )
@@ -691,19 +843,32 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         replica_fit_input_cache = FitInputCache()
         fitted = prediction = corrected = paired = None
         try:
-            fitted = fit_on_indices(
-                spec,
-                model_space,
-                config,
-                dataset,
-                split.train,
-                selected_params,
-                seed=semantic_seed(split.seed, spec.name, selected_candidate, "replica_fit"),
-                transform_seed_base=semantic_seed(split.seed, spec.name, "transform"),
-                feature_transform_cache=replica_transform_cache,
-                fit_input_cache=replica_fit_input_cache,
-                logger=logger,
-            )
+            if fixed_minirocket_transform is not None:
+                fitted = _fit_with_fixed_feature_transform(
+                    spec,
+                    model_space,
+                    config,
+                    dataset,
+                    split.train,
+                    selected_params,
+                    seed=semantic_seed(split.seed, spec.name, selected_candidate, "replica_fit"),
+                    feature_transform=fixed_minirocket_transform,
+                    logger=logger,
+                )
+            else:
+                fitted = fit_on_indices(
+                    spec,
+                    model_space,
+                    config,
+                    dataset,
+                    split.train,
+                    selected_params,
+                    seed=semantic_seed(split.seed, spec.name, selected_candidate, "replica_fit"),
+                    transform_seed_base=semantic_seed(split.seed, spec.name, "transform"),
+                    feature_transform_cache=replica_transform_cache,
+                    fit_input_cache=replica_fit_input_cache,
+                    logger=logger,
+                )
 
             prediction = predict_indices(
                 spec,
