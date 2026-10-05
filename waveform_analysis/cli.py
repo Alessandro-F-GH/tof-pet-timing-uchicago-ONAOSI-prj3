@@ -9,7 +9,7 @@ from .ml_pipeline.batch import run_batch
 from .ml_pipeline.binning_scan import run_ctr_binning_scan
 from .ml_pipeline.config import load_batch_config, load_config, public_batch_config, public_config
 from .ml_pipeline.postprocess import remake_batch_plots, remake_study_plots
-from .ml_pipeline.report import batch_result_dirs, generate_report
+from .ml_pipeline.report_compat import batch_result_dirs, generate_report
 from .ml_pipeline.report_naming import compact_report_filenames
 from .ml_pipeline.study import run_study
 
