@@ -20,9 +20,9 @@
   },
   "training": {
     "device": "auto",
-    "epochs": 50,
+    "epochs": 100,
     "batch_size": 32,
-    "lr_decay_epochs": [15, 30],
+    "lr_decay_epochs": [30, 60],
     "lr_decay_factor": 0.1
   },
   "verbose": false
