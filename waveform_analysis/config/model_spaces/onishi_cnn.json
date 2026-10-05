@@ -19,8 +19,8 @@
       "log": true
     },
     "batch_size": {
-      "type": "categorical",
-      "value": [32, 128]
+      "type": "fixed",
+      "value": [32]
     }
   },
   "training": {
