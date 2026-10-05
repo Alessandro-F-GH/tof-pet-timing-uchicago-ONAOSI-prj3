@@ -5,10 +5,7 @@ import json
 
 import pytest
 
-from waveform_analysis.ml_pipeline.report_compat import (
-    SUPPORTED_RESULT_SCHEMAS,
-    collect_results,
-)
+from waveform_analysis.ml_pipeline.report import CURRENT_RESULT_SCHEMA, collect_results
 
 
 def _write_run(tmp_path, *, schema, model, formulation):
@@ -17,7 +14,7 @@ def _write_run(tmp_path, *, schema, model, formulation):
     manifest = {
         "schema_version": schema,
         "name": f"study_{model}",
-        "study_name": "report_compatibility",
+        "study_name": "report_schema",
         "analysis": {"root_file": "data.root", "true_tof_ps": 0.0},
         "model": model,
         "estimator_formulation": formulation,
@@ -73,12 +70,12 @@ def _write_run(tmp_path, *, schema, model, formulation):
         ("linear_ridge", "shared"),
     ],
 )
-def test_collect_results_supports_current_schema_and_registered_models(
+def test_collect_results_uses_current_schema_and_model_registry(
     tmp_path, model, expected_formulation
 ):
     run_dir = _write_run(
         tmp_path,
-        schema=43,
+        schema=CURRENT_RESULT_SCHEMA,
         model=model,
         formulation="stale-value-intentionally-ignored",
     )
@@ -89,23 +86,12 @@ def test_collect_results_supports_current_schema_and_registered_models(
     assert records[0]["ctr_ps"] == pytest.approx(60.0)
 
 
-def test_collect_results_accepts_recent_compatible_schemas(tmp_path):
-    for schema in sorted(SUPPORTED_RESULT_SCHEMAS):
-        run_dir = _write_run(
-            tmp_path / f"schema_{schema}",
-            schema=schema,
-            model="linear_ridge",
-            formulation="shared",
-        )
-        assert collect_results([run_dir])[0]["model"] == "linear_ridge"
-
-
-def test_collect_results_rejects_unknown_future_schema(tmp_path):
+def test_collect_results_rejects_noncurrent_schema(tmp_path):
     run_dir = _write_run(
         tmp_path,
-        schema=max(SUPPORTED_RESULT_SCHEMAS) + 1,
+        schema=CURRENT_RESULT_SCHEMA - 1,
         model="linear_ridge",
         formulation="shared",
     )
-    with pytest.raises(RuntimeError, match="Unsupported result schema"):
+    with pytest.raises(RuntimeError, match="current code requires schema"):
         collect_results([run_dir])
