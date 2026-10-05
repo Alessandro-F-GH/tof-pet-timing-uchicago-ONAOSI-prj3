@@ -35,6 +35,7 @@ from .train import (
     detector_swap_rmse,
     fit_on_indices,
     predict_indices,
+    release_training_memory,
     save_model,
 )
 from .view import model_target
@@ -261,6 +262,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     model_space = config["model"]["space"]
     optimization = optimization_config(model_space)
     n_replicas = int(config["evaluation"]["n_replicas"])
+    prediction_chunk_size = int(config["runtime"]["prediction_chunk_size"])
 
     if optimization.strategy == "fixed":
         candidates = candidate_manifest([fixed_parameters(model_space)])
@@ -295,6 +297,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "optimization": model_space["optimization"],
         "optimization_strategy": optimization.strategy,
         "evaluation": config["evaluation"],
+        "runtime": config["runtime"],
         "save_models": config["save_models"],
         "preprocessing": config["preprocessing"],
         "preprocessing_fingerprint": canonical_hash(config["preprocessing"]),
@@ -321,7 +324,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
     if candidates:
         store.write_candidates(candidates)
     logger.info(
-        "Study | model=%s | mode=%s | window=%s | strategy=%s | replicas=%d | batch_seed=%d | fixed_validation=%.3f | blind=%.3f",
+        "Study | model=%s | mode=%s | window=%s | strategy=%s | replicas=%d | batch_seed=%d | fixed_validation=%.3f | blind=%.3f | prediction_chunk=%d",
         spec.name,
         config["mode"],
         config["window_ns"],
@@ -330,6 +333,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         int(config["seed"]),
         float(config["model_selection"]["validation_fraction"]),
         float(config["evaluation"]["blind_fraction"]),
+        prediction_chunk_size,
     )
 
     rebuild_control = bool(config.get("_rebuild_control", rebuild_preprocessing))
@@ -519,43 +523,49 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                 return float(existing["rmse_ps"])
 
             logger.info("Hyperparameter candidate %s | %s", label, _format_parameter_pairs(params))
-            fitted = fit_on_indices(
-                spec,
-                model_space,
-                config,
-                dataset,
-                fixed.split.tuning_train,
-                params,
-                seed=semantic_seed(fixed.split.seed, spec.name, identifier, "tuning_fit"),
-                transform_seed_base=transform_seed_base,
-                feature_transform_cache=transform_cache,
-                fit_input_cache=fit_input_cache,
-                logger=logger,
-            )
-            prediction = predict_indices(
-                spec,
-                fitted,
-                dataset,
-                config["mode"],
-                fixed.split.validation,
-            )
-            corrected = validation_target - prediction
-            row = _validation_row(
-                seed=fixed.split.seed,
-                candidate_id=identifier,
-                selected=False,
-                corrected=corrected,
-                raw_validation_rmse=raw_validation_rmse,
-                spec=spec,
-                config=config,
-                event_identity=event_identity,
-                protocol_identity=protocol_identity,
-                sampling_identity=fixed.sampling_identity,
-                train_n=len(fixed.split.tuning_train),
-            )
-            store.upsert_result(row)
-            logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
-            return float(row["rmse_ps"])
+            fitted = prediction = corrected = None
+            try:
+                fitted = fit_on_indices(
+                    spec,
+                    model_space,
+                    config,
+                    dataset,
+                    fixed.split.tuning_train,
+                    params,
+                    seed=semantic_seed(fixed.split.seed, spec.name, identifier, "tuning_fit"),
+                    transform_seed_base=transform_seed_base,
+                    feature_transform_cache=transform_cache,
+                    fit_input_cache=fit_input_cache,
+                    logger=logger,
+                )
+                prediction = predict_indices(
+                    spec,
+                    fitted,
+                    dataset,
+                    config["mode"],
+                    fixed.split.validation,
+                    chunk_size=prediction_chunk_size,
+                )
+                corrected = validation_target - prediction
+                row = _validation_row(
+                    seed=fixed.split.seed,
+                    candidate_id=identifier,
+                    selected=False,
+                    corrected=corrected,
+                    raw_validation_rmse=raw_validation_rmse,
+                    spec=spec,
+                    config=config,
+                    event_identity=event_identity,
+                    protocol_identity=protocol_identity,
+                    sampling_identity=fixed.sampling_identity,
+                    train_n=len(fixed.split.tuning_train),
+                )
+                store.upsert_result(row)
+                logger.info("Hyperparameter validation | RMSE=%.3f ps", row["rmse_ps"])
+                return float(row["rmse_ps"])
+            finally:
+                del corrected, prediction, fitted
+                release_training_memory()
 
         if optimization.strategy == "grid":
             for index, (_, params) in enumerate(list(candidates.items()), 1):
@@ -637,6 +647,12 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
             selected_validation_rmse,
         )
 
+        # Keep no tuning transform or training matrix alive during replicas.
+        transform_cache.clear()
+        fit_input_cache.clear()
+        del transform_cache, fit_input_cache, validation_target
+        release_training_memory()
+
     progress = ProgressTracker(logger, {"replica": n_replicas})
     replica_protocol_logged = False
     for replica_index in range(1, n_replicas + 1):
@@ -653,14 +669,16 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
         if store.has_result("replica", selected_candidate, replica_index):
             progress.complete("replica", f"replica {replica_index}", announce=False)
+            del split, replica
             continue
 
         if not replica_protocol_logged:
             logger.info(
-                "Replica protocol | fit=once per replica | train=%d | blind=%d | fixed validation excluded | model_save=%s",
+                "Replica protocol | fit=once per replica | train=%d | blind=%d | fixed validation excluded | model_save=%s | prediction_chunk=%d",
                 len(split.train),
                 len(split.test),
                 config["save_models"],
+                prediction_chunk_size,
             )
             replica_protocol_logged = True
         logger.info(
@@ -671,68 +689,91 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         )
         replica_transform_cache = FeatureTransformCache()
         replica_fit_input_cache = FitInputCache()
-        fitted = fit_on_indices(
-            spec,
-            model_space,
-            config,
-            dataset,
-            split.train,
-            selected_params,
-            seed=semantic_seed(split.seed, spec.name, selected_candidate, "replica_fit"),
-            transform_seed_base=semantic_seed(split.seed, spec.name, "transform"),
-            feature_transform_cache=replica_transform_cache,
-            fit_input_cache=replica_fit_input_cache,
-            logger=logger,
-        )
+        fitted = prediction = corrected = paired = None
+        try:
+            fitted = fit_on_indices(
+                spec,
+                model_space,
+                config,
+                dataset,
+                split.train,
+                selected_params,
+                seed=semantic_seed(split.seed, spec.name, selected_candidate, "replica_fit"),
+                transform_seed_base=semantic_seed(split.seed, spec.name, "transform"),
+                feature_transform_cache=replica_transform_cache,
+                fit_input_cache=replica_fit_input_cache,
+                logger=logger,
+            )
 
-        prediction = predict_indices(spec, fitted, dataset, config["mode"], split.test)
-        corrected = np.asarray(target[split.test], float) - prediction
-        swap = detector_swap_rmse(spec, fitted, dataset, config["mode"], split.test)
-        paired = paired_ctr_improvement(
-            corrected,
-            replica.led_ps,
-            config["fit"],
-            seed=semantic_seed(split.seed, "paired_led_ml", selected_candidate),
-            led_ctr_ps=replica.led_ctr_ps,
-            led_rmse_ps=replica.led_rmse_ps,
-        )
-        store.save_blind_residuals(split.seed, selected_candidate, corrected)
-        row = _replica_row(
-            replica_index=replica_index,
-            seed=split.seed,
-            candidate_id=selected_candidate,
-            corrected=corrected,
-            led=replica.led_ps,
-            spec=spec,
-            config=config,
-            event_identity=event_identity,
-            protocol_identity=protocol_identity,
-            sampling_identity=fixed.sampling_identity,
-            train_n=len(split.train),
-            swap_rmse_ps=swap,
-            paired=paired,
-        )
-        store.upsert_result(row)
-
-        if _should_save_model(config["save_models"], replica_index):
-            save_model(
+            prediction = predict_indices(
                 spec,
                 fitted,
-                store.model_dir(replica_index, split.seed, selected_candidate),
-                selected_params,
+                dataset,
+                config["mode"],
+                split.test,
+                chunk_size=prediction_chunk_size,
             )
-            logger.info("Replica model saved | replica=%d", replica_index)
+            corrected = np.asarray(target[split.test], float) - prediction
+            swap = detector_swap_rmse(
+                spec,
+                fitted,
+                dataset,
+                config["mode"],
+                split.test,
+                forward_prediction=prediction,
+                chunk_size=prediction_chunk_size,
+            )
+            paired = paired_ctr_improvement(
+                corrected,
+                replica.led_ps,
+                config["fit"],
+                seed=semantic_seed(split.seed, "paired_led_ml", selected_candidate),
+                led_ctr_ps=replica.led_ctr_ps,
+                led_rmse_ps=replica.led_rmse_ps,
+            )
+            store.save_blind_residuals(split.seed, selected_candidate, corrected)
+            row = _replica_row(
+                replica_index=replica_index,
+                seed=split.seed,
+                candidate_id=selected_candidate,
+                corrected=corrected,
+                led=replica.led_ps,
+                spec=spec,
+                config=config,
+                event_identity=event_identity,
+                protocol_identity=protocol_identity,
+                sampling_identity=fixed.sampling_identity,
+                train_n=len(split.train),
+                swap_rmse_ps=swap,
+                paired=paired,
+            )
+            store.upsert_result(row)
 
-        logger.info(
-            "Replica result | replica=%d | CTR=%.3f ps | LED CTR=%.3f ps | improvement=%.3f ps (%.2f%%) | RMSE=%.3f ps",
-            replica_index,
-            row["ctr_ps"],
-            row["uncorrected_ctr_ps"],
-            row["improvement_ps"],
-            row["improvement_percent"],
-            row["rmse_ps"],
-        )
-        progress.complete("replica", f"replica {replica_index}", announce=False)
+            if _should_save_model(config["save_models"], replica_index):
+                save_model(
+                    spec,
+                    fitted,
+                    store.model_dir(replica_index, split.seed, selected_candidate),
+                    selected_params,
+                )
+                logger.info("Replica model saved | replica=%d", replica_index)
+
+            logger.info(
+                "Replica result | replica=%d | CTR=%.3f ps | LED CTR=%.3f ps | improvement=%.3f ps (%.2f%%) | RMSE=%.3f ps",
+                replica_index,
+                row["ctr_ps"],
+                row["uncorrected_ctr_ps"],
+                row["improvement_ps"],
+                row["improvement_percent"],
+                row["rmse_ps"],
+            )
+            progress.complete("replica", f"replica {replica_index}", announce=False)
+        finally:
+            replica_transform_cache.clear()
+            replica_fit_input_cache.clear()
+            del paired, corrected, prediction, fitted
+            del replica_transform_cache, replica_fit_input_cache, split, replica
+            release_training_memory()
 
     rows = store.read_results()
     plot_hyperparameter_validation(
