@@ -153,7 +153,12 @@ def fit(params, train_x, train_target, *, seed, config):
             "shared_minirocket transformed input and target must contain the same number of events"
         )
 
-    regressor = Ridge(alpha=float(params["ridge_alpha"]), fit_intercept=False)
+    regressor = Ridge(
+        alpha=float(params["ridge_alpha"]),
+        fit_intercept=False,
+        solver="lsqr",
+        tol=1e-4,
+    )
     regressor.fit(features, y)
     return SharedMiniRocketArtifact(
         regressor=regressor,
