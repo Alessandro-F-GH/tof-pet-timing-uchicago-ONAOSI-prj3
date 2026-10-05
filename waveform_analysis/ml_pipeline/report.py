@@ -38,10 +38,9 @@ def _validated_manifest(run_dir: Path) -> dict:
 
 def _model_identity(manifest: dict, run_dir: Path) -> tuple[str, str]:
     model = str(manifest["model"])
-    if model in model_names():
-        formulation = str(get_model(model).estimator_formulation).strip().lower()
-    else:
-        formulation = str(manifest.get("estimator_formulation", "")).strip().lower()
+    if model not in model_names():
+        raise RuntimeError(f"Unregistered model in {run_dir}: {model!r}")
+    formulation = str(get_model(model).estimator_formulation).strip().lower()
     if formulation not in {"shared", "direct"}:
         raise RuntimeError(
             f"Invalid estimator formulation in {run_dir}: {formulation!r} "
