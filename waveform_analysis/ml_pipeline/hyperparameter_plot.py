@@ -120,7 +120,8 @@ def plot_hyperparameter_validation(
 
     if logger:
         logger.info(
-            "Hyperparameter plot uses fixed-validation RMSE for one result per candidate; no CTR selection and no replica averaging"
+            "Hyperparameter plot uses fixed-validation %s for one result per candidate; no replica averaging",
+            metric_label,
         )
 
     fig.tight_layout()
