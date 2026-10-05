@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import gc
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,9 @@ from .splits import semantic_seed
 from .view import model_target, waveform_view
 
 
+_DEFAULT_PREDICTION_CHUNK_SIZE = 4096
+
+
 @dataclass
 class FittedFeatureTransform:
     spec: Any
@@ -23,10 +27,7 @@ class FittedFeatureTransform:
     seed: int
     cache: dict[str, np.ndarray] = field(default_factory=dict)
 
-    def apply(self, values, cache_key):
-        key = str(cache_key)
-        if key in self.cache:
-            return self.cache[key]
+    def apply(self, values):
         transformed = np.asarray(
             self.spec.transform(self.artifact, np.asarray(values, np.float32))
         )
@@ -38,13 +39,17 @@ class FittedFeatureTransform:
             raise RuntimeError(
                 f"Feature transform {self.spec.name} produced non-finite values"
             )
-        self.cache[key] = transformed
         return transformed
 
 
 class FeatureTransformCache:
+    """Keep only one fitted feature transform and its transformed fit input in RAM."""
+
     def __init__(self):
         self._items = {}
+
+    def clear(self):
+        self._items.clear()
 
     def prepare(self, spec, parameters, values, *, seed_base, scope_key, config):
         transform_parameters = dict(spec.parameters(dict(parameters or {}), config) or {})
@@ -64,6 +69,12 @@ class FeatureTransformCache:
         fit_key = f"fit:{scope_key}"
         if cached is not None:
             return cached, cached.cache[fit_key]
+
+        # A different transform configuration supersedes the previous one.
+        # This preserves reuse across candidates that share the same transform
+        # parameters (for example MiniRocket ridge-alpha scans) without letting
+        # transformed matrices accumulate across the whole optimization.
+        self.clear()
 
         artifact, transformed = spec.fit_transform(
             transform_parameters,
@@ -111,6 +122,9 @@ class PreparedFitInput:
 class FitInputCache:
     def __init__(self):
         self._items = {}
+
+    def clear(self):
+        self._items.clear()
 
     def prepare(self, spec, dataset, mode, indices):
         idx = np.asarray(indices, np.int64)
@@ -166,6 +180,17 @@ class FittedModel:
     output_max_abs_ps: float | None = None
     sample_mask: np.ndarray | None = None
     feature_transform: FittedFeatureTransform | None = None
+
+
+def release_training_memory():
+    """Release cyclic Python objects and unused CUDA allocator blocks."""
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _fit_once(
@@ -265,6 +290,11 @@ def fit_on_indices(
             "sample_mask_training_events": int(y.size),
             "input_samples_before_mask": int(mask.size),
             "input_samples_after_mask": int(mask.sum()),
+            "prediction_chunk_size": int(
+                config.get("runtime", {}).get(
+                    "prediction_chunk_size", _DEFAULT_PREDICTION_CHUNK_SIZE
+                )
+            ),
         }
     )
     if feature_transform is not None:
@@ -288,24 +318,11 @@ def _model_input(fitted, dataset, mode, indices, *, swapped=False):
     pair = np.ascontiguousarray(pair)
     if fitted.feature_transform is None:
         return pair
-
-    protocol_identity = str(
-        dataset.manifest.get("analysis_protocol_identity")
-        or dataset.manifest["analysis_population_identity"]
-    )
-    key = canonical_hash(
-        {
-            "protocol": protocol_identity,
-            "mode": mode,
-            "indices": idx.tolist(),
-            "swapped": bool(swapped),
-        }
-    )
-    return fitted.feature_transform.apply(pair, key)
+    return fitted.feature_transform.apply(pair)
 
 
 def _prediction_from_input(spec, fitted, values):
-    prediction = np.asarray(spec.predict(fitted.artifact, values), np.float64)
+    prediction = np.asarray(spec.predict(fitted.artifact, values), np.float64).reshape(-1)
     if fitted.output_max_abs_ps is not None:
         prediction = np.clip(
             prediction,
@@ -315,21 +332,87 @@ def _prediction_from_input(spec, fitted, values):
     return prediction
 
 
-def predict_indices(spec, fitted, dataset, mode, indices):
-    return _prediction_from_input(
-        spec, fitted, _model_input(fitted, dataset, mode, indices)
+def _resolve_prediction_chunk_size(fitted, chunk_size):
+    value = (
+        fitted.metadata.get("prediction_chunk_size", _DEFAULT_PREDICTION_CHUNK_SIZE)
+        if chunk_size is None
+        else chunk_size
+    )
+    value = int(value)
+    if value < 1:
+        raise ValueError("prediction chunk size must be >= 1")
+    return value
+
+
+def _predict_indices(spec, fitted, dataset, mode, indices, *, swapped, chunk_size=None):
+    idx = np.asarray(indices, np.int64).reshape(-1)
+    if not idx.size:
+        return np.empty(0, dtype=np.float64)
+
+    chunk = _resolve_prediction_chunk_size(fitted, chunk_size)
+    output = np.empty(idx.size, dtype=np.float64)
+    for start in range(0, idx.size, chunk):
+        stop = min(start + chunk, idx.size)
+        prediction = _prediction_from_input(
+            spec,
+            fitted,
+            _model_input(fitted, dataset, mode, idx[start:stop], swapped=swapped),
+        )
+        if prediction.size != stop - start:
+            raise RuntimeError(
+                f"Model prediction changed the event axis: expected {stop - start}, got {prediction.size}"
+            )
+        output[start:stop] = prediction
+    return output
+
+
+def predict_indices(spec, fitted, dataset, mode, indices, *, chunk_size=None):
+    return _predict_indices(
+        spec,
+        fitted,
+        dataset,
+        mode,
+        indices,
+        swapped=False,
+        chunk_size=chunk_size,
     )
 
 
-def detector_swap_rmse(spec, fitted, dataset, mode, indices):
+def detector_swap_rmse(
+    spec,
+    fitted,
+    dataset,
+    mode,
+    indices,
+    *,
+    forward_prediction=None,
+    chunk_size=None,
+):
     if spec.estimator_formulation == "shared":
         return 0.0
-    forward = _prediction_from_input(
-        spec, fitted, _model_input(fitted, dataset, mode, indices)
+    forward = (
+        np.asarray(forward_prediction, np.float64).reshape(-1)
+        if forward_prediction is not None
+        else predict_indices(
+            spec,
+            fitted,
+            dataset,
+            mode,
+            indices,
+            chunk_size=chunk_size,
+        )
     )
-    reverse = _prediction_from_input(
-        spec, fitted, _model_input(fitted, dataset, mode, indices, swapped=True)
+    reverse = _predict_indices(
+        spec,
+        fitted,
+        dataset,
+        mode,
+        indices,
+        swapped=True,
+        chunk_size=chunk_size,
     )
+    if forward.shape != reverse.shape:
+        raise RuntimeError("Detector-swap diagnostic prediction shape mismatch")
     epsilon = forward + reverse
     if not np.all(np.isfinite(epsilon)):
         raise RuntimeError("Detector-swap diagnostic produced non-finite predictions")
@@ -358,6 +441,16 @@ def _load_pickle_feature_transform(spec, directory):
     return FittedFeatureTransform(spec.feature_transform, artifact, "reloaded", {}, 0, {})
 
 
+def _loaded_metadata(artifact, config):
+    metadata = dict(getattr(artifact, "metadata", {}) or {})
+    metadata["prediction_chunk_size"] = int(
+        config.get("runtime", {}).get(
+            "prediction_chunk_size", _DEFAULT_PREDICTION_CHUNK_SIZE
+        )
+    )
+    return metadata
+
+
 def load_fitted_model(spec, directory, parameters, config):
     directory = Path(directory)
     mask = np.load(directory / "sample_mask.npy").astype(bool)
@@ -381,7 +474,7 @@ def load_fitted_model(spec, directory, parameters, config):
             feature_transform = _load_pickle_feature_transform(spec, directory)
         return FittedModel(
             artifact,
-            dict(getattr(artifact, "metadata", {}) or {}),
+            _loaded_metadata(artifact, config),
             output_limit,
             mask,
             feature_transform,
@@ -396,6 +489,11 @@ def load_fitted_model(spec, directory, parameters, config):
         weights_only=False,
     )
     metadata = dict(payload.get("metadata", {}) or {})
+    metadata["prediction_chunk_size"] = int(
+        config.get("runtime", {}).get(
+            "prediction_chunk_size", _DEFAULT_PREDICTION_CHUNK_SIZE
+        )
+    )
     n = int(mask.sum())
     p = dict(parameters or {})
 
