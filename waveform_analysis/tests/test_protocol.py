@@ -116,7 +116,7 @@ def test_model_selection_metric_is_required_and_validated(tmp_path):
             "led_selection": {"thresholds_mV": [15], "minimum_crossing_efficiency": 0.95, "coincidence_window_ns": 2},
             "io": {},
         },
-        "model": "linear_ridge",
+        "model": "shared_linear_ridge",
         "mode": "energy_to_energy",
         "window": {"start": -1, "end": 1},
         "seed": 1,
@@ -161,7 +161,7 @@ def test_compact_benchmark_uses_configured_validation_metric_and_blind_fraction(
     package_root = Path(study.__file__).resolve().parents[1]
     config_path = package_root / "config" / "batches" / "benchmark_other_models_49V.json"
     resolved = load_batch_config(config_path, project_root=package_root)
-    assert len(resolved.runs) == 8 * 2 * 2
+    assert len(resolved.runs) == 9 * 2 * 2
     assert resolved.protocol["seed"] == 1001
     assert resolved.protocol["model_selection"] == {"validation_fraction": 0.20, "metric": "ctr"}
     assert resolved.protocol["evaluation"] == {"n_replicas": 5, "blind_fraction": 0.50, "minimum_events_per_split": 50}
@@ -266,7 +266,7 @@ def test_validation_ctr_uses_central_fit_without_bootstrap(monkeypatch):
         corrected=np.asarray([1.0, -1.0, 0.5]),
         raw_validation_rmse=2.0,
         raw_validation_ctr=50.0,
-        spec=type("Spec", (), {"name": "linear_ridge", "estimator_formulation": "shared"})(),
+        spec=type("Spec", (), {"name": "shared_linear_ridge", "estimator_formulation": "shared"})(),
         config={"fit": {"histogram_bin_width_ps": 10.0}, "mode": "energy_to_energy", "window_ns": {"start": -1.0, "end": 1.0}},
         event_identity="events",
         protocol_identity="protocol",
