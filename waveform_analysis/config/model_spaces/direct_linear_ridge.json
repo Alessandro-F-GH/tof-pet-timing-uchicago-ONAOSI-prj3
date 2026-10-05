@@ -1,14 +1,22 @@
 {
   "model": "direct_linear_ridge",
   "optimization": {
-    "strategy": "grid"
+    "strategy": "optuna",
+    "sampler": "tpe",
+    "n_trials": 20,
+    "n_startup_trials": 5
   },
   "parameters": {
     "ridge_alpha": {
-      "type": "categorical",
-      "choices": [ 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1 , 10]
+      "type": "float",
+      "low": 1e-8,
+      "high": 1e3,
+      "log": true
     }
   },
-  "training": {},
+  "training": {
+    "solver": "lsqr",
+    "tol": 1e-4
+  },
   "verbose": false
 }

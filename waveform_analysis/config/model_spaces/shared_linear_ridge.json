@@ -9,14 +9,14 @@
   "parameters": {
     "ridge_alpha": {
       "type": "float",
-      "low": 1e-6,
-      "high": 10.0,
+      "low": 1e-8,
+      "high": 1e3,
       "log": true
     }
   },
   "training": {
     "solver": "lsqr",
-    "tol": 1e-6
+    "tol": 1e-4
   },
   "verbose": false
 }
