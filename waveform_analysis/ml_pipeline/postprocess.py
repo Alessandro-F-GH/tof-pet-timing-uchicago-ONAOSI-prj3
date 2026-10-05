@@ -21,6 +21,10 @@ def remake_study_plots(config, *, logger=None):
     if not rows:
         raise RuntimeError(f"No result rows found in {store.results_path}")
 
+    selection_name = str(config["model_selection"]["metric"])
+    selection_field = "ctr_ps" if selection_name == "ctr" else "rmse_ps"
+    selection_label = "CTR" if selection_name == "ctr" else "RMSE"
+
     candidates_path = run_dir / "candidates.json"
     if candidates_path.is_file():
         candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
@@ -28,8 +32,10 @@ def remake_study_plots(config, *, logger=None):
             plot_hyperparameter_validation(
                 rows,
                 candidates,
-                run_dir / "hyperparameter_validation_rmse.png",
+                run_dir / f"hyperparameter_validation_{selection_name}.png",
                 log,
+                metric=selection_field,
+                metric_label=selection_label,
             )
 
     plots = make_study_result_plots(
