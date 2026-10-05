@@ -11,12 +11,13 @@ from typing import Any
 import numpy as np
 
 from .common import atomic_json, canonical_hash
+from .sample_mask import apply_sample_mask, training_sample_mask
 from .splits import semantic_seed
 from .train import FittedFeatureTransform
 from .view import waveform_view
 
 
-_CACHE_SCHEMA_VERSION = 1
+_CACHE_SCHEMA_VERSION = 2
 _MINIROCKET_TRANSFORMS = {
     "direct_minirocket_multivariate",
     "shared_minirocket_univariate",
@@ -28,6 +29,7 @@ class PersistentFeatureCache:
     directory: Path
     features: np.ndarray
     transform: FittedFeatureTransform
+    sample_mask: np.ndarray
     metadata: dict[str, Any]
 
     def rows(self, indices) -> np.ndarray:
@@ -42,6 +44,15 @@ def is_minirocket_transform(feature_transform) -> bool:
     )
 
 
+def _training_sample_mask(dataset, mode, fit_indices) -> np.ndarray:
+    idx = np.asarray(fit_indices, dtype=np.int64)
+    pair = waveform_view(dataset, mode, idx).materialize()
+    try:
+        return training_sample_mask(pair)
+    finally:
+        del pair
+
+
 def transform_identity(
     spec,
     model_space,
@@ -54,8 +65,6 @@ def transform_identity(
 ):
     if spec.feature_transform is None:
         raise ValueError("feature transform is required")
-    if not spec.preserve_temporal_grid:
-        raise ValueError("persistent feature caching currently requires preserve_temporal_grid=True")
 
     idx = np.asarray(fit_indices, dtype=np.int64)
     transform_parameters = dict(
@@ -72,8 +81,7 @@ def transform_identity(
         dataset.manifest.get("analysis_protocol_identity")
         or dataset.manifest["analysis_population_identity"]
     )
-    view = waveform_view(dataset, mode, np.empty(0, dtype=np.int64))
-    sample_mask = np.ones(int(view.time_ps.size), dtype=bool)
+    sample_mask = _training_sample_mask(dataset, mode, idx)
     scope_key = canonical_hash(
         {
             "protocol": protocol_identity,
@@ -129,7 +137,7 @@ def load_feature_cache(
     if not is_minirocket_transform(spec.feature_transform):
         return None
 
-    identity, transform_parameters, transform_seed, _ = transform_identity(
+    identity, transform_parameters, transform_seed, sample_mask = transform_identity(
         spec,
         model_space,
         dataset,
@@ -160,6 +168,9 @@ def load_feature_cache(
         "analysis_protocol_identity": str(dataset.manifest["analysis_protocol_identity"]),
         "mode": str(mode),
         "n_events": int(dataset.n_events),
+        "sample_mask_identity": canonical_hash(sample_mask.tolist()),
+        "input_samples_before_mask": int(sample_mask.size),
+        "input_samples_after_mask": int(sample_mask.sum()),
         "dtype": "float32",
     }
     if any(metadata.get(key) != value for key, value in expected.items()):
@@ -177,14 +188,16 @@ def load_feature_cache(
     transform = _load_transform(spec, transform_path, metadata)
     if logger is not None:
         logger.info(
-            "Feature cache reused | %s | id=%s | events=%d | features=%d | size=%.2f GiB",
+            "Feature cache reused | %s | id=%s | events=%d | features=%d | samples=%d/%d | size=%.2f GiB",
             spec.feature_transform.name,
             identity[:12],
             features.shape[0],
             features.shape[1],
+            int(sample_mask.sum()),
+            int(sample_mask.size),
             features.nbytes / (1024**3),
         )
-    return PersistentFeatureCache(directory, features, transform, metadata)
+    return PersistentFeatureCache(directory, features, transform, sample_mask, metadata)
 
 
 def _save_transform(path: Path, artifact) -> None:
@@ -217,7 +230,21 @@ def build_feature_cache(
         raise ValueError("persistent feature caching is only enabled for MiniRocket transforms")
 
     idx_fit = np.asarray(fit_indices, dtype=np.int64)
+    expected_identity, _, _, sample_mask = transform_identity(
+        spec,
+        model_space,
+        dataset,
+        config["mode"],
+        idx_fit,
+        parameters,
+        seed_base=int(seed_base),
+    )
     identity = str(feature_transform.identity)
+    if identity != expected_identity:
+        raise RuntimeError(
+            "MiniRocket feature-transform identity does not match the training-derived sample mask"
+        )
+
     directory = cache_directory(dataset, spec.feature_transform.name, identity)
     directory.mkdir(parents=True, exist_ok=True)
     features_path = directory / "features.npy"
@@ -269,13 +296,15 @@ def build_feature_cache(
     total_remaining = int(remaining.size)
     if logger is not None:
         logger.info(
-            "Feature cache build | %s | id=%s | events=%d | prefilled=%d | remaining=%d | features=%d | dtype=float32 | chunk=%d",
+            "Feature cache build | %s | id=%s | events=%d | prefilled=%d | remaining=%d | features=%d | samples=%d/%d | dtype=float32 | chunk=%d",
             spec.feature_transform.name,
             identity[:12],
             int(dataset.n_events),
             int(idx_fit.size if fit_features is not None else 0),
             total_remaining,
             feature_count,
+            int(sample_mask.sum()),
+            int(sample_mask.size),
             chunk_size,
         )
 
@@ -284,6 +313,7 @@ def build_feature_cache(
             stop = min(start + chunk_size, total_remaining)
             chunk_indices = remaining[start:stop]
             pair = waveform_view(dataset, config["mode"], chunk_indices).materialize()
+            pair = apply_sample_mask(pair, sample_mask)
             transformed = np.asarray(feature_transform.apply(pair), dtype=np.float32)
             if transformed.shape != (chunk_indices.size, feature_count):
                 raise RuntimeError(
@@ -319,6 +349,9 @@ def build_feature_cache(
             "fit_events": int(idx_fit.size),
             "n_events": int(dataset.n_events),
             "feature_count": feature_count,
+            "sample_mask_identity": canonical_hash(sample_mask.tolist()),
+            "input_samples_before_mask": int(sample_mask.size),
+            "input_samples_after_mask": int(sample_mask.sum()),
             "dtype": "float32",
             "feature_file": str(features_path.resolve()),
             "transform_file": str(transform_path.resolve()),
@@ -336,11 +369,13 @@ def build_feature_cache(
     feature_transform.cache.clear()
     if logger is not None:
         logger.info(
-            "Feature cache complete | %s | id=%s | events=%d | features=%d | size=%.2f GiB",
+            "Feature cache complete | %s | id=%s | events=%d | features=%d | samples=%d/%d | size=%.2f GiB",
             spec.feature_transform.name,
             identity[:12],
             features.shape[0],
             features.shape[1],
+            int(sample_mask.sum()),
+            int(sample_mask.size),
             features.nbytes / (1024**3),
         )
-    return PersistentFeatureCache(directory, features, feature_transform, metadata)
+    return PersistentFeatureCache(directory, features, feature_transform, sample_mask, metadata)
