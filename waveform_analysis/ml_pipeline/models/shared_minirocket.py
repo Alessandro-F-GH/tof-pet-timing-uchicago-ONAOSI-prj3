@@ -66,7 +66,7 @@ def _transformer(parameters, seed):
 def _array(features) -> np.ndarray:
     if hasattr(features, "to_numpy"):
         features = features.to_numpy()
-    return np.asarray(features, dtype=np.float64)
+    return np.asarray(features, dtype=np.float32)
 
 
 def _single_channel_input(values: np.ndarray) -> np.ndarray:
@@ -91,8 +91,6 @@ def fit_transform(parameters, train_x, *, seed, config):
     if pair.shape[-1] < 9:
         raise ValueError("shared_minirocket requires at least 9 temporal samples")
 
-    # Fit exactly one univariate MiniRocket on the pooled detector waveforms so
-    # both detectors use the same fitted random-feature map phi.
     pooled = np.concatenate([pair[:, 0, :], pair[:, 1, :]], axis=0)
     transformer = _transformer(parameters, seed)
     pooled_features = _array(transformer.fit_transform(_single_channel_input(pooled)))
@@ -101,9 +99,9 @@ def fit_transform(parameters, train_x, *, seed, config):
     scaler.fit(pooled_features)
 
     n = pair.shape[0]
-    z1 = np.asarray(scaler.transform(pooled_features[:n]), dtype=np.float64)
-    z2 = np.asarray(scaler.transform(pooled_features[n:]), dtype=np.float64)
-    difference = z1 - z2
+    z1 = np.asarray(scaler.transform(pooled_features[:n], copy=False), dtype=np.float32)
+    z2 = np.asarray(scaler.transform(pooled_features[n:], copy=False), dtype=np.float32)
+    difference = np.asarray(z1 - z2, dtype=np.float32)
 
     artifact = SharedMiniRocketTransformArtifact(
         transformer=transformer,
@@ -114,6 +112,7 @@ def fit_transform(parameters, train_x, *, seed, config):
             "num_kernels": int(parameters["num_kernels"]),
             "n_jobs": int(parameters.get("n_jobs", -1)),
             "feature_count": int(difference.shape[1]),
+            "feature_dtype": str(difference.dtype),
             "training_events": int(n),
             "pooled_transform_fit_waveforms": int(pooled.shape[0]),
             "training_seed": int(seed),
@@ -129,9 +128,9 @@ def transform(
     pair = _pair(normalized_pair)
     z1 = _array(artifact.transformer.transform(_single_channel_input(pair[:, 0, :])))
     z2 = _array(artifact.transformer.transform(_single_channel_input(pair[:, 1, :])))
-    z1 = np.asarray(artifact.scaler.transform(z1), dtype=np.float64)
-    z2 = np.asarray(artifact.scaler.transform(z2), dtype=np.float64)
-    return z1 - z2
+    z1 = np.asarray(artifact.scaler.transform(z1, copy=False), dtype=np.float32)
+    z2 = np.asarray(artifact.scaler.transform(z2, copy=False), dtype=np.float32)
+    return np.asarray(z1 - z2, dtype=np.float32)
 
 
 def save_transform(artifact: SharedMiniRocketTransformArtifact, path: Path) -> None:
@@ -142,7 +141,7 @@ def save_transform(artifact: SharedMiniRocketTransformArtifact, path: Path) -> N
 
 def fit(params, train_x, train_target, *, seed, config):
     del seed, config
-    features = np.asarray(train_x, dtype=np.float64)
+    features = np.asarray(train_x, dtype=np.float32)
     y = np.asarray(train_target, dtype=np.float64)
     if features.ndim != 2:
         raise ValueError(
@@ -154,7 +153,6 @@ def fit(params, train_x, train_target, *, seed, config):
             "shared_minirocket transformed input and target must contain the same number of events"
         )
 
-    # No intercept preserves exact antisymmetry after feature differencing.
     regressor = Ridge(alpha=float(params["ridge_alpha"]), fit_intercept=False)
     regressor.fit(features, y)
     return SharedMiniRocketArtifact(
@@ -168,13 +166,14 @@ def fit(params, train_x, train_target, *, seed, config):
             "fit_intercept": False,
             "training_events": int(y.size),
             "feature_count": int(features.shape[1]),
+            "feature_dtype": str(features.dtype),
         },
     )
 
 
 def predict(artifact: SharedMiniRocketArtifact, features: np.ndarray) -> np.ndarray:
     return np.asarray(
-        artifact.regressor.predict(np.asarray(features, dtype=np.float64)),
+        artifact.regressor.predict(np.asarray(features, dtype=np.float32)),
         dtype=np.float64,
     )
 
