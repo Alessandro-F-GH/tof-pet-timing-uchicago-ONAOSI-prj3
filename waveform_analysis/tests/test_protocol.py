@@ -73,7 +73,7 @@ def test_results_schema_separates_fixed_tuning_from_replicas():
 
 def test_result_upsert_keys_validation_and_replica_separately(tmp_path):
     store = RunStore(tmp_path / "run")
-    validation = {"phase": "hyperparameter_validation", "replica_index": "", "seed": 1, "candidate_id": "abc", "selected": False, "rmse_ps": 60.0}
+    validation = {"phase": "hyperparameter_validation", "replica_index": "", "seed": 1, "candidate_id": "abc", "selected": False, "rmse_ps": 60.0, "ctr_ps": 70.0}
     replica = {"phase": "replica", "replica_index": 1, "seed": 2, "candidate_id": "abc", "selected": True, "ctr_ps": 55.0}
     store.upsert_result(validation)
     store.upsert_result(replica)
@@ -82,17 +82,58 @@ def test_result_upsert_keys_validation_and_replica_separately(tmp_path):
     assert len(rows) == 2
     assert [row["phase"] for row in rows] == ["hyperparameter_validation", "replica"]
     assert float(rows[0]["rmse_ps"]) == 60.0
+    assert float(rows[0]["ctr_ps"]) == 70.0
     assert float(rows[1]["ctr_ps"]) == 54.0
 
 
-def test_hyperparameter_plot_uses_fixed_validation_rmse(tmp_path):
+def test_hyperparameter_plot_accepts_ctr_or_rmse(tmp_path):
     candidates = {"a": {"learning_rate": 1e-3}, "b": {"learning_rate": 1e-2}}
     rows = [
-        {"phase": "hyperparameter_validation", "replica_index": "", "candidate_id": "a", "rmse_ps": 60.0},
-        {"phase": "hyperparameter_validation", "replica_index": "", "candidate_id": "b", "rmse_ps": 55.0},
+        {"phase": "hyperparameter_validation", "replica_index": "", "candidate_id": "a", "rmse_ps": 60.0, "ctr_ps": 70.0},
+        {"phase": "hyperparameter_validation", "replica_index": "", "candidate_id": "b", "rmse_ps": 55.0, "ctr_ps": 65.0},
     ]
-    path = plot_hyperparameter_validation(rows, candidates, tmp_path / "validation_rmse.png")
-    assert path is not None and path.is_file()
+    rmse = plot_hyperparameter_validation(rows, candidates, tmp_path / "validation_rmse.png")
+    ctr = plot_hyperparameter_validation(
+        rows,
+        candidates,
+        tmp_path / "validation_ctr.png",
+        metric="ctr_ps",
+        metric_label="CTR",
+    )
+    assert rmse is not None and rmse.is_file()
+    assert ctr is not None and ctr.is_file()
+
+
+def test_model_selection_metric_is_required_and_validated(tmp_path):
+    base = {
+        "reference_dataset": {"root_file": "a.root", "true_tof_ps": 0, "channels": {"energy": [1, 2], "polarities": [1, 1]}},
+        "analysis_dataset": {"root_file": "b.root", "true_tof_ps": 0, "channels": {"energy": [1, 2], "polarities": [1, 1]}},
+        "preprocessing_config": {
+            "materialized_window_ns": {"before": 7, "after": 40},
+            "energy": {}, "timing": {},
+            "selection": {"baseline_window_ns": [-2, -1], "baseline_noise": {"lambda_mad": 5}, "baseline_clipping": {"margin_mV": 1}},
+            "photopeak": {}, "tot_peak": {},
+            "led_selection": {"thresholds_mV": [15], "minimum_crossing_efficiency": 0.95, "coincidence_window_ns": 2},
+            "io": {},
+        },
+        "model": "linear_ridge",
+        "mode": "energy_to_energy",
+        "window": {"start": -1, "end": 1},
+        "seed": 1,
+        "evaluation": {"n_replicas": 2, "blind_fraction": 0.5, "minimum_events_per_split": 1},
+        "fit": {"histogram_bin_width_ps": 20},
+        "ml_output": {"max_abs_ps": 100},
+        "output_dir": "x",
+    }
+    missing = tmp_path / "missing.json"
+    missing.write_text(json.dumps({**base, "model_selection": {"validation_fraction": 0.1}}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="validation_fraction and metric"):
+        load_config(missing, project_root=tmp_path)
+
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text(json.dumps({**base, "model_selection": {"validation_fraction": 0.1, "metric": "mae"}}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="model_selection.metric"):
+        load_config(invalid, project_root=tmp_path)
 
 
 def test_unsupported_study_schema_is_rejected(tmp_path):
@@ -105,7 +146,7 @@ def test_unsupported_study_schema_is_rejected(tmp_path):
         "mode": "energy_to_energy",
         "window": {"start": -1, "end": 1},
         "seed": 1,
-        "model_selection": {"validation_fraction": 0.1},
+        "model_selection": {"validation_fraction": 0.1, "metric": "ctr"},
         "evaluation": {"n_replicas": 2, "blind_fraction": 0.5, "minimum_events_per_split": 1},
         "fit": {"histogram_bin_width_ps": 20},
         "ml_output": {"max_abs_ps": 100},
@@ -116,13 +157,13 @@ def test_unsupported_study_schema_is_rejected(tmp_path):
         load_config(path, project_root=tmp_path)
 
 
-def test_compact_benchmark_uses_fixed_validation_and_blind_fraction():
+def test_compact_benchmark_uses_configured_validation_metric_and_blind_fraction():
     package_root = Path(study.__file__).resolve().parents[1]
     config_path = package_root / "config" / "batches" / "benchmark_other_models_49V.json"
     resolved = load_batch_config(config_path, project_root=package_root)
     assert len(resolved.runs) == 8 * 2 * 2
     assert resolved.protocol["seed"] == 1001
-    assert resolved.protocol["model_selection"] == {"validation_fraction": 0.20}
+    assert resolved.protocol["model_selection"] == {"validation_fraction": 0.20, "metric": "ctr"}
     assert resolved.protocol["evaluation"] == {"n_replicas": 5, "blind_fraction": 0.50, "minimum_events_per_split": 50}
     assert {config["save_models"] for config in resolved.runs} == {"first"}
     assert all("resampling" not in config for config in resolved.runs)
@@ -196,15 +237,42 @@ def test_prepared_data_uses_control_led_and_window_scoped_population():
     assert 'coincidence & window_valid' in source
 
 
-def test_study_flow_uses_rmse_tuning_and_excludes_validation_from_replicas():
+def test_study_flow_supports_ctr_or_rmse_tuning_and_excludes_validation_from_replicas():
     source = inspect.getsource(study.run_study)
-    assert '"hyperparameter_validation"' in source
-    assert 'for replica_index in range(1, n_replicas + 1)' in source
-    assert 'fixed.split.tuning_train' in source
+    assert 'selection_field = "ctr_ps" if selection_name == "ctr" else "rmse_ps"' in source
+    assert 'row.get(selection_field' in source
+    assert '"selection_metric": selection_metric' in source
     assert 'fixed.split.validation' in source
-    assert 'CandidateScore(candidate_id, float(row["rmse_ps"]))' in source
-    assert '"selection_metric": "fixed_validation_rmse_ps"' in source
     assert 'fixed validation excluded' in source.lower()
     assert 'fixed validation included in train' not in source.lower()
-    assert 'hyperparameter_validation_ctr.png' not in source
     assert 'final refit' not in source.lower()
+
+
+def test_validation_ctr_uses_central_fit_without_bootstrap(monkeypatch):
+    calls = []
+
+    class Result:
+        ctr_ps = 42.0
+
+    def fake_ctr(values, config, *, seed, bootstrap):
+        calls.append(bootstrap)
+        return Result()
+
+    monkeypatch.setattr(study, "ctr_estimate", fake_ctr)
+    row = study._validation_row(
+        seed=1,
+        candidate_id="a",
+        selected=False,
+        corrected=np.asarray([1.0, -1.0, 0.5]),
+        raw_validation_rmse=2.0,
+        raw_validation_ctr=50.0,
+        spec=type("Spec", (), {"name": "linear_ridge", "estimator_formulation": "shared"})(),
+        config={"fit": {"histogram_bin_width_ps": 10.0}, "mode": "energy_to_energy", "window_ns": {"start": -1.0, "end": 1.0}},
+        event_identity="events",
+        protocol_identity="protocol",
+        sampling_identity="sampling",
+        train_n=3,
+    )
+    assert calls == [False]
+    assert row["ctr_ps"] == pytest.approx(42.0)
+    assert row["uncorrected_ctr_ps"] == pytest.approx(50.0)
