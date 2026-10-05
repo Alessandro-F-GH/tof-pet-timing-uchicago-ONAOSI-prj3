@@ -20,7 +20,7 @@
     },
     "batch_size": {
       "type": "fixed",
-      "value": [32]
+      "value": 32
     }
   },
   "training": {
