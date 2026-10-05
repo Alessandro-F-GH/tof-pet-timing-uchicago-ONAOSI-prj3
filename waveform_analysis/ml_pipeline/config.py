@@ -9,6 +9,7 @@ from .common import canonical_hash
 
 CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
 MODEL_SAVE_POLICIES = ("all", "first", "none")
+DEFAULT_PREDICTION_CHUNK_SIZE = 4096
 
 
 class ConfigError(ValueError):
@@ -111,6 +112,19 @@ def _fit(raw):
     return fit
 
 
+def _runtime(raw=None):
+    value = copy.deepcopy(raw or {})
+    if not isinstance(value, dict):
+        raise ConfigError("runtime must be an object")
+    extra = set(value) - {"prediction_chunk_size"}
+    if extra:
+        raise ConfigError(f"Unsupported runtime fields: {sorted(extra)}")
+    chunk = int(value.get("prediction_chunk_size", DEFAULT_PREDICTION_CHUNK_SIZE))
+    if chunk < 1:
+        raise ConfigError("runtime.prediction_chunk_size must be >= 1")
+    return {"prediction_chunk_size": chunk}
+
+
 def _save_models(raw):
     value = str(raw if raw is not None else "all").strip().lower()
     if value not in MODEL_SAVE_POLICIES:
@@ -142,7 +156,7 @@ def _evaluation(raw):
 def validate_config(config):
     required = (
         "reference", "analysis", "preprocessing", "mode", "model", "window_ns",
-        "seed", "model_selection", "evaluation", "fit", "ml_input", "ml_output", "output_dir",
+        "seed", "model_selection", "evaluation", "fit", "ml_input", "ml_output", "runtime", "output_dir",
     )
     for key in required:
         if key not in config:
@@ -170,6 +184,8 @@ def validate_config(config):
         raise ConfigError("evaluation.n_replicas must be >= 1")
     if int(config["evaluation"]["minimum_events_per_split"]) < 1:
         raise ConfigError("evaluation.minimum_events_per_split must be >= 1")
+    if int(config["runtime"]["prediction_chunk_size"]) < 1:
+        raise ConfigError("runtime.prediction_chunk_size must be >= 1")
 
     preprocessing = config["preprocessing"]
     for key in ("materialized_window_ns", "energy", "timing", "selection", "photopeak", "tot_peak", "led_selection", "io"):
@@ -222,7 +238,7 @@ def _resolve(source, raw, root):
         "ml_output", "output_dir",
     }
     optional_fields = {
-        "name", "ml_input", "save_models", "study_name", "run_id", "window_name",
+        "name", "ml_input", "runtime", "save_models", "study_name", "run_id", "window_name",
     }
     missing = required_fields - set(raw)
     if missing:
@@ -251,6 +267,7 @@ def _resolve(source, raw, root):
         "fit": _fit(raw["fit"]),
         "ml_input": copy.deepcopy(raw.get("ml_input", {"subsampling": 1})),
         "ml_output": copy.deepcopy(raw["ml_output"]),
+        "runtime": _runtime(raw.get("runtime")),
         "output_dir": _project(root, raw["output_dir"]),
         "save_models": _save_models(raw.get("save_models", "all")),
     }
@@ -259,7 +276,9 @@ def _resolve(source, raw, root):
             config[key] = str(raw[key])
     validate_config(config)
     config["_config_path"] = str(source)
-    config["_config_fingerprint"] = canonical_hash({k: v for k, v in config.items() if k != "save_models"})
+    config["_config_fingerprint"] = canonical_hash(
+        {k: v for k, v in config.items() if k not in {"save_models", "runtime"}}
+    )
     return config
 
 
@@ -312,13 +331,14 @@ def load_batch_config(path, project_root=None):
     }
     if not protocol_required <= set(protocol):
         raise ConfigError(f"protocol requires {sorted(protocol_required)}")
-    extra_protocol = set(protocol) - (protocol_required | {"ml_input"})
+    extra_protocol = set(protocol) - (protocol_required | {"ml_input", "runtime"})
     if extra_protocol:
         raise ConfigError(f"Unsupported protocol fields: {sorted(extra_protocol)}")
 
     seed = int(protocol["seed"])
     model_selection = _selection(protocol["model_selection"])
     evaluation = _evaluation(protocol["evaluation"])
+    runtime = _runtime(protocol.get("runtime"))
     save_models = _save_models(raw.get("save_models", "all"))
 
     sweep = copy.deepcopy(raw["sweep"])
@@ -371,6 +391,7 @@ def load_batch_config(path, project_root=None):
                     "fit": _protocol_value(protocol, "fit", mode),
                     "ml_input": _protocol_value(protocol, "ml_input", mode) if "ml_input" in protocol else {"subsampling": 1},
                     "ml_output": _protocol_value(protocol, "ml_output", mode),
+                    "runtime": runtime,
                     "output_dir": str(model_root / _mode_tag(mode) / str(window_name)),
                     "save_models": save_models,
                 }
@@ -392,6 +413,7 @@ def load_batch_config(path, project_root=None):
         "fit": copy.deepcopy(protocol["fit"]),
         "ml_input": copy.deepcopy(protocol.get("ml_input", {"subsampling": 1})),
         "ml_output": copy.deepcopy(protocol["ml_output"]),
+        "runtime": runtime,
     }
     return BatchConfig(
         name=name,
