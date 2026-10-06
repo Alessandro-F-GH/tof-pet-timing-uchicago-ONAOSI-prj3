@@ -17,9 +17,8 @@ from .spec import FeatureTransformSpec, ModelSpec
 
 def _concatenate(pair: np.ndarray) -> np.ndarray:
     values = validate_pair(pair, "direct_linear_ridge")
-    return np.ascontiguousarray(
-        np.concatenate([values[:, 0, :], values[:, 1, :]], axis=1)
-    )
+    contiguous = np.ascontiguousarray(values)
+    return contiguous.reshape(contiguous.shape[0], -1)
 
 
 def fit_transform(parameters, train_x, *, seed, config):
@@ -62,6 +61,7 @@ FEATURE_TRANSFORM = FeatureTransformSpec(
     parameters=transform_parameters,
     fit_transform=fit_transform,
     transform=transform,
+    log_fit=False,
 )
 
 
