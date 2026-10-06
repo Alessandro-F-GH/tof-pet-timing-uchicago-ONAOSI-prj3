@@ -52,6 +52,23 @@ def _robust_range(series, important=(), quantiles=_DISPLAY_QUANTILES):
     return lo, hi
 
 
+def _selection_display_range(intervals, *, relative_pad=0.25, minimum_pad=0.15):
+    finite = []
+    for interval in intervals:
+        for value in interval:
+            if value is not None and np.isfinite(value):
+                finite.append(float(value))
+    if not finite:
+        return None
+    lo = min(finite)
+    hi = max(finite)
+    span = hi - lo
+    pad = max(float(minimum_pad), float(relative_pad) * span)
+    if span <= 0:
+        pad = max(pad, abs(lo) * 0.02, 1e-3)
+    return lo - pad, hi + pad
+
+
 def _selected(values, selection):
     values = _finite(values)
     if selection is None:
@@ -195,8 +212,11 @@ def plot_tot(hits, photo_mask, limits, path, title):
             values.extend(float(hit.duration_ns) for hit in hits[row][detector])
         series.append(np.asarray(values, float))
 
-    important = [float(value) for interval in limits for value in interval]
-    display = _robust_range(series, important)
+    display = _selection_display_range(
+        limits,
+        relative_pad=0.35,
+        minimum_pad=0.20,
+    )
 
     fig, ax = plt.subplots(figsize=(7.2, 4.5))
     for detector in range(2):
