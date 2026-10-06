@@ -124,13 +124,14 @@ def collect_results(paths):
     return records
 
 
-def generate_report(paths, output_dir, *, logger=None, report_config=None):
+def generate_report(paths, output_dir, *, preprocessing_dir=None, logger=None, report_config=None):
     original = _report.collect_results
     _report.collect_results = collect_results
     try:
         return _report.generate_report(
             paths,
             output_dir,
+            preprocessing_dir=preprocessing_dir,
             logger=logger,
             report_config=report_config,
         )
