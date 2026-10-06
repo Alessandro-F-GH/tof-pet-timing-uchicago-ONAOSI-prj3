@@ -6,7 +6,7 @@
   "parameters": {
     "architecture": {
       "type": "fixed",
-      "value": 128
+      "value": [128]
     },
     "activation": {
       "type": "fixed",
@@ -38,7 +38,7 @@
     },
     "batch_size": {
       "type": "fixed",
-      "choices": [32]
+      "value": 32
     }
   },
   "training": {
