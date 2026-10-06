@@ -1,8 +1,8 @@
 {
   "name": "benchmark_all_models_48V",
-  "reference_dataset": "../datasets/control.json",
+  "reference_dataset": "../datasets/control_FBK.json",
   "analysis_dataset": {
-    "root_file": "processed_data/10-03/48V-R1.root",
+    "root_file": "processed_data/10-05/48V-R1.root",
     "true_tof_ps": 0.0,
     "channels": {
       "energy": [1, 2],
@@ -11,15 +11,15 @@
       "timing_polarities": [1, 1]
     }
   },
-  "output_dir": "results/studies/UC/full_benchmark_48V_R1",
+  "output_dir": "results/studies/FBK/local_benchmark_48V_R1",
   "save_models": "none",
   "protocol": {
     "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
     "model_selection": {"validation_fraction": 0.1, "metric": "ctr"},
     "evaluation": {
-      "n_replicas": 50,
-      "blind_fraction": 0.5,
+      "n_replicas": 5,
+      "blind_fraction": 0.6,
       "minimum_events_per_split": 50
     },
     "fit": {
@@ -38,17 +38,12 @@
       "direct_linear_ridge",
       "shared_linear_ridge",
 
-      "onishi_cnn",
-      "shared_cnn1d",
-      "independent_cnn1d",
-
       "direct_mlp",
       "antisymmetric_mlp",
       "locally_connected_mlp"
     ],
-    "modes": ["energy_to_energy", "timing_to_timing"],
+    "modes": ["timing_to_timing"],
     "windows": {
-      "onishi": {"start": -1.5, "end": 2.0},
       "wide": {"start": -2.0, "end": 30.0}
     }
   }
