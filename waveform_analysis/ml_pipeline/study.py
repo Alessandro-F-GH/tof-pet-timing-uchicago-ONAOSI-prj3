@@ -48,7 +48,7 @@ from .train import (
 from .view import model_target, waveform_view
 
 
-_SCHEMA_VERSION = 45
+_SCHEMA_VERSION = 44
 
 
 def _logger(run_dir):
