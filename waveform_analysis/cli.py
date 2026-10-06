@@ -65,8 +65,7 @@ def _parser():
     report.add_argument(
         "--preprocessing",
         type=Path,
-        required=True,
-        help="Folder containing preprocessing diagnostics to include in the report",
+        help="Optional preprocessing diagnostics folder; defaults to <results>/preprocessing",
     )
     report.add_argument("--output-dir", type=Path)
     report.add_argument(
@@ -120,7 +119,11 @@ def main():
 
     if args.command == "report":
         results_dir = Path(args.results).expanduser().resolve()
-        preprocessing_dir = Path(args.preprocessing).expanduser().resolve()
+        preprocessing_dir = (
+            Path(args.preprocessing).expanduser().resolve()
+            if args.preprocessing is not None
+            else results_dir / "preprocessing"
+        )
         output_dir = args.output_dir or (results_dir / "report")
         report_config = None if args.report_config is None else _config_path(args.report_config)
         report_root = generate_report(
