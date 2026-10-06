@@ -98,7 +98,7 @@ class FeatureTransformCache:
         )
         self._items[identity] = wrapper
         logger = config.get("_logger")
-        if logger is not None:
+        if logger is not None and bool(getattr(spec, "log_fit", True)):
             logger.info(
                 "Feature transform fitted | %s | id=%s | params=%s | events=%d | features=%s",
                 spec.name,
