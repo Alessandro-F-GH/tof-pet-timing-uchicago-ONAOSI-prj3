@@ -19,7 +19,7 @@
     "model_selection": {"validation_fraction": 0.1, "metric": "ctr"},
     "evaluation": {
       "n_replicas": 5,
-      "blind_fraction": 0.6,
+      "blind_fraction": 0.5,
       "minimum_events_per_split": 50
     },
     "fit": {
