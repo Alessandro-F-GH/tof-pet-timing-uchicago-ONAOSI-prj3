@@ -11,7 +11,7 @@
       "timing_polarities": [1, 1]
     }
   },
-  "output_dir": "results/studies/UC/local_benchmark_48V_R1",
+  "output_dir": "results/studies/UC/timing_benchmark_48V_R1",
   "save_models": "none",
   "protocol": {
     "seed": 1001,
@@ -48,6 +48,7 @@
     ],
     "modes": ["timing_to_timing"],
     "windows": {
+      "onishi": {"start": -1.0, "end": 2},
       "wide": {"start": -2.0, "end": 30.0}
     }
   }
