@@ -876,6 +876,227 @@ def _copy_preprocessing_diagnostics(source_dir, destination_dir):
     return destination
 
 
+def _replica_output_path(record):
+    return (
+        Path(record["source_run"])
+        / "replica_outputs"
+        / (
+            f"replica_{int(record['replica_index']):03d}_"
+            f"seed_{int(record['seed'])}_{record['candidate_id']}.npz"
+        )
+    )
+
+
+def _event_output_stability(records):
+    by_event = {"train": defaultdict(list), "blind": defaultdict(list)}
+    n_replica_files = 0
+
+    for record in records:
+        path = _replica_output_path(record)
+        if not path.is_file():
+            continue
+        with np.load(path) as data:
+            train_event = np.asarray(data["train_event_index"], np.int64)
+            train_prediction = np.asarray(data["train_prediction_ps"], float)
+            blind_event = np.asarray(data["blind_event_index"], np.int64)
+            blind_prediction = np.asarray(data["blind_prediction_ps"], float)
+
+        if train_event.shape != train_prediction.shape:
+            raise RuntimeError(f"Train stability output shape mismatch: {path}")
+        if blind_event.shape != blind_prediction.shape:
+            raise RuntimeError(f"Blind stability output shape mismatch: {path}")
+
+        for event, prediction in zip(train_event, train_prediction):
+            if np.isfinite(prediction):
+                by_event["train"][int(event)].append(float(prediction))
+        for event, prediction in zip(blind_event, blind_prediction):
+            if np.isfinite(prediction):
+                by_event["blind"][int(event)].append(float(prediction))
+        n_replica_files += 1
+
+    rows = []
+    for split in ("train", "blind"):
+        for event, values in sorted(by_event[split].items()):
+            if len(values) < 2:
+                continue
+            values = np.asarray(values, float)
+            rows.append(
+                {
+                    "split": split,
+                    "event_index": int(event),
+                    "n_replicas": int(values.size),
+                    "output_mean_ps": float(np.mean(values)),
+                    "output_std_ps": float(np.std(values, ddof=1)),
+                }
+            )
+    return rows, n_replica_files
+
+
+def plot_model_stability(records, output_dir, reporting=None):
+    reporting = load_reporting_config() if reporting is None else reporting
+    root = Path(output_dir).resolve()
+    groups = _group(
+        records,
+        lambda row: (
+            str(row["study"]),
+            str(row["dataset_key"]),
+            str(row["mode"]),
+            *_window_key(row),
+            str(row["model"]),
+        ),
+    )
+    outputs = []
+    summary = []
+
+    for key, rows in sorted(groups.items()):
+        study, dataset_key, mode, window, start, end, model = key
+        stability_rows, n_replica_files = _event_output_stability(rows)
+        if not stability_rows:
+            continue
+
+        detail_dir = root / _safe(mode) / _safe(window) / _safe(model)
+        detail_dir.mkdir(parents=True, exist_ok=True)
+        table_path = detail_dir / "event_output_std.csv"
+        write_csv(table_path, stability_rows)
+        outputs.append(table_path)
+
+        split_values = {
+            split: np.asarray(
+                [
+                    row["output_std_ps"]
+                    for row in stability_rows
+                    if row["split"] == split and np.isfinite(row["output_std_ps"])
+                ],
+                float,
+            )
+            for split in ("train", "blind")
+        }
+
+        fig, ax = plt.subplots(figsize=(7.0, 4.8))
+        nonempty = [values for values in split_values.values() if values.size]
+        if nonempty:
+            joined = np.concatenate(nonempty)
+            upper = float(np.quantile(joined, 0.995)) if joined.size else 1.0
+            upper = max(upper, float(np.max(joined)) * 0.25, 1e-6)
+            bins = np.linspace(0.0, upper, 60)
+            for split in ("train", "blind"):
+                values = split_values[split]
+                if values.size:
+                    shown = values[values <= upper]
+                    ax.hist(
+                        shown,
+                        bins=bins,
+                        alpha=0.45,
+                        label=f"{split} (n={values.size})",
+                    )
+        ax.set_xlabel("Per-event output standard deviation across replicas [ps]")
+        ax.set_ylabel("Events")
+        ax.set_title(f"Model output stability | {mode} | {window} | {model}")
+        ax.legend()
+        _apply_axes_style(ax, reporting)
+        distribution_path = detail_dir / "distribution.png"
+        outputs.append(_save(fig, distribution_path, reporting))
+
+        for split in ("train", "blind"):
+            values = split_values[split]
+            if not values.size:
+                continue
+            summary.append(
+                {
+                    "study": study,
+                    "dataset_key": dataset_key,
+                    "mode": mode,
+                    "window": window,
+                    "window_start_ns": start,
+                    "window_end_ns": end,
+                    "model": model,
+                    "split": split,
+                    "mean_output_std_ps": float(np.mean(values)),
+                    "median_output_std_ps": float(np.median(values)),
+                    "std_of_event_output_std_ps": float(np.std(values, ddof=1))
+                    if values.size > 1
+                    else 0.0,
+                    "n_events": int(values.size),
+                    "n_replica_files": int(n_replica_files),
+                }
+            )
+
+    if summary:
+        summary_dir = root / "summary"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_table = summary_dir / "model_stability_summary.csv"
+        write_csv(summary_table, summary)
+        outputs.append(summary_table)
+
+        blind_rows = [
+            row
+            for row in summary
+            if row["split"] == "blind" and np.isfinite(row["mean_output_std_ps"])
+        ]
+        by_mode = _group(blind_rows, lambda row: row["mode"])
+        style = plot_style(reporting, "bar")
+        for mode, rows in sorted(by_mode.items()):
+            windows = sorted(
+                {
+                    (row["window"], row["window_start_ns"], row["window_end_ns"])
+                    for row in rows
+                },
+                key=lambda item: (item[1], item[2], item[0]),
+            )
+            models = sorted({row["model"] for row in rows})
+            if not windows or not models:
+                continue
+
+            x = np.arange(len(windows), dtype=float)
+            bar_width = float(style["group_width"]) / max(1, len(models))
+            fig_width = max(
+                float(style["figure_width_min"]),
+                float(style["width_per_category"]) * len(windows),
+            )
+            fig, ax = plt.subplots(
+                figsize=(fig_width, float(style["figure_height"]))
+            )
+            lookup = {
+                (
+                    row["window"],
+                    row["window_start_ns"],
+                    row["window_end_ns"],
+                    row["model"],
+                ): row
+                for row in rows
+            }
+
+            for model_index, model in enumerate(models):
+                offset = (
+                    model_index - (len(models) - 1) / 2.0
+                ) * bar_width
+                for window_index, window_key in enumerate(windows):
+                    row = lookup.get((*window_key, model))
+                    if row is None:
+                        continue
+                    xpos = x[window_index] + offset
+                    ax.bar(
+                        xpos,
+                        row["mean_output_std_ps"],
+                        width=bar_width,
+                        label=model if window_index == 0 else None,
+                    )
+
+            labels = [
+                f"{window[0]}\n[{window[1]:g}, {window[2]:g}] ns"
+                for window in windows
+            ]
+            ax.set_xticks(x, labels)
+            ax.set_xlabel("Waveform window")
+            ax.set_ylabel("Mean per-event output std across replicas [ps]")
+            ax.set_title(f"Model stability on blind events | {mode}")
+            ax.legend(title="Model")
+            _apply_axes_style(ax, reporting)
+            outputs.append(_save(fig, summary_dir / f"{_safe(mode)}.png", reporting))
+
+    return outputs, summary
+
+
 def _prepare_report_layout(output_dir):
     root = Path(output_dir).expanduser().resolve()
     for name in ("tables", "plots"):
@@ -895,6 +1116,7 @@ def _prepare_report_layout(output_dir):
         "window_plots": root / "plots" / "window_comparison",
         "best_model_plots": root / "plots" / "best_model",
         "preprocessing": root / "preprocessing",
+        "model_stability": root / "model stability",
     }
     for key, path in layout.items():
         if key != "root":
@@ -942,12 +1164,19 @@ def generate_report(paths, output_dir, *, preprocessing_dir=None, logger=None, r
         outputs.extend(plot_best_models_by_mode(summary, layout["best_model_plots"], reporting))
         correlation_outputs, correlation_rows = model_output_correlations(records, layout["correlation_tables"], plot_dir=layout["correlation_plots"], reporting=reporting)
         outputs.extend(correlation_outputs)
+        stability_outputs, stability_rows = plot_model_stability(
+            records,
+            layout["model_stability"],
+            reporting=reporting,
+        )
+        outputs.extend(stability_outputs)
     manifest = {
         "schema_version": 6,
         "sources": sorted({row["source_run"] for row in records}),
         "preprocessing_source": None if preprocessing_source is None else str(preprocessing_source),
         "n_replica_rows": len(records), "n_summary_rows": len(summary),
         "n_paired_model_comparisons": len(comparisons), "n_model_output_correlations": len(correlation_rows),
+        "n_model_stability_rows": len(stability_rows),
         "statistical_unit": "replica", "fit_bootstrap": False, "paired_bootstrap_unit": "replica",
         "pairing_rule": "same study + dataset + analysis protocol + sampling identity + mode + window + replica index",
         "window_comparison_grouping": "same study + dataset + mode; population and sampling identities may differ because they are window-specific",
