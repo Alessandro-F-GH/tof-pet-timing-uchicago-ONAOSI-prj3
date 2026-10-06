@@ -173,17 +173,51 @@ def _previous_dependency_fingerprints(root):
         experiment = canonical_hash(old_protocol)
 
     if preprocessing is None:
+        resolved_configs = []
         for path in sorted(root.glob("models/**/resolved_config.json")):
             resolved = _read_json(path)
-            if not isinstance(resolved, dict):
-                continue
-            if not {"reference", "analysis", "preprocessing"} <= set(resolved):
-                continue
-            # Legacy manifests did not persist the complete preprocessing
-            # dependency identity (control LED fit is mode-dependent). Do not
-            # invent one here; the first run with schema v6 will establish it.
-            preprocessing = None
-            break
+            if isinstance(resolved, dict):
+                resolved_configs.append(resolved)
+
+        usable = [
+            resolved
+            for resolved in resolved_configs
+            if {"reference", "analysis", "preprocessing", "mode", "fit"} <= set(resolved)
+        ]
+        if usable:
+            shared = {
+                canonical_hash(
+                    {
+                        "reference": resolved["reference"],
+                        "analysis": resolved["analysis"],
+                        "preprocessing": resolved["preprocessing"],
+                    }
+                )
+                for resolved in usable
+            }
+            if len(shared) == 1:
+                fit_by_mode = {}
+                consistent = True
+                for resolved in usable:
+                    mode = str(resolved["mode"])
+                    fit = dict(resolved["fit"])
+                    if mode in fit_by_mode and canonical_hash(fit_by_mode[mode]) != canonical_hash(fit):
+                        consistent = False
+                        break
+                    fit_by_mode[mode] = fit
+                if consistent:
+                    first = usable[0]
+                    preprocessing = canonical_hash(
+                        {
+                            "reference": first["reference"],
+                            "analysis": first["analysis"],
+                            "preprocessing": first["preprocessing"],
+                            "control_modes": sorted(fit_by_mode),
+                            "control_fit_by_mode": {
+                                key: fit_by_mode[key] for key in sorted(fit_by_mode)
+                            },
+                        }
+                    )
 
     return {
         "preprocessing": preprocessing,
