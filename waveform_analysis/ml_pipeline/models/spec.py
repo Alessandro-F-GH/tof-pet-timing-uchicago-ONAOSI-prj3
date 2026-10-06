@@ -31,6 +31,7 @@ class FeatureTransformSpec:
     fit_transform: TransformFit
     transform: TransformApply
     save: TransformSave | None = None
+    log_fit: bool = True
 
     def __post_init__(self) -> None:
         name = str(self.name).strip()
