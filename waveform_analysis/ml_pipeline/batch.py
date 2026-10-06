@@ -102,12 +102,16 @@ def _existing_study_state(config):
     return "matching_incomplete"
 
 
-def _preprocessing_dependency_fingerprint(config):
+def _preprocessing_dependency_fingerprint(batch):
+    first = batch.runs[0]
+    fit_by_mode, modes = _control_protocol(batch.runs)
     return canonical_hash(
         {
-            "reference": config["reference"],
-            "analysis": config["analysis"],
-            "preprocessing": config["preprocessing"],
+            "reference": first["reference"],
+            "analysis": first["analysis"],
+            "preprocessing": first["preprocessing"],
+            "control_modes": list(modes),
+            "control_fit_by_mode": fit_by_mode,
         }
     )
 
@@ -122,16 +126,23 @@ def _experiment_dependency_fingerprint(batch):
 
 
 def _batch_dependency_fingerprints(batch):
-    preprocessing = {
-        _preprocessing_dependency_fingerprint(config)
+    first = batch.runs[0]
+    shared = {
+        canonical_hash(
+            {
+                "reference": config["reference"],
+                "analysis": config["analysis"],
+                "preprocessing": config["preprocessing"],
+            }
+        )
         for config in batch.runs
     }
-    if len(preprocessing) != 1:
+    if len(shared) != 1:
         raise RuntimeError(
             "All studies in one batch must share the same resolved preprocessing dependencies"
         )
     return {
-        "preprocessing": next(iter(preprocessing)),
+        "preprocessing": _preprocessing_dependency_fingerprint(batch),
         "experiment": _experiment_dependency_fingerprint(batch),
     }
 
@@ -168,13 +179,10 @@ def _previous_dependency_fingerprints(root):
                 continue
             if not {"reference", "analysis", "preprocessing"} <= set(resolved):
                 continue
-            preprocessing = canonical_hash(
-                {
-                    "reference": resolved["reference"],
-                    "analysis": resolved["analysis"],
-                    "preprocessing": resolved["preprocessing"],
-                }
-            )
+            # Legacy manifests did not persist the complete preprocessing
+            # dependency identity (control LED fit is mode-dependent). Do not
+            # invent one here; the first run with schema v6 will establish it.
+            preprocessing = None
             break
 
     return {
