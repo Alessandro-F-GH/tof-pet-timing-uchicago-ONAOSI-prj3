@@ -9,7 +9,7 @@ from .ml_pipeline.batch import run_batch
 from .ml_pipeline.binning_scan import run_ctr_binning_scan
 from .ml_pipeline.config import load_batch_config, load_config, public_batch_config, public_config
 from .ml_pipeline.postprocess import remake_batch_plots, remake_study_plots
-from .ml_pipeline.report import batch_result_dirs, generate_report
+from .ml_pipeline.report import generate_report
 from .ml_pipeline.report_naming import compact_report_filenames
 from .ml_pipeline.study import run_study
 
@@ -56,9 +56,18 @@ def _parser():
         "report",
         help="Compare completed replica results by model, formulation, mode, and window",
     )
-    source = report.add_mutually_exclusive_group(required=True)
-    source.add_argument("--batch-config", type=Path)
-    source.add_argument("--studies", type=Path, nargs="+")
+    report.add_argument(
+        "--results",
+        type=Path,
+        required=True,
+        help="Folder containing study results; searched recursively for results.csv + manifest.json",
+    )
+    report.add_argument(
+        "--preprocessing",
+        type=Path,
+        required=True,
+        help="Folder containing preprocessing diagnostics to include in the report",
+    )
     report.add_argument("--output-dir", type=Path)
     report.add_argument(
         "--report-config",
@@ -110,17 +119,14 @@ def main():
     logger = logging.getLogger("waveform-batch")
 
     if args.command == "report":
-        if args.batch_config is not None:
-            batch = load_batch_config(_config_path(args.batch_config), PROJECT_ROOT)
-            paths = batch_result_dirs(batch)
-            output_dir = args.output_dir or (Path(batch.output_dir) / "report")
-        else:
-            paths = [Path(path).expanduser().resolve() for path in args.studies]
-            output_dir = args.output_dir or (PROJECT_ROOT / "results" / "reports" / "comparison")
+        results_dir = Path(args.results).expanduser().resolve()
+        preprocessing_dir = Path(args.preprocessing).expanduser().resolve()
+        output_dir = args.output_dir or (results_dir / "report")
         report_config = None if args.report_config is None else _config_path(args.report_config)
         report_root = generate_report(
-            paths,
+            [results_dir],
             output_dir,
+            preprocessing_dir=preprocessing_dir,
             logger=logger,
             report_config=report_config,
         )
