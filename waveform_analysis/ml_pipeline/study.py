@@ -48,7 +48,7 @@ from .train import (
 from .view import model_target, waveform_view
 
 
-_SCHEMA_VERSION = 44
+_SCHEMA_VERSION = 45
 
 
 def _logger(run_dir):
@@ -559,6 +559,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         "hyperparameter_tuning_train_sampling": "fixed_random_subset_matching_replica_train_size",
         "minirocket_feature_cache": bool(minirocket),
         "detector_swap_diagnostic": bool(detector_swap_enabled),
+        "replica_output_predictions": True,
     }
     if resume and (run_dir / "manifest.json").is_file():
         old = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1050,7 +1051,13 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         split = replica.split
         manifest["shared_replicas"][str(replica_index)] = str(replica.directory)
         store.write_manifest(manifest)
-        if store.has_result("replica", selected_candidate, replica_index):
+        replica_output_path = store.replica_outputs_path(
+            replica_index, split.seed, selected_candidate
+        )
+        if (
+            store.has_result("replica", selected_candidate, replica_index)
+            and replica_output_path.is_file()
+        ):
             progress.complete("replica", f"replica {replica_index}", announce=False)
             del split, replica
             continue
@@ -1070,7 +1077,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
 
         replica_transform_cache = FeatureTransformCache()
         replica_fit_input_cache = FitInputCache()
-        fitted = prediction = corrected = paired = train_features = None
+        fitted = prediction = train_prediction = corrected = paired = train_features = None
         try:
             if selected_feature_cache is not None:
                 train_features = selected_feature_cache.rows(split.train)
@@ -1086,6 +1093,16 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                     feature_transform=selected_feature_cache.transform,
                     logger=logger,
                 )
+                train_prediction = np.asarray(
+                    spec.predict(fitted.artifact, train_features),
+                    dtype=np.float64,
+                ).reshape(-1)
+                if fitted.output_max_abs_ps is not None:
+                    train_prediction = np.clip(
+                        train_prediction,
+                        -fitted.output_max_abs_ps,
+                        fitted.output_max_abs_ps,
+                    )
                 del train_features
                 train_features = None
                 release_training_memory()
@@ -1109,6 +1126,14 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                     feature_transform_cache=replica_transform_cache,
                     fit_input_cache=replica_fit_input_cache,
                     logger=logger,
+                )
+                train_prediction = predict_indices(
+                    spec,
+                    fitted,
+                    dataset,
+                    config["mode"],
+                    split.train,
+                    chunk_size=prediction_chunk_size,
                 )
                 prediction = predict_indices(
                     spec,
@@ -1141,6 +1166,15 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
                 led_rmse_ps=replica.led_rmse_ps,
             )
             store.save_blind_residuals(split.seed, selected_candidate, corrected)
+            store.save_replica_outputs(
+                replica_index,
+                split.seed,
+                selected_candidate,
+                train_event_index=np.asarray(dataset.event_index[split.train], np.int64),
+                train_prediction_ps=train_prediction,
+                blind_event_index=np.asarray(dataset.event_index[split.test], np.int64),
+                blind_prediction_ps=prediction,
+            )
             row = _replica_row(
                 replica_index=replica_index,
                 seed=split.seed,
@@ -1178,7 +1212,7 @@ def run_study(config, *, overwrite=False, resume=False, rebuild_preprocessing=Fa
         finally:
             replica_transform_cache.clear()
             replica_fit_input_cache.clear()
-            del train_features, paired, corrected, prediction, fitted
+            del train_features, paired, corrected, prediction, train_prediction, fitted
             del replica_transform_cache, replica_fit_input_cache, split, replica
             release_training_memory()
 
