@@ -79,6 +79,7 @@ def _expand_result_path(path):
     manifest_path = path / "manifest.json"
     if (path / "results.csv").is_file() and manifest_path.is_file():
         return [path]
+
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         runs = manifest.get("runs")
@@ -87,10 +88,20 @@ def _expand_result_path(path):
             for run in runs:
                 child = Path(run["path"])
                 child = child if child.is_absolute() else path / child
-                if (child / "results.csv").is_file():
+                if (child / "results.csv").is_file() and (child / "manifest.json").is_file():
                     result.append(child.resolve())
             if result:
                 return result
+
+    if path.is_dir():
+        discovered = sorted(
+            candidate.parent.resolve()
+            for candidate in path.rglob("results.csv")
+            if (candidate.parent / "manifest.json").is_file()
+        )
+        if discovered:
+            return discovered
+
     raise FileNotFoundError(f"No study results found in {path}")
 
 
@@ -854,6 +865,17 @@ def model_output_correlations(records, output_dir, plot_dir=None, reporting=None
     return outputs, long_rows
 
 
+def _copy_preprocessing_diagnostics(source_dir, destination_dir):
+    source = Path(source_dir).expanduser().resolve()
+    destination = Path(destination_dir).resolve()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Preprocessing folder not found: {source}")
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+    return destination
+
+
 def _prepare_report_layout(output_dir):
     root = Path(output_dir).expanduser().resolve()
     for name in ("tables", "plots"):
@@ -872,6 +894,7 @@ def _prepare_report_layout(output_dir):
         "ctr_time_plots": root / "plots" / "ctr_vs_time",
         "window_plots": root / "plots" / "window_comparison",
         "best_model_plots": root / "plots" / "best_model",
+        "preprocessing": root / "preprocessing",
     }
     for key, path in layout.items():
         if key != "root":
@@ -880,11 +903,16 @@ def _prepare_report_layout(output_dir):
     return layout
 
 
-def generate_report(paths, output_dir, *, logger=None, report_config=None):
+def generate_report(paths, output_dir, *, preprocessing_dir=None, logger=None, report_config=None):
     log = logger or logging.getLogger("waveform-report")
     reporting = load_reporting_config(report_config)
     layout = _prepare_report_layout(output_dir)
     root = layout["root"]
+    preprocessing_source = None
+    if preprocessing_dir is not None:
+        preprocessing_source = Path(preprocessing_dir).expanduser().resolve()
+        _copy_preprocessing_diagnostics(preprocessing_source, layout["preprocessing"])
+
     records = collect_results(paths)
     summary = study_summary(records)
     comparisons = paired_model_comparisons(records)
@@ -917,6 +945,7 @@ def generate_report(paths, output_dir, *, logger=None, report_config=None):
     manifest = {
         "schema_version": 6,
         "sources": sorted({row["source_run"] for row in records}),
+        "preprocessing_source": None if preprocessing_source is None else str(preprocessing_source),
         "n_replica_rows": len(records), "n_summary_rows": len(summary),
         "n_paired_model_comparisons": len(comparisons), "n_model_output_correlations": len(correlation_rows),
         "statistical_unit": "replica", "fit_bootstrap": False, "paired_bootstrap_unit": "replica",
