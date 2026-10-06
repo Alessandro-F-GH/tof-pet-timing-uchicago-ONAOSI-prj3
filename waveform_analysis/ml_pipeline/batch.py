@@ -97,6 +97,8 @@ def _existing_study_state(config):
 
     if manifest.get("config_fingerprint") != config["_config_fingerprint"]:
         return "mismatch"
+    if not bool(manifest.get("replica_output_predictions", False)):
+        return "matching_incomplete"
     if manifest.get("status") == "complete":
         return "matching_complete"
     return "matching_incomplete"
