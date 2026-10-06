@@ -47,10 +47,6 @@ def _parser():
 
     batch = sub.add_parser("batch")
     batch.add_argument("--config", type=Path, required=True)
-    batch_mode = batch.add_mutually_exclusive_group()
-    batch_mode.add_argument("--overwrite", action="store_true")
-    batch_mode.add_argument("--resume", action="store_true")
-    batch.add_argument("--rebuild-preprocessing", action="store_true")
     batch.add_argument("--remake-plots", action="store_true")
 
     remake_batch = sub.add_parser("remake-batch-plots")
@@ -161,9 +157,6 @@ def main():
             return
         for output in run_batch(
             batch,
-            overwrite=args.overwrite,
-            resume=args.resume,
-            rebuild_preprocessing=args.rebuild_preprocessing,
             logger=logger,
         ):
             print(output)
