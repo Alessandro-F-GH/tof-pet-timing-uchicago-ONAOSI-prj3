@@ -132,6 +132,35 @@ class RunStore:
         np.savez_compressed(path, corrected_ps=np.asarray(corrected_ps, np.float64))
         return path
 
+    def replica_outputs_path(self, replica_index, seed, candidate_id):
+        return (
+            self.root
+            / "replica_outputs"
+            / f"replica_{int(replica_index):03d}_seed_{int(seed)}_{candidate_id}.npz"
+        )
+
+    def save_replica_outputs(
+        self,
+        replica_index,
+        seed,
+        candidate_id,
+        *,
+        train_event_index,
+        train_prediction_ps,
+        blind_event_index,
+        blind_prediction_ps,
+    ):
+        path = self.replica_outputs_path(replica_index, seed, candidate_id)
+        path.parent.mkdir(exist_ok=True)
+        np.savez_compressed(
+            path,
+            train_event_index=np.asarray(train_event_index, np.int64),
+            train_prediction_ps=np.asarray(train_prediction_ps, np.float32),
+            blind_event_index=np.asarray(blind_event_index, np.int64),
+            blind_prediction_ps=np.asarray(blind_prediction_ps, np.float32),
+        )
+        return path
+
     def model_dir(self, replica_index, seed, candidate_id):
         path = (
             self.root
