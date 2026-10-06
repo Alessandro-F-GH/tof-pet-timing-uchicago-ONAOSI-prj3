@@ -548,7 +548,29 @@ def plot_window_model_comparisons(summary, output_dir, *, metric, reporting=None
                 if row is None or not np.isfinite(row[mean_key]):
                     continue
                 family = formulation_style(reporting, model_formulation[model])
-                ax.bar(x[model_index] + offset, row[mean_key], width=bar_width, yerr=row[std_key] if np.isfinite(row[std_key]) else None, capsize=float(reporting["global"]["error_capsize"]), color=family["color"], hatch=hatches[window_index % len(hatches)], edgecolor=style["edge_color"], linewidth=float(style["edge_line_width"]))
+                xpos = x[model_index] + offset
+                ax.bar(
+                    xpos,
+                    row[mean_key],
+                    width=bar_width,
+                    yerr=row[std_key] if np.isfinite(row[std_key]) else None,
+                    capsize=float(reporting["global"]["error_capsize"]),
+                    color=family["color"],
+                    hatch=hatches[window_index % len(hatches)],
+                    edgecolor=style["edge_color"],
+                    linewidth=float(style["edge_line_width"]),
+                )
+                if metric == "ctr":
+                    error = row[std_key] if np.isfinite(row[std_key]) else 0.0
+                    ax.annotate(
+                        f"{row[mean_key]:.0f} ps",
+                        (xpos, row[mean_key] + error),
+                        xytext=(0, 4),
+                        textcoords="offset points",
+                        ha="center",
+                        va="bottom",
+                        fontsize=float(reporting["global"]["annotation_size"]),
+                    )
         led_values = _unique_reference_values(rows, led_key)
         reference = reporting["reference"]
         if led_values.size:
