@@ -1,15 +1,12 @@
 {
   "model": "locally_connected_mlp",
   "optimization": {
-    "strategy": "optuna",
-    "sampler": "tpe",
-    "n_trials": 30,
-    "n_startup_trials": 10
+    "strategy": "grid"
   },
   "parameters": {
     "architecture": {
-      "type": "categorical",
-      "choices": [[16], [128]]
+      "type": "fixed",
+      "value": 128
     },
     "activation": {
       "type": "fixed",
@@ -33,17 +30,15 @@
     },
     "max_correction_ps": {
       "type": "categorical",
-      "choices": [20, 60, 120, 200, 500]
+      "choices": [20, 60, 120, 500]
     },
     "learning_rate": {
-      "type": "float",
-      "low": 1e-5,
-      "high": 1e-2,
-      "log": true
+      "type": "categorical",
+      "choices": [1e-2, 1e-3, 1e-4, 1e-5]
     },
     "batch_size": {
-      "type": "categorical",
-      "choices": [32, 128, 1024]
+      "type": "fixed",
+      "choices": [32]
     }
   },
   "training": {
