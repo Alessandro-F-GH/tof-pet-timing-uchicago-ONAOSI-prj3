@@ -102,14 +102,221 @@ def _existing_study_state(config):
     return "matching_incomplete"
 
 
-def _write_batch_state(batch, rows, status):
+def _preprocessing_dependency_fingerprint(config):
+    return canonical_hash(
+        {
+            "reference": config["reference"],
+            "analysis": config["analysis"],
+            "preprocessing": config["preprocessing"],
+        }
+    )
+
+
+def _experiment_dependency_fingerprint(batch):
+    protocol = {
+        key: value
+        for key, value in batch.protocol.items()
+        if key not in {"preprocessing_config", "runtime"}
+    }
+    return canonical_hash(protocol)
+
+
+def _batch_dependency_fingerprints(batch):
+    preprocessing = {
+        _preprocessing_dependency_fingerprint(config)
+        for config in batch.runs
+    }
+    if len(preprocessing) != 1:
+        raise RuntimeError(
+            "All studies in one batch must share the same resolved preprocessing dependencies"
+        )
+    return {
+        "preprocessing": next(iter(preprocessing)),
+        "experiment": _experiment_dependency_fingerprint(batch),
+    }
+
+
+def _read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _previous_dependency_fingerprints(root):
+    root = Path(root).resolve()
+    manifest = _read_json(root / "manifest.json") or {}
+    stored = manifest.get("dependency_fingerprints")
+    preprocessing = None
+    experiment = None
+    if isinstance(stored, dict):
+        preprocessing = stored.get("preprocessing")
+        experiment = stored.get("experiment")
+
+    if experiment is None and isinstance(manifest.get("protocol"), dict):
+        old_protocol = {
+            key: value
+            for key, value in manifest["protocol"].items()
+            if key not in {"preprocessing_config", "runtime"}
+        }
+        experiment = canonical_hash(old_protocol)
+
+    if preprocessing is None:
+        for path in sorted(root.glob("models/**/resolved_config.json")):
+            resolved = _read_json(path)
+            if not isinstance(resolved, dict):
+                continue
+            if not {"reference", "analysis", "preprocessing"} <= set(resolved):
+                continue
+            preprocessing = canonical_hash(
+                {
+                    "reference": resolved["reference"],
+                    "analysis": resolved["analysis"],
+                    "preprocessing": resolved["preprocessing"],
+                }
+            )
+            break
+
+    return {
+        "preprocessing": preprocessing,
+        "experiment": experiment,
+    }
+
+
+def _plan_batch(batch):
+    root = Path(batch.output_dir).resolve()
+    current = _batch_dependency_fingerprints(batch)
+    previous = _previous_dependency_fingerprints(root)
+
+    if previous["preprocessing"] is not None and previous["preprocessing"] != current["preprocessing"]:
+        scope = "preprocessing"
+    elif previous["experiment"] is not None and previous["experiment"] != current["experiment"]:
+        scope = "experiment"
+    else:
+        scope = "study"
+
+    studies = []
+    for config in batch.runs:
+        if scope in {"preprocessing", "experiment"}:
+            action = "rebuild"
+        else:
+            state = _existing_study_state(config)
+            action = {
+                "missing": "run",
+                "matching_complete": "keep",
+                "matching_incomplete": "resume",
+                "mismatch": "rebuild",
+                "unreadable": "rebuild",
+            }[state]
+        studies.append(
+            {
+                "config": config,
+                "action": action,
+                "path": Path(config["output_dir"]).resolve(),
+            }
+        )
+
+    destructive = scope in {"preprocessing", "experiment"} or any(
+        item["action"] == "rebuild" for item in studies
+    )
+    return {
+        "scope": scope,
+        "current_fingerprints": current,
+        "previous_fingerprints": previous,
+        "studies": studies,
+        "destructive": destructive,
+    }
+
+
+def _print_batch_plan(batch, plan):
+    labels = {
+        "keep": "KEEP",
+        "resume": "RESUME",
+        "run": "RUN",
+        "rebuild": "REBUILD",
+    }
+    print(f"Batch plan | {batch.name}")
+    if plan["scope"] == "preprocessing":
+        print("  Dependency change: preprocessing -> rebuild preprocessing and all downstream results")
+    elif plan["scope"] == "experiment":
+        print("  Dependency change: batch experiment protocol -> keep preprocessing, rebuild all downstream results")
+    else:
+        print("  Shared dependencies unchanged -> evaluate each study independently")
+
+    for index, item in enumerate(plan["studies"], 1):
+        config = item["config"]
+        print(
+            f"  {index:02d}/{len(plan['studies']):02d} "
+            f"{labels[item['action']]:7s} {config['name']}"
+        )
+
+
+def _confirm_destructive_plan(plan):
+    if not plan["destructive"]:
+        return
+    print("")
+    if plan["scope"] == "preprocessing":
+        print("Existing preprocessing-dependent batch results will be removed.")
+    elif plan["scope"] == "experiment":
+        print("Existing post-preprocessing batch results will be removed.")
+    else:
+        changed = sum(item["action"] == "rebuild" for item in plan["studies"])
+        print(f"{changed} existing study/studies have changed configuration and will be replaced.")
+
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except EOFError as exc:
+        raise RuntimeError(
+            "Batch requires overwrite confirmation but no interactive terminal is available. "
+            "Run the batch command interactively to review and confirm the plan."
+        ) from exc
+    if answer not in {"y", "yes"}:
+        raise SystemExit("Batch cancelled; no existing results were modified.")
+
+
+def _apply_batch_plan(batch, plan):
+    root = Path(batch.output_dir).resolve()
+    scope = plan["scope"]
+
+    if scope == "preprocessing":
+        if root.exists():
+            shutil.rmtree(root)
+        return
+
+    if scope == "experiment":
+        if root.exists():
+            for child in list(root.iterdir()):
+                if child.name == "preprocessing":
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+        return
+
+    changed = False
+    for item in plan["studies"]:
+        if item["action"] != "rebuild":
+            continue
+        path = item["path"]
+        if path.exists():
+            shutil.rmtree(path)
+        changed = True
+    if changed:
+        report_dir = root / "report"
+        if report_dir.exists():
+            shutil.rmtree(report_dir)
+
+
+def _write_batch_state(batch, rows, status, dependency_fingerprints=None):
     root = Path(batch.output_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema_version": 5,
+        "schema_version": 6,
         "name": batch.name,
         "status": status,
         "source_config": batch.source_path,
+        "dependency_fingerprints": dependency_fingerprints or _batch_dependency_fingerprints(batch),
         "protocol": batch.protocol,
         "axes": batch.axes,
         "save_models": batch.runs[0]["save_models"],
@@ -280,114 +487,84 @@ def _publish_batch_selection_diagnostics(
 def run_batch(
     batch,
     *,
-    overwrite=False,
-    resume=False,
-    rebuild_preprocessing=False,
     logger=None,
 ):
     if not isinstance(batch, BatchConfig):
         raise TypeError("run_batch requires a resolved BatchConfig")
 
+    plan = _plan_batch(batch)
+    _print_batch_plan(batch, plan)
+    _confirm_destructive_plan(plan)
+    _apply_batch_plan(batch, plan)
+
+    rebuild_preprocessing = plan["scope"] == "preprocessing"
     configs = _runtime_configs(
         list(batch.runs),
         batch.output_dir,
         rebuild_preprocessing=rebuild_preprocessing,
     )
+    actions = [item["action"] for item in plan["studies"]]
+    fingerprints = plan["current_fingerprints"]
+
     outputs = []
     total = len(configs)
     _log_gpu_status(logger)
     rows = _run_index(batch)
-
     root = Path(batch.output_dir).resolve()
-    _write_batch_state(batch, rows, "running")
+    _write_batch_state(batch, rows, "running", fingerprints)
 
     published_modes = set()
-    for index, config in enumerate(configs, 1):
+    for index, (config, action) in enumerate(zip(configs, actions), 1):
         if logger:
-            logger.info("Batch run %d/%d | %s", index, total, config["name"])
-        try:
-            study_overwrite = bool(overwrite)
-            study_resume = bool(resume)
-
-            if overwrite:
-                state = _existing_study_state(config)
-                if state == "matching_complete":
-                    output = Path(config["output_dir"]).resolve()
-                    outputs.append(output)
-                    rows[index - 1]["status"] = "complete"
-                    _write_batch_state(batch, rows, "running")
-                    if logger:
-                        logger.info(
-                            "Batch reused | %s | matching resolved configuration | %s",
-                            config["name"],
-                            output,
-                        )
-
-                    mode = str(config["mode"])
-                    if mode not in published_modes:
-                        _publish_batch_selection_diagnostics(
-                            config,
-                            root,
-                            force=bool(rebuild_preprocessing),
-                            logger=logger,
-                        )
-                        published_modes.add(mode)
-                    continue
-
-                if state == "matching_incomplete":
-                    study_overwrite = False
-                    study_resume = True
-                    if logger:
-                        logger.info(
-                            "Batch selective resume | %s | matching configuration with incomplete study",
-                            config["name"],
-                        )
-                elif state in {"mismatch", "unreadable"}:
-                    study_overwrite = True
-                    study_resume = False
-                    if logger:
-                        reason = (
-                            "resolved configuration changed"
-                            if state == "mismatch"
-                            else "existing study metadata is unreadable"
-                        )
-                        logger.info(
-                            "Batch selective overwrite | %s | %s",
-                            config["name"],
-                            reason,
-                        )
-                else:
-                    study_overwrite = False
-                    study_resume = False
-
-            output = run_study(
-                config,
-                overwrite=study_overwrite,
-                resume=study_resume,
-                rebuild_preprocessing=False,
+            logger.info(
+                "Batch run %d/%d | %s | action=%s",
+                index,
+                total,
+                config["name"],
+                action,
             )
-            outputs.append(output)
+        try:
+            if action == "keep":
+                output = Path(config["output_dir"]).resolve()
+                outputs.append(output)
+                rows[index - 1]["status"] = "complete"
+                _write_batch_state(batch, rows, "running", fingerprints)
+                if logger:
+                    logger.info(
+                        "Batch reused | %s | matching complete configuration | %s",
+                        config["name"],
+                        output,
+                    )
+            else:
+                output = run_study(
+                    config,
+                    overwrite=False,
+                    resume=(action == "resume"),
+                    rebuild_preprocessing=False,
+                )
+                outputs.append(output)
+                rows[index - 1]["status"] = "complete"
+                _write_batch_state(batch, rows, "running", fingerprints)
+                if logger:
+                    verb = "resumed" if action == "resume" else "completed"
+                    logger.info("Batch %s | %s | %s", verb, config["name"], output)
 
             mode = str(config["mode"])
             if mode not in published_modes:
                 _publish_batch_selection_diagnostics(
                     config,
                     root,
-                    force=bool(rebuild_preprocessing),
+                    force=rebuild_preprocessing,
                     logger=logger,
                 )
                 published_modes.add(mode)
 
-            rows[index - 1]["status"] = "complete"
-            _write_batch_state(batch, rows, "running")
-            if logger:
-                logger.info("Batch completed | %s | %s", config["name"], output)
         except Exception:
             rows[index - 1]["status"] = "failed"
-            _write_batch_state(batch, rows, "failed")
+            _write_batch_state(batch, rows, "failed", fingerprints)
             if logger:
                 logger.exception("Batch failed | %s", config["name"])
             raise
 
-    _write_batch_state(batch, rows, "complete")
+    _write_batch_state(batch, rows, "complete", fingerprints)
     return outputs
