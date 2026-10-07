@@ -11,7 +11,7 @@
       "timing_polarities": [1, 1]
     }
   },
-  "output_dir": "results/studies/FBK/local_benchmark_48V_R1",
+  "output_dir": "results/studies/FBK/timing_benchmark_48V_R1",
   "save_models": "none",
   "protocol": {
     "seed": 1001,
@@ -40,10 +40,15 @@
 
       "direct_mlp",
       "antisymmetric_mlp",
-      "locally_connected_mlp"
+      "locally_connected_mlp",
+
+      "onishi_cnn",
+      "shared_cnn1d",
+      "independent_cnn1d"
     ],
-    "modes": ["timing_to_timing"],
+    "modes": ["timing_to_timing","energy_to_energy"],
     "windows": {
+      "onishi": {"start": -1.5, "end": 2.0},
       "wide": {"start": -2.0, "end": 30.0}
     }
   }
