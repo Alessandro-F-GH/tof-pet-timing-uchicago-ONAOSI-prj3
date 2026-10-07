@@ -9,6 +9,7 @@
                     "channels": {"energy": [1, 2], "polarities": [1, 1], "timing": [3, 4], "timing_polarities": [1, 1]}},
                     
   "results": {"root": "results", "folder": "FBK/benchmark_48V_R1_R2"},
+  
   "save_model": true,
   "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/default_ctr.json",
      "cross_validation": {"folds": 3, "shuffle": true, "metric": "ctr", "minimum_events_per_fold": 50, 
@@ -21,11 +22,7 @@
                 "runtime": {"prediction_chunk_size": 4096},
                 "xai": {"enabled": true, "group_size_samples": 8, "max_events": 4096}},
 
-  "sweep": {"models": ["direct_minirocket", "shared_minirocket", "direct_linear_ridge", 
-                      "shared_linear_ridge", "direct_mlp", "antisymmetric_mlp", 
-                      "locally_connected_mlp", "onishi_cnn", "shared_cnn1d", "independent_cnn1d"],
-            
-            "modes": ["energy_to_energy", "timing_to_timing"], 
+  "sweep": {"models": ["direct_linear_ridge", "shared_linear_ridge"], "modes": ["energy_to_energy", "timing_to_timing"], 
 
   "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
 }
