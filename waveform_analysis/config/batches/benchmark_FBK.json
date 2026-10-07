@@ -13,7 +13,7 @@
   "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/default_ctr.json",
      "cross_validation": {"folds": 3, "shuffle": true, "metric": "ctr", "minimum_events_per_fold": 50, 
      "pruning": {"enabled": true, "startup_complete_candidates": 3, "min_folds_before_prune": 1, 
-                "max_degradation_ps": 5.0, "prune_if_worse_than_led": true, "led_max_degradation_ps": 0.0}}, 
+                "max_degradation_ps": 3.0, "prune_if_worse_than_led": true, "led_max_degradation_ps": 0.0}}, 
                 
                 "bootstrap": {"n_resamples": 100}, 
                 "fit": {"energy_to_energy": {"histogram_bin_width_ps": 10.0}, "timing_to_timing": {"histogram_bin_width_ps": 5.0}}, 
