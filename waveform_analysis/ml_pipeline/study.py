@@ -5,7 +5,7 @@ import numpy as np
 from .common import canonical_hash
 from .feature_cache import prepare_frozen_features,prepare_frozen_transform,uses_frozen_model_input
 from .models import get_model
-from .preprocessing import fit_control,prepare_role_dataset
+from .preprocessing import fit_control,prepare_role_dataset,publish_preprocessing_diagnostics
 from .search import candidate_id,candidate_manifest,fixed_parameters,grid_candidates,optimization_config,suggest_parameters
 from .shared_artifacts import ExperimentArtifactStore
 from .splits import semantic_seed
@@ -144,6 +144,8 @@ def run_study(config,*,logger=None):
     run_dir=Path(config["output_dir"]).resolve();store=RunStore(run_dir);logger=logger or _logger(run_dir);spec=get_model(config["model"]["name"]);space=config["model"]["space"];store.write_resolved_config({k:v for k,v in config.items() if not str(k).startswith("_")})
     if store.manifest_path.is_file() and not store.compatible_schema():raise RuntimeError("Incompatible result schema must be rebuilt by batch planner")
     control,control_dir=fit_control(config,rebuild=False,logger=logger);_,_,development=prepare_role_dataset(config,"development",control,rebuild=False,logger=logger)
+    publish_preprocessing_diagnostics(config,"control",control,config["batch_output_dir"],logger=logger)
+    publish_preprocessing_diagnostics(config,"development",control,config["batch_output_dir"],logger=logger)
     frozen_transform=None;frozen_development=None
     if uses_frozen_model_input(spec):
         _,_,control_prepared=prepare_role_dataset(config,"control",control,rebuild=False,logger=None)
@@ -165,6 +167,7 @@ def run_study(config,*,logger=None):
         logger.info("Final fit | reusing saved model")
     logger.info("Blind preparation | applying frozen preprocessing")
     _,_,blind=prepare_role_dataset(config,"blind",control,rebuild=False,logger=logger)
+    publish_preprocessing_diagnostics(config,"blind",control,config["batch_output_dir"],logger=logger)
     frozen_blind=prepare_frozen_features(spec,frozen_transform,config,blind,role="blind",cache_root=config["preprocessing"]["cache_dir"],logger=logger) if frozen_transform is not None else None
     blind_fp=_stage("blind",{"final_fit":final_fp,"blind":blind.manifest["analysis_protocol_identity"],"fit":config["fit"],"frozen_transform":None if frozen_transform is None else frozen_transform.identity})
     if _sync(store,"blind",blind_fp)!="complete" or not store.predictions_path.is_file():
