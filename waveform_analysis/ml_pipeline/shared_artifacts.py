@@ -67,7 +67,11 @@ class ExperimentArtifactStore:
         window = config.get("window_name") or (
             f"{float(config['window_ns']['start']):g}_{float(config['window_ns']['end']):g}ns"
         )
-        return self.root / "populations" / f"{mode}__{_safe(window)}__{protocol_identity[:12]}"
+        name = f"{mode}__{_safe(window)}__{protocol_identity[:12]}"
+        return prefer_existing(
+            self.root / "pop" / name,
+            self.root / "populations" / name,
+        )
 
     def _sampling_identity(self, dataset, config) -> str:
         return canonical_hash({
@@ -84,7 +88,10 @@ class ExperimentArtifactStore:
         event_identity = str(dataset.manifest["event_population_identity"])
         sampling_identity = self._sampling_identity(dataset, config)
         population_dir = self._population_dir(dataset, config)
-        sampling_dir = population_dir / "sampling" / sampling_identity[:16]
+        sampling_dir = prefer_existing(
+            population_dir / "s" / sampling_identity[:16],
+            population_dir / "sampling" / sampling_identity[:16],
+        )
         sampling_dir.mkdir(parents=True, exist_ok=True)
 
         population_manifest = {
@@ -192,7 +199,7 @@ class ExperimentArtifactStore:
             raise AssertionError("fixed validation must never enter replica blind evaluation")
 
         replica_dir = prefer_existing(
-            fixed.directory / "replicas" / replica_tag(replica_index, split.seed),
+            fixed.directory / "r" / replica_tag(replica_index, split.seed),
             fixed.directory / "replicas" / f"replica_{int(replica_index):03d}_seed_{int(split.seed)}",
         )
         replica_dir.mkdir(parents=True, exist_ok=True)
