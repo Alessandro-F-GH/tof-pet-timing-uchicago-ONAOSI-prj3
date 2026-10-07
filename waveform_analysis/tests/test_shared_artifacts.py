@@ -52,7 +52,7 @@ def test_shared_fixed_validation_and_replica_are_written_once(tmp_path, monkeypa
     replica_b = store.prepare_replica(dataset, _config(), 1, target, fixed=fixed_a)
     np.testing.assert_array_equal(replica_a.split.test, replica_b.split.test)
 
-    fixed_files = list((tmp_path / "artifacts").rglob("fixed_validation.npz"))
+    fixed_files = list((tmp_path / "artifacts").rglob("validation.npz"))
     replica_files = list((tmp_path / "artifacts").rglob("split.npz"))
     assert len(fixed_files) == 1
     assert len(replica_files) == 1
