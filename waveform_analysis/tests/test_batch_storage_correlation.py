@@ -54,17 +54,17 @@ def test_batch_publishes_cached_selection_diagnostics_once_per_mode():
 def _record(tmp_path, *, model, formulation, mode, replica, output, led):
     seed = 1000 + replica
     run_dir = tmp_path / f"{model}_{mode}"
-    residual_dir = run_dir / "blind_residuals"
+    residual_dir = run_dir / "residuals"
     residual_dir.mkdir(parents=True, exist_ok=True)
     candidate_id = "selected"
     np.savez_compressed(
-        residual_dir / f"seed_{seed}_{candidate_id}.npz",
+        residual_dir / f"s{seed}_{candidate_id}.npz",
         corrected_ps=np.asarray(led, float) - np.asarray(output, float),
     )
     shared_dir = tmp_path / f"shared_{mode}_{replica}"
     shared_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        shared_dir / "blind_reference.npz",
+        shared_dir / "blind.npz",
         event_index=np.arange(len(led), dtype=np.int64),
         led_ps=np.asarray(led, float),
     )
