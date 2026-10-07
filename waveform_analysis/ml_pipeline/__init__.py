@@ -1,1 +1,1 @@
-"""Compact holdout-only waveform timing pipeline."""
+"""Control-fitted preprocessing, development cross-validation, and blind evaluation pipeline."""

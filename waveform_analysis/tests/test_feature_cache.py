@@ -10,7 +10,6 @@ from waveform_analysis.ml_pipeline.feature_cache import (
     load_feature_cache,
 )
 from waveform_analysis.ml_pipeline.models.spec import FeatureTransformSpec
-from waveform_analysis.ml_pipeline.study_cached import _detector_swap_enabled
 from waveform_analysis.ml_pipeline.train import FittedFeatureTransform
 
 
@@ -120,8 +119,3 @@ def test_feature_cache_is_float32_memmap_and_reusable(tmp_path):
     assert loaded is not None
     np.testing.assert_allclose(loaded.features, cache.features)
 
-
-def test_detector_swap_diagnostic_is_opt_in():
-    assert _detector_swap_enabled({}) is False
-    assert _detector_swap_enabled({"diagnostics": {}}) is False
-    assert _detector_swap_enabled({"diagnostics": {"detector_swap": True}}) is True
