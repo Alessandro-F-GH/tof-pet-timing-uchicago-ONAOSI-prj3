@@ -18,9 +18,9 @@ def _mode_fit_map(batch):
         result[mode]=fit
     return result
 def _runtime_configs(batch):
-    fit_by_mode=_mode_fit_map(batch);out=[]
+    fit_by_mode=_mode_fit_map(batch);out=[];all_modes=tuple(sorted(fit_by_mode))
     for config in batch.runs:
-        item=dict(config);mode=str(config["mode"]);item["_control_modes"]=(mode,);item["_control_fit_by_mode"]={mode:dict(fit_by_mode[mode])};out.append(item)
+        item=dict(config);item["_control_modes"]=all_modes;item["_control_fit_by_mode"]={mode:dict(fit_by_mode[mode]) for mode in all_modes};out.append(item)
     return out
 def _planner_fingerprints(config):
     pre=canonical_hash({"control":config["control"],"preprocessing":config["preprocessing"],"mode":config["mode"],"fit":config["fit"]});dev=canonical_hash({"preprocessing":pre,"development":config["development"],"window":config["window_ns"],"ml_input":config["ml_input"]});cv=canonical_hash({"development":dev,"cross_validation":config["cross_validation"],"model":config["model"],"seed":config["seed"]});final=canonical_hash({"cv":cv,"development":dev,"model":config["model"],"seed":config["seed"]});blind=canonical_hash({"final_fit":final,"preprocessing":pre,"blind":config["blind"],"window":config["window_ns"],"ml_input":config["ml_input"],"fit":config["fit"]});bootstrap=canonical_hash({"blind":blind,"bootstrap":config["bootstrap"],"seed":config["seed"]});xai=canonical_hash({"final_fit":final,"blind":blind,"xai":config["xai"],"seed":config["seed"]});plots=canonical_hash({"plot_config":config["plot_config"]});return {"preprocessing":pre,"development":dev,"cv":cv,"final_fit":final,"blind":blind,"bootstrap":bootstrap,"xai":xai,"plots":plots}

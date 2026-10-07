@@ -68,19 +68,28 @@ def _windows(runs,root,cfg):
                 wr=[r for r in mr if r["manifest"].get("window_name")==window];selected={}
                 for form in ("shared","direct"):
                     candidates=[r for r in wr if r["manifest"]["estimator_formulation"]==form]
-                    if candidates:selected[form]=min(candidates,key=lambda r:float(r["best"][f"validation_{metric}_mean_ps"]))
+                    if candidates:
+                        selection_metric=str(candidates[0]["best"]["selection_metric"]);selected[form]=min(candidates,key=lambda r:float(r["best"][f"validation_{selection_metric}_mean_ps"]))
                 labels.append(str(window)+"\n"+" ".join(f"{f[0].upper()}:{selected[f]['manifest']['model']}" for f in ("shared","direct") if f in selected))
                 for form in ("shared","direct"):
                     run=selected.get(form);values[form].append(float(run["blind"][f"{metric}_ps"]) if run else np.nan);errors[form].append(float(run["bootstrap"][f"{metric}_bootstrap_std_ps"]) if run else np.nan)
             grouped_bar(labels,[{"label":cfg["formulations"][f]["label"],"values":values[f],"errors":errors[f]} for f in ("shared","direct")],output_path(directory,f"windows_{metric}",cfg),cfg,ylabel=f"Blind {metric.upper()} [ps]",title=f"Waveform-window comparison — winners selected by development CV {metric.upper()}")
-def generate_report(result_root,*,logger=None):
+def _read_matrix(path):
+    rows=_csv(path);return [r["model"] for r in rows],np.asarray([[float(v) for k,v in r.items() if k!="model"] for r in rows],dtype=float)
+
+def generate_report(result_root,*,logger=None,reuse_numeric=False):
     root=Path(result_root).resolve();cfg=load_plot_config(root);root_config=_json(root/"config.json");runs=collect_runs(root);report=root/"report";tables=report/"tables";tables.mkdir(parents=True,exist_ok=True)
     for run in runs:render_run_plots(run["directory"],cfg)
     validation,blind=_summaries(runs);write_csv(tables/"validation.csv",validation);write_csv(tables/"blind.csv",blind);seed=int(root_config["protocol"]["seed"])
     for (mode,window),group in _groups(runs).items():
         d=report/("energy" if mode=="energy_to_energy" else "timing")/str(window);d.mkdir(parents=True,exist_ok=True);labels,corr,corr_n,payloads=_correlation(group);_matrix(d/"output_correlation.csv",labels,corr);_matrix(d/"output_correlation_n.csv",labels,corr_n);heatmap(corr,labels,output_path(d,"output_correlation",cfg),cfg,title="Blind model-output correlation",correlation=True,value_format=".2f")
         for metric in ("ctr","rmse"):
-            labels,central,std,counts=_paired(group,payloads,metric,root_config,seed);_matrix(d/f"paired_{metric}.csv",labels,central);_matrix(d/f"paired_{metric}_std.csv",labels,std);_matrix(d/f"paired_{metric}_n.csv",labels,counts);heatmap(central,labels,output_path(d,f"paired_{metric}",cfg),cfg,title=f"Paired blind Δ {metric.upper()} (row − column) [ps]");heatmap(std,labels,output_path(d,f"paired_{metric}_std",cfg),cfg,title=f"Paired blind Δ {metric.upper()} bootstrap std [ps]")
+            central_path=d/f"paired_{metric}.csv";std_path=d/f"paired_{metric}_std.csv";count_path=d/f"paired_{metric}_n.csv"
+            if reuse_numeric and central_path.is_file() and std_path.is_file() and count_path.is_file():
+                labels,central=_read_matrix(central_path);_,std=_read_matrix(std_path);_,counts=_read_matrix(count_path)
+            else:
+                labels,central,std,counts=_paired(group,payloads,metric,root_config,seed);_matrix(central_path,labels,central);_matrix(std_path,labels,std);_matrix(count_path,labels,counts)
+            heatmap(central,labels,output_path(d,f"paired_{metric}",cfg),cfg,title=f"Paired blind Δ {metric.upper()} (row − column) [ps]");heatmap(std,labels,output_path(d,f"paired_{metric}_std",cfg),cfg,title=f"Paired blind Δ {metric.upper()} bootstrap std [ps]")
         _scatters(group,d,cfg)
     _windows(runs,report,cfg);atomic_json(report/"manifest.json",{"source_result_root":str(root),"runs":len(runs),"plot_regeneration_requires_training":False,"pairwise_difference_convention":"metric(row)-metric(column); negative means row model is better","window_winner_source":"development_cv_only"})
     if logger:logger.info("Report generated from persisted results only | %s",report)

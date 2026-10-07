@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json,shutil
 from pathlib import Path
-from .common import atomic_json
+from .common import atomic_json,canonical_hash
 from .control_preprocessing import fit_control_artifact
 from .data import preprocess_selected
 from .event_selection import apply_selection_rules
@@ -18,11 +18,11 @@ def apply_frozen_preprocessing(config,role,control_artifact,*,rebuild=False,logg
 def prepare_role_dataset(config,role,control_artifact,*,rebuild=False,logger=None):
     selection,native=apply_frozen_preprocessing(config,role,control_artifact,rebuild=rebuild,logger=logger);prepared=prepare_ml_dataset(native,control_artifact,config,dataset_config=config[role],dataset_role=role,cache_dir=Path(config["preprocessing"]["cache_dir"])/f"{role}_ml",rebuild=rebuild,logger=logger);return selection,native,prepared
 def publish_preprocessing_diagnostics(config,role,control_artifact,batch_root,*,force=False,logger=None):
-    selection,native=apply_frozen_preprocessing(config,role,control_artifact,rebuild=False,logger=None);mode="energy" if config["mode"]=="energy_to_energy" else "timing";out=Path(batch_root).resolve()/"preprocessing"/str(role)/mode;metadata=out/"manifest.json";fingerprint=str(selection.manifest["fingerprint"])
+    selection,native=apply_frozen_preprocessing(config,role,control_artifact,rebuild=False,logger=None);mode="energy" if config["mode"]=="energy_to_energy" else "timing";out=Path(batch_root).resolve()/"preprocessing"/str(role)/mode;metadata=out/"manifest.json";fingerprint=str(selection.manifest["fingerprint"]);plot_fingerprint=canonical_hash(config["plot_config"])
     if metadata.is_file() and not force:
         try:
             existing=json.loads(metadata.read_text(encoding="utf-8"))
-            if existing.get("selection_fingerprint")==fingerprint and existing.get("control_fingerprint")==control_artifact["fingerprint"]:return out
+            if existing.get("selection_fingerprint")==fingerprint and existing.get("control_fingerprint")==control_artifact["fingerprint"] and existing.get("plot_fingerprint")==plot_fingerprint:return out
         except (OSError,json.JSONDecodeError):pass
     if out.exists():shutil.rmtree(out)
     out.mkdir(parents=True,exist_ok=True);copied=[]
@@ -31,5 +31,5 @@ def publish_preprocessing_diagnostics(config,role,control_artifact,batch_root,*,
         if source.is_file():shutil.copy2(source,out/name);copied.append(name)
     family=str(selection.manifest["family"]);wave=plot_materialized_event(native,family,config[role]["channels"][family],out/"waveform.png",f"{role.capitalize()} selected {family}-channel event")
     if wave is not None:copied.append("waveform.png")
-    atomic_json(metadata,{"dataset_role":role,"source_dataset":str(Path(config[role]["root_file"]).resolve()),"control_source_dataset":str(Path(config["control"]["root_file"]).resolve()),"control_fingerprint":control_artifact["fingerprint"],"selection_rules_fingerprint":selection.manifest.get("rules_fingerprint"),"selection_fingerprint":fingerprint,"n_raw":selection.manifest.get("n_raw"),"n_selected":selection.manifest.get("n_selected"),"stage_counts":selection.manifest.get("stage_counts"),"rules_fitted_on":"control","files":copied})
+    atomic_json(metadata,{"dataset_role":role,"source_dataset":str(Path(config[role]["root_file"]).resolve()),"control_source_dataset":str(Path(config["control"]["root_file"]).resolve()),"control_fingerprint":control_artifact["fingerprint"],"selection_rules_fingerprint":selection.manifest.get("rules_fingerprint"),"selection_fingerprint":fingerprint,"n_raw":selection.manifest.get("n_raw"),"n_selected":selection.manifest.get("n_selected"),"stage_counts":selection.manifest.get("stage_counts"),"rules_fitted_on":"control","plot_fingerprint":plot_fingerprint,"files":copied})
     return out
