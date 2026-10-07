@@ -146,18 +146,37 @@ def run_study(config,*,logger=None):
     if not isinstance(best,dict):
         best=_select(store,candidates,config);store.mark_stage("selection",selection_fp,metadata={"candidate_id":best["candidate_id"]});logger.info("CV selected | %s | %s | CTR=%.1f ± %.1f ps | RMSE=%.1f ± %.1f ps",_model_label(spec.name),_format_optimized_params(space,best["parameters"]),float(best["validation_ctr_mean_ps"]),float(best["validation_ctr_std_ps"]),float(best["validation_rmse_mean_ps"]),float(best["validation_rmse_std_ps"]))
     final_fp=_stage("final_fit",{"development":development.manifest["analysis_protocol_identity"],"model":config["model"],"candidate_id":best["candidate_id"],"parameters":best["parameters"],"seed":config["seed"]});fitted=None
-    if _sync(store,"final_fit",final_fp)!="complete":fitted=_model(store,spec,space,config,development,best,final_fp,logger)
+    if _sync(store,"final_fit",final_fp)!="complete":
+        logger.info("Final fit | %s | training on full development set | n=%d",_model_label(spec.name),int(development.n_events))
+        fitted=_model(store,spec,space,config,development,best,final_fp,logger)
+        logger.info("Final fit complete | %s",_model_label(spec.name))
+    else:
+        logger.info("Final fit | reusing saved model")
+    logger.info("Blind preparation | applying frozen preprocessing")
     _,_,blind=prepare_role_dataset(config,"blind",control,rebuild=False,logger=logger);blind_fp=_stage("blind",{"final_fit":final_fp,"blind":blind.manifest["analysis_protocol_identity"],"fit":config["fit"]})
     if _sync(store,"blind",blind_fp)!="complete" or not store.predictions_path.is_file():
+        logger.info("Blind evaluation | %s | n=%d",_model_label(spec.name),int(blind.n_events))
         if fitted is None:fitted=_model(store,spec,space,config,development,best,final_fp,logger)
         indices=np.arange(blind.n_events,dtype=np.int64);prediction=predict_indices(spec,fitted,blind,config["mode"],indices,chunk_size=int(config["runtime"]["prediction_chunk_size"]));led=np.asarray(model_target(blind,config["mode"]),dtype=np.float64);corrected=led-prediction;central=paired_central_metrics(corrected,led,config["fit"],seed=semantic_seed(config["seed"],spec.name,"blind_central"));store.save_predictions(event_id=np.asarray(blind.event_index,dtype=np.int64),prediction_ps=prediction,corrected_ps=corrected,led_residual_ps=led);store.write_blind({**central,"dataset_role":"blind","dataset_source":blind.manifest["dataset_source"],"event_population_identity":blind.manifest["event_population_identity"],"candidate_id":best["candidate_id"],"parameters":best["parameters"],"evaluation_count":1,"central_value_source":"original_non_resampled_blind_distribution"});store.mark_stage("blind",blind_fp,metadata={"n_events":int(blind.n_events)})
+        logger.info("Blind result | CTR=%.1f ps | RMSE=%.1f ps | LED CTR=%.1f ps | ΔCTR=%.1f ps",float(central["ctr_ps"]),float(central["rmse_ps"]),float(central["led_ctr_ps"]),float(central["ctr_improvement_ps"]))
+    else:
+        logger.info("Blind evaluation | reusing saved predictions")
     pred=store.load_predictions();bootstrap_fp=_stage("bootstrap",{"blind":blind_fp,"bootstrap":config["bootstrap"],"seed":config["seed"]})
     if _sync(store,"bootstrap",bootstrap_fp)!="complete" or not store.bootstrap_path.is_file():
+        logger.info("Blind bootstrap | %d event resamples | no retraining",int(config["bootstrap"]["n_resamples"]))
         summary,draws=blind_event_bootstrap(pred["corrected_ps"],pred["led_residual_ps"],config["fit"],n_resamples=int(config["bootstrap"]["n_resamples"]),seed=semantic_seed(config["seed"],spec.name,"bootstrap"));store.write_bootstrap(summary);store.save_bootstrap_draws(draws);store.mark_stage("bootstrap",bootstrap_fp)
+        logger.info("Blind uncertainty | CTR ± %.1f ps | RMSE ± %.1f ps",float(summary["ctr_bootstrap_std_ps"]),float(summary["rmse_bootstrap_std_ps"]))
+    else:
+        logger.info("Blind bootstrap | reusing saved uncertainty")
     xai_fp=_stage("xai",{"final_fit":final_fp,"blind":blind.manifest["analysis_protocol_identity"],"xai":config["xai"],"seed":config["seed"]})
     if config["xai"]["enabled"] and (_sync(store,"xai",xai_fp)!="complete" or not store.xai_path.is_file()):
+        logger.info("XAI | grouped temporal occlusion | max_events=%d | group=%d samples",int(config["xai"]["max_events"]),int(config["xai"]["group_size_samples"]))
         if fitted is None:fitted=_model(store,spec,space,config,development,best,final_fp,logger)
         store.save_xai(**temporal_occlusion_importance(spec,fitted,blind,config["mode"],group_size_samples=int(config["xai"]["group_size_samples"]),max_events=int(config["xai"]["max_events"]),seed=semantic_seed(config["seed"],spec.name,"xai")));store.mark_stage("xai",xai_fp,metadata={"method":"grouped_temporal_occlusion"})
-    elif not config["xai"]["enabled"]:store.mark_stage("xai",xai_fp,metadata={"enabled":False})
+        logger.info("XAI complete")
+    elif not config["xai"]["enabled"]:
+        store.mark_stage("xai",xai_fp,metadata={"enabled":False})
+    else:
+        logger.info("XAI | reusing saved importance")
     manifest={"schema_version":RUN_SCHEMA_VERSION,"status":"complete","name":config["name"],"study_name":config.get("study_name"),"run_id":config.get("run_id"),"mode":config["mode"],"window_name":config.get("window_name"),"window_ns":config["window_ns"],"model":spec.name,"estimator_formulation":spec.estimator_formulation,"control_dataset":config["control"],"development_dataset":config["development"],"blind_dataset":config["blind"],"control_artifact":str(Path(control_dir).resolve()),"preprocessing_fit_role":"control","model_selection_role":"development","blind_role":"final_one_time_evaluation_only","blind_used_in_selection":False,"cv":config["cross_validation"],"selected_candidate_id":best["candidate_id"],"selected_hyperparameters":best["parameters"],"validation_ctr_mean_ps":best["validation_ctr_mean_ps"],"validation_ctr_std_ps":best["validation_ctr_std_ps"],"validation_rmse_mean_ps":best["validation_rmse_mean_ps"],"validation_rmse_std_ps":best["validation_rmse_std_ps"],"validation_std_interpretation":"fold-to-fold development validation variability","blind_bootstrap_interpretation":"event-level uncertainty conditional on final fitted model; no retraining","bootstrap_unit":"blind_event","single_configured_seed":int(config["seed"]),"stage_fingerprints":{"cv":cv_fp,"selection":selection_fp,"final_fit":final_fp,"blind":blind_fp,"bootstrap":bootstrap_fp,"xai":xai_fp}}
-    store.write_manifest(manifest);release_training_memory();return run_dir
+    store.write_manifest(manifest);release_training_memory();logger.info("Study complete | %s | %s | %s",_model_label(spec.name),config["mode"],config.get("window_name"));return run_dir
