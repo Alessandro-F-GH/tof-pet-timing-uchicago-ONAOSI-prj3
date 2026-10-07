@@ -10,7 +10,7 @@ from .shared_artifacts import ExperimentArtifactStore
 from .splits import semantic_seed
 from .stats import blind_event_bootstrap,metric_values,paired_central_metrics
 from .storage import RUN_SCHEMA_VERSION,RunStore
-from .train import FeatureTransformCache,FitInputCache,fit_on_indices,load_fitted_model,predict_indices,release_training_memory,save_model
+from .train import FeatureTransformCache,FitInputCache,fit_on_indices,load_fitted_model,predict_indices,release_training_memory,save_model,saved_model_complete
 from .validation import best_complete_candidate,evaluate_candidate
 from .view import model_target
 from .xai import temporal_occlusion_importance
@@ -128,7 +128,11 @@ def _fit_final(spec,space,config,development,best,logger):
     seed=semantic_seed(config["seed"],config["mode"],config.get("window_name"),spec.name,best["candidate_id"],"final_fit");fitted=fit_on_indices(spec,space,config,development,np.arange(development.n_events,dtype=np.int64),best["parameters"],seed=seed,transform_seed_base=semantic_seed(seed,"transform"),logger=logger);return fitted,seed
 def _model(store,spec,space,config,development,best,fp,logger):
     status=_sync(store,"final_fit",fp)
-    if status=="complete" and config["save_model"] and store.model_dir.is_dir():return load_fitted_model(spec,store.model_dir,best["parameters"],config)
+    if status=="complete" and config["save_model"]:
+        if saved_model_complete(spec,store.model_dir):
+            return load_fitted_model(spec,store.model_dir,best["parameters"],config)
+        logger.warning("Saved final model is incomplete or incompatible | retraining on full development set")
+        store.invalidate_from("final_fit")
     fitted,seed=_fit_final(spec,space,config,development,best,logger)
     if config["save_model"]:
         if store.model_dir.exists():shutil.rmtree(store.model_dir)

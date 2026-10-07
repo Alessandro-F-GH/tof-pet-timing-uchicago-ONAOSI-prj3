@@ -451,20 +451,44 @@ def _loaded_metadata(artifact, config):
     return metadata
 
 
+def saved_model_complete(spec, directory) -> bool:
+    directory = Path(directory)
+    if not directory.is_dir() or not (directory / "sample_mask.npy").is_file():
+        return False
+    pickle_models = {
+        "direct_linear_ridge",
+        "shared_linear_ridge",
+        "direct_minirocket",
+        "shared_minirocket",
+    }
+    if spec.name in pickle_models:
+        if not (directory / "model.pkl").is_file():
+            return False
+        if spec.name in {"direct_minirocket", "shared_minirocket"}:
+            return (directory / "feature_transform" / "transform.pkl").is_file()
+        return True
+    return (directory / "model.pt").is_file()
+
+
 def load_fitted_model(spec, directory, parameters, config):
     directory = Path(directory)
     mask = np.load(directory / "sample_mask.npy").astype(bool)
     output_limit = float(config["ml_output"]["max_abs_ps"])
 
-    if spec.name in {"direct_minirocket", "shared_minirocket", "linear_ridge"}:
+    if spec.name in {
+        "direct_linear_ridge",
+        "shared_linear_ridge",
+        "direct_minirocket",
+        "shared_minirocket",
+    }:
         with (directory / "model.pkl").open("rb") as stream:
             artifact = pickle.load(stream)
-        if spec.name == "linear_ridge":
-            from .models.linear_ridge import DifferenceTransformArtifact
+        if spec.name in {"direct_linear_ridge", "shared_linear_ridge"}:
+            from .models._linear_ridge_common import LinearTransformArtifact
 
             feature_transform = FittedFeatureTransform(
                 spec.feature_transform,
-                DifferenceTransformArtifact({}),
+                LinearTransformArtifact({"reloaded": True}),
                 "reloaded",
                 {},
                 0,
@@ -497,11 +521,11 @@ def load_fitted_model(spec, directory, parameters, config):
     n = int(mask.sum())
     p = dict(parameters or {})
 
-    if spec.name == "mlp":
+    if spec.name == "antisymmetric_mlp":
         from .models._mlp_common import MLPArtifact
-        from .models.mlp import SharedScorerMLP
+        from .models.antisymmetric_mlp import AntisymmetricMLP
 
-        model = SharedScorerMLP(n, p["architecture"], p["activation"])
+        model = AntisymmetricMLP(n, p["architecture"], p["activation"])
         artifact_type = MLPArtifact
     elif spec.name == "direct_mlp":
         from .models._mlp_common import MLPArtifact
