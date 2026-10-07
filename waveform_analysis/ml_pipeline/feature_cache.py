@@ -1,210 +1,89 @@
 from __future__ import annotations
 
-import gc
 import json
 import os
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
 from .common import atomic_json, canonical_hash
-from .sample_mask import apply_sample_mask, training_sample_mask
 from .splits import semantic_seed
 from .train import FittedFeatureTransform
 from .view import waveform_view
 
-
-_CACHE_SCHEMA_VERSION = 2
-_MINIROCKET_TRANSFORMS = {
-    "direct_minirocket_multivariate",
-    "shared_minirocket_univariate",
+_CACHE_VERSION = 3
+_FROZEN_INPUT_MODELS = {
+    "direct_linear_ridge",
+    "shared_linear_ridge",
+    "direct_minirocket",
+    "shared_minirocket",
 }
+_MINIROCKET_MODELS = {"direct_minirocket", "shared_minirocket"}
 
 
 @dataclass(frozen=True)
-class PersistentFeatureCache:
-    directory: Path
-    features: np.ndarray
+class FrozenTransform:
     transform: FittedFeatureTransform
+    identity: str
+    fit_role: str
+    input_samples: int
+
+
+@dataclass(frozen=True)
+class FrozenFeatureSet:
+    features: np.ndarray
     sample_mask: np.ndarray
-    metadata: dict[str, Any]
+    transform: FittedFeatureTransform
+    identity: str
+    role: str
 
     def rows(self, indices) -> np.ndarray:
-        idx = np.asarray(indices, dtype=np.int64)
-        return np.asarray(self.features[idx], dtype=np.float32)
-
-
-def is_minirocket_transform(feature_transform) -> bool:
-    return (
-        feature_transform is not None
-        and str(feature_transform.name) in _MINIROCKET_TRANSFORMS
-    )
-
-
-def _training_sample_mask(dataset, mode, fit_indices) -> np.ndarray:
-    idx = np.asarray(fit_indices, dtype=np.int64)
-    pair = waveform_view(dataset, mode, idx).materialize()
-    try:
-        return training_sample_mask(pair)
-    finally:
-        del pair
-
-
-def transform_identity(
-    spec,
-    model_space,
-    dataset,
-    mode,
-    fit_indices,
-    parameters,
-    *,
-    seed_base,
-):
-    if spec.feature_transform is None:
-        raise ValueError("feature transform is required")
-
-    idx = np.asarray(fit_indices, dtype=np.int64)
-    transform_parameters = dict(
-        spec.feature_transform.parameters(dict(parameters or {}), model_space) or {}
-    )
-    parameter_hash = canonical_hash(transform_parameters)
-    transform_seed = semantic_seed(
-        int(seed_base),
-        "feature_transform",
-        spec.feature_transform.name,
-        parameter_hash,
-    )
-    protocol_identity = str(
-        dataset.manifest.get("analysis_protocol_identity")
-        or dataset.manifest["analysis_population_identity"]
-    )
-    sample_mask = _training_sample_mask(dataset, mode, idx)
-    scope_key = canonical_hash(
-        {
-            "protocol": protocol_identity,
-            "mode": mode,
-            "indices": idx.tolist(),
-            "sample_mask": sample_mask.tolist(),
-        }
-    )
-    identity = canonical_hash(
-        {
-            "name": spec.feature_transform.name,
-            "parameters": transform_parameters,
-            "seed": transform_seed,
-            "scope": scope_key,
-        }
-    )
-    return identity, transform_parameters, transform_seed, sample_mask
-
-
-def cache_directory(dataset, transform_name: str, identity: str) -> Path:
-    return (
-        Path(dataset.directory).resolve()
-        / "feature_cache"
-        / str(transform_name)
-        / identity[:16]
-    )
-
-
-def _load_transform(spec, path: Path, metadata: dict[str, Any]) -> FittedFeatureTransform:
-    with path.open("rb") as stream:
-        artifact = pickle.load(stream)
-    return FittedFeatureTransform(
-        spec.feature_transform,
-        artifact,
-        str(metadata["transform_identity"]),
-        dict(metadata["transform_parameters"]),
-        int(metadata["transform_seed"]),
-        {},
-    )
-
-
-def load_feature_cache(
-    spec,
-    model_space,
-    dataset,
-    mode,
-    fit_indices,
-    parameters,
-    *,
-    seed_base,
-    logger=None,
-):
-    if not is_minirocket_transform(spec.feature_transform):
-        return None
-
-    identity, transform_parameters, transform_seed, sample_mask = transform_identity(
-        spec,
-        model_space,
-        dataset,
-        mode,
-        fit_indices,
-        parameters,
-        seed_base=seed_base,
-    )
-    directory = cache_directory(dataset, spec.feature_transform.name, identity)
-    metadata_path = directory / "manifest.json"
-    features_path = directory / "features.npy"
-    transform_path = directory / "transform.pkl"
-    if not (metadata_path.is_file() and features_path.is_file() and transform_path.is_file()):
-        return None
-
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    expected = {
-        "schema_version": _CACHE_SCHEMA_VERSION,
-        "transform_identity": identity,
-        "transform_name": spec.feature_transform.name,
-        "transform_parameters": transform_parameters,
-        "transform_seed": int(transform_seed),
-        "event_population_identity": str(dataset.manifest["event_population_identity"]),
-        "analysis_protocol_identity": str(dataset.manifest["analysis_protocol_identity"]),
-        "mode": str(mode),
-        "n_events": int(dataset.n_events),
-        "sample_mask_identity": canonical_hash(sample_mask.tolist()),
-        "input_samples_before_mask": int(sample_mask.size),
-        "input_samples_after_mask": int(sample_mask.sum()),
-        "dtype": "float32",
-    }
-    if any(metadata.get(key) != value for key, value in expected.items()):
-        return None
-
-    features = np.load(features_path, mmap_mode="r")
-    feature_count = int(metadata.get("feature_count", -1))
-    if (
-        features.dtype != np.float32
-        or features.ndim != 2
-        or features.shape != (int(dataset.n_events), feature_count)
-    ):
-        return None
-
-    transform = _load_transform(spec, transform_path, metadata)
-    if logger is not None:
-        logger.info(
-            "Feature cache reused | %s | id=%s | events=%d | features=%d | samples=%d/%d | size=%.2f GiB",
-            spec.feature_transform.name,
-            identity[:12],
-            features.shape[0],
-            features.shape[1],
-            int(sample_mask.sum()),
-            int(sample_mask.size),
-            features.nbytes / (1024**3),
+        return np.asarray(
+            self.features[np.asarray(indices, dtype=np.int64)],
+            dtype=np.float32,
         )
-    return PersistentFeatureCache(directory, features, transform, sample_mask, metadata)
 
 
-def _save_transform(path: Path, artifact) -> None:
+def uses_frozen_model_input(spec) -> bool:
+    return spec.name in _FROZEN_INPUT_MODELS and spec.feature_transform is not None
+
+
+def _fixed_candidate(model_space: dict) -> dict:
+    return {
+        str(name): raw.get("value")
+        for name, raw in (model_space.get("parameters") or {}).items()
+        if isinstance(raw, dict) and str(raw.get("type", "")).lower() == "fixed"
+    }
+
+
+def _transform_parameters(spec, model_space: dict) -> dict:
+    candidate = _fixed_candidate(model_space)
+    try:
+        return dict(spec.feature_transform.parameters(candidate, model_space) or {})
+    except KeyError as exc:
+        raise ValueError(
+            f"{spec.name} feature-transform parameter {exc.args[0]!r} must be fixed "
+            "during the downstream model search"
+        ) from exc
+
+
+def _pair(dataset, mode, indices=None) -> np.ndarray:
+    if indices is None:
+        indices = np.arange(dataset.n_events, dtype=np.int64)
+    return np.asarray(
+        waveform_view(dataset, mode, np.asarray(indices, dtype=np.int64)).materialize(),
+        dtype=np.float32,
+    )
+
+
+def _atomic_pickle(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     try:
         with tmp.open("wb") as stream:
-            pickle.dump(artifact, stream, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(value, stream, protocol=pickle.HIGHEST_PROTOCOL)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp, path)
@@ -213,169 +92,268 @@ def _save_transform(path: Path, artifact) -> None:
             tmp.unlink()
 
 
-def build_feature_cache(
+def _transform_root(cache_root, mode, window, model_name, identity):
+    return (
+        Path(cache_root).resolve()
+        / "model_inputs"
+        / ("energy" if mode == "energy_to_energy" else "timing")
+        / str(window)
+        / str(model_name)
+        / identity[:16]
+    )
+
+
+def prepare_frozen_transform(
     spec,
     model_space,
     config,
-    dataset,
-    fit_indices,
-    parameters,
-    feature_transform: FittedFeatureTransform,
     *,
-    seed_base,
-    fit_features=None,
+    control_dataset,
+    development_dataset,
+    cache_root,
     logger=None,
-):
-    if not is_minirocket_transform(spec.feature_transform):
-        raise ValueError("persistent feature caching is only enabled for MiniRocket transforms")
+) -> FrozenTransform | None:
+    if not uses_frozen_model_input(spec):
+        return None
 
-    idx_fit = np.asarray(fit_indices, dtype=np.int64)
-    expected_identity, _, _, sample_mask = transform_identity(
-        spec,
-        model_space,
-        dataset,
-        config["mode"],
-        idx_fit,
-        parameters,
-        seed_base=int(seed_base),
+    mode = str(config["mode"])
+    window = str(config.get("window_name") or "window")
+    transform_parameters = _transform_parameters(spec, model_space)
+    fit_role = "control" if spec.name in _MINIROCKET_MODELS else "deterministic"
+    fit_identity = (
+        str(control_dataset.manifest["analysis_protocol_identity"])
+        if fit_role == "control"
+        else "no_fit"
     )
-    identity = str(feature_transform.identity)
-    if identity != expected_identity:
-        raise RuntimeError(
-            "MiniRocket feature-transform identity does not match the training-derived sample mask"
-        )
+    seed = semantic_seed(
+        int(config["seed"]),
+        mode,
+        window,
+        spec.feature_transform.name,
+        "frozen_transform",
+    )
+    input_samples = int(
+        waveform_view(
+            development_dataset,
+            mode,
+            np.asarray([0], dtype=np.int64),
+        ).time_ps.size
+    )
+    identity = canonical_hash(
+        {
+            "schema_version": _CACHE_VERSION,
+            "model": spec.name,
+            "transform": spec.feature_transform.name,
+            "parameters": transform_parameters,
+            "seed": int(seed),
+            "fit_role": fit_role,
+            "fit_identity": fit_identity,
+            "input_samples": input_samples,
+        }
+    )
+    directory = _transform_root(cache_root, mode, window, spec.name, identity)
+    manifest_path = directory / "transform.json"
+    artifact_path = directory / "transform.pkl"
 
-    directory = cache_directory(dataset, spec.feature_transform.name, identity)
+    if manifest_path.is_file() and artifact_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("identity") == identity:
+                with artifact_path.open("rb") as stream:
+                    artifact = pickle.load(stream)
+                wrapper = FittedFeatureTransform(
+                    spec.feature_transform,
+                    artifact,
+                    identity,
+                    transform_parameters,
+                    int(seed),
+                    {},
+                )
+                if logger:
+                    logger.info(
+                        "Model transform reused | %s | fit=%s",
+                        spec.name.replace("_", " ").title(),
+                        fit_role,
+                    )
+                return FrozenTransform(wrapper, identity, fit_role, input_samples)
+        except (OSError, ValueError, json.JSONDecodeError, pickle.PickleError):
+            pass
+
     directory.mkdir(parents=True, exist_ok=True)
-    features_path = directory / "features.npy"
-    metadata_path = directory / "manifest.json"
-    transform_path = directory / "transform.pkl"
-
-    existing = load_feature_cache(
-        spec,
-        model_space,
-        dataset,
-        config["mode"],
-        idx_fit,
-        parameters,
-        seed_base=int(seed_base),
-        logger=logger,
-    )
-    if existing is not None:
-        return existing
-
-    if fit_features is not None:
-        fit_features = np.asarray(fit_features, dtype=np.float32)
-        if fit_features.ndim != 2 or fit_features.shape[0] != idx_fit.size:
-            raise ValueError("fit feature cache shape does not match fit indices")
-        feature_count = int(fit_features.shape[1])
+    if fit_role == "control":
+        fit_pair = _pair(control_dataset, mode)
+        if logger:
+            logger.info(
+                "Model transform fit | %s | control only | events=%d",
+                spec.name.replace("_", " ").title(),
+                int(control_dataset.n_events),
+            )
     else:
-        feature_count = int(
-            getattr(feature_transform.artifact, "metadata", {}).get("feature_count", 0)
+        fit_pair = _pair(
+            development_dataset,
+            mode,
+            np.asarray([0], dtype=np.int64),
         )
-        if feature_count < 1:
-            raise RuntimeError("MiniRocket transform does not expose feature_count")
 
-    temp_path = directory / ".features.npy.tmp"
-    if temp_path.exists():
-        temp_path.unlink()
+    artifact, _ = spec.feature_transform.fit_transform(
+        transform_parameters,
+        fit_pair,
+        seed=int(seed),
+        config=model_space,
+    )
+    del fit_pair
+    metadata = getattr(artifact, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata["transform_fit_role"] = fit_role
+        metadata["input_samples"] = input_samples
+
+    _atomic_pickle(artifact_path, artifact)
+    atomic_json(
+        manifest_path,
+        {
+            "schema_version": _CACHE_VERSION,
+            "identity": identity,
+            "model": spec.name,
+            "transform": spec.feature_transform.name,
+            "parameters": transform_parameters,
+            "seed": int(seed),
+            "fit_role": fit_role,
+            "fit_identity": fit_identity,
+            "input_samples": input_samples,
+        },
+    )
+    wrapper = FittedFeatureTransform(
+        spec.feature_transform,
+        artifact,
+        identity,
+        transform_parameters,
+        int(seed),
+        {},
+    )
+    return FrozenTransform(wrapper, identity, fit_role, input_samples)
+
+
+def prepare_frozen_features(
+    spec,
+    frozen_transform: FrozenTransform,
+    config,
+    dataset,
+    *,
+    role,
+    cache_root,
+    logger=None,
+) -> FrozenFeatureSet:
+    mode = str(config["mode"])
+    window = str(config.get("window_name") or "window")
+    dataset_identity = str(dataset.manifest["analysis_protocol_identity"])
+    identity = canonical_hash(
+        {
+            "schema_version": _CACHE_VERSION,
+            "transform_identity": frozen_transform.identity,
+            "dataset_identity": dataset_identity,
+            "role": str(role),
+        }
+    )
+    directory = _transform_root(
+        cache_root,
+        mode,
+        window,
+        spec.name,
+        frozen_transform.identity,
+    )
+    path = directory / f"{role}_{identity[:12]}.npy"
+    metadata_path = directory / f"{role}_{identity[:12]}.json"
+    if path.is_file() and metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            features = np.load(path, mmap_mode="r")
+            if (
+                metadata.get("identity") == identity
+                and features.shape[0] == int(dataset.n_events)
+            ):
+                if logger:
+                    logger.info(
+                        "Model input reused | %s | %s | events=%d | features=%d",
+                        spec.name.replace("_", " ").title(),
+                        role,
+                        features.shape[0],
+                        features.shape[1],
+                    )
+                return FrozenFeatureSet(
+                    features,
+                    np.ones(frozen_transform.input_samples, dtype=bool),
+                    frozen_transform.transform,
+                    identity,
+                    str(role),
+                )
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    directory.mkdir(parents=True, exist_ok=True)
+    chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
+    first = frozen_transform.transform.apply(
+        _pair(dataset, mode, np.asarray([0], dtype=np.int64))
+    )
+    feature_count = int(np.asarray(first).shape[1])
+    tmp = path.with_name(f".{path.name}.tmp")
+    if tmp.exists():
+        tmp.unlink()
     matrix = np.lib.format.open_memmap(
-        temp_path,
+        tmp,
         mode="w+",
         dtype=np.float32,
         shape=(int(dataset.n_events), feature_count),
     )
-
-    completed = np.zeros(int(dataset.n_events), dtype=bool)
-    if fit_features is not None and idx_fit.size:
-        matrix[idx_fit] = fit_features
-        completed[idx_fit] = True
-
-    remaining = np.flatnonzero(~completed).astype(np.int64, copy=False)
-    chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
-    total_remaining = int(remaining.size)
-    if logger is not None:
-        logger.info(
-            "Feature cache build | %s | id=%s | events=%d | prefilled=%d | remaining=%d | features=%d | samples=%d/%d | dtype=float32 | chunk=%d",
-            spec.feature_transform.name,
-            identity[:12],
-            int(dataset.n_events),
-            int(idx_fit.size if fit_features is not None else 0),
-            total_remaining,
-            feature_count,
-            int(sample_mask.sum()),
-            int(sample_mask.size),
-            chunk_size,
-        )
-
     try:
-        for start in range(0, total_remaining, chunk_size):
-            stop = min(start + chunk_size, total_remaining)
-            chunk_indices = remaining[start:stop]
-            pair = waveform_view(dataset, config["mode"], chunk_indices).materialize()
-            pair = apply_sample_mask(pair, sample_mask)
-            transformed = np.asarray(feature_transform.apply(pair), dtype=np.float32)
-            if transformed.shape != (chunk_indices.size, feature_count):
+        for start in range(0, int(dataset.n_events), chunk_size):
+            stop = min(start + chunk_size, int(dataset.n_events))
+            indices = np.arange(start, stop, dtype=np.int64)
+            transformed = np.asarray(
+                frozen_transform.transform.apply(_pair(dataset, mode, indices)),
+                dtype=np.float32,
+            )
+            if transformed.shape != (stop - start, feature_count):
                 raise RuntimeError(
-                    "Feature transform cache chunk has an unexpected shape: "
+                    f"{spec.name} transformed feature shape changed: "
                     f"{transformed.shape}"
                 )
-            matrix[chunk_indices] = transformed
-            del transformed, pair
-            if logger is not None:
-                logger.info(
-                    "Feature cache progress | %s | %d/%d transformed (%.1f%%)",
-                    spec.feature_transform.name,
-                    stop,
-                    total_remaining,
-                    100.0 * stop / max(1, total_remaining),
-                )
-
+            matrix[start:stop] = transformed
         matrix.flush()
         del matrix
-        gc.collect()
-        os.replace(temp_path, features_path)
-        _save_transform(transform_path, feature_transform.artifact)
-        metadata = {
-            "schema_version": _CACHE_SCHEMA_VERSION,
-            "transform_identity": identity,
-            "transform_name": spec.feature_transform.name,
-            "transform_parameters": dict(feature_transform.parameters),
-            "transform_seed": int(feature_transform.seed),
-            "event_population_identity": str(dataset.manifest["event_population_identity"]),
-            "analysis_protocol_identity": str(dataset.manifest["analysis_protocol_identity"]),
-            "mode": str(config["mode"]),
-            "fit_indices_identity": canonical_hash(idx_fit.tolist()),
-            "fit_events": int(idx_fit.size),
-            "n_events": int(dataset.n_events),
-            "feature_count": feature_count,
-            "sample_mask_identity": canonical_hash(sample_mask.tolist()),
-            "input_samples_before_mask": int(sample_mask.size),
-            "input_samples_after_mask": int(sample_mask.sum()),
-            "dtype": "float32",
-            "feature_file": str(features_path.resolve()),
-            "transform_file": str(transform_path.resolve()),
-        }
-        atomic_json(metadata_path, metadata)
+        os.replace(tmp, path)
     finally:
         try:
             del matrix
         except UnboundLocalError:
             pass
-        if temp_path.exists():
-            temp_path.unlink()
+        if tmp.exists():
+            tmp.unlink()
 
-    features = np.load(features_path, mmap_mode="r")
-    feature_transform.cache.clear()
-    if logger is not None:
+    atomic_json(
+        metadata_path,
+        {
+            "schema_version": _CACHE_VERSION,
+            "identity": identity,
+            "transform_identity": frozen_transform.identity,
+            "dataset_identity": dataset_identity,
+            "role": str(role),
+            "events": int(dataset.n_events),
+            "feature_count": feature_count,
+        },
+    )
+    features = np.load(path, mmap_mode="r")
+    if logger:
         logger.info(
-            "Feature cache complete | %s | id=%s | events=%d | features=%d | samples=%d/%d | size=%.2f GiB",
-            spec.feature_transform.name,
-            identity[:12],
+            "Model input ready | %s | %s | events=%d | features=%d",
+            spec.name.replace("_", " ").title(),
+            role,
             features.shape[0],
             features.shape[1],
-            int(sample_mask.sum()),
-            int(sample_mask.size),
-            features.nbytes / (1024**3),
         )
-    return PersistentFeatureCache(directory, features, feature_transform, sample_mask, metadata)
+    return FrozenFeatureSet(
+        features,
+        np.ones(frozen_transform.input_samples, dtype=bool),
+        frozen_transform.transform,
+        identity,
+        str(role),
+    )

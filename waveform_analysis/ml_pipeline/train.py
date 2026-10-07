@@ -241,13 +241,22 @@ def fit_on_indices(
     feature_transform_cache=None,
     fit_input_cache=None,
     logger=None,
+    frozen_features=None,
 ):
-    cache = fit_input_cache if fit_input_cache is not None else FitInputCache()
-    prepared = cache.prepare(spec, dataset, config["mode"], indices)
-    x = prepared.x
-    y = prepared.y
-    time = prepared.time_ps
-    mask = prepared.sample_mask
+    idx = np.asarray(indices, np.int64)
+    if frozen_features is not None:
+        x = frozen_features.rows(idx)
+        y = np.asarray(model_target(dataset, config["mode"])[idx], dtype=np.float64)
+        mask = np.asarray(frozen_features.sample_mask, dtype=bool)
+        time = apply_sample_mask_to_time(waveform_view(dataset, config["mode"], np.asarray([0], dtype=np.int64)).time_ps, mask)
+        prepared = PreparedFitInput(x, y, time, mask, frozen_features.identity)
+    else:
+        cache = fit_input_cache if fit_input_cache is not None else FitInputCache()
+        prepared = cache.prepare(spec, dataset, config["mode"], idx)
+        x = prepared.x
+        y = prepared.y
+        time = prepared.time_ps
+        mask = prepared.sample_mask
 
     cfg = copy.deepcopy(model_config)
     cfg["_early_stopping_seed"] = int(seed)
@@ -255,8 +264,8 @@ def fit_on_indices(
     if logger is not None:
         cfg["_logger"] = logger
 
-    feature_transform = None
-    if spec.feature_transform is not None:
+    feature_transform = frozen_features.transform if frozen_features is not None else None
+    if spec.feature_transform is not None and frozen_features is None:
         transform_cache = (
             feature_transform_cache
             if feature_transform_cache is not None
@@ -344,7 +353,7 @@ def _resolve_prediction_chunk_size(fitted, chunk_size):
     return value
 
 
-def _predict_indices(spec, fitted, dataset, mode, indices, *, swapped, chunk_size=None):
+def _predict_indices(spec, fitted, dataset, mode, indices, *, swapped, chunk_size=None, frozen_features=None):
     idx = np.asarray(indices, np.int64).reshape(-1)
     if not idx.size:
         return np.empty(0, dtype=np.float64)
@@ -353,11 +362,11 @@ def _predict_indices(spec, fitted, dataset, mode, indices, *, swapped, chunk_siz
     output = np.empty(idx.size, dtype=np.float64)
     for start in range(0, idx.size, chunk):
         stop = min(start + chunk, idx.size)
-        prediction = _prediction_from_input(
-            spec,
-            fitted,
-            _model_input(fitted, dataset, mode, idx[start:stop], swapped=swapped),
-        )
+        if frozen_features is not None and not swapped:
+            values = frozen_features.rows(idx[start:stop])
+        else:
+            values = _model_input(fitted, dataset, mode, idx[start:stop], swapped=swapped)
+        prediction = _prediction_from_input(spec, fitted, values)
         if prediction.size != stop - start:
             raise RuntimeError(
                 f"Model prediction changed the event axis: expected {stop - start}, got {prediction.size}"
@@ -366,7 +375,7 @@ def _predict_indices(spec, fitted, dataset, mode, indices, *, swapped, chunk_siz
     return output
 
 
-def predict_indices(spec, fitted, dataset, mode, indices, *, chunk_size=None):
+def predict_indices(spec, fitted, dataset, mode, indices, *, chunk_size=None, frozen_features=None):
     return _predict_indices(
         spec,
         fitted,
@@ -375,6 +384,7 @@ def predict_indices(spec, fitted, dataset, mode, indices, *, chunk_size=None):
         indices,
         swapped=False,
         chunk_size=chunk_size,
+        frozen_features=frozen_features,
     )
 
 

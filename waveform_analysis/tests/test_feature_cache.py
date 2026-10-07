@@ -1,121 +1,94 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
 from waveform_analysis.ml_pipeline.feature_cache import (
-    build_feature_cache,
-    load_feature_cache,
+    prepare_frozen_features,
+    prepare_frozen_transform,
 )
-from waveform_analysis.ml_pipeline.models.spec import FeatureTransformSpec
-from waveform_analysis.ml_pipeline.train import FittedFeatureTransform
+from waveform_analysis.ml_pipeline.models import get_model
 
 
 class DummyDataset:
-    def __init__(self, directory: Path, n_events=8):
+    def __init__(self, directory, identity, n_events=12, n_samples=16):
         self.directory = directory
-        self.directory.mkdir(parents=True, exist_ok=True)
         self.manifest = {
-            "analysis_protocol_identity": "protocol-A",
-            "analysis_population_identity": "protocol-A",
-            "event_population_identity": "population-A",
+            "analysis_protocol_identity": identity,
+            "analysis_population_identity": identity,
+            "event_population_identity": identity,
+            "dataset_source": f"{identity}.root",
         }
-        values = np.arange(n_events * 2 * 4, dtype=np.float32).reshape(n_events, 2, 4)
-        self.energy_windows = values
+        rng = np.random.default_rng(abs(hash(identity)) % (2**32))
+        self.energy_windows = rng.normal(size=(n_events, 2, n_samples)).astype(np.float32)
         self.timing_windows = None
-        self.energy_time_ps = np.arange(4, dtype=np.float64)
+        self.energy_time_ps = np.arange(n_samples, dtype=np.float64)
         self.timing_time_ps = None
+        self.energy_target_ps = rng.normal(size=n_events)
+        self.timing_target_ps = None
+        self.event_index = np.arange(n_events, dtype=np.int64)
         self.n_events = n_events
 
 
-def _spec():
-    def parameters(params, config):
-        del config
-        return {"num_kernels": int(params["num_kernels"]), "n_jobs": -1}
-
-    def transform(artifact, values):
-        x = np.asarray(values, dtype=np.float32)
-        scale = float(artifact.scale)
-        return np.stack(
-            [x[:, 0, :].mean(axis=1), x[:, 1, :].mean(axis=1)],
-            axis=1,
-        ).astype(np.float32) * scale
-
-    feature_transform = FeatureTransformSpec(
-        name="direct_minirocket_multivariate",
-        parameters=parameters,
-        fit_transform=lambda *args, **kwargs: None,
-        transform=transform,
-        save=None,
-    )
-    return SimpleNamespace(
-        feature_transform=feature_transform,
-        preserve_temporal_grid=True,
-    )
-
-
-def test_feature_cache_is_float32_memmap_and_reusable(tmp_path):
-    dataset = DummyDataset(tmp_path / "prepared")
-    spec = _spec()
-    model_space = {"transform": {"n_jobs": -1}}
-    parameters = {"num_kernels": 10000}
-    fit_indices = np.asarray([0, 2, 4], dtype=np.int64)
-    transform = FittedFeatureTransform(
-        spec.feature_transform,
-        SimpleNamespace(scale=2.0, metadata={"feature_count": 2}),
-        "expected-identity",
-        {"num_kernels": 10000, "n_jobs": -1},
-        123,
-        {},
-    )
-
-    # Use the actual identity expected by the cache loader.
-    from waveform_analysis.ml_pipeline.feature_cache import transform_identity
-
-    identity, transform_parameters, transform_seed, _ = transform_identity(
-        spec,
-        model_space,
-        dataset,
-        "energy_to_energy",
-        fit_indices,
-        parameters,
-        seed_base=11,
-    )
-    transform.identity = identity
-    transform.parameters = transform_parameters
-    transform.seed = transform_seed
-    fit_features = transform.apply(dataset.energy_windows[fit_indices])
-
-    config = {
+def _config(tmp_path):
+    return {
         "mode": "energy_to_energy",
-        "runtime": {"prediction_chunk_size": 2},
+        "window_name": "test",
+        "seed": 1001,
+        "runtime": {"prediction_chunk_size": 5},
+        "preprocessing": {"cache_dir": str(tmp_path)},
     }
-    cache = build_feature_cache(
+
+
+def test_shared_linear_difference_is_materialized_once_per_dataset(tmp_path):
+    spec = get_model("shared_linear_ridge")
+    space = {
+        "parameters": {
+            "ridge_alpha": {"type": "float", "low": 1e-6, "high": 10.0, "log": True}
+        }
+    }
+    control = DummyDataset(tmp_path / "control", "control")
+    development = DummyDataset(tmp_path / "development", "development")
+    config = _config(tmp_path)
+
+    frozen = prepare_frozen_transform(
         spec,
-        model_space,
+        space,
         config,
-        dataset,
-        fit_indices,
-        parameters,
-        transform,
-        seed_base=11,
-        fit_features=fit_features,
+        control_dataset=control,
+        development_dataset=development,
+        cache_root=tmp_path,
     )
-    assert isinstance(cache.features, np.memmap)
-    assert cache.features.dtype == np.float32
-    assert cache.features.shape == (dataset.n_events, 2)
-
-    loaded = load_feature_cache(
+    features = prepare_frozen_features(
         spec,
-        model_space,
-        dataset,
-        "energy_to_energy",
-        fit_indices,
-        parameters,
-        seed_base=11,
+        frozen,
+        config,
+        development,
+        role="development",
+        cache_root=tmp_path,
     )
-    assert loaded is not None
-    np.testing.assert_allclose(loaded.features, cache.features)
+    expected = development.energy_windows[:, 0, :] - development.energy_windows[:, 1, :]
+    np.testing.assert_allclose(features.features, expected, rtol=1e-6, atol=1e-6)
+    assert frozen.fit_role == "deterministic"
 
+    reused = prepare_frozen_features(
+        spec,
+        frozen,
+        config,
+        development,
+        role="development",
+        cache_root=tmp_path,
+    )
+    assert reused.identity == features.identity
+
+
+def test_minirocket_transform_is_defined_as_control_fitted():
+    # Avoid importing the optional sktime dependency; this checks the protocol
+    # contract through the registered model and fixed transform parameters.
+    spec = get_model("direct_minirocket")
+    assert spec.feature_transform.name == "direct_minirocket_multivariate"
+    assert spec.feature_transform.parameters(
+        {"num_kernels": 10000},
+        {"transform": {"n_jobs": -1}},
+    ) == {"num_kernels": 10000, "n_jobs": -1}

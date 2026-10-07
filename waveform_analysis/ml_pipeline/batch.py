@@ -5,7 +5,7 @@ from .common import atomic_json,canonical_hash,write_csv
 from .config import BatchConfig,public_batch_config
 from .preprocessing import fit_control,publish_preprocessing_diagnostics
 from .study import run_study
-BATCH_SCHEMA_VERSION=10
+BATCH_SCHEMA_VERSION=11
 
 def _read_json(path):
     try:return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -28,7 +28,7 @@ def _run_state(config,previous):
     path=Path(config["output_dir"]);current=_planner_fingerprints(config)
     if not path.exists() or not any(path.iterdir()):return "run","all",current
     manifest=_read_json(path/"manifest.json")
-    if manifest is not None and int(manifest.get("schema_version",-1))!=50:return "rebuild","incompatible_schema",current
+    if manifest is not None and int(manifest.get("schema_version",-1))!=51:return "rebuild","incompatible_schema",current
     old=(previous or {}).get(config["run_id"])
     if not isinstance(old,dict):return "rebuild","unknown_dependencies",current
     if old.get("preprocessing")!=current["preprocessing"] or old.get("development")!=current["development"] or old.get("cv")!=current["cv"]:return "rebuild","cv",current

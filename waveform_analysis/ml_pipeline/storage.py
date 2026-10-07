@@ -3,7 +3,7 @@ import csv,json,os,shutil,tempfile
 from pathlib import Path
 import numpy as np
 from .common import atomic_json,write_csv
-RUN_SCHEMA_VERSION=50
+RUN_SCHEMA_VERSION=51
 STAGE_ORDER=("cv","selection","final_fit","blind","bootstrap","xai","plots")
 def _read_csv(path):
     if not Path(path).is_file(): return []
