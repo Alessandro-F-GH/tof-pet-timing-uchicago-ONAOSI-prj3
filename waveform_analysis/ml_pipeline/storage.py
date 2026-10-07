@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .artifact_naming import prefer_existing, replica_tag, seed_tag
 from .common import atomic_json
 
 
@@ -124,7 +125,9 @@ class RunStore:
         )
 
     def blind_residuals_path(self, seed, candidate_id):
-        return self.root / "blind_residuals" / f"seed_{int(seed)}_{candidate_id}.npz"
+        compact = self.root / "residuals" / f"{seed_tag(seed)}_{candidate_id}.npz"
+        legacy = self.root / "blind_residuals" / f"seed_{int(seed)}_{candidate_id}.npz"
+        return prefer_existing(compact, legacy)
 
     def save_blind_residuals(self, seed, candidate_id, corrected_ps):
         path = self.blind_residuals_path(seed, candidate_id)
@@ -133,11 +136,17 @@ class RunStore:
         return path
 
     def replica_outputs_path(self, replica_index, seed, candidate_id):
-        return (
+        compact = (
+            self.root
+            / "predictions"
+            / f"{replica_tag(replica_index, seed)}_{candidate_id}.npz"
+        )
+        legacy = (
             self.root
             / "replica_outputs"
             / f"replica_{int(replica_index):03d}_seed_{int(seed)}_{candidate_id}.npz"
         )
+        return prefer_existing(compact, legacy)
 
     def save_replica_outputs(
         self,
@@ -162,11 +171,13 @@ class RunStore:
         return path
 
     def model_dir(self, replica_index, seed, candidate_id):
-        path = (
+        compact = self.root / "models" / replica_tag(replica_index, seed) / candidate_id
+        legacy = (
             self.root
             / "models"
             / f"replica_{int(replica_index):03d}_seed_{int(seed)}"
             / candidate_id
         )
+        path = prefer_existing(compact, legacy)
         path.mkdir(parents=True, exist_ok=True)
         return path
