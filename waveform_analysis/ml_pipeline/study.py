@@ -29,6 +29,41 @@ def _candidate_row(summary):
     row=dict(summary);row["parameters"]=json.dumps(row.get("parameters",{}),sort_keys=True,separators=(",",":"));return row
 def _n_complete(rows):return sum(not _bool(r.get("pruned",False)) and int(r.get("completed_folds",0))==int(r.get("total_folds",-1)) for r in rows)
 
+def _model_label(name):
+    return str(name).replace("_"," ").title()
+
+def _optimized_parameter_names(space):
+    return [str(name) for name,spec in (space.get("parameters") or {}).items() if isinstance(spec,dict) and str(spec.get("type","")).lower()!="fixed"]
+
+def _format_value(value):
+    if isinstance(value,float):
+        if value!=0.0 and (abs(value)<1e-3 or abs(value)>=1e4):return f"{value:.3g}"
+        return f"{value:g}"
+    if isinstance(value,(list,tuple)):return "["+", ".join(_format_value(v) for v in value)+"]"
+    return str(value)
+
+def _format_optimized_params(space,params):
+    names=_optimized_parameter_names(space)
+    if not names:return "fixed parameters"
+    return ", ".join(f"{name}={_format_value(params[name])}" for name in names if name in params)
+
+def _candidate_log(logger,label,space,summary):
+    params=_format_optimized_params(space,summary.get("parameters") or {})
+    folds=f"{int(summary['completed_folds'])}/{int(summary['total_folds'])}"
+    metrics=f"CTR={float(summary['ctr_mean_ps']):.1f} ps | RMSE={float(summary['rmse_mean_ps']):.1f} ps"
+    if not _bool(summary.get("pruned",False)):
+        logger.info("%s | %s | %s",label,params,metrics)
+        return
+    reason=str(summary.get("pruning_reason") or "criterion")
+    tolerance=float(summary.get("pruning_tolerance_ps") or 0.0)
+    if reason=="led":
+        degradation=float(summary.get("candidate_vs_led_degradation_ps") or 0.0)
+        detail=f"LED +{degradation:.1f} ps > {tolerance:.1f} ps"
+    else:
+        degradation=float(summary.get("candidate_vs_incumbent_degradation_ps") or 0.0)
+        detail=f"incumbent +{degradation:.1f} ps > {tolerance:.1f} ps"
+    logger.info("%s | %s | PRUNED after %s folds | %s | %s",label,params,folds,detail,metrics)
+
 def _fold_evaluator(spec,space,config,development,shared,candidate,logger):
     target=np.asarray(model_target(development,config["mode"]),dtype=np.float64);chunk=int(config["runtime"]["prediction_chunk_size"])
     def evaluate(parameters,fold):
@@ -40,15 +75,18 @@ def _fold_evaluator(spec,space,config,development,shared,candidate,logger):
             input_cache.clear();transform_cache.clear();del corrected,prediction,fitted;release_training_memory()
     return evaluate
 
-def _evaluate_candidate(store,spec,space,config,development,shared,identifier,params,logger):
+def _evaluate_candidate(store,spec,space,config,development,shared,identifier,params,logger,*,log_label):
     summary=store.candidate_row(identifier);folds=store.read_fold_rows(identifier)
     if summary is not None and (_bool(summary.get("pruned",False)) or int(summary.get("completed_folds",0))==int(summary.get("total_folds",-1))):return summary
     rows=store.read_candidate_rows();startup=int(config["cross_validation"]["pruning"]["startup_complete_candidates"]);force=_n_complete(rows)<startup;inc=None if force else best_complete_candidate(rows,config["cross_validation"]["metric"]);inc_id=None if inc is None else str(inc["candidate_id"]);inc_folds=None if inc_id is None else store.read_fold_rows(inc_id)
-    summary,_=evaluate_candidate(candidate_id=identifier,parameters=params,folds=shared.split.folds,evaluate_fold=_fold_evaluator(spec,space,config,development,shared,identifier,logger),metric=config["cross_validation"]["metric"],pruning=config["cross_validation"]["pruning"],existing_fold_rows=folds,persisted_candidate=summary,incumbent_candidate_id=inc_id,incumbent_rows=inc_folds,force_complete=force,persist_fold=store.upsert_fold);store.upsert_candidate(_candidate_row(summary));logger.info("CV candidate | %s | folds=%d/%d | CTR=%.1f ps | RMSE=%.1f ps | pruned=%s",identifier,int(summary["completed_folds"]),int(summary["total_folds"]),float(summary["ctr_mean_ps"]),float(summary["rmse_mean_ps"]),bool(summary["pruned"]));return summary
+    summary,_=evaluate_candidate(candidate_id=identifier,parameters=params,folds=shared.split.folds,evaluate_fold=_fold_evaluator(spec,space,config,development,shared,identifier,logger),metric=config["cross_validation"]["metric"],pruning=config["cross_validation"]["pruning"],existing_fold_rows=folds,persisted_candidate=summary,incumbent_candidate_id=inc_id,incumbent_rows=inc_folds,force_complete=force,persist_fold=store.upsert_fold);store.upsert_candidate(_candidate_row(summary));_candidate_log(logger,log_label,space,summary);return summary
 
 def _fixed_grid(store,spec,space,config,development,shared,logger):
     opt=optimization_config(space);raw=[fixed_parameters(space)] if opt.strategy=="fixed" else grid_candidates(space);candidates=candidate_manifest(raw);store.write_candidates({i:{"parameters":p} for i,p in candidates.items()})
-    for i,p in candidates.items():_evaluate_candidate(store,spec,space,config,development,shared,i,p,logger)
+    total=len(candidates)
+    for index,(i,p) in enumerate(candidates.items(),1):
+        label="Fixed configuration" if opt.strategy=="fixed" else f"Candidate {index}/{total}"
+        _evaluate_candidate(store,spec,space,config,development,shared,i,p,logger,log_label=label)
     return candidates
 def _sampler(path,seed,startup):
     if path.is_file():
@@ -63,7 +101,7 @@ def _optuna(store,spec,space,config,development,shared,logger):
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING);opt=optimization_config(space);sampler_path=store.root/"optuna_sampler.pkl";sampler=_sampler(sampler_path,semantic_seed(config["seed"],config["mode"],config.get("window_name"),spec.name,"optuna"),opt.n_startup_trials);study=optuna.create_study(study_name="development_cv",direction="minimize",sampler=sampler,storage=f"sqlite:///{(store.root/'optuna.db').as_posix()}",load_if_exists=True);registry=store.read_json(store.candidates_path,{}) or {}
     def finish(number,params,identifier):
-        summary=_evaluate_candidate(store,spec,space,config,development,shared,identifier,params,logger)
+        summary=_evaluate_candidate(store,spec,space,config,development,shared,identifier,params,logger,log_label=f"Trial {int(number)+1}/{int(opt.n_trials)}")
         if _bool(summary.get("pruned",False)):study.tell(int(number),state=optuna.trial.TrialState.PRUNED)
         else:study.tell(int(number),float(summary[f"{config['cross_validation']['metric']}_mean_ps"]))
         _save_sampler(sampler_path,sampler)
@@ -76,7 +114,12 @@ def _optuna(store,spec,space,config,development,shared,logger):
         trial=study.ask();params=suggest_parameters(trial,space);identifier=candidate_id(params);trial.set_user_attr("candidate_id",identifier);trial.set_user_attr("resolved_parameters",params);registry[identifier]={"parameters":params,"trial_number":int(trial.number)};store.write_candidates(registry);_save_sampler(sampler_path,sampler);finish(trial.number,params,identifier)
     return {i:dict(v["parameters"]) for i,v in registry.items()}
 def _search(store,spec,space,config,development,shared,logger):
-    return _fixed_grid(store,spec,space,config,development,shared,logger) if optimization_config(space).strategy in {"fixed","grid"} else _optuna(store,spec,space,config,development,shared,logger)
+    opt=optimization_config(space);optimized=_optimized_parameter_names(space);target=", ".join(optimized) if optimized else "none"
+    if opt.strategy=="optuna":search=f"Optuna/TPE, {int(opt.n_trials)} trials"
+    elif opt.strategy=="grid":search=f"grid, {len(grid_candidates(space))} candidates"
+    else:search="fixed configuration"
+    logger.info("CV search | %s | optimize=%s | %s | %d folds",_model_label(spec.name),target,search,int(config["cross_validation"]["folds"]))
+    return _fixed_grid(store,spec,space,config,development,shared,logger) if opt.strategy in {"fixed","grid"} else _optuna(store,spec,space,config,development,shared,logger)
 def _select(store,candidates,config):
     best=best_complete_candidate(store.read_candidate_rows(),config["cross_validation"]["metric"])
     if best is None:raise RuntimeError("No fully evaluated CV candidate is eligible")
@@ -100,7 +143,8 @@ def run_study(config,*,logger=None):
     if _sync(store,"cv",cv_fp)!="complete":candidates=_search(store,spec,space,config,development,shared,logger);store.mark_stage("cv",cv_fp,metadata={"candidates":len(store.read_candidate_rows())})
     else:candidates={i:dict(v.get("parameters",v)) for i,v in (store.read_json(store.candidates_path,{}) or {}).items()}
     selection_fp=_stage("selection",{"cv":cv_fp,"metric":config["cross_validation"]["metric"]});best=store.read_json(store.best_path) if _sync(store,"selection",selection_fp)=="complete" else None
-    if not isinstance(best,dict):best=_select(store,candidates,config);store.mark_stage("selection",selection_fp,metadata={"candidate_id":best["candidate_id"]})
+    if not isinstance(best,dict):
+        best=_select(store,candidates,config);store.mark_stage("selection",selection_fp,metadata={"candidate_id":best["candidate_id"]});logger.info("CV selected | %s | %s | CTR=%.1f ± %.1f ps | RMSE=%.1f ± %.1f ps",_model_label(spec.name),_format_optimized_params(space,best["parameters"]),float(best["validation_ctr_mean_ps"]),float(best["validation_ctr_std_ps"]),float(best["validation_rmse_mean_ps"]),float(best["validation_rmse_std_ps"]))
     final_fp=_stage("final_fit",{"development":development.manifest["analysis_protocol_identity"],"model":config["model"],"candidate_id":best["candidate_id"],"parameters":best["parameters"],"seed":config["seed"]});fitted=None
     if _sync(store,"final_fit",final_fp)!="complete":fitted=_model(store,spec,space,config,development,best,final_fp,logger)
     _,_,blind=prepare_role_dataset(config,"blind",control,rebuild=False,logger=logger);blind_fp=_stage("blind",{"final_fit":final_fp,"blind":blind.manifest["analysis_protocol_identity"],"fit":config["fit"]})
