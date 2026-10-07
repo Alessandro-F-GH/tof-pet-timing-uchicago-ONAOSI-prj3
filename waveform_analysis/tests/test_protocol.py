@@ -71,6 +71,19 @@ def test_results_schema_separates_fixed_tuning_from_replicas():
     assert "sampling_identity" in RESULT_FIELDS
 
 
+def test_compact_internal_artifact_paths(tmp_path):
+    store = RunStore(tmp_path / "run")
+    assert store.blind_residuals_path(1234, "abc").relative_to(store.root).as_posix() == "residuals/s1234_abc.npz"
+    assert (
+        store.replica_outputs_path(2, 1234, "abc").relative_to(store.root).as_posix()
+        == "predictions/r002_s1234_abc.npz"
+    )
+    assert (
+        store.model_dir(2, 1234, "abc").relative_to(store.root).as_posix()
+        == "models/r002_s1234/abc"
+    )
+
+
 def test_result_upsert_keys_validation_and_replica_separately(tmp_path):
     store = RunStore(tmp_path / "run")
     validation = {"phase": "hyperparameter_validation", "replica_index": "", "seed": 1, "candidate_id": "abc", "selected": False, "rmse_ps": 60.0, "ctr_ps": 70.0}
