@@ -1,88 +1,118 @@
 # Waveform ML pipeline
 
-This package evaluates waveform-based timing corrections for paired TOF-PET detector signals.
+The pipeline uses three explicit scientific dataset roles:
 
-Scientifically, each study:
+1. **control** — fit preprocessing, event-selection and LED criteria once;
+2. **development** — apply the frozen control rules, run deterministic common-fold K-fold CV, tune/select the model, and train the final selected configuration;
+3. **blind** — apply the same frozen rules and evaluate the already-selected final model once.
 
-1. preprocesses and selects valid events using a fixed control-derived protocol;
-2. builds the requested waveform window and detector mode;
-3. selects model hyperparameters on one fixed validation split using the configured **CTR or RMSE** metric;
-4. freezes the selected configuration;
-5. repeats train/blind evaluation over deterministic replicas;
-6. compares corrected timing against the LED reference using CTR and RMSE;
-7. produces per-study plots and cross-model reports.
+The blind dataset never participates in preprocessing fitting, fold construction, hyperparameter tuning, pruning, model/window/formulation selection, or final training.
 
-The code supports only the current configuration and result formats. Old result schemas and removed model names are not migrated or interpreted.
+## Development CV and pruning
 
-## Models
+Every `(mode, window)` development population gets one deterministic K-fold definition derived from the single batch seed. Every model and every candidate uses the same folds in the same order. CTR and RMSE are always computed, together with LED CTR/RMSE on the exact same validation events.
 
-Current registered models include:
+Pruning is controlled by `protocol.cross_validation.pruning`. Startup candidates complete all folds. Later candidates are compared only on folds already completed by that candidate. LED comparison is evaluated first; then, if available, the best fully evaluated incumbent is compared on those same fold IDs. Lower is better and pruning uses a strict `degradation_ps > tolerance_ps` rule, so equality does not prune. Tolerances may be scalar or fold-count mappings.
 
-- `shared_linear_ridge`: linear shared/antisymmetric correction, using `s1 - s2`;
-- `direct_linear_ridge`: unconstrained linear correction on concatenated `[s1, s2]`;
-- `antisymmetric_mlp`;
-- `locally_connected_mlp`;
-- `shared_cnn1d`;
-- `shared_minirocket`;
-- `direct_mlp`;
-- `independent_cnn1d`;
-- `onishi_cnn`;
-- `direct_minirocket`.
+Optuna/TPE only proposes parameters. Fold execution and pruning are implemented by the repository evaluator, so fixed/grid/Optuna all follow the same protocol.
 
-Models are classified as either **shared/antisymmetric** or **direct/non-shared** formulations and are compared on the same event population, validation split, and replica seeds whenever the study context matches.
+## Blind evaluation and uncertainty
+
+After development selection, the chosen configuration is trained once on the complete development population and applied once to the prepared blind population. Blind CTR/RMSE central values are computed from the original non-resampled residual distribution.
+
+Event bootstrap is then used only for uncertainty estimation. Each draw resamples blind event indices with replacement and applies the same indices to ML and LED residuals. The model is never retrained inside bootstrap.
+
+- development CV std = fold-to-fold validation variability;
+- blind bootstrap std = event-level uncertainty conditional on the final fitted model;
+- blind bootstrap is not training-instability uncertainty.
 
 ## Configuration
 
-Configuration files are under:
+Batch configs require `control_dataset`, `development_dataset`, `blind_dataset`, `results`, `protocol`, and `sweep`.
 
-```text
-config/
-├── batches/
-├── datasets/
-├── model_spaces/
-├── preprocessing/
-└── reporting.json
-```
+There is exactly one configured `protocol.seed`. Semantic seeds for folds, candidate fitting, Optuna, final fitting, bootstrap and XAI are derived from it.
 
-A batch defines the analysis dataset, protocol, models, detector modes, waveform windows, number of replicas, output directory, and model-save policy. Model-specific hyperparameter spaces are stored in `config/model_spaces/`.
-
-Hyperparameter selection is configured in the batch protocol:
+Example pruning:
 
 ```json
-"model_selection": {
-  "validation_fraction": 0.1,
-  "metric": "ctr"
+"cross_validation": {
+  "folds": 5,
+  "shuffle": true,
+  "metric": "ctr",
+  "minimum_events_per_fold": 50,
+  "pruning": {
+    "enabled": true,
+    "startup_complete_candidates": 3,
+    "min_folds_before_prune": 1,
+    "max_degradation_ps": 5.0,
+    "prune_if_worse_than_led": true,
+    "led_max_degradation_ps": 0.0
+  }
 }
 ```
 
-`metric` can be `"ctr"` or `"rmse"`. CTR selection uses the same direct F1/FWHM timing-width definition as the rest of the analysis and only its central value is evaluated during tuning; no CTR bootstrap is performed for candidate selection.
+Plot styling is centralized in `config/plots/default.json`; scientific thresholds do not belong there.
 
-## Main commands
+## Commands
 
 ```bash
-# Validate configuration
-python -m waveform_analysis.cli check-batch --config config/batches/test.json
-
-# Run from scratch
-python -m waveform_analysis.cli batch --config config/batches/test.json --overwrite
-
-# Resume an interrupted batch
-python -m waveform_analysis.cli batch --config config/batches/test.json --resume
-
-# Rebuild preprocessing artifacts
-python -m waveform_analysis.cli batch --config config/batches/test.json --overwrite --rebuild-preprocessing
-
-# Generate the cross-model report
-python -m waveform_analysis.cli report --batch-config config/batches/test.json
-
-# Recreate plots without retraining
-python -m waveform_analysis.cli remake-batch-plots --config config/batches/test.json
+python -m waveform_analysis.cli check-batch --config config/batches/test_ridge.json
+python -m waveform_analysis.cli batch --config config/batches/test_ridge.json
+python -m waveform_analysis.cli plots --results results/FBK/test_ridge_48V_R1_R2
 ```
 
-## Outputs
+The batch command prints a `KEEP` / `RESUME` / `RUN` / `REBUILD` execution plan before destructive changes.
 
-Each study stores its resolved configuration, selected hyperparameters, validation scores, replica results, blind residuals, summary plots, and optional fitted models.
+## Result layout
 
-The batch report summarizes model performance across modes and waveform windows, including blind CTR and RMSE, LED-to-ML improvement, paired model comparisons, RMSE-vs-CTR relation, waveform-window comparison, best models, and model-output correlations when matched blind outputs are available.
+```text
+results/<folder>/
+├── manifest.json
+├── config.json
+├── plots.json
+├── runs.csv
+├── preprocessing/
+│   ├── control/<mode>/
+│   ├── development/<mode>/
+│   └── blind/<mode>/
+├── artifacts/<mode>/<window>/...
+├── <mode>/<window>/<model>/
+│   ├── manifest.json
+│   ├── config.json
+│   ├── folds.csv
+│   ├── cv.csv
+│   ├── best.json
+│   ├── final_fit.json
+│   ├── blind.json
+│   ├── pred.npz
+│   ├── bootstrap.json
+│   ├── bootstrap.npz
+│   ├── xai.npz
+│   ├── model/
+│   └── plots/
+└── report/
+    ├── tables/
+    └── <mode>/<window>/
+```
 
-Hyperparameters are selected only from the fixed validation split. Replica statistics are computed only from blind evaluation rows; the validation set is never reused in replica training or testing.
+`pred.npz` persists blind event IDs explicitly for model-to-model alignment.
+
+## Resume and dependency invalidation
+
+Completed CV folds and candidates are persisted as they finish. Interrupted candidate CV resumes from the first missing fold. Persisted pruning decisions remain authoritative while scientific dependencies are unchanged.
+
+Changes are scoped:
+
+- development/CV/model-search changes invalidate CV and downstream stages for the affected model;
+- blind-only changes preserve compatible development CV and selection;
+- bootstrap-only changes reuse blind predictions and central values;
+- XAI-only changes reuse CV, final selection and blind predictions;
+- plot-only changes regenerate plots/reports from persisted results only.
+
+Old fixed-validation and replica result schemas are intentionally unsupported. There are no compatibility readers or legacy execution modes.
+
+## Reporting
+
+Reporting consumes persisted numeric artifacts and produces validation/blind summaries, model-output correlations aligned by blind event ID, paired CTR/RMSE model-difference matrices with paired event bootstrap, blind RMSE-vs-CTR plots, validation-vs-blind plots, and window comparisons.
+
+Window comparison winners are selected from development CV only; their blind performance is then displayed. CTR/RMSE bar annotations use integer-rounded picoseconds. XAI is grouped temporal occlusion and stores numeric importance separately from its plot.

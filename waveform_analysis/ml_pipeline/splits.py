@@ -12,99 +12,103 @@ def semantic_seed(base: int, *parts: object) -> int:
 
 
 @dataclass(frozen=True)
-class FixedValidationSplit:
-    tuning_train: np.ndarray
+class CVFold:
+    fold_id: int
+    train: np.ndarray
     validation: np.ndarray
-    seed: int
-
-    def validate(self, n_events: int) -> None:
-        train = set(map(int, self.tuning_train))
-        validation = set(map(int, self.validation))
-        if train & validation:
-            raise AssertionError("fixed tuning train and validation overlap")
-        if train | validation != set(range(int(n_events))):
-            raise AssertionError("fixed tuning split must cover the prepared population exactly")
 
 
 @dataclass(frozen=True)
-class ReplicaSplit:
-    train: np.ndarray
-    test: np.ndarray
+class CVSplit:
+    folds: tuple[CVFold, ...]
     seed: int
-    replica_index: int
+    shuffle: bool
+    n_events: int
 
-    def validate(self, resampling_pool: np.ndarray) -> None:
-        pool = set(map(int, np.asarray(resampling_pool, dtype=np.int64)))
-        train = set(map(int, self.train))
-        test = set(map(int, self.test))
-        if train & test:
-            raise AssertionError("replica train and blind test overlap")
-        if train | test != pool:
-            raise AssertionError("replica train/test must partition the non-validation resampling pool exactly")
+    def validate(self) -> None:
+        universe = set(range(int(self.n_events)))
+        seen_validation: set[int] = set()
+        for expected_id, fold in enumerate(self.folds, 1):
+            if int(fold.fold_id) != expected_id:
+                raise AssertionError("CV fold IDs must be consecutive and one-based")
+            train = set(map(int, np.asarray(fold.train, dtype=np.int64)))
+            validation = set(map(int, np.asarray(fold.validation, dtype=np.int64)))
+            if not validation:
+                raise AssertionError("CV validation fold cannot be empty")
+            if train & validation:
+                raise AssertionError("CV training and validation subsets overlap")
+            if train | validation != universe:
+                raise AssertionError("Each CV fold must partition the development population")
+            if seen_validation & validation:
+                raise AssertionError("CV validation folds overlap")
+            seen_validation |= validation
+        if seen_validation != universe:
+            raise AssertionError("CV validation folds must cover development exactly once")
 
 
-def _sample(values: np.ndarray, n_selected: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    values = np.asarray(values, dtype=np.int64)
-    n_selected = int(n_selected)
-    if not 0 < n_selected < values.size:
-        raise ValueError("sample size must be between 1 and pool_size - 1")
-    perm = rng.permutation(values)
-    selected = np.sort(perm[:n_selected])
-    remaining = np.sort(perm[n_selected:])
-    return remaining, selected
-
-
-def make_fixed_validation_split(
+def make_cv_split(
     n_events: int,
     *,
-    analysis_identity: str,
+    population_identity: str,
     batch_seed: int,
-    validation_fraction: float,
-) -> FixedValidationSplit:
+    n_folds: int,
+    shuffle: bool,
+) -> CVSplit:
     n_events = int(n_events)
-    validation_fraction = float(validation_fraction)
-    if n_events < 3:
-        raise ValueError("Need at least three prepared events")
-    if not 0.0 < validation_fraction < 1.0:
-        raise ValueError("validation_fraction must lie in (0, 1)")
-    n_validation = int(round(n_events * validation_fraction))
-    n_validation = min(n_events - 2, max(1, n_validation))
-    seed = semantic_seed(int(batch_seed), "fixed_validation", analysis_identity)
-    rng = np.random.default_rng(seed)
-    tuning_train, validation = _sample(np.arange(n_events, dtype=np.int64), n_validation, rng)
-    split = FixedValidationSplit(tuning_train=tuning_train, validation=validation, seed=seed)
-    split.validate(n_events)
+    n_folds = int(n_folds)
+    if n_folds < 2:
+        raise ValueError("n_folds must be >= 2")
+    if n_events < n_folds:
+        raise ValueError("development population must contain at least one event per fold")
+
+    seed = semantic_seed(int(batch_seed), str(population_identity), "cv")
+    order = np.arange(n_events, dtype=np.int64)
+    if bool(shuffle):
+        order = np.random.default_rng(seed).permutation(order)
+
+    validation_parts = np.array_split(order, n_folds)
+    all_indices = np.arange(n_events, dtype=np.int64)
+    folds = []
+    for fold_id, validation in enumerate(validation_parts, 1):
+        validation = np.sort(np.asarray(validation, dtype=np.int64))
+        mask = np.ones(n_events, dtype=bool)
+        mask[validation] = False
+        train = all_indices[mask]
+        folds.append(CVFold(fold_id, train, validation))
+
+    split = CVSplit(tuple(folds), seed, bool(shuffle), n_events)
+    split.validate()
     return split
 
 
-def make_replica_split(
-    n_events: int,
-    fixed_split: FixedValidationSplit,
-    *,
-    analysis_identity: str,
-    batch_seed: int,
-    replica_index: int,
-    blind_fraction: float,
-) -> ReplicaSplit:
-    n_events = int(n_events)
-    replica_index = int(replica_index)
-    blind_fraction = float(blind_fraction)
-    if replica_index < 1:
-        raise ValueError("replica_index must be >= 1")
-    if not 0.0 < blind_fraction < 1.0:
-        raise ValueError("blind_fraction must lie in (0, 1)")
-    fixed_split.validate(n_events)
+def fold_assignment(split: CVSplit) -> np.ndarray:
+    split.validate()
+    assignment = np.empty(int(split.n_events), dtype=np.int16)
+    for fold in split.folds:
+        assignment[np.asarray(fold.validation, dtype=np.int64)] = int(fold.fold_id)
+    return assignment
 
-    pool = np.asarray(fixed_split.tuning_train, dtype=np.int64)
-    n_test = int(round(n_events * blind_fraction))
-    if not 0 < n_test < pool.size:
-        raise ValueError(
-            "blind_fraction must leave a non-empty replica training subset after excluding fixed validation"
-        )
 
-    seed = semantic_seed(int(batch_seed), "bootstrap_replica", analysis_identity, replica_index)
-    rng = np.random.default_rng(seed)
-    train, test = _sample(pool, n_test, rng)
-    split = ReplicaSplit(train=train, test=test, seed=seed, replica_index=replica_index)
-    split.validate(pool)
+def cv_split_from_assignment(assignment: np.ndarray, *, seed: int, shuffle: bool) -> CVSplit:
+    assignment = np.asarray(assignment, dtype=np.int64).reshape(-1)
+    if assignment.size < 2:
+        raise ValueError("fold assignment must contain at least two events")
+    fold_ids = sorted(set(map(int, assignment)))
+    if fold_ids != list(range(1, len(fold_ids) + 1)):
+        raise ValueError("fold assignment must use consecutive one-based fold IDs")
+    all_indices = np.arange(assignment.size, dtype=np.int64)
+    folds = []
+    for fold_id in fold_ids:
+        validation = np.flatnonzero(assignment == fold_id).astype(np.int64, copy=False)
+        train = np.flatnonzero(assignment != fold_id).astype(np.int64, copy=False)
+        folds.append(CVFold(fold_id, train, validation))
+    split = CVSplit(tuple(folds), int(seed), bool(shuffle), int(assignment.size))
+    split.validate()
     return split
+
+
+def bootstrap_draw_indices(n_events: int, rng: np.random.Generator) -> np.ndarray:
+    n_events = int(n_events)
+    if n_events < 1:
+        raise ValueError("bootstrap requires at least one event")
+    return rng.integers(0, n_events, size=n_events, dtype=np.int64)

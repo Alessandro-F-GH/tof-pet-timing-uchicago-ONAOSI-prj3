@@ -8,9 +8,9 @@ from pathlib import Path
 from .common import canonical_hash
 
 CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
-MODEL_SAVE_POLICIES = ("all", "first", "none")
 MODEL_SELECTION_METRICS = ("rmse", "ctr")
 DEFAULT_PREDICTION_CHUNK_SIZE = 4096
+DEFAULT_PLOT_CONFIG = "config/plots/default.json"
 
 
 class ConfigError(ValueError):
@@ -22,8 +22,11 @@ class BatchConfig:
     name: str
     output_dir: str
     source_path: str
+    results: dict
+    datasets: dict
     protocol: dict
     axes: dict
+    plot_config: dict
     runs: tuple[dict, ...]
 
 
@@ -61,7 +64,7 @@ def _dataset(owner, value, root):
     data = _module(_relative(owner, value)) if isinstance(value, str) else copy.deepcopy(value)
     if not isinstance(data, dict):
         raise ConfigError("dataset must resolve to an object")
-    if "root_file" not in data or "true_tof_ps" not in data or "channels" not in data:
+    if not {"root_file", "true_tof_ps", "channels"} <= set(data):
         raise ConfigError("dataset requires root_file, true_tof_ps and channels")
     data["root_file"] = _project(root, data["root_file"])
     return data
@@ -72,7 +75,7 @@ def _preprocessing(owner, value, root):
     if not isinstance(preprocessing, dict):
         raise ConfigError("preprocessing_config must resolve to an object")
     if "cache_dir" not in preprocessing:
-        preprocessing["cache_dir"] = "processed_data/ml_protocol_v2"
+        preprocessing["cache_dir"] = "processed_data/ml_protocol_v3"
     preprocessing["cache_dir"] = _project(root, preprocessing["cache_dir"])
     return preprocessing
 
@@ -95,12 +98,18 @@ def _model(owner, raw, root):
         name = str(space.get("model", ""))
     if str(space.get("model", name)) != name:
         raise ConfigError("model-space name mismatch")
+    optimization = space.get("optimization") or {}
+    if "seed" in optimization:
+        raise ConfigError("model optimization must not define its own seed; use protocol.seed")
     return {"name": name, "space": space}
 
 
 def _window(raw):
     if isinstance(raw, dict) and set(raw) >= {"start", "end"}:
-        return {"start": float(raw["start"]), "end": float(raw["end"])}
+        value = {"start": float(raw["start"]), "end": float(raw["end"])}
+        if value["end"] <= value["start"]:
+            raise ConfigError("window end must exceed start")
+        return value
     raise ConfigError("window must resolve to one {start,end} interval")
 
 
@@ -109,7 +118,9 @@ def _fit(raw):
     if not isinstance(fit, dict):
         raise ConfigError("fit must be an object")
     if "bootstrap_samples" in fit:
-        raise ConfigError("fit.bootstrap_samples is not supported")
+        raise ConfigError("fit.bootstrap_samples is not supported; use protocol.bootstrap")
+    if float(fit["histogram_bin_width_ps"]) <= 0:
+        raise ConfigError("fit.histogram_bin_width_ps must be positive")
     return fit
 
 
@@ -126,183 +137,119 @@ def _runtime(raw=None):
     return {"prediction_chunk_size": chunk}
 
 
-def _save_models(raw):
-    value = str(raw if raw is not None else "all").strip().lower()
-    if value not in MODEL_SAVE_POLICIES:
-        raise ConfigError(f"save_models must be one of {MODEL_SAVE_POLICIES}")
+def _tolerance(raw, *, folds, field):
+    if isinstance(raw, dict):
+        out = {}
+        for key, value in raw.items():
+            try:
+                fold = int(key)
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"{field} mapping keys must be fold counts") from exc
+            if fold < 1 or fold >= int(folds):
+                raise ConfigError(f"{field} fold keys must lie in [1, folds-1]")
+            value = float(value)
+            if value < 0:
+                raise ConfigError(f"{field} values must be non-negative")
+            out[str(fold)] = value
+        return out
+    value = float(raw)
+    if value < 0:
+        raise ConfigError(f"{field} must be non-negative")
     return value
 
 
-def _selection(raw):
+def _cross_validation(raw):
     value = copy.deepcopy(raw)
-    required = {"validation_fraction", "metric"}
-    if not isinstance(value, dict) or set(value) != required:
-        raise ConfigError("model_selection must contain exactly validation_fraction and metric")
-    value["validation_fraction"] = float(value["validation_fraction"])
-    value["metric"] = str(value["metric"]).strip().lower()
-    if value["metric"] not in MODEL_SELECTION_METRICS:
-        raise ConfigError(f"model_selection.metric must be one of {MODEL_SELECTION_METRICS}")
-    return value
+    if not isinstance(value, dict):
+        raise ConfigError("cross_validation must be an object")
+    required = {"folds", "shuffle", "metric", "minimum_events_per_fold", "pruning"}
+    if set(value) != required:
+        raise ConfigError(f"cross_validation must contain exactly {sorted(required)}")
+    folds = int(value["folds"])
+    if folds < 2:
+        raise ConfigError("cross_validation.folds must be >= 2")
+    metric = str(value["metric"]).strip().lower()
+    if metric not in MODEL_SELECTION_METRICS:
+        raise ConfigError(f"cross_validation.metric must be one of {MODEL_SELECTION_METRICS}")
+    minimum = int(value["minimum_events_per_fold"])
+    if minimum < 1:
+        raise ConfigError("cross_validation.minimum_events_per_fold must be >= 1")
+    pruning = copy.deepcopy(value["pruning"])
+    if not isinstance(pruning, dict):
+        raise ConfigError("cross_validation.pruning must be an object")
+    required_pruning = {
+        "enabled", "startup_complete_candidates", "min_folds_before_prune",
+        "max_degradation_ps", "prune_if_worse_than_led", "led_max_degradation_ps",
+    }
+    if set(pruning) != required_pruning:
+        raise ConfigError(f"cross_validation.pruning must contain exactly {sorted(required_pruning)}")
+    startup = int(pruning["startup_complete_candidates"])
+    minimum_folds = int(pruning["min_folds_before_prune"])
+    if startup < 0:
+        raise ConfigError("startup_complete_candidates must be >= 0")
+    if bool(pruning["enabled"]) and startup < 1:
+        raise ConfigError("enabled pruning requires at least one startup complete candidate")
+    if minimum_folds < 1 or minimum_folds >= folds:
+        raise ConfigError("min_folds_before_prune must lie in [1, folds-1]")
+    max_degradation = _tolerance(pruning["max_degradation_ps"], folds=folds, field="max_degradation_ps")
+    led_degradation = _tolerance(pruning["led_max_degradation_ps"], folds=folds, field="led_max_degradation_ps")
+    for field, tolerance in (("max_degradation_ps", max_degradation), ("led_max_degradation_ps", led_degradation)):
+        if isinstance(tolerance, dict) and bool(pruning["enabled"]):
+            missing = [str(i) for i in range(minimum_folds, folds) if str(i) not in tolerance]
+            if missing:
+                raise ConfigError(f"{field} mapping is missing eligible fold counts: {missing}")
+    return {
+        "folds": folds,
+        "shuffle": bool(value["shuffle"]),
+        "metric": metric,
+        "minimum_events_per_fold": minimum,
+        "pruning": {
+            "enabled": bool(pruning["enabled"]),
+            "startup_complete_candidates": startup,
+            "min_folds_before_prune": minimum_folds,
+            "max_degradation_ps": max_degradation,
+            "prune_if_worse_than_led": bool(pruning["prune_if_worse_than_led"]),
+            "led_max_degradation_ps": led_degradation,
+        },
+    }
 
 
-def _evaluation(raw):
+def _bootstrap(raw):
     value = copy.deepcopy(raw)
-    required = {"n_replicas", "blind_fraction", "minimum_events_per_split"}
-    if not isinstance(value, dict) or set(value) != required:
-        raise ConfigError(
-            "evaluation must contain exactly n_replicas, blind_fraction and minimum_events_per_split"
-        )
-    value["n_replicas"] = int(value["n_replicas"])
-    value["blind_fraction"] = float(value["blind_fraction"])
-    value["minimum_events_per_split"] = int(value["minimum_events_per_split"])
-    return value
+    if not isinstance(value, dict) or set(value) != {"n_resamples"}:
+        raise ConfigError("bootstrap must contain exactly n_resamples")
+    n_resamples = int(value["n_resamples"])
+    if n_resamples < 1:
+        raise ConfigError("bootstrap.n_resamples must be >= 1")
+    return {"n_resamples": n_resamples}
 
 
-def validate_config(config):
-    required = (
-        "reference", "analysis", "preprocessing", "mode", "model", "window_ns",
-        "seed", "model_selection", "evaluation", "fit", "ml_input", "ml_output", "runtime", "output_dir",
-    )
-    for key in required:
-        if key not in config:
-            raise ConfigError(f"Missing {key}")
-
-    if config["mode"] not in CHANNEL_MODES:
-        raise ConfigError(f"mode must be one of {CHANNEL_MODES}")
-    if config["reference"]["channels"] != config["analysis"]["channels"]:
-        raise ConfigError("reference and analysis channel definitions must match")
-    if config["mode"] == "timing_to_timing" and not config["analysis"]["channels"].get("timing"):
-        raise ConfigError("timing mode requires timing channels")
-
-    int(config["seed"])
-    validation_fraction = float(config["model_selection"]["validation_fraction"])
-    if str(config["model_selection"]["metric"]) not in MODEL_SELECTION_METRICS:
-        raise ConfigError(f"model_selection.metric must be one of {MODEL_SELECTION_METRICS}")
-    blind_fraction = float(config["evaluation"]["blind_fraction"])
-    if not 0.0 < validation_fraction < 1.0:
-        raise ConfigError("model_selection.validation_fraction must lie in (0, 1)")
-    if not 0.0 < blind_fraction < 1.0:
-        raise ConfigError("evaluation.blind_fraction must lie in (0, 1)")
-    if validation_fraction + blind_fraction >= 1.0:
-        raise ConfigError(
-            "validation_fraction + blind_fraction must be < 1 so every replica retains a variable training subset"
-        )
-    if int(config["evaluation"]["n_replicas"]) < 1:
-        raise ConfigError("evaluation.n_replicas must be >= 1")
-    if int(config["evaluation"]["minimum_events_per_split"]) < 1:
-        raise ConfigError("evaluation.minimum_events_per_split must be >= 1")
-    if int(config["runtime"]["prediction_chunk_size"]) < 1:
-        raise ConfigError("runtime.prediction_chunk_size must be >= 1")
-
-    preprocessing = config["preprocessing"]
-    for key in ("materialized_window_ns", "energy", "timing", "selection", "photopeak", "tot_peak", "led_selection", "io"):
-        if key not in preprocessing:
-            raise ConfigError(f"preprocessing.{key} is required")
-    selection = preprocessing["selection"]
-    if not isinstance(selection, dict):
-        raise ConfigError("preprocessing.selection must be an object")
-    required_selection = {"baseline_window_ns", "baseline_noise", "baseline_clipping"}
-    if set(selection) != required_selection:
-        raise ConfigError(
-            "selection must contain exactly baseline_window_ns, baseline_noise and baseline_clipping"
-        )
-    baseline_window = selection["baseline_window_ns"]
-    if len(baseline_window) != 2 or float(baseline_window[1]) > 0:
-        raise ConfigError("selection.baseline_window_ns must contain two values before trigger")
-    noise = selection["baseline_noise"]
-    if not isinstance(noise, dict) or set(noise) != {"lambda_mad"} or float(noise["lambda_mad"]) < 0:
-        raise ConfigError("selection.baseline_noise.lambda_mad must be non-negative")
-    clipping = selection["baseline_clipping"]
-    if not isinstance(clipping, dict) or set(clipping) != {"margin_mV"} or float(clipping["margin_mV"]) < 0:
-        raise ConfigError("selection.baseline_clipping.margin_mV must be non-negative")
-    led = preprocessing["led_selection"]
-    if not led.get("thresholds_mV"):
-        raise ConfigError("led_selection.thresholds_mV must be non-empty")
-    if not 0 < float(led["minimum_crossing_efficiency"]) <= 1:
-        raise ConfigError("invalid LED minimum crossing efficiency")
-    if float(led["coincidence_window_ns"]) <= 0:
-        raise ConfigError("invalid LED coincidence window")
-
-    if config["window_ns"]["end"] <= config["window_ns"]["start"]:
-        raise ConfigError("window end must exceed start")
-    if int(config["ml_input"].get("subsampling", 1)) <= 0:
-        raise ConfigError("ml_input.subsampling must be positive")
-    if float(config["ml_output"]["max_abs_ps"]) <= 0:
-        raise ConfigError("invalid fit settings")
-    if float(config["fit"]["histogram_bin_width_ps"]) <= 0:
-        raise ConfigError("invalid fit settings")
-    config["save_models"] = _save_models(config.get("save_models", "all"))
-
-    from .models import model_names
-    if config["model"]["name"] not in model_names():
-        raise ConfigError(f"unregistered model {config['model']['name']}")
-
-
-def _resolve(source, raw, root):
-    required_fields = {
-        "reference_dataset", "analysis_dataset", "preprocessing_config", "model",
-        "mode", "window", "seed", "model_selection", "evaluation", "fit",
-        "ml_output", "output_dir",
-    }
-    optional_fields = {
-        "name", "ml_input", "runtime", "save_models", "study_name", "run_id", "window_name",
-    }
-    missing = required_fields - set(raw)
-    if missing:
-        raise ConfigError(f"Missing study fields: {sorted(missing)}")
-    extra = set(raw) - required_fields - optional_fields
+def _xai(raw=None):
+    value = copy.deepcopy(raw or {})
+    if not isinstance(value, dict):
+        raise ConfigError("xai must be an object")
+    extra = set(value) - {"enabled", "group_size_samples", "max_events"}
     if extra:
-        raise ConfigError(f"Unsupported study fields: {sorted(extra)}")
-
-    reference = _dataset(source, raw["reference_dataset"], root)
-    analysis = _dataset(source, raw.get("analysis_dataset"), root)
-    preprocessing = _preprocessing(source, raw.get("preprocessing_config"), root)
-    model = _model(source, raw.get("model"), root)
-    window = _window(raw["window"])
-
-    config = {
-        "name": str(raw.get("name", source.stem)),
-        "reference": reference,
-        "analysis": analysis,
-        "preprocessing": preprocessing,
-        "mode": str(raw["mode"]),
-        "model": model,
-        "window_ns": window,
-        "seed": int(raw["seed"]),
-        "model_selection": _selection(raw["model_selection"]),
-        "evaluation": _evaluation(raw["evaluation"]),
-        "fit": _fit(raw["fit"]),
-        "ml_input": copy.deepcopy(raw.get("ml_input", {"subsampling": 1})),
-        "ml_output": copy.deepcopy(raw["ml_output"]),
-        "runtime": _runtime(raw.get("runtime")),
-        "output_dir": _project(root, raw["output_dir"]),
-        "save_models": _save_models(raw.get("save_models", "all")),
-    }
-    for key in ("study_name", "run_id", "window_name"):
-        if key in raw:
-            config[key] = str(raw[key])
-    validate_config(config)
-    config["_config_path"] = str(source)
-    config["_config_fingerprint"] = canonical_hash(
-        {k: v for k, v in config.items() if k not in {"save_models", "runtime"}}
-    )
-    return config
+        raise ConfigError(f"Unsupported xai fields: {sorted(extra)}")
+    group_size = int(value.get("group_size_samples", 8))
+    max_events = int(value.get("max_events", 512))
+    if group_size < 1 or max_events < 1:
+        raise ConfigError("xai group_size_samples and max_events must be >= 1")
+    return {"enabled": bool(value.get("enabled", True)), "group_size_samples": group_size, "max_events": max_events}
 
 
-def load_config(path, project_root=None):
-    source = Path(path).expanduser().resolve()
-    root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]
-    return _resolve(source, _read(source), root)
+def _results(raw, root):
+    if not isinstance(raw, dict) or set(raw) != {"root", "folder"}:
+        raise ConfigError("results must contain exactly root and folder")
+    base = Path(_project(root, raw["root"]))
+    folder = str(raw["folder"]).strip().strip("/\\")
+    if not folder:
+        raise ConfigError("results.folder cannot be empty")
+    return {"root": str(base.resolve()), "folder": folder, "directory": str((base / folder).resolve())}
 
 
 def _mode_tag(mode):
     return "energy" if mode == "energy_to_energy" else "timing"
-
-
-def _model_family(model_name):
-    from .models import get_model
-
-    return f"{get_model(model_name).estimator_formulation}_models"
 
 
 def _excluded(model, mode, window, rules):
@@ -319,34 +266,82 @@ def _protocol_value(protocol, key, mode):
     return copy.deepcopy(value[mode]) if isinstance(value, dict) and mode in value else copy.deepcopy(value)
 
 
+def _validate_dataset_compatibility(control, development, blind):
+    if not (control["channels"] == development["channels"] == blind["channels"]):
+        raise ConfigError("control, development and blind channel definitions must match")
+
+
+def validate_config(config):
+    required = {
+        "control", "development", "blind", "preprocessing", "mode", "model", "window_ns",
+        "seed", "cross_validation", "bootstrap", "fit", "ml_input", "ml_output", "runtime",
+        "xai", "output_dir", "save_model",
+    }
+    missing = required - set(config)
+    if missing:
+        raise ConfigError(f"Missing resolved study fields: {sorted(missing)}")
+    if config["mode"] not in CHANNEL_MODES:
+        raise ConfigError(f"mode must be one of {CHANNEL_MODES}")
+    _validate_dataset_compatibility(config["control"], config["development"], config["blind"])
+    if config["mode"] == "timing_to_timing":
+        for role in ("control", "development", "blind"):
+            if not config[role]["channels"].get("timing"):
+                raise ConfigError(f"timing mode requires timing channels in {role}")
+    int(config["seed"])
+    if int(config["ml_input"].get("subsampling", 1)) <= 0:
+        raise ConfigError("ml_input.subsampling must be positive")
+    if float(config["ml_output"]["max_abs_ps"]) <= 0:
+        raise ConfigError("ml_output.max_abs_ps must be positive")
+    preprocessing = config["preprocessing"]
+    for key in ("materialized_window_ns", "energy", "timing", "selection", "photopeak", "tot_peak", "led_selection", "io"):
+        if key not in preprocessing:
+            raise ConfigError(f"preprocessing.{key} is required")
+    from .models import model_names
+    if config["model"]["name"] not in model_names():
+        raise ConfigError(f"unregistered model {config['model']['name']}")
+
+
 def load_batch_config(path, project_root=None):
     source = Path(path).expanduser().resolve()
     root = Path(project_root).resolve() if project_root else Path(__file__).resolve().parents[1]
     raw = _read(source)
-
-    required = {"name", "reference_dataset", "analysis_dataset", "output_dir", "protocol", "sweep"}
+    required = {"name", "control_dataset", "development_dataset", "blind_dataset", "results", "protocol", "sweep"}
     missing = required - set(raw)
     if missing:
         raise ConfigError(f"Missing batch fields: {sorted(missing)}")
-    extra = set(raw) - required - {"save_models"}
+    extra = set(raw) - required - {"save_model", "plot_config"}
     if extra:
         raise ConfigError(f"Unsupported batch fields: {sorted(extra)}")
 
-    protocol = copy.deepcopy(raw["protocol"])
-    protocol_required = {
-        "seed", "preprocessing_config", "model_selection", "evaluation", "fit", "ml_output"
+    datasets = {
+        "control": _dataset(source, raw["control_dataset"], root),
+        "development": _dataset(source, raw["development_dataset"], root),
+        "blind": _dataset(source, raw["blind_dataset"], root),
     }
+    _validate_dataset_compatibility(datasets["control"], datasets["development"], datasets["blind"])
+    results = _results(raw["results"], root)
+    plot_path = _relative(source, raw.get("plot_config", DEFAULT_PLOT_CONFIG)) if "plot_config" in raw else root / DEFAULT_PLOT_CONFIG
+    plot_config = _read(plot_path)
+
+    protocol = copy.deepcopy(raw["protocol"])
+    protocol_required = {"seed", "preprocessing_config", "cross_validation", "bootstrap", "fit", "ml_output"}
     if not protocol_required <= set(protocol):
         raise ConfigError(f"protocol requires {sorted(protocol_required)}")
-    extra_protocol = set(protocol) - (protocol_required | {"ml_input", "runtime"})
+    extra_protocol = set(protocol) - (protocol_required | {"ml_input", "runtime", "xai"})
     if extra_protocol:
         raise ConfigError(f"Unsupported protocol fields: {sorted(extra_protocol)}")
-
-    seed = int(protocol["seed"])
-    model_selection = _selection(protocol["model_selection"])
-    evaluation = _evaluation(protocol["evaluation"])
-    runtime = _runtime(protocol.get("runtime"))
-    save_models = _save_models(raw.get("save_models", "all"))
+    normalized_protocol = {
+        "seed": int(protocol["seed"]),
+        "preprocessing_config": str(protocol["preprocessing_config"]),
+        "cross_validation": _cross_validation(protocol["cross_validation"]),
+        "bootstrap": _bootstrap(protocol["bootstrap"]),
+        "fit": copy.deepcopy(protocol["fit"]),
+        "ml_input": copy.deepcopy(protocol.get("ml_input", {"subsampling": 1})),
+        "ml_output": copy.deepcopy(protocol["ml_output"]),
+        "runtime": _runtime(protocol.get("runtime")),
+        "xai": _xai(protocol.get("xai")),
+    }
+    preprocessing = _preprocessing(source, protocol["preprocessing_config"], root)
 
     sweep = copy.deepcopy(raw["sweep"])
     extra_sweep = set(sweep) - {"models", "modes", "windows", "exclude"}
@@ -365,45 +360,53 @@ def load_batch_config(path, project_root=None):
     if not isinstance(rules, list):
         raise ConfigError("sweep.exclude must be a list")
 
-    name = str(raw["name"])
-    output = Path(_project(root, raw["output_dir"]))
     runs = []
-    for model_raw in models:
-        model_name = model_raw if isinstance(model_raw, str) else str(model_raw.get("name", ""))
-        if not model_name:
-            raise ConfigError("every sweep model needs a name")
-        model_root = output / "models" / _model_family(model_name) / model_name
-        for mode_raw in modes:
-            mode = str(mode_raw)
-            if mode not in CHANNEL_MODES:
-                raise ConfigError(f"mode must be one of {CHANNEL_MODES}")
-            for window_name, window in windows.items():
+    for mode_raw in modes:
+        mode = str(mode_raw)
+        if mode not in CHANNEL_MODES:
+            raise ConfigError(f"mode must be one of {CHANNEL_MODES}")
+        for window_name, window_raw in windows.items():
+            window = _window(window_raw)
+            for model_raw in models:
+                model_name = model_raw if isinstance(model_raw, str) else str(model_raw.get("name", ""))
+                if not model_name:
+                    raise ConfigError("every sweep model needs a name")
                 if _excluded(model_name, mode, str(window_name), rules):
                     continue
-                run_id = f"{model_name}__{_mode_tag(mode)}__{window_name}"
-                item = {
-                    "name": f"{name}__{run_id}",
-                    "study_name": name,
-                    "run_id": run_id,
+                model = _model(source, model_raw, root)
+                output_dir = Path(results["directory"]) / _mode_tag(mode) / str(window_name) / model_name
+                config = {
+                    "name": f"{raw['name']}__{_mode_tag(mode)}__{window_name}__{model_name}",
+                    "study_name": str(raw["name"]),
+                    "run_id": f"{_mode_tag(mode)}__{window_name}__{model_name}",
                     "window_name": str(window_name),
-                    "reference_dataset": raw["reference_dataset"],
-                    "analysis_dataset": raw["analysis_dataset"],
-                    "preprocessing_config": protocol["preprocessing_config"],
-                    "model": model_raw,
+                    "control": copy.deepcopy(datasets["control"]),
+                    "development": copy.deepcopy(datasets["development"]),
+                    "blind": copy.deepcopy(datasets["blind"]),
+                    "preprocessing": copy.deepcopy(preprocessing),
+                    "model": model,
                     "mode": mode,
-                    "window": window,
-                    "seed": seed,
-                    "model_selection": model_selection,
-                    "evaluation": evaluation,
-                    "fit": _protocol_value(protocol, "fit", mode),
+                    "window_ns": window,
+                    "seed": normalized_protocol["seed"],
+                    "cross_validation": copy.deepcopy(normalized_protocol["cross_validation"]),
+                    "bootstrap": copy.deepcopy(normalized_protocol["bootstrap"]),
+                    "fit": _fit(_protocol_value(protocol, "fit", mode)),
                     "ml_input": _protocol_value(protocol, "ml_input", mode) if "ml_input" in protocol else {"subsampling": 1},
                     "ml_output": _protocol_value(protocol, "ml_output", mode),
-                    "runtime": runtime,
-                    "output_dir": str(model_root / _mode_tag(mode) / str(window_name)),
-                    "save_models": save_models,
+                    "runtime": copy.deepcopy(normalized_protocol["runtime"]),
+                    "xai": copy.deepcopy(normalized_protocol["xai"]),
+                    "output_dir": str(output_dir.resolve()),
+                    "batch_output_dir": results["directory"],
+                    "plot_config": copy.deepcopy(plot_config),
+                    "save_model": bool(raw.get("save_model", True)),
                 }
-                runs.append(_resolve(source, item, root))
-
+                validate_config(config)
+                config["_config_path"] = str(source)
+                config["_config_fingerprint"] = canonical_hash({
+                    key: value for key, value in config.items()
+                    if key not in {"runtime", "plot_config", "output_dir", "batch_output_dir", "save_model"} and not str(key).startswith("_")
+                })
+                runs.append(config)
     if not runs:
         raise ConfigError("batch sweep produced no runs")
 
@@ -412,22 +415,15 @@ def load_batch_config(path, project_root=None):
         "modes": [str(m) for m in modes],
         "windows": {str(key): _window(value) for key, value in windows.items()},
     }
-    normalized_protocol = {
-        "seed": seed,
-        "preprocessing_config": str(protocol["preprocessing_config"]),
-        "model_selection": model_selection,
-        "evaluation": evaluation,
-        "fit": copy.deepcopy(protocol["fit"]),
-        "ml_input": copy.deepcopy(protocol.get("ml_input", {"subsampling": 1})),
-        "ml_output": copy.deepcopy(protocol["ml_output"]),
-        "runtime": runtime,
-    }
     return BatchConfig(
-        name=name,
-        output_dir=str(output.resolve()),
+        name=str(raw["name"]),
+        output_dir=results["directory"],
         source_path=str(source),
+        results=results,
+        datasets=datasets,
         protocol=normalized_protocol,
         axes=axes,
+        plot_config=plot_config,
         runs=tuple(runs),
     )
 
@@ -439,10 +435,15 @@ def public_config(config):
 def public_batch_config(batch):
     return {
         "name": batch.name,
-        "output_dir": batch.output_dir,
+        "results": batch.results,
+        "datasets": batch.datasets,
         "source_path": batch.source_path,
         "protocol": batch.protocol,
         "axes": batch.axes,
-        "save_models": batch.runs[0].get("save_models", "all") if batch.runs else "all",
+        "save_model": batch.runs[0]["save_model"] if batch.runs else True,
         "runs": [public_config(config) for config in batch.runs],
     }
+
+
+def load_config(path, project_root=None):
+    raise ConfigError("single-study configs were removed; use a batch config with control/development/blind roles")

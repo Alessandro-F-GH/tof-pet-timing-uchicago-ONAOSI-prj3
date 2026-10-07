@@ -1,55 +1,10 @@
 {
-  "name": "benchmark_all_models_48V",
-  "reference_dataset": "../datasets/control_FBK.json",
-  "analysis_dataset": {
-    "root_file": "processed_data/10-05/48V-R1.root",
-    "true_tof_ps": 0.0,
-    "channels": {
-      "energy": [1, 2],
-      "polarities": [1, 1],
-      "timing": [3, 4],
-      "timing_polarities": [1, 1]
-    }
-  },
-  "output_dir": "results/studies/FBK/timing_benchmark_48V_R1",
-  "save_models": "none",
-  "protocol": {
-    "seed": 1001,
-    "preprocessing_config": "../preprocessing/default_ctr.json",
-    "model_selection": {"validation_fraction": 0.1, "metric": "ctr"},
-    "evaluation": {
-      "n_replicas": 5,
-      "blind_fraction": 0.5,
-      "minimum_events_per_split": 50
-    },
-    "fit": {
-      "energy_to_energy": {"histogram_bin_width_ps": 10.0},
-      "timing_to_timing": {"histogram_bin_width_ps": 5.0}
-    },
-    "ml_input": {"subsampling": 1},
-    "ml_output": {"max_abs_ps": 2000.0},
-    "runtime": {"prediction_chunk_size": 4096}
-  },
-  "sweep": {
-    "models": [
-      "direct_minirocket",
-      "shared_minirocket",
-
-      "direct_linear_ridge",
-      "shared_linear_ridge",
-
-      "direct_mlp",
-      "antisymmetric_mlp",
-      "locally_connected_mlp",
-
-      "onishi_cnn",
-      "shared_cnn1d",
-      "independent_cnn1d"
-    ],
-    "modes": ["timing_to_timing","energy_to_energy"],
-    "windows": {
-      "onishi": {"start": -1.5, "end": 2.0},
-      "wide": {"start": -2.0, "end": 30.0}
-    }
-  }
+  "name": "benchmark_FBK_48V_R1_R2",
+  "control_dataset": "../datasets/control_FBK.json",
+  "development_dataset": {"root_file": "processed_data/10-05/48V-R1.root", "true_tof_ps": 0.0, "channels": {"energy": [1, 2], "polarities": [1, 1], "timing": [3, 4], "timing_polarities": [1, 1]}},
+  "blind_dataset": {"root_file": "processed_data/10-05/48V-R2.root", "true_tof_ps": 0.0, "channels": {"energy": [1, 2], "polarities": [1, 1], "timing": [3, 4], "timing_polarities": [1, 1]}},
+  "results": {"root": "results", "folder": "FBK/benchmark_48V_R1_R2"},
+  "save_model": true,
+  "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/default_ctr.json", "cross_validation": {"folds": 5, "shuffle": true, "metric": "ctr", "minimum_events_per_fold": 50, "pruning": {"enabled": true, "startup_complete_candidates": 3, "min_folds_before_prune": 1, "max_degradation_ps": 5.0, "prune_if_worse_than_led": true, "led_max_degradation_ps": 0.0}}, "bootstrap": {"n_resamples": 1000}, "fit": {"energy_to_energy": {"histogram_bin_width_ps": 10.0}, "timing_to_timing": {"histogram_bin_width_ps": 5.0}}, "ml_input": {"subsampling": 1}, "ml_output": {"max_abs_ps": 2000.0}, "runtime": {"prediction_chunk_size": 4096}, "xai": {"enabled": true, "group_size_samples": 8, "max_events": 512}},
+  "sweep": {"models": ["direct_linear_ridge", "shared_linear_ridge"], "modes": ["energy_to_energy", "timing_to_timing"], "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
 }

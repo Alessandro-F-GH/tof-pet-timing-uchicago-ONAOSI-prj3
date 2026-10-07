@@ -1,0 +1,19 @@
+{
+  "output": {"format": "png", "dpi": 160},
+  "font": {"family": "DejaVu Sans", "size": 10, "title_size": 11, "label_size": 10, "tick_size": 9, "legend_size": 9, "annotation_size": 8},
+  "grid": {"enabled": true, "alpha": 0.22, "linestyle": ":"},
+  "line": {"width": 1.2},
+  "markers": {"default": "o", "size": 6.0},
+  "formulations": {
+    "shared": {"label": "Shared antisymmetric", "color": "#1f77b4", "marker": "o"},
+    "direct": {"label": "Direct / non-shared", "color": "#d95f02", "marker": "^"}
+  },
+  "reference": {"label": "LED reference", "color": "#666666", "marker": "s", "linestyle": "--"},
+  "cv": {"figsize": [7.0, 4.5], "pruned_marker": "x", "label_rotation": 35},
+  "scatter": {"figsize": [6.4, 5.0], "marker_size": 60, "annotation_offset": [5, 5], "error_capsize": 3.0},
+  "bar": {"figure_width_min": 7.2, "figure_height": 4.8, "width_per_category": 1.25, "group_width": 0.78, "window_hatches": ["", "//", "\\", "xx", "..", "++"], "edge_color": "#333333", "edge_line_width": 0.6, "annotation_offset_points": 3, "error_capsize": 3.0},
+  "heatmap": {"min_figsize": [6.8, 5.4], "per_model": [0.95, 0.82], "correlation_cmap": "coolwarm", "difference_cmap": "coolwarm", "correlation_limits": [-1.0, 1.0], "label_rotation": 35, "cell_text_size": 8},
+  "histogram": {"figsize": [6.4, 4.4], "bins": 40, "histtype": "stepfilled", "alpha": 0.45},
+  "xai": {"figsize": [7.0, 4.0], "fill_alpha": 0.18},
+  "preprocessing": {"figsize": [7.2, 4.5], "waveform_figsize": [7.2, 6.0], "display_quantiles": [0.005, 0.995], "hist_alpha": 0.22, "photopeak_bins": 100, "noise_bins": 80, "tot_bins": 100, "detector_colors": ["#1f77b4", "#ff7f0e"], "selection_relative_pad": 0.25, "selection_minimum_pad": 0.15}
+}

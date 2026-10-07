@@ -1,183 +1,93 @@
 from __future__ import annotations
-
-import csv
-import os
-import shutil
-import tempfile
+import csv,json,os,shutil,tempfile
 from pathlib import Path
-
 import numpy as np
-
-from .artifact_naming import prefer_existing, replica_tag, seed_tag
-from .common import atomic_json
-
-
-RESULT_FIELDS = (
-    "phase",
-    "replica_index",
-    "seed",
-    "model",
-    "estimator_formulation",
-    "mode",
-    "window_start_ns",
-    "window_end_ns",
-    "population_identity",
-    "event_population_identity",
-    "analysis_protocol_identity",
-    "sampling_identity",
-    "candidate_id",
-    "selected",
-    "ctr_ps",
-    "uncorrected_ctr_ps",
-    "improvement_ps",
-    "improvement_percent",
-    "rmse_ps",
-    "uncorrected_rmse_ps",
-    "rmse_improvement_ps",
-    "rmse_improvement_percent",
-    "n",
-    "train_n",
-    "swap_rmse_ps",
-)
-
-
+from .common import atomic_json,write_csv
+RUN_SCHEMA_VERSION=50
+STAGE_ORDER=("cv","selection","final_fit","blind","bootstrap","xai","plots")
+def _read_csv(path):
+    if not Path(path).is_file(): return []
+    with Path(path).open("r",encoding="utf-8",newline="") as stream:return list(csv.DictReader(stream))
+def _atomic_npz(path,**arrays):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);fd,tmp=tempfile.mkstemp(prefix=f".{path.name}.",suffix=".tmp",dir=path.parent)
+    try:
+        with os.fdopen(fd,"wb") as stream: np.savez_compressed(stream,**arrays);stream.flush();os.fsync(stream.fileno())
+        os.replace(tmp,path)
+    finally:
+        if os.path.exists(tmp):os.unlink(tmp)
 class RunStore:
-    def __init__(self, root, *, overwrite=False, resume=False):
-        self.root = Path(root).resolve()
-        if overwrite and resume:
-            raise ValueError("overwrite and resume are mutually exclusive")
-        if overwrite and self.root.exists():
-            shutil.rmtree(self.root)
-        if self.root.exists() and any(self.root.iterdir()) and not resume:
-            raise FileExistsError(f"Run directory is not empty: {self.root}")
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.resume = bool(resume)
-
+    def __init__(self,root):self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True)
     @property
-    def results_path(self):
-        return self.root / "results.csv"
-
-    def write_manifest(self, value):
-        atomic_json(self.root / "manifest.json", value)
-
-    def write_resolved_config(self, value):
-        atomic_json(self.root / "resolved_config.json", value)
-
-    def write_candidates(self, value):
-        atomic_json(self.root / "candidates.json", value)
-
-    def write_selected_hyperparameters(self, value):
-        atomic_json(self.root / "selected_hyperparameters.json", value)
-
-    def read_results(self):
-        if not self.results_path.is_file():
-            return []
-        with self.results_path.open("r", encoding="utf-8", newline="") as stream:
-            return list(csv.DictReader(stream))
-
-    def _atomic_rows(self, rows):
-        fd, tmp = tempfile.mkstemp(prefix=".results.", suffix=".csv", dir=self.root)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
-                writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow({key: row.get(key, "") for key in RESULT_FIELDS})
-            os.replace(tmp, self.results_path)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-
-    def upsert_result(self, row):
-        rows = self.read_results()
-        key = (
-            str(row["phase"]),
-            str(row.get("replica_index", "")),
-            str(row["candidate_id"]),
-        )
-        rows = [
-            existing
-            for existing in rows
-            if (
-                str(existing.get("phase", "")),
-                str(existing.get("replica_index", "")),
-                str(existing.get("candidate_id", "")),
-            )
-            != key
-        ]
-        rows.append(dict(row))
-
-        def sort_key(value):
-            phase_order = 0 if value.get("phase") == "hyperparameter_validation" else 1
-            replica = int(value["replica_index"]) if str(value.get("replica_index", "")).strip() else 0
-            return phase_order, replica, str(value.get("candidate_id", ""))
-
-        rows.sort(key=sort_key)
-        self._atomic_rows(rows)
-
-    def has_result(self, phase, candidate_id, replica_index=None):
-        wanted_replica = "" if replica_index is None else str(int(replica_index))
-        return any(
-            row.get("phase") == phase
-            and row.get("candidate_id") == candidate_id
-            and str(row.get("replica_index", "")) == wanted_replica
-            for row in self.read_results()
-        )
-
-    def blind_residuals_path(self, seed, candidate_id):
-        compact = self.root / "residuals" / f"{seed_tag(seed)}_{candidate_id}.npz"
-        legacy = self.root / "blind_residuals" / f"seed_{int(seed)}_{candidate_id}.npz"
-        return prefer_existing(compact, legacy)
-
-    def save_blind_residuals(self, seed, candidate_id, corrected_ps):
-        path = self.blind_residuals_path(seed, candidate_id)
-        path.parent.mkdir(exist_ok=True)
-        np.savez_compressed(path, corrected_ps=np.asarray(corrected_ps, np.float64))
-        return path
-
-    def replica_outputs_path(self, replica_index, seed, candidate_id):
-        compact = (
-            self.root
-            / "predictions"
-            / f"{replica_tag(replica_index, seed)}_{candidate_id}.npz"
-        )
-        legacy = (
-            self.root
-            / "replica_outputs"
-            / f"replica_{int(replica_index):03d}_seed_{int(seed)}_{candidate_id}.npz"
-        )
-        return prefer_existing(compact, legacy)
-
-    def save_replica_outputs(
-        self,
-        replica_index,
-        seed,
-        candidate_id,
-        *,
-        train_event_index,
-        train_prediction_ps,
-        blind_event_index,
-        blind_prediction_ps,
-    ):
-        path = self.replica_outputs_path(replica_index, seed, candidate_id)
-        path.parent.mkdir(exist_ok=True)
-        np.savez_compressed(
-            path,
-            train_event_index=np.asarray(train_event_index, np.int64),
-            train_prediction_ps=np.asarray(train_prediction_ps, np.float32),
-            blind_event_index=np.asarray(blind_event_index, np.int64),
-            blind_prediction_ps=np.asarray(blind_prediction_ps, np.float32),
-        )
-        return path
-
-    def model_dir(self, replica_index, seed, candidate_id):
-        compact = self.root / "models" / replica_tag(replica_index, seed) / candidate_id
-        legacy = (
-            self.root
-            / "models"
-            / f"replica_{int(replica_index):03d}_seed_{int(seed)}"
-            / candidate_id
-        )
-        path = prefer_existing(compact, legacy)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    def manifest_path(self):return self.root/"manifest.json"
+    @property
+    def state_path(self):return self.root/"state.json"
+    @property
+    def folds_path(self):return self.root/"folds.csv"
+    @property
+    def cv_path(self):return self.root/"cv.csv"
+    @property
+    def candidates_path(self):return self.root/"candidates.json"
+    @property
+    def best_path(self):return self.root/"best.json"
+    @property
+    def final_fit_path(self):return self.root/"final_fit.json"
+    @property
+    def blind_path(self):return self.root/"blind.json"
+    @property
+    def bootstrap_path(self):return self.root/"bootstrap.json"
+    @property
+    def bootstrap_draws_path(self):return self.root/"bootstrap.npz"
+    @property
+    def predictions_path(self):return self.root/"pred.npz"
+    @property
+    def xai_path(self):return self.root/"xai.npz"
+    @property
+    def model_dir(self):return self.root/"model"
+    @property
+    def plots_dir(self):return self.root/"plots"
+    def write_manifest(self,v):atomic_json(self.manifest_path,v)
+    def write_resolved_config(self,v):atomic_json(self.root/"config.json",v)
+    def write_candidates(self,v):atomic_json(self.candidates_path,v)
+    def write_best(self,v):atomic_json(self.best_path,v)
+    def write_final_fit(self,v):atomic_json(self.final_fit_path,v)
+    def write_blind(self,v):atomic_json(self.blind_path,v)
+    def write_bootstrap(self,v):atomic_json(self.bootstrap_path,v)
+    def read_json(self,path,default=None):
+        try:return json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError,json.JSONDecodeError):return default
+    def read_state(self):
+        v=self.read_json(self.state_path,{})
+        if not isinstance(v,dict) or int(v.get("schema_version",-1))!=RUN_SCHEMA_VERSION:return {"schema_version":RUN_SCHEMA_VERSION,"stages":{}}
+        v.setdefault("stages",{});return v
+    def stage_status(self,stage,fingerprint):
+        item=self.read_state()["stages"].get(str(stage))
+        if not isinstance(item,dict):return "missing"
+        if item.get("fingerprint")!=str(fingerprint):return "stale"
+        return "complete" if item.get("status")=="complete" else "incomplete"
+    def mark_stage(self,stage,fingerprint,*,status="complete",metadata=None):
+        state=self.read_state();state["stages"][stage]={"status":str(status),"fingerprint":str(fingerprint),"metadata":dict(metadata or {})};atomic_json(self.state_path,state)
+    def invalidate_from(self,stage):
+        graph={"cv":("cv","selection","final_fit","blind","bootstrap","xai","plots"),"selection":("selection","final_fit","blind","bootstrap","xai","plots"),"final_fit":("final_fit","blind","bootstrap","xai","plots"),"blind":("blind","bootstrap","xai","plots"),"bootstrap":("bootstrap","plots"),"xai":("xai","plots"),"plots":("plots",)}
+        files={"cv":[self.folds_path,self.cv_path,self.candidates_path,self.root/"optuna.db",self.root/"optuna_sampler.pkl"],"selection":[self.best_path],"final_fit":[self.final_fit_path,self.model_dir],"blind":[self.blind_path,self.predictions_path],"bootstrap":[self.bootstrap_path,self.bootstrap_draws_path],"xai":[self.xai_path],"plots":[self.plots_dir]}
+        for current in graph[stage]:
+            for path in files[current]:
+                if path.is_dir():shutil.rmtree(path,ignore_errors=True)
+                elif path.exists():path.unlink()
+        state=self.read_state()
+        for current in graph[stage]:state["stages"].pop(current,None)
+        atomic_json(self.state_path,state)
+    def read_fold_rows(self,candidate_id=None):
+        rows=_read_csv(self.folds_path);return rows if candidate_id is None else [r for r in rows if r.get("candidate_id")==str(candidate_id)]
+    def upsert_fold(self,row):
+        key=(str(row["candidate_id"]),int(row["fold_id"]));rows=[r for r in _read_csv(self.folds_path) if (str(r.get("candidate_id")),int(r.get("fold_id",-1)))!=key];rows.append(dict(row));rows.sort(key=lambda r:(str(r.get("candidate_id","")),int(r.get("fold_id",0))));write_csv(self.folds_path,rows)
+    def read_candidate_rows(self):return _read_csv(self.cv_path)
+    def candidate_row(self,candidate_id):return next((r for r in self.read_candidate_rows() if r.get("candidate_id")==str(candidate_id)),None)
+    def upsert_candidate(self,row):
+        rows=[r for r in self.read_candidate_rows() if r.get("candidate_id")!=str(row["candidate_id"])];rows.append(dict(row));rows.sort(key=lambda r:str(r.get("candidate_id","")));write_csv(self.cv_path,rows)
+    def save_predictions(self,*,event_id,prediction_ps,corrected_ps,led_residual_ps):
+        _atomic_npz(self.predictions_path,event_id=np.asarray(event_id,dtype=np.int64),prediction_ps=np.asarray(prediction_ps,dtype=np.float64),corrected_ps=np.asarray(corrected_ps,dtype=np.float64),led_residual_ps=np.asarray(led_residual_ps,dtype=np.float64));return self.predictions_path
+    def load_predictions(self):
+        with np.load(self.predictions_path) as data:return {k:np.asarray(data[k]) for k in data.files}
+    def save_bootstrap_draws(self,draws):_atomic_npz(self.bootstrap_draws_path,**{k:np.asarray(v,dtype=np.float64) for k,v in draws.items()})
+    def save_xai(self,**arrays):_atomic_npz(self.xai_path,**arrays);return self.xai_path
+    def compatible_schema(self):return int((self.read_json(self.manifest_path,{}) or {}).get("schema_version",-1))==RUN_SCHEMA_VERSION
