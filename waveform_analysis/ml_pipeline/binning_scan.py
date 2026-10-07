@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from .artifact_naming import prefer_existing, replica_tag
 from .dataset import load_prepared_dataset
 from .models import get_model
 from .stats import ctr_estimate, rmse_ps
@@ -58,11 +59,9 @@ def _residuals_for_row(store, spec, dataset, config, candidates, row, target, lo
     with np.load(split_path) as split_data:
         test = np.asarray(split_data["test"], np.int64)
 
-    model_dir = (
-        store.root
-        / "models"
-        / f"replica_{replica_index:03d}_seed_{seed}"
-        / candidate_id
+    model_dir = prefer_existing(
+        store.root / "models" / replica_tag(replica_index, seed) / candidate_id,
+        store.root / "models" / f"replica_{replica_index:03d}_seed_{seed}" / candidate_id,
     )
     if not model_dir.is_dir():
         raise FileNotFoundError(
