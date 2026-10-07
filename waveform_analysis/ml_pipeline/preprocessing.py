@@ -25,11 +25,13 @@ def publish_preprocessing_diagnostics(config,role,control_artifact,batch_root,*,
             if existing.get("selection_fingerprint")==fingerprint and existing.get("control_fingerprint")==control_artifact["fingerprint"] and existing.get("plot_fingerprint")==plot_fingerprint:return out
         except (OSError,json.JSONDecodeError):pass
     if out.exists():shutil.rmtree(out)
-    out.mkdir(parents=True,exist_ok=True);copied=[]
+    plots_dir=out/"plots";tables_dir=out/"tables";plots_dir.mkdir(parents=True,exist_ok=True);tables_dir.mkdir(parents=True,exist_ok=True);copied=[]
     for name in _SELECTION_DIAGNOSTICS:
         source=Path(selection.directory)/name
-        if source.is_file():shutil.copy2(source,out/name);copied.append(name)
-    family=str(selection.manifest["family"]);wave=plot_materialized_event(native,family,config[role]["channels"][family],out/"waveform.png",f"{role.capitalize()} selected {family}-channel event")
-    if wave is not None:copied.append("waveform.png")
+        if source.is_file():
+            destination=(tables_dir if source.suffix.lower()==".csv" else plots_dir)/name
+            shutil.copy2(source,destination);copied.append(str(destination.relative_to(out)))
+    family=str(selection.manifest["family"]);wave=plot_materialized_event(native,family,config[role]["channels"][family],plots_dir/"waveform.png",f"{role.capitalize()} selected {family}-channel event")
+    if wave is not None:copied.append(str(Path(wave).relative_to(out)))
     atomic_json(metadata,{"dataset_role":role,"source_dataset":str(Path(config[role]["root_file"]).resolve()),"control_source_dataset":str(Path(config["control"]["root_file"]).resolve()),"control_fingerprint":control_artifact["fingerprint"],"selection_rules_fingerprint":selection.manifest.get("rules_fingerprint"),"selection_fingerprint":fingerprint,"n_raw":selection.manifest.get("n_raw"),"n_selected":selection.manifest.get("n_selected"),"stage_counts":selection.manifest.get("stage_counts"),"rules_fitted_on":"control","plot_fingerprint":plot_fingerprint,"files":copied})
     return out

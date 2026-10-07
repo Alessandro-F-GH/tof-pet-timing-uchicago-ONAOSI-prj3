@@ -18,7 +18,7 @@ def _save(fig,path):
 def _csv(path):
     with Path(path).open("r",encoding="utf-8",newline="") as s:return list(csv.DictReader(s))
 def plot_run_cv(run,cfg):
-    run=Path(run);path=run/"cv.csv"
+    run=Path(run);path=run/"tables"/"cv.csv"
     if not path.is_file():return None
     rows=_csv(path);manifest=json.loads((run/"manifest.json").read_text());metric=manifest["cv"]["metric"];mean=f"{metric}_mean_ps";std=f"{metric}_std_ps";rows=sorted(rows,key=lambda r:float(r.get(mean,"inf")));x=np.arange(len(rows));v=np.asarray([float(r[mean]) for r in rows]);e=np.asarray([float(r[std]) for r in rows]);pr=np.asarray([str(r.get("pruned","")).lower() in {"true","1"} for r in rows])
     with plot_context(cfg):
@@ -26,13 +26,13 @@ def plot_run_cv(run,cfg):
         if np.any(pr):ax.scatter(x[pr],v[pr],marker=cfg["cv"]["pruned_marker"],label="pruned")
         ax.set_xticks(x);ax.set_xticklabels([r["candidate_id"] for r in rows],rotation=float(cfg["cv"]["label_rotation"]),ha="right");ax.set_ylabel(f"Development CV {metric.upper()} [ps]");ax.legend();_finish(ax,cfg);return _save(fig,output_path(run/"plots","cv",cfg))
 def plot_run_blind(run,cfg):
-    run=Path(run);path=run/"pred.npz"
+    run=Path(run);path=run/"artifacts"/"pred.npz"
     if not path.is_file():return None
     with np.load(path) as d:corrected=np.asarray(d["corrected_ps"]);led=np.asarray(d["led_residual_ps"])
     with plot_context(cfg):
         fig,ax=plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]));ax.hist(led,bins=int(cfg["histogram"]["bins"]),alpha=float(cfg["histogram"]["alpha"]),label="LED");ax.hist(corrected,bins=int(cfg["histogram"]["bins"]),alpha=float(cfg["histogram"]["alpha"]),label="ML corrected");ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg);return _save(fig,output_path(run/"plots","blind",cfg))
 def plot_run_xai(run,cfg):
-    run=Path(run);path=run/"xai.npz"
+    run=Path(run);path=run/"artifacts"/"xai.npz"
     if not path.is_file():return None
     with np.load(path) as d:time=np.asarray(d["time_ps"],float)/1000.0;importance=np.asarray(d["importance_ps"],float)
     with plot_context(cfg):

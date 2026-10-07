@@ -78,29 +78,38 @@ results/<folder>/
 ├── manifest.json
 ├── config.json
 ├── plots.json
-├── runs.csv
+├── tables/
+│   └── runs.csv
 ├── preprocessing/
 │   ├── control/<mode>/
+│   │   ├── plots/
+│   │   └── tables/
 │   ├── development/<mode>/
+│   │   ├── plots/
+│   │   └── tables/
 │   └── blind/<mode>/
+│       ├── plots/
+│       └── tables/
 ├── artifacts/<mode>/<window>/...
 ├── <mode>/<window>/<model>/
 │   ├── manifest.json
 │   ├── config.json
-│   ├── folds.csv
-│   ├── cv.csv
 │   ├── best.json
 │   ├── final_fit.json
 │   ├── blind.json
-│   ├── pred.npz
 │   ├── bootstrap.json
-│   ├── bootstrap.npz
-│   ├── xai.npz
+│   ├── tables/
+│   │   ├── folds.csv
+│   │   └── cv.csv
+│   ├── artifacts/
+│   │   ├── pred.npz
+│   │   ├── bootstrap.npz
+│   │   └── xai.npz
 │   ├── model/
 │   └── plots/
 └── report/
-    ├── tables/
-    └── <mode>/<window>/
+    ├── tables/<mode>/<window>/
+    └── plots/<mode>/<window>/
 ```
 
 `pred.npz` persists blind event IDs explicitly for model-to-model alignment.
@@ -123,4 +132,4 @@ Old fixed-validation and replica result schemas are intentionally unsupported. T
 
 Reporting consumes persisted numeric artifacts and produces validation/blind summaries, model-output correlations aligned by blind event ID, paired CTR/RMSE model-difference matrices with paired event bootstrap, blind RMSE-vs-CTR plots, validation-vs-blind plots, and window comparisons.
 
-Window comparison winners are selected from development CV only; their blind performance is then displayed. CTR/RMSE bar annotations use integer-rounded picoseconds. XAI is grouped temporal occlusion and stores numeric importance separately from its plot.
+Window comparison winners are selected from development CV only; their blind performance is then displayed together with the LED reference baseline. Aggregate blind RMSE-vs-CTR comparison plots also include the LED reference. CTR/RMSE bar annotations use integer-rounded picoseconds. XAI is grouped temporal occlusion and stores numeric importance separately from its plot.

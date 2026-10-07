@@ -16,15 +16,32 @@ def _atomic_npz(path,**arrays):
     finally:
         if os.path.exists(tmp):os.unlink(tmp)
 class RunStore:
-    def __init__(self,root):self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True)
+    def __init__(self,root):
+        self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True);self._organize_existing_layout()
+    def _organize_existing_layout(self):
+        moves={
+            "folds.csv":self.root/"tables"/"folds.csv",
+            "cv.csv":self.root/"tables"/"cv.csv",
+            "pred.npz":self.root/"artifacts"/"pred.npz",
+            "bootstrap.npz":self.root/"artifacts"/"bootstrap.npz",
+            "xai.npz":self.root/"artifacts"/"xai.npz",
+        }
+        for name,destination in moves.items():
+            source=self.root/name
+            if source.is_file() and not destination.exists():
+                destination.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(source),str(destination))
     @property
     def manifest_path(self):return self.root/"manifest.json"
     @property
     def state_path(self):return self.root/"state.json"
     @property
-    def folds_path(self):return self.root/"folds.csv"
+    def tables_dir(self):return self.root/"tables"
     @property
-    def cv_path(self):return self.root/"cv.csv"
+    def artifacts_dir(self):return self.root/"artifacts"
+    @property
+    def folds_path(self):return self.tables_dir/"folds.csv"
+    @property
+    def cv_path(self):return self.tables_dir/"cv.csv"
     @property
     def candidates_path(self):return self.root/"candidates.json"
     @property
@@ -36,11 +53,11 @@ class RunStore:
     @property
     def bootstrap_path(self):return self.root/"bootstrap.json"
     @property
-    def bootstrap_draws_path(self):return self.root/"bootstrap.npz"
+    def bootstrap_draws_path(self):return self.artifacts_dir/"bootstrap.npz"
     @property
-    def predictions_path(self):return self.root/"pred.npz"
+    def predictions_path(self):return self.artifacts_dir/"pred.npz"
     @property
-    def xai_path(self):return self.root/"xai.npz"
+    def xai_path(self):return self.artifacts_dir/"xai.npz"
     @property
     def model_dir(self):return self.root/"model"
     @property
