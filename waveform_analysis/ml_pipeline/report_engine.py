@@ -15,6 +15,7 @@ import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from .artifact_naming import prefer_existing, replica_tag, seed_tag
 from .common import atomic_json, canonical_hash, write_csv
 from .config import BatchConfig
 from .reporting_config import formulation_style, load_reporting_config, plot_style, rc_params
@@ -738,12 +739,20 @@ def _load_model_output(record, cache):
     key = record["source_run"], record["seed"], record["candidate_id"]
     if key in cache:
         return cache[key]
-    residual_path = Path(record["source_run"]) / "blind_residuals" / f"seed_{int(record['seed'])}_{record['candidate_id']}.npz"
+    source_run = Path(record["source_run"])
+    residual_path = prefer_existing(
+        source_run / "residuals" / f"{seed_tag(record['seed'])}_{record['candidate_id']}.npz",
+        source_run / "blind_residuals" / f"seed_{int(record['seed'])}_{record['candidate_id']}.npz",
+    )
     if not residual_path.is_file() or not record["shared_replica"]:
         return None
     with np.load(residual_path) as data:
         corrected = np.asarray(data["corrected_ps"], float)
-    reference_path = Path(record["shared_replica"]) / "blind_reference.npz"
+    shared_replica = Path(record["shared_replica"])
+    reference_path = prefer_existing(
+        shared_replica / "blind.npz",
+        shared_replica / "blind_reference.npz",
+    )
     if not reference_path.is_file():
         return None
     with np.load(reference_path) as data:
@@ -877,13 +886,17 @@ def _copy_preprocessing_diagnostics(source_dir, destination_dir):
 
 
 def _replica_output_path(record):
-    return (
-        Path(record["source_run"])
+    source_run = Path(record["source_run"])
+    return prefer_existing(
+        source_run
+        / "predictions"
+        / f"{replica_tag(record['replica_index'], record['seed'])}_{record['candidate_id']}.npz",
+        source_run
         / "replica_outputs"
         / (
             f"replica_{int(record['replica_index']):03d}_"
             f"seed_{int(record['seed'])}_{record['candidate_id']}.npz"
-        )
+        ),
     )
 
 
