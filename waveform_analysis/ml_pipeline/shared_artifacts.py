@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .artifact_naming import prefer_existing, replica_tag
 from .common import atomic_json, canonical_hash
 from .splits import FixedValidationSplit, ReplicaSplit, make_fixed_validation_split, make_replica_split
 from .stats import ctr_estimate, rmse_ps
@@ -118,7 +119,7 @@ class ExperimentArtifactStore:
                 f"Fixed model-selection split violates minimum_events_per_split={minimum}"
             )
 
-        split_path = sampling_dir / "fixed_validation.npz"
+        split_path = prefer_existing(sampling_dir / "validation.npz", sampling_dir / "fixed_validation.npz")
         if split_path.is_file():
             with np.load(split_path) as data:
                 saved = FixedValidationSplit(
@@ -190,10 +191,9 @@ class ExperimentArtifactStore:
         if set(map(int, split.test)) & set(map(int, fixed.split.validation)):
             raise AssertionError("fixed validation must never enter replica blind evaluation")
 
-        replica_dir = (
-            fixed.directory
-            / "replicas"
-            / f"replica_{int(replica_index):03d}_seed_{int(split.seed)}"
+        replica_dir = prefer_existing(
+            fixed.directory / "replicas" / replica_tag(replica_index, split.seed),
+            fixed.directory / "replicas" / f"replica_{int(replica_index):03d}_seed_{int(split.seed)}",
         )
         replica_dir.mkdir(parents=True, exist_ok=True)
         split_path = replica_dir / "split.npz"
@@ -219,7 +219,7 @@ class ExperimentArtifactStore:
         target = np.asarray(target, dtype=np.float64)
         led_ps = np.asarray(target[split.test], dtype=np.float64)
         event_index = np.asarray(dataset.event_index[split.test], dtype=np.int64)
-        reference_path = replica_dir / "blind_reference.npz"
+        reference_path = prefer_existing(replica_dir / "blind.npz", replica_dir / "blind_reference.npz")
         if reference_path.is_file():
             with np.load(reference_path) as data:
                 saved_event_index = np.asarray(data["event_index"], dtype=np.int64)
@@ -230,7 +230,10 @@ class ExperimentArtifactStore:
             _atomic_npz(reference_path, event_index=event_index, led_ps=led_ps)
 
         fit_identity = canonical_hash(config["fit"])
-        baseline_path = replica_dir / f"baseline_{fit_identity[:16]}.json"
+        baseline_path = prefer_existing(
+            replica_dir / f"base_{fit_identity[:16]}.json",
+            replica_dir / f"baseline_{fit_identity[:16]}.json",
+        )
         if baseline_path.is_file():
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         else:
