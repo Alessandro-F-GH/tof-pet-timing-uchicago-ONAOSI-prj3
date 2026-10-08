@@ -1,5 +1,5 @@
 from __future__ import annotations
-import csv, hashlib, json, os, tempfile
+import csv, hashlib, json, os, tempfile, time
 from pathlib import Path
 from typing import Any
 import numpy as np
@@ -29,6 +29,16 @@ def channel_limits(value:Any)->np.ndarray:
         raise ValueError("vertical_scale_limit_mV must be [low, high] or two detector [low, high] pairs")
     return a
 
+def _replace_with_retry(source:Path,destination:Path)->None:
+    # On Windows, transient file locks can briefly prevent atomic replacement.
+    for attempt in range(5):
+        try:
+            os.replace(source,destination)
+            return
+        except PermissionError:
+            if attempt==4:raise
+            time.sleep(0.1*(2**attempt))
+
 def atomic_json(path:Path,value:Any)->None:
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     payload=json.dumps(json_safe(value),indent=2,sort_keys=True,allow_nan=False)+"\n"
@@ -36,7 +46,7 @@ def atomic_json(path:Path,value:Any)->None:
     try:
         with os.fdopen(fd,"w",encoding="utf-8") as stream:
             stream.write(payload);stream.flush();os.fsync(stream.fileno())
-        os.replace(tmp,path)
+        _replace_with_retry(tmp,path)
     finally:
         if os.path.exists(tmp):os.unlink(tmp)
 
@@ -49,6 +59,6 @@ def write_csv(path:Path,rows:list[dict[str,Any]])->None:
         with os.fdopen(fd,"w",encoding="utf-8",newline="") as stream:
             w=csv.DictWriter(stream,fieldnames=fields);w.writeheader();w.writerows(rows)
             stream.flush();os.fsync(stream.fileno())
-        os.replace(tmp,path)
+        _replace_with_retry(tmp,path)
     finally:
         if os.path.exists(tmp):os.unlink(tmp)
