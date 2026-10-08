@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 
-DATASET_FORMAT_VERSION=32
+DATASET_FORMAT_VERSION=33
 
 @dataclass(frozen=True)
 class InputTransform:
@@ -13,7 +13,9 @@ class InputTransform:
     maximum: np.ndarray
     def transform(self,values):
         x=np.asarray(values,dtype=np.float32)
-        return ((x-self.minimum)/(self.maximum-self.minimum)).astype(np.float32)
+        normalized=((x-self.minimum)/(self.maximum-self.minimum)).astype(np.float32)
+        # Clip at each detector's configured physical amplitude limits.
+        return np.clip(normalized,0.0,1.0,out=normalized)
     def inverse(self,values):
         x=np.asarray(values,dtype=np.float32)
         return (x*(self.maximum-self.minimum)+self.minimum).astype(np.float32)
