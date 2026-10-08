@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import numpy as np
-from waveform_analysis.ml_pipeline.splits import make_cv_split
-from waveform_analysis.ml_pipeline.validation import best_complete_candidate,evaluate_candidate,pruning_decision
+from waveform_analysis.data.splits import make_cv_split
+from waveform_analysis.engine.validation import best_complete_candidate,evaluate_candidate,pruning_decision
 def row(fold,value,led=100.):return {"candidate_id":"c","fold_id":fold,"ctr_ps":float(value),"rmse_ps":float(value+10),"led_ctr_ps":float(led),"led_rmse_ps":float(led+10)}
 def pruning(**kw):
     v={"enabled":True,"startup_complete_candidates":2,"min_folds_before_prune":1,"max_degradation_ps":5.0,"prune_if_worse_than_led":False,"led_max_degradation_ps":0.0};v.update(kw);return v

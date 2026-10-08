@@ -6,13 +6,13 @@ import pytest
 
 matplotlib.use("Agg")
 
-from waveform_analysis.ml_pipeline.plotting import _xai_one_ns, plot_run_xai
-from waveform_analysis.ml_pipeline.xai import temporal_occlusion_importance
+from waveform_analysis.reporting.plotting import _xai_one_ns, plot_run_xai
+from waveform_analysis.engine.xai import temporal_occlusion_importance
 
 
 class DummyDataset:
     def __init__(self):
-        from waveform_analysis.ml_pipeline.dataset import InputTransform
+        from waveform_analysis.data.dataset import InputTransform
         self.n_events = 3
         self.event_index = np.arange(3, dtype=np.int64)
         self.energy_windows = np.array([

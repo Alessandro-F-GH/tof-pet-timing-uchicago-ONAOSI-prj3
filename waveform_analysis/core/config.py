@@ -602,14 +602,6 @@ def public_batch_config(batch: BatchConfig) -> dict[str, Any]:
     }
 
 
-def load_config(
-    path: str | Path, project_root: str | Path | None = None
-) -> dict[str, Any]:
-    raise ConfigError(
-        "single-study configs were removed; use a batch config with control/development/blind roles"
-    )
-
-
 # Retain serialized identities while legacy imports resolve to this module.
 from waveform_analysis.core.compat import (
     preserve_legacy_identity as _preserve_legacy_identity,

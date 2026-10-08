@@ -21,35 +21,13 @@ class LinearRidgeArtifact:
     metadata: dict[str, Any]
 
 
-def finite_grid_values(raw, default):
-    if raw is None:
-        return list(default)
-    if isinstance(raw, dict):
-        kind = str(raw.get("type", "")).strip().lower()
-        if kind == "fixed":
-            return [raw["value"]]
-        if kind == "categorical":
-            return list(raw["choices"])
-        raise ValueError(
-            "linear Ridge candidates require a finite fixed/categorical alpha grid"
-        )
-    if isinstance(raw, (list, tuple, np.ndarray)):
-        return list(raw)
-    return [raw]
+def candidates(config: dict[str, Any]) -> list[dict[str, float]]:
+    """Inspect the effective lambda grid; RidgeCV selects it internally.
 
-
-def candidates(config):
-    parameters = config.get("parameters", {})
-    alphas = [
-        float(value)
-        for value in finite_grid_values(
-            parameters.get("ridge_alpha"),
-            [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0],
-        )
-    ]
-    if any((not np.isfinite(alpha)) or alpha <= 0 for alpha in alphas):
-        raise ValueError("linear Ridge ridge_alpha values must be finite and positive")
-    return [{"ridge_alpha": alpha} for alpha in alphas]
+    This callback satisfies ModelSpec's shared interface and never launches
+    an outer candidate search for the two linear estimators.
+    """
+    return [{"ridge_alpha": alpha} for alpha in ridge_cv_config(config).alphas]
 
 
 def transform_parameters(params, config):

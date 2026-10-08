@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from waveform_analysis.ml_pipeline.feature_cache import (
+from waveform_analysis.data.feature_cache import (
     prepare_frozen_features,
     prepare_frozen_transform,
 )
-from waveform_analysis.ml_pipeline.models import get_model
+from waveform_analysis.models import get_model
 
 
 class DummyDataset:

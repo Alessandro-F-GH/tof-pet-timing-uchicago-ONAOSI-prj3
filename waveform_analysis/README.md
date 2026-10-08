@@ -2,7 +2,7 @@
 
 Implementation packages are `core/`, `signal/`, `data/`, `models/`, `engine/`,
 and `reporting/`. Existing `ml_pipeline` imports remain compatible. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the full migration map, typed interfaces,
+[ARCHITECTURE.md](ARCHITECTURE.md) for the package layout, typed interfaces,
 pure NumPy timing/baseline APIs and exact numerical regression checks.
 
 The pipeline uses three explicit scientific dataset roles:
@@ -41,16 +41,15 @@ Model-space settings:
 `cv: null` selects efficient leave-one-out CV; an integer >= 2 selects sklearn
 K-fold CV. `alphas.low` and `alphas.high` are inclusive endpoints;
 `alphas.num` is the number of logarithmically spaced values. Explicit lists
-remain supported for compatibility. Defaults contain 23 logarithmically spaced positive alphas from
-1e-8 to 1e3. This intentionally changes lambda selection from CTR-based outer
+remain supported for compatibility. The bundled model spaces specify 50 logarithmically spaced positive alphas from
+1e-8 to 1e3. Direct API calls that omit the grid use the typed 23-value fallback. This intentionally changes lambda selection from CTR-based outer
 validation to MSE on the estimator's unmodified predictions. Output clipping,
 preprocessing, blind CTR/RMSE, bootstrap and XAI keep their existing definitions.
 The independent control/blind populations never become Ridge training events.
 
-Legacy `parameters.ridge_alpha` fixed/categorical grids are migrated;
-continuous ranges become 23 linear/logarithmic grid points. Obsolete outer
-optimization/solver settings are ignored for these two models. New `ridge_cv`
-settings take precedence. Ridge-only batches may omit `protocol.cross_validation`;
+`ridge_cv` is the canonical lambda configuration. The parser also accepts
+`parameters.ridge_alpha` grids/ranges as input aliases; `ridge_cv` takes
+precedence. Outer optimization/solver settings do not apply to these two models. Ridge-only batches may omit `protocol.cross_validation`;
 mixed batches retain it for the other models.
 
 Ridge outputs retain `best.json`, `final_fit.json`, saved models and blind
@@ -58,12 +57,11 @@ artifacts. Outer validation fields are null and no outer fold/candidate table
 is generated. `report/tables/ridge_cv.csv` records lambda, internal MSE in ps²
 and full development training count. Validation tables/plots and development
 CV winner comparisons include only models using outer CV; Ridge window plots
-show every window separately. Existing Ridge runs rebuild once; alpha-grid
-changes invalidate their fit, while unused outer-CV changes do not.
+show every window separately. Alpha-grid changes invalidate the Ridge fit, while unused outer-CV changes do not.
 
 ## Development CV and pruning
 
-For models other than the two linear Ridge variants, every `(mode, window)` development population gets one deterministic K-fold definition derived from the single batch seed. Every model and every candidate uses the same folds in the same order. CTR and RMSE are always computed, together with LED CTR/RMSE on the exact same validation events.
+For models other than the two linear Ridge variants, every `(mode, window)` development population gets one deterministic K-fold definition derived from the single batch seed. Every participating model and candidate uses the same folds in the same order. CTR and RMSE are always computed, together with LED CTR/RMSE on the exact same validation events.
 
 Pruning is controlled by `protocol.cross_validation.pruning`. Startup candidates complete all folds. Later candidates are compared only on folds already completed by that candidate. LED comparison is evaluated first; then, if available, the best fully evaluated incumbent is compared on those same fold IDs. Lower is better and pruning uses a strict `degradation_ps > tolerance_ps` rule, so equality does not prune. Tolerances may be scalar or fold-count mappings.
 
@@ -108,10 +106,12 @@ Plot styling is centralized in `config/plots/default.json`; scientific threshold
 
 ## Commands
 
+From the repository root:
+
 ```bash
-python -m waveform_analysis.cli check-batch --config config/batches/test_ridge.json
-python -m waveform_analysis.cli batch --config config/batches/test_ridge.json
-python -m waveform_analysis.cli plots --results results/FBK/test_ridge_48V_R1_R2
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_ridge.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_ridge.json
+python -m waveform_analysis.cli plots --results waveform_analysis/results/FBK/test_ridge_48V_R1_R2
 ```
 
 The batch command prints a `KEEP` / `RESUME` / `RUN` / `REBUILD` execution plan before destructive changes.
@@ -137,12 +137,15 @@ results/<folder>/
 │       └── tables/
 ├── artifacts/<mode>/<window>/...
 ├── <mode>/<window>/<model>/
-│   ├── manifest.json
-│   ├── config.json
-│   ├── best.json
-│   ├── final_fit.json
-│   ├── blind.json
-│   ├── bootstrap.json
+│   ├── metadata/
+│   │   ├── manifest.json
+│   │   ├── state.json
+│   │   ├── config.json
+│   │   ├── candidates.json
+│   │   ├── best.json
+│   │   ├── final_fit.json
+│   │   ├── blind.json
+│   │   └── bootstrap.json
 │   ├── tables/
 │   │   ├── folds.csv
 │   │   └── cv.csv
@@ -158,6 +161,9 @@ results/<folder>/
 ```
 
 `pred.npz` persists blind event IDs explicitly for model-to-model alignment.
+`folds.csv`, `cv.csv` and `candidates.json` belong to outer-CV runs;
+RidgeCV records lambda selection in `metadata/best.json` and the report table
+`report/tables/ridge_cv.csv`.
 
 ## Resume and dependency invalidation
 
@@ -171,7 +177,7 @@ Changes are scoped:
 - XAI-only changes reuse CV, final selection and blind predictions;
 - plot-only changes regenerate plots/reports from persisted results only.
 
-Old fixed-validation and replica result schemas are intentionally unsupported. There are no compatibility readers or legacy execution modes.
+Batch results must use the supported schema checked by the dependency planner.
 
 ## Reporting
 
@@ -201,7 +207,7 @@ plot sections (`cv`, `histogram`, `scatter`, `bar`, `heatmap`, `xai`,
 `preprocessing`). `formulations` and `reference` set comparison colours;
 `preprocessing.detector_colors` and `xai.detector_colors` set waveform colours.
 The style is applied locally and does not modify global Matplotlib settings.
-Older configuration files remain supported through defaults for new options.
+Omitted optional style settings receive defaults.
 
 For publication, set `output.format` to `pdf` or `svg`; PDF embeds TrueType fonts.
 Set `output.dpi` for PNG resolution, and `output.bbox_inches` / `pad_inches` for
@@ -209,7 +215,7 @@ export margins. To restyle existing model/report figures, edit the result root's
 `plots.json` and run:
 
 ```bash
-python -m waveform_analysis.cli plots --results results/FBK/test_ridge_48V_R1_R2
+python -m waveform_analysis.cli plots --results waveform_analysis/results/FBK/test_ridge_48V_R1_R2
 ```
 
 This regenerates plots from saved numerical artifacts without training. Frozen

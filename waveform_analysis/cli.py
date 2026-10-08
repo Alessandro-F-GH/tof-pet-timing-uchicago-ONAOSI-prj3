@@ -20,7 +20,7 @@ def _config_path(path: str | Path) -> Path:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m waveform_analysis.cli",
-        description="TOF-PET control → development CV → blind evaluation pipeline",
+        description="TOF-PET control → development model selection → blind evaluation pipeline",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser(

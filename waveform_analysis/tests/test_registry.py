@@ -1,6 +1,6 @@
 import unittest
 
-from waveform_analysis.ml_pipeline.models import get_model, model_names
+from waveform_analysis.models import get_model, model_names
 
 
 class RegistryTests(unittest.TestCase):
@@ -21,11 +21,11 @@ class RegistryTests(unittest.TestCase):
             },
         )
 
-    def test_every_model_uses_training_derived_constant_sample_filter(self):
+    def test_architecture_specific_temporal_grid_policy(self):
+        preserving = {"shared_cnn1d", "independent_cnn1d", "locally_connected_mlp"}
         for name in model_names():
-            self.assertFalse(
-                get_model(name).preserve_temporal_grid,
-                f"{name} bypasses the constant-sample filter",
+            self.assertEqual(
+                get_model(name).preserve_temporal_grid, name in preserving, name
             )
 
 

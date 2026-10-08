@@ -116,7 +116,7 @@ def _parameter_specs(space: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def optimization_config(space: dict[str, Any]) -> OptimizationConfig:
     raw = space.get("optimization")
     if not isinstance(raw, dict):
-        raise ValueError("Every model space must define an optimization object")
+        raise ValueError("Outer-search model spaces must define an optimization object")
     strategy = str(raw.get("strategy", "")).strip().lower()
     if strategy not in SEARCH_STRATEGIES:
         raise ValueError(f"optimization.strategy must be one of {SEARCH_STRATEGIES}")

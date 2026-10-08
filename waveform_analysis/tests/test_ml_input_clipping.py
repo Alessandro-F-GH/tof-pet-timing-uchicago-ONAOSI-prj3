@@ -1,6 +1,6 @@
 import numpy as np
 
-from waveform_analysis.ml_pipeline.dataset import InputTransform
+from waveform_analysis.data.dataset import InputTransform
 
 
 def test_detector_specific_clipping_and_inverse():

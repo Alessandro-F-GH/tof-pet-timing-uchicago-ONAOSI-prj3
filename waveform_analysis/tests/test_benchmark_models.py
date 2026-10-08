@@ -3,20 +3,20 @@ import inspect
 import numpy as np
 import torch
 
-from waveform_analysis.ml_pipeline.models import get_model, model_names
-from waveform_analysis.ml_pipeline.models._cnn1d_common import IndependentCNN1D, SharedCNN1D
-from waveform_analysis.ml_pipeline.models.direct_linear_ridge import candidates as direct_linear_ridge_candidates
-from waveform_analysis.ml_pipeline.models.direct_minirocket import candidates as direct_minirocket_candidates
-from waveform_analysis.ml_pipeline.models.direct_mlp import DirectPairMLP
-from waveform_analysis.ml_pipeline.models.shared_linear_ridge import candidates as shared_linear_ridge_candidates
-from waveform_analysis.ml_pipeline.models.shared_minirocket import (
+from waveform_analysis.models import get_model, model_names
+from waveform_analysis.models.neural.cnn1d_common import IndependentCNN1D, SharedCNN1D
+from waveform_analysis.models.linear.direct_linear_ridge import candidates as direct_linear_ridge_candidates
+from waveform_analysis.models.kernel.direct_minirocket import candidates as direct_minirocket_candidates
+from waveform_analysis.models.neural.direct_mlp import DirectPairMLP
+from waveform_analysis.models.linear.shared_linear_ridge import candidates as shared_linear_ridge_candidates
+from waveform_analysis.models.kernel.shared_minirocket import (
     SharedMiniRocketTransformArtifact,
     candidates as shared_minirocket_candidates,
     fit_transform as shared_minirocket_fit_transform,
     transform as shared_minirocket_transform,
 )
-from waveform_analysis.ml_pipeline.models.spec import FeatureTransformSpec
-from waveform_analysis.ml_pipeline.train import FeatureTransformCache
+from waveform_analysis.models.spec import FeatureTransformSpec
+from waveform_analysis.engine.train import FeatureTransformCache
 
 
 def test_benchmark_registry_contains_all_model_families():
@@ -107,7 +107,7 @@ def test_shared_minirocket_transform_is_exactly_antisymmetric():
             return np.asarray(x, dtype=np.float64)[:, 0, :]
 
     class IdentityScaler:
-        def transform(self, x):
+        def transform(self, x, *, copy=True):
             return np.asarray(x, dtype=np.float64)
 
     artifact = SharedMiniRocketTransformArtifact(
@@ -128,7 +128,7 @@ def test_shared_minirocket_transform_is_exactly_antisymmetric():
 
 
 def test_linear_ridge_variants_share_same_alpha_grid_contract():
-    config = {"parameters": {"ridge_alpha": [0.1, 1.0, 10.0]}}
+    config = {"ridge_cv": {"alphas": {"low": 0.1, "high": 10.0, "num": 3}}}
     expected = [
         {"ridge_alpha": 0.1},
         {"ridge_alpha": 1.0},

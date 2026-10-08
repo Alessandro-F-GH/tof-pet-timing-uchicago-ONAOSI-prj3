@@ -1,4 +1,4 @@
-"""Dense scorer architecture, artifact and legacy candidate factory."""
+"""Dense scorer architecture, fitted artifact and candidate inspection."""
 
 from __future__ import annotations
 

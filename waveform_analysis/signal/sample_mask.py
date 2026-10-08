@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from waveform_analysis.data.view import waveform_view
-
 SAMPLE_CONSTANT_FRACTION = 0.99
 
 
@@ -49,21 +47,6 @@ def training_sample_mask(
             "check the prepared waveform inputs"
         )
     return np.asarray(keep, dtype=bool)
-
-
-def dataset_training_sample_mask(
-    dataset,
-    mode: str,
-    *,
-    min_constant_fraction: float = SAMPLE_CONSTANT_FRACTION,
-) -> np.ndarray:
-    """Compute the shared sample mask from the dataset training split only."""
-    training = np.asarray(dataset.training, dtype=np.int64)
-    train_x = waveform_view(dataset, mode, training).materialize()
-    return training_sample_mask(
-        train_x,
-        min_constant_fraction=min_constant_fraction,
-    )
 
 
 def apply_sample_mask(pair: np.ndarray, sample_mask: np.ndarray | None) -> np.ndarray:

@@ -89,7 +89,7 @@ def test_ridge_only_batch_does_not_require_outer_cv(tmp_path):
     raw["protocol"]["preprocessing_config"] = str(
         (source.parent / raw["protocol"]["preprocessing_config"]).resolve()
     )
-    del raw["protocol"]["cross_validation"]
+    raw["protocol"].pop("cross_validation", None)
     path = tmp_path / "batch.json"
     path.write_text(json.dumps(raw))
     batch = load_batch_config(path)
@@ -184,7 +184,11 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         c = deepcopy(runs[0])
         c["run_id"] = c["run_id"].replace("direct_linear_ridge", "direct_mlp")
         c["output_dir"] = str(tmp_path / c["run_id"])
-        c["cross_validation"] = deepcopy(resolved.protocol["cross_validation"])
+        c["cross_validation"] = deepcopy(
+            load_batch_config(source.parent / "benchmark_FBK.json").protocol[
+                "cross_validation"
+            ]
+        )
         c["cross_validation"]["folds"] = 2
         c["cross_validation"]["pruning"]["enabled"] = False
         c["model"] = {
@@ -309,3 +313,15 @@ def test_log_spaced_alpha_range_matches_explicit_grid():
 def test_invalid_log_spaced_alpha_range(limits):
     with pytest.raises(ValueError):
         ridge_cv_config({"ridge_cv": {"alphas": limits}})
+
+
+@pytest.mark.parametrize("name", ["direct_linear_ridge", "shared_linear_ridge"])
+def test_candidate_inspection_uses_effective_ridgecv_grid(name):
+    spec = get_model(name)
+    for space in (
+        {},
+        {"ridge_cv": {"alphas": {"low": 0.001, "high": 100.0, "num": 7}}},
+    ):
+        assert [
+            candidate["ridge_alpha"] for candidate in spec.candidates(space)
+        ] == list(ridge_cv_config(space).alphas)

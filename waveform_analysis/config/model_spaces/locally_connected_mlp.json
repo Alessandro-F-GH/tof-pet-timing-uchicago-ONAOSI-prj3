@@ -30,7 +30,7 @@
     },
     "max_correction_ps": {
       "type": "fixed",
-      "value": [500]
+      "value": 500
     },
     "learning_rate": {
       "type": "categorical",

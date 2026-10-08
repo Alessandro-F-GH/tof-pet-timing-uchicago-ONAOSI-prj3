@@ -2,25 +2,26 @@ import unittest
 
 import numpy as np
 
-from waveform_analysis.ml_pipeline.models.locally_connected_mlp import (
+from waveform_analysis.models.neural.locally_connected_mlp import (
     LocallyConnected1D,
     SharedLocallyConnectedScorer,
     candidates as locally_connected_candidates,
 )
-from waveform_analysis.ml_pipeline.models.mlp import (
-    MLPArtifact,
-    SharedScorerMLP,
+from waveform_analysis.models.neural.dense import MLPArtifact
+from waveform_analysis.models.neural.antisymmetric_mlp import (
+    AntisymmetricMLP,
     candidates as mlp_candidates,
+    fit as fit_mlp,
     predict as predict_mlp,
 )
-from waveform_analysis.ml_pipeline.models.onishi_cnn import (
+from waveform_analysis.models.neural.onishi_cnn import (
     OnishiCNNArtifact,
     OnishiPairedCNN,
     candidates as onishi_candidates,
     explain as explain_onishi_cnn,
     predict as predict_onishi_cnn,
 )
-from waveform_analysis.ml_pipeline.view import corrected_timing_residual
+from waveform_analysis.data.view import corrected_timing_residual
 
 
 class ActiveModelTests(unittest.TestCase):
@@ -28,7 +29,7 @@ class ActiveModelTests(unittest.TestCase):
         rng = np.random.default_rng(16)
         pair = rng.normal(size=(8, 2, 24)).astype(np.float32)
         artifact = MLPArtifact(
-            SharedScorerMLP(24, [8, 4], "silu"),
+            AntisymmetricMLP(24, [8, 4], "silu"),
             "cpu",
             {},
         )
@@ -78,8 +79,18 @@ class ActiveModelTests(unittest.TestCase):
                 "device": "cpu",
             },
         }
-        self.assertEqual(config["training"]["momentum"], 0.9)
-
+        rng = np.random.default_rng(401)
+        artifact = fit_mlp(
+            mlp_candidates(config)[0],
+            rng.normal(size=(16, 2, 24)).astype(np.float32),
+            rng.normal(size=16),
+            seed=1,
+            config=config,
+        )
+        self.assertEqual(artifact.metadata["optimizer"], "sgd_nesterov")
+        self.assertTrue(artifact.metadata["nesterov"])
+        self.assertEqual(artifact.metadata["momentum"], 0.9)
+        self.assertEqual(artifact.metadata["training_loss"], "rmse")
 
     def test_locally_connected_layer_has_unshared_position_specific_kernels(self):
         import torch
@@ -199,8 +210,7 @@ class ActiveModelTests(unittest.TestCase):
             }
         )
         conv_layers = [
-            layer for layer in model.features
-            if isinstance(layer, torch.nn.Conv2d)
+            layer for layer in model.features if isinstance(layer, torch.nn.Conv2d)
         ]
         self.assertEqual(
             [layer.kernel_size for layer in conv_layers],

@@ -2,7 +2,7 @@
 
 This directory contains the LaTeX source for the waveform-based TOF-PET timing report.
 
-The report follows the final waveform-analysis code and is centered on one model comparison:
+The manuscript describes a specific two-model experiment:
 
 1. **Proposed model:** detector-shared antisymmetric MLP, with prediction `g(s1) - g(s2)`.
 2. **Reference model:** paired Onishi CNN, using the fixed literature-inspired architecture implemented as `onishi_cnn`.
@@ -27,6 +27,12 @@ Structure:
 - `figures/`: report figures.
 - `tables/`: LaTeX table fragments.
 
-The final paper model runs should come from `experiment.type = model_study`. MLP and Onishi runs are produced independently and combined with `compare-runs`, which checks compatible windows/voltage sets and aligns persisted blind-test event identities before computing model-output correlations.
+Keep figures and tables tied to the same frozen study outputs. The split,
+selection, estimator and uncertainty choices described in the manuscript belong
+to that experiment and must not be changed merely to match software defaults.
 
-The standalone `threshold_scan` experiment belongs only to the antisymmetric MLP and is treated as a supporting sensitivity study rather than as part of the main architecture comparison.
+For executable batch commands and configuration, use
+[the waveform software README](../waveform_analysis/README.md). Batch reporting
+aligns saved blind-event identities for model correlations and paired bootstrap
+comparisons. LED-threshold sensitivity is a separate supporting analysis, not
+an option to select parameters with blind events in the production pipeline.

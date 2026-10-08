@@ -4,13 +4,13 @@ This section summarizes the analysis path shared by the waveform-based machine-l
 
 \subsection{Data partitioning}
 
-The ROOT event population is split before any fitted event selection into a permanent development population and a permanent blind-test population. In the current default profile, \(40\%\) of the events are assigned to the blind-test split and \(60\%\) to development. The development population is then split with a validation fraction of \(20\%\), corresponding approximately to \(48\%\) training, \(12\%\) validation, and \(40\%\) blind test of the original population.
+The ROOT event population is split before any fitted event selection into a permanent development population and a permanent blind-test population. In the configured study partition, \(40\%\) of the events are assigned to the blind-test split and \(60\%\) to development. The development population is then split with a validation fraction of \(20\%\), corresponding approximately to \(48\%\) training, \(12\%\) validation, and \(40\%\) blind test of the original population.
 
 Fitted selection quantities are determined without using the blind-test population. The same persisted split identities are reused by the dense MLP, locally connected MLP, and Onishi model studies, and the run-comparison utility checks the blind event identities before model-output correlations are computed.
 
 \reportfigure
     {figures/data_split.pdf}
-    {Dataset partitioning used by the final waveform pipeline. The permanent blind-test population is isolated before fitted selection and model development.}
+    {Dataset partitioning used in this study. The permanent blind-test population is isolated before fitted selection and model development.}
     {fig:data-split}
 
 \subsection{Event selection}
@@ -33,7 +33,7 @@ All fitted selection cuts are derived from the development population and then f
 
 \subsection{Native-time waveform preprocessing}
 
-Only the waveform family required by the selected experiment mode is materialized. Waveforms are decoded and oriented consistently, clamped to detector-specific physical amplitude limits, and cropped around the main trigger while preserving the native acquisition-time grid. The current pipeline applies no denoising and no event-wise baseline subtraction.
+Only the waveform family required by the selected experiment mode is materialized. Waveforms are decoded and oriented consistently, clamped to detector-specific physical amplitude limits, and cropped around the main trigger while preserving the native acquisition-time grid. The reported analysis applies no denoising and no event-wise baseline subtraction.
 
 For machine learning, amplitudes are mapped globally to \([0,1]\) using the configured detector-specific physical limits. This normalization is fixed by configuration rather than estimated from individual events or from the training population.
 
@@ -65,7 +65,7 @@ The supervised target is the calibrated LED residual,
 \end{equation}
 The models therefore learn an event-by-event correction to the conventional timing estimate rather than predicting the physical TOF directly.
 
-For final \texttt{model\_study} runs, the LED threshold offset above baseline is fixed in the experiment configuration and is shared by the MLP and Onishi studies being compared. LED-threshold dependence is investigated separately with the MLP-only \texttt{threshold\_scan} experiment; it is not folded into the architecture comparison.
+For the architecture-comparison runs reported here, the LED threshold offset above baseline is fixed in the experiment configuration and is shared by the MLP and Onishi studies being compared. LED-threshold dependence is investigated separately with the MLP LED-threshold sensitivity experiment; it is not folded into the architecture comparison.
 
 \reportfigure
     {figures/led_threshold_selection.pdf}
@@ -100,11 +100,11 @@ This asymmetry in the fitting protocol must be stated explicitly when interpreti
 
 \subsection{CTR estimator}\label{sec:ctr-estimator}
 
-Coincidence timing resolution (CTR) is evaluated from the timing-residual distribution~\cite{surti2015}. The repository uses the Gaussian-equivalent shortest empirical coverage interval. For a configured coverage fraction \(p\), the narrowest empirical interval containing \(\lceil pN\rceil\) finite residuals is rescaled to the equivalent Gaussian full width at half maximum. The current default coverage fraction is \(p=0.90\).
+Coincidence timing resolution (CTR) is evaluated from the timing-residual distribution~\cite{surti2015}. The reported experiment uses the Gaussian-equivalent shortest empirical coverage interval. For a configured coverage fraction \(p\), the narrowest empirical interval containing \(\lceil pN\rceil\) finite residuals is rescaled to the equivalent Gaussian full width at half maximum. The configured coverage fraction is \(p=0.90\).
 
 For a model prediction \(y_\theta\), the corrected residual is
 \begin{equation}
     r_{\mathrm{ML}}=y_{\mathrm{target}}-y_\theta.
 \end{equation}
 
-Final CTR uncertainties are obtained from event bootstrap; the current default uses 500 bootstrap resamples. Presentation histograms are therefore only visual summaries and do not enter the CTR estimator.
+Final CTR uncertainties are obtained from event bootstrap; the reported configuration uses 500 bootstrap resamples. Presentation histograms are therefore only visual summaries and do not enter the CTR estimator.

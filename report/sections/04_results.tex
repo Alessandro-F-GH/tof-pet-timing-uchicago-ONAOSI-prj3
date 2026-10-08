@@ -1,6 +1,6 @@
 \section{Results}
 
-The final results are organized around the two-model comparison implemented in the repository: the detector-shared antisymmetric MLP and the paired Onishi CNN reference. For each reported board, waveform family, and bias-voltage set, the two models are run independently with the same fixed LED threshold and the same configured waveform windows. Final performance refers to the permanent blind-test population.
+The final results are organized around the two-model comparison studied here: the detector-shared antisymmetric MLP and the paired Onishi CNN reference. For each reported board, waveform family, and bias-voltage set, the two models are run independently with the same fixed LED threshold and the same configured waveform windows. Final performance refers to the permanent blind-test population.
 
 \subsection{Main MLP-versus-Onishi comparison}
 
@@ -56,7 +56,7 @@ For each waveform family, report both the absolute blind-test CTR of LED, MLP, a
 
 \subsection{LED-threshold sensitivity: MLP-only supporting study}
 
-LED-threshold dependence is no longer part of the main two-model experiment. The repository implements it as a separate \texttt{threshold\_scan} study for the antisymmetric MLP only. For each configured threshold, MLP hyperparameters are selected by validation CTR and the selected checkpoint is evaluated on blind data without refitting.
+LED-threshold dependence is no longer part of the main two-model experiment. The sensitivity study reported here treats it as a separate experiment for the antisymmetric MLP only. For each configured threshold, MLP hyperparameters are selected by validation CTR and the selected checkpoint is evaluated on blind data without refitting.
 
 The scan reports blind LED CTR, blind MLP CTR, and relative improvement for every threshold. It is therefore treated as a sensitivity study and not as a third branch of the model comparison.
 
@@ -73,7 +73,7 @@ The scan reports blind LED CTR, blind MLP CTR, and relative improvement for ever
 
 \subsection{Model-output correlation}
 
-A similar final CTR does not imply that two models apply the same correction to every event. The \texttt{compare-runs} workflow therefore aligns the persisted blind-test event IDs and computes the Pearson correlation between the MLP and Onishi model outputs at each bias voltage and for each waveform window.
+A similar final CTR does not imply that two models apply the same correction to every event. The event-aligned comparison therefore aligns the persisted blind-test event IDs and computes the Pearson correlation between the MLP and Onishi model outputs at each bias voltage and for each waveform window.
 
 \reportfigure
     {figures/model_output_correlation_onishi_window.pdf}

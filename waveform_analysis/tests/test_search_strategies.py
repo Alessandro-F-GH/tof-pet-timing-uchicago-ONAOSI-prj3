@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from waveform_analysis.ml_pipeline.search import (
+from waveform_analysis.engine.search import (
     fixed_parameters,
     grid_candidates,
     optimization_config,
@@ -56,3 +56,20 @@ def test_model_spaces_are_seedless():
             assert "optimization" not in space
         else:
             assert optimization_config(space).strategy in {"fixed", "grid", "optuna"}
+
+
+def test_locally_connected_fixed_bound_is_a_scalar():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "config/model_spaces/locally_connected_mlp.json"
+    )
+    space = json.loads(path.read_text())
+    candidates = grid_candidates(space)
+    assert candidates
+    assert all(
+        isinstance(candidate["max_correction_ps"], (int, float))
+        for candidate in candidates
+    )
+    assert all(
+        float(candidate["max_correction_ps"]) == 500.0 for candidate in candidates
+    )

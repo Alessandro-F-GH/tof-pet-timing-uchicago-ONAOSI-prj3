@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from waveform_analysis.ml_pipeline import preprocessing as pipeline
+from waveform_analysis.engine import preprocessing as pipeline
 def cfg(tmp):
     return {"mode":"timing_to_timing","control":{"root_file":"control.root"},"development":{"root_file":"development.root"},"blind":{"root_file":"blind.root"},"preprocessing":{"cache_dir":str(tmp)},"plot_config":{},"fit":{},"_control_modes":("timing_to_timing",),"_control_fit_by_mode":{"timing_to_timing":{}}}
 def test_control_fit_and_frozen_application(monkeypatch,tmp_path):

@@ -1,43 +1,30 @@
-# Waveform architecture migration
+# Waveform software architecture
 
-## 1. Migration plan and file map
+## 1. Package responsibilities
 
-Implemented against Git baseline `59a095a4cbc8b699c5bce16f656d4156483ce86b`.
-The complete current-path/new-path table is in [MIGRATION.md](MIGRATION.md),
-with its machine-readable equivalent in [module_migration.json](module_migration.json).
+| Package | Responsibility |
+| --- | --- |
+| `core/` | Configuration, physical constants, exceptions, logging and I/O utilities. |
+| `signal/` | Pure NumPy timing, baseline, pulse and resolution calculations. |
+| `data/` | Acquisition I/O, prepared datasets, common splits, caches and persistence. |
+| `models/linear/` | Direct and shared linear RidgeCV estimators. |
+| `models/kernel/` | Frozen MiniRocket transforms and downstream estimators. |
+| `models/neural/` | MLP/CNN architectures and artifact definitions. |
+| `engine/` | Batch/study orchestration, training, validation, preprocessing and XAI. |
+| `reporting/` | Plots, persisted-result reports and aggregate statistics. |
 
-1. Freeze original signal calculations and reproduce baseline test outcomes.
-2. Move implementations into responsibility packages while retaining old imports
-   and serialized definition identities.
-3. Extract pure numerical kernels and shared runtime operations without changing
-   arithmetic, RNG consumption, fitted state or exported schemas.
-4. Compare baseline and migrated implementations using identical dependencies,
-   synthetic inputs and seeds, including separate-process model experiments.
-
-| Original location | Implementation location | Responsibility |
-| --- | --- | --- |
-| `ml_pipeline/config.py`, `common.py`, `progress.py` | `core/` | Configuration, hashing/atomic I/O and progress policy. |
-| `ml_pipeline/energy_io.py`, `data.py`, `dataset.py`, `prepared_data.py` | `data/` | Acquisition I/O and prepared waveforms. |
-| `ml_pipeline/splits.py`, feature/shared caches, `storage.py`, `view.py` | `data/` | Population splits, caching and persistence. |
-| Timing/baseline numerical kernels and selection pulse/calibration kernels | `signal/` | Pure NumPy operations independent of Torch and file I/O. |
-| `utils/peak.py`, `utils/photopeak.py` | `signal/peak.py`, `signal/photopeak.py` | Original Gaussian photopeak/ToT fits. |
-| `ml_pipeline/models/*linear_ridge*` | `models/linear/` | Linear estimators and feature definitions. |
-| `ml_pipeline/models/*minirocket*` | `models/kernel/` | Frozen MiniRocket transforms and downstream estimators. |
-| MLP/CNN definitions | `models/neural/` | Architectures and artifact definitions. |
-| Batch, study, search, validation, training, preprocessing and XAI orchestration | `engine/` | Scientific execution order. |
-| Plotting, reports, postprocessing and aggregate statistics | `reporting/` | Persisted-result rendering and aggregation. |
-
-The legacy implementation files are module aliases, rather than copied code.
-Old and new implementation imports resolve to the same module; the legacy
-model-registry package re-exports the same callbacks and specifications.
-Migrated classes keep their old `__module__` paths so existing pickle references
-still resolve.
+`ml_pipeline` contains import aliases, not copied implementations. The alias map
+is maintained once in [module_migration.json](module_migration.json). Serialized
+class identities are preserved so existing pickle/checkpoint artifacts load.
+Internal production code and ordinary tests import the responsibility packages;
+dedicated compatibility/regression checks verify supported serialized identities.
 
 ## 2. Interfaces and typed configuration
 
-[core/config.py](core/config.py) remains the canonical batch parser. Its existing
-JSON normalization, validation, exception messages, project-root resolution,
-public dictionaries and configuration fingerprints are retained. Frozen typed
+[core/config.py](core/config.py) is the canonical batch parser. It validates datasets, model spaces,
+scientific roles and batch axes, then
+normalizes JSON into effective per-run configurations. Ridge-only batches do not
+require outer CV; mixed batches require it for the other estimators. Frozen typed
 settings live in [core/settings.py](core/settings.py) and are re-exported there:
 
 - `BaselineConfig`: required trigger-relative window and clipping margin.
@@ -83,9 +70,9 @@ CLI logging uses the same logger name, level and message format through
 `core/logging.py`.
 
 Precise types were added to settings, signal kernels, dataset boundaries, model
-interfaces and shared trainers. Free-form legacy engine/report payloads retain
-their dictionaries; this migration does not claim strict static typing of every
-legacy payload.
+interfaces and shared trainers. Free-form engine/report payloads retain
+their dictionaries; strict static typing is not imposed on every
+payload.
 
 ## 3. Pure signal-processing APIs
 
@@ -174,18 +161,11 @@ python -m pytest waveform_analysis/tests/test_signal_regression.py waveform_anal
 python -m pytest waveform_analysis/tests -q --continue-on-collection-errors
 ```
 
-Original architectural migration verification: 59 added checks passed. The full suite ran **101 passing tests, 2 failing
-tests and 1 collection error**. The untouched baseline ran 42 passing tests with
-the same two failures and error:
-
-- `test_models.py` imports nonexistent `models.mlp`.
-- The MiniRocket test's scaler mock rejects `copy=False`, which the existing
-  implementation uses.
-- The registry test requires `preserve_temporal_grid=False` for all models,
-  contradicting the existing CNN setting.
-
-Those existing tests were not weakened, skipped or rewritten. Deliberately
-all-NaN synthetic signals emit the same NumPy warning in both CFD implementations.
+The complete suite covers active model architectures, selection/training
+contracts, saved-fit reload, resume, report generation and NumPy signal outputs.
+The model tests exercise actual optimizer settings and architecture-specific
+temporal-grid preservation. Deliberately all-NaN synthetic signals emit the same
+NumPy warning in reference and production CFD implementations.
 
 Validation uses synthetic inputs and CPU execution with identical installed
 dependencies. GPU behavior and end-to-end production acquisition datasets were
@@ -199,3 +179,8 @@ fitting, blind isolation, batch reports, cache invalidation and saved-fit resume
 RidgeCV verification: 16 dedicated checks pass, including Ridge-only and mixed
 Ridge/MLP batches with real fitting, persistence, blind evaluation and reporting.
 The outer-search configuration tests now validate RidgeCV spaces separately.
+
+Cleanup verification: the full suite passes 144 tests, including exact reference
+comparisons for the eight outer-CV model families and scientific protocol, plus
+sklearn-equivalence tests for both RidgeCV models. Additional candidate-grid
+inspection checks verify that model callbacks expose the effective RidgeCV grid.

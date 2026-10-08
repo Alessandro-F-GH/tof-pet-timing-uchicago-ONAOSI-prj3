@@ -49,9 +49,9 @@ The current reference training configuration uses Adam, MSE loss, batch size 128
 
 \subsection{Controlled comparison across waveform windows}
 
-The models are executed as independent \texttt{model\_study} runs. Each run evaluates the same configured waveform windows and persists the blind residuals, model outputs, split identities, XAI arrays, and result tables.
+The models are executed as independent architecture-comparison runs. Each run evaluates the same configured waveform windows and persists the blind residuals, model outputs, split identities, XAI arrays, and result tables.
 
-The completed model-study runs are then combined with the repository's \texttt{compare-runs} workflow. Before comparison, the workflow checks compatible window definitions and voltage sets. Model-output correlation is computed only after aligning the persisted blind-test event identities.
+The completed model runs are combined using event-aligned comparisons. Before comparison, the workflow checks compatible window definitions and voltage sets. Model-output correlation is computed only after aligning the persisted blind-test event identities.
 
 This separation is useful operationally because the dense MLP, locally connected MLP, and Onishi CNN can be trained independently, while the final comparison still operates on compatible persisted blind-test results.
 

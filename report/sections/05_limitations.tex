@@ -29,8 +29,8 @@ The final discussion should consider the following limitations where relevant:
     \item \textbf{Single split realization:} the reported comparison uses one persisted development/validation/blind partition.
     \item \textbf{MLP selection hierarchy:} an internal holdout controls epoch-level stopping, while the external validation split ranks hyperparameter candidates only when more than one candidate is configured. The selected parameters are then refitted on the full development population before blind evaluation.
     \item \textbf{Two-window scope:} the final model study compares two predefined waveform windows rather than performing an exhaustive temporal ablation.
-    \item \textbf{Train-derived sample mask:} the temporal mask uses the current 99\% constant-value criterion and may affect the exact retained input dimension.
-    \item \textbf{Model-comparison uncertainty:} the current cross-run comparison propagates the persisted model CTR uncertainties independently; it does not recompute a paired bootstrap of the MLP-minus-Onishi CTR difference.
+    \item \textbf{Train-derived sample mask:} the temporal mask uses the configured 99\% constant-value criterion and may affect the exact retained input dimension.
+    \item \textbf{Model-comparison uncertainty:} the study-specific cross-run comparison propagates the persisted model CTR uncertainties independently; it does not recompute a paired bootstrap of the MLP-minus-Onishi CTR difference.
     \item \textbf{Dataset and detector scope:} conclusions may depend on the measured crystals, SiPMs, boards, voltages, and acquisition conditions.
     \item \textbf{Interpretability:} gradient sensitivity is model-dependent and should not be interpreted as causal waveform information without additional ablation evidence.
 \end{itemize}

@@ -2,26 +2,37 @@
 
 Analysis software for the ONAOSI/UChicago TOF-PET project.
 
-- `waveform_analysis/`: oscilloscope event selection, fixed-control preprocessing and waveform ML.
+- `waveform_analysis/`: oscilloscope event selection, control-fitted preprocessing and waveform ML.
 - `janus_data_analysis/`: Pico-TDC / Janus timing analysis.
-- `utils_fit/`: repository-wide timing-resolution utilities.
+- `utils_fit/`: shared timing-resolution utilities.
+- `report/` and `update_report/`: scientific manuscripts and study-specific figures/tables.
 
-The waveform ML path follows one scientific order:
+The waveform pipeline uses three independent dataset roles:
 
-`independent control -> fit/freeze preprocessing + LED threshold -> apply frozen rules to independent analysis data -> fixed ML population -> repeated train/validation/blind holdout -> model selection/refit -> blind evaluation`
+1. **Control:** fit event-selection, preprocessing and LED-threshold rules once.
+2. **Development:** apply the frozen rules, select model parameters and fit the final model.
+3. **Blind:** evaluate the final model and estimate event-bootstrap uncertainty.
 
-The control sample can determine photopeak, baseline-noise, baseline-clipping, timing-ToT and LED-selection rules, but contributes no ML training or test events. The analysis sample can only be filtered with those frozen rules. For a given analysis population and resampling seed, train/validation/blind event identities are independent of model and waveform window so later studies can be paired by seed.
+The blind dataset never participates in selection or training. Most models use
+common deterministic development CV folds and fixed/grid/Optuna parameter
+selection. The two linear Ridge models use sklearn RidgeCV on all development
+events with a configurable logarithmic lambda grid and MSE scoring; they bypass
+outer CV and pruning. MiniRocket retains the outer development-CV pipeline.
 
-Waveform studies use one mode per study: `energy_to_energy` or `timing_to_timing`. A study also resolves exactly one registered model and one waveform window. Hyperparameter selection is generic: a single candidate is fitted directly on train+validation; multiple candidates are trained on train only, selected by validation CTR, then refitted from scratch on train+validation before blind evaluation.
+Batches sweep models, waveform modes and windows. Modes are `energy_to_energy`
+and `timing_to_timing`; each resolved run has one model and one window. Reports
+compare predictions on matched blind event identities and provide paired
+bootstrap uncertainty. Figure styling is configured in JSON.
 
-Run from the repository root, for example:
+Run from the repository root:
 
 ```bash
-python -m waveform_analysis.cli check --config waveform_analysis/config/studies/example.json
-python -m waveform_analysis.cli run --config waveform_analysis/config/studies/example.json
-python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/main.json
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_ridge.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_ridge.json
+python -m waveform_analysis.cli plots --results waveform_analysis/results/FBK/test_ridge_48V_R1_R2
 ```
 
-Old voltage-scan, threshold-scan, concatenated-dataset and multi-model/multi-window experiment schemas are intentionally incompatible with the current pipeline.
-
-See `waveform_analysis/README.md` for the study configuration, output schema and leakage invariants.
+See [waveform_analysis/README.md](waveform_analysis/README.md) for configuration,
+result layout, resume behavior, scientific invariants and plot customization.
+Manuscript methods describe their specific experiments; executable pipeline
+instructions are maintained in these software READMEs.

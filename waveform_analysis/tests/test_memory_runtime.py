@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from waveform_analysis.ml_pipeline.models.spec import FeatureTransformSpec
-from waveform_analysis.ml_pipeline.train import (
+from waveform_analysis.models.spec import FeatureTransformSpec
+from waveform_analysis.engine.train import (
     FeatureTransformCache,
     FittedModel,
     predict_indices,

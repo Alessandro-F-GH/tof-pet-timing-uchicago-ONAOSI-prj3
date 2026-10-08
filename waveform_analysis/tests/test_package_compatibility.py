@@ -136,7 +136,7 @@ def test_normalized_configuration_and_fingerprints_are_unchanged(tmp_path):
     sys.modules[name] = reference
     try:
         spec.loader.exec_module(reference)
-        config_path = ROOT / "waveform_analysis/config/batches/test_ridge.json"
+        config_path = ROOT / "waveform_analysis/config/batches/benchmark_FBK.json"
         project = ROOT / "waveform_analysis"
         expected = reference.public_batch_config(
             reference.load_batch_config(config_path, project)
@@ -146,7 +146,8 @@ def test_normalized_configuration_and_fingerprints_are_unchanged(tmp_path):
 
         for run in expected["runs"]:
             model = run["model"]
-            model["space"] = normalize_ridge_space(model["space"], model["name"])
+            if model["name"] in {"direct_linear_ridge", "shared_linear_ridge"}:
+                model["space"] = normalize_ridge_space(model["space"], model["name"])
         actual = public_batch_config(load_batch_config(config_path, project))
         assert actual == expected
         assert canonical_hash(actual) == canonical_hash(expected)
