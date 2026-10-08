@@ -2,7 +2,7 @@ from __future__ import annotations
 import numpy as np
 from .sample_mask import apply_sample_mask
 from .splits import semantic_seed
-from .view import waveform_view
+from .view import mode_family,waveform_view
 
 def _predict_array(spec,fitted,pair):
     values=apply_sample_mask(np.asarray(pair,dtype=np.float32),fitted.sample_mask)
@@ -23,4 +23,8 @@ def temporal_occlusion_importance(spec,fitted,dataset,mode,*,group_size_samples,
         else:
             alpha=np.linspace(0.0,1.0,stop-start+2,dtype=np.float32)[1:-1];replacement=perturbed[:,:,left:left+1]*(1.0-alpha)[None,None,:]+perturbed[:,:,right:right+1]*alpha[None,None,:]
         perturbed[:,:,start:stop]=replacement;changed=_predict_array(spec,fitted,perturbed);score=float(np.mean(np.abs(changed-baseline)));importance[start:stop]=score;starts.append(start);stops.append(stop);group_scores.append(score)
-    return {"time_ps":np.asarray(view.time_ps,dtype=np.float64),"importance_ps":importance,"group_start":np.asarray(starts,dtype=np.int32),"group_stop":np.asarray(stops,dtype=np.int32),"group_importance_ps":np.asarray(group_scores,dtype=np.float64),"event_index":np.asarray(dataset.event_index[indices],dtype=np.int64),"n_events":np.asarray(n_selected,dtype=np.int64),"group_size_samples":np.asarray(group_size_samples,dtype=np.int64)}
+    family=mode_family(mode)
+    transform=dataset.energy_transform if family=="energy" else dataset.timing_transform
+    if transform is None:raise ValueError(f"Missing {family} waveform input transform for XAI example")
+    example_waveforms_mV=transform.inverse(pair[0])
+    return {"example_waveforms_mV":np.asarray(example_waveforms_mV,dtype=np.float32),"example_event_index":np.asarray(dataset.event_index[indices[0]],dtype=np.int64),"time_ps":np.asarray(view.time_ps,dtype=np.float64),"importance_ps":importance,"group_start":np.asarray(starts,dtype=np.int32),"group_stop":np.asarray(stops,dtype=np.int32),"group_importance_ps":np.asarray(group_scores,dtype=np.float64),"event_index":np.asarray(dataset.event_index[indices],dtype=np.int64),"n_events":np.asarray(n_selected,dtype=np.int64),"group_size_samples":np.asarray(group_size_samples,dtype=np.int64)}
