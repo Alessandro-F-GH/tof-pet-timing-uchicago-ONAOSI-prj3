@@ -21,7 +21,7 @@ def _csv(path):
 def plot_run_cv(run,cfg):
     run=Path(run);path=run/"tables"/"cv.csv"
     if not path.is_file():return None
-    rows=_csv(path);manifest=json.loads((run/"manifest.json").read_text());metric=manifest["cv"]["metric"];mean=f"{metric}_mean_ps";std=f"{metric}_std_ps";rows=sorted(rows,key=lambda r:float(r.get(mean,"inf")));x=np.arange(len(rows));v=np.asarray([float(r[mean]) for r in rows]);e=np.asarray([float(r[std]) for r in rows]);pr=np.asarray([str(r.get("pruned","")).lower() in {"true","1"} for r in rows])
+    rows=_csv(path);manifest=json.loads((run/"metadata"/"manifest.json").read_text());metric=manifest["cv"]["metric"];mean=f"{metric}_mean_ps";std=f"{metric}_std_ps";rows=sorted(rows,key=lambda r:float(r.get(mean,"inf")));x=np.arange(len(rows));v=np.asarray([float(r[mean]) for r in rows]);e=np.asarray([float(r[std]) for r in rows]);pr=np.asarray([str(r.get("pruned","")).lower() in {"true","1"} for r in rows])
     with plot_context(cfg):
         fig,ax=plt.subplots(figsize=tuple(cfg["cv"]["figsize"]));ax.errorbar(x[~pr],v[~pr],yerr=e[~pr],fmt=cfg["markers"]["default"],capsize=3,label="complete")
         if np.any(pr):ax.scatter(x[pr],v[pr],marker=cfg["cv"]["pruned_marker"],label="pruned")
