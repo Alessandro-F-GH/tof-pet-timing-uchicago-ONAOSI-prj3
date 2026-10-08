@@ -1,0 +1,297 @@
+"""Frozen timing reference from 59a095a4cbc8b699c5bce16f656d4156483ce86b.
+
+Test-only independent oracle. Do not update it to make a regression pass.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+
+
+
+def family_arrays(data: PreprocessedData, family: str):
+    if family == "energy":
+        values = (
+            data.energy_windows_mV,
+            data.energy_window_start_time_s,
+            data.energy_sample_interval_s,
+            data.energy_rising_start,
+            data.energy_rising_stop,
+        )
+    elif family == "timing":
+        values = (
+            data.timing_windows_mV,
+            data.timing_window_start_time_s,
+            data.timing_sample_interval_s,
+            data.timing_rising_start,
+            data.timing_rising_stop,
+        )
+    else:
+        raise ValueError(f"Unknown waveform family: {family}")
+    if any(value is None for value in values):
+        raise ValueError(f"{family} preprocessed waveforms are unavailable")
+    return values
+
+
+def _baseline_level_mV(
+    signal,
+    interval_s: float,
+    materialized_before_ns: float,
+    baseline_window_ns,
+) -> float:
+    y = np.asarray(signal, dtype=np.float64)
+    dt_ns = float(interval_s) * 1.0e9
+    window = np.asarray(baseline_window_ns, dtype=np.float64).reshape(-1)
+    if (
+        y.size == 0
+        or not np.isfinite(dt_ns)
+        or dt_ns <= 0.0
+        or window.size != 2
+        or not np.all(np.isfinite(window))
+        or float(window[1]) <= float(window[0])
+    ):
+        return float("nan")
+
+    trigger_index = int(np.ceil(float(materialized_before_ns) / dt_ns))
+    start = max(0, trigger_index + int(np.floor(float(window[0]) / dt_ns)))
+    stop = min(
+        y.size,
+        trigger_index + int(np.ceil(float(window[1]) / dt_ns)) + 1,
+    )
+    if stop <= start:
+        return float("nan")
+    values = y[start:stop]
+    values = values[np.isfinite(values)]
+    return float(np.mean(values)) if values.size else float("nan")
+
+
+def _materialized_before_ns(data: PreprocessedData) -> float:
+    window = data.manifest.get("materialized_window_ns") or {}
+    value = float(window.get("before", np.nan))
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            "Preprocessed manifest does not provide a valid materialized_window_ns.before"
+        )
+    return value
+
+
+def _crossing_ps(signal, start_time_s, interval_s, rising_start, rising_stop, level_mV) -> float:
+    y = np.asarray(signal, dtype=np.float64)
+    a, b = int(rising_start), int(rising_stop)
+    if a < 0 or b >= y.size or b <= a or not np.isfinite(level_mV):
+        return float("nan")
+    y0, y1 = y[a:b], y[a + 1:b + 1]
+    crossings = np.flatnonzero(
+        np.isfinite(y0) & np.isfinite(y1) & (y0 < level_mV) & (y1 >= level_mV)
+    )
+    if crossings.size == 0:
+        crossings = np.flatnonzero(
+            np.isfinite(y0) & np.isfinite(y1) & (y0 == level_mV) & (y1 > level_mV)
+        )
+    if crossings.size == 0:
+        return float("nan")
+    lower = a + int(crossings[-1])
+    denom = float(y[lower + 1] - y[lower])
+    if denom == 0.0 or not np.isfinite(denom):
+        return float("nan")
+    fraction = (float(level_mV) - float(y[lower])) / denom
+    if not 0.0 <= fraction <= 1.0:
+        return float("nan")
+    return (
+        float(start_time_s) + (float(lower) + fraction) * float(interval_s)
+    ) * 1.0e12
+
+
+def led_grid(
+    data: PreprocessedData,
+    family: str,
+    indices: np.ndarray,
+    thresholds_mV: np.ndarray,
+    *,
+    baseline_window_ns=None,
+) -> np.ndarray:
+    """Return LED crossings; configured thresholds are offsets above event baseline."""
+    waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
+    idx = np.asarray(indices, dtype=np.int64)
+    thresholds = np.asarray(thresholds_mV, dtype=np.float64).reshape(-1)
+    output = np.full((idx.size, 2, thresholds.size), np.nan, dtype=np.float64)
+    before_ns = _materialized_before_ns(data) if baseline_window_ns is not None else None
+    for row, event in enumerate(idx):
+        for detector in range(2):
+            baseline = 0.0
+            if baseline_window_ns is not None:
+                baseline = _baseline_level_mV(
+                    waves[event, detector],
+                    intervals[event, detector],
+                    float(before_ns),
+                    baseline_window_ns,
+                )
+                if not np.isfinite(baseline):
+                    continue
+            for column, threshold in enumerate(thresholds):
+                output[row, detector, column] = _crossing_ps(
+                    waves[event, detector],
+                    starts[event, detector],
+                    intervals[event, detector],
+                    rising_start[event, detector],
+                    rising_stop[event, detector],
+                    baseline + float(threshold),
+                )
+    return output
+
+
+def cfd_grid(
+    data: PreprocessedData,
+    family: str,
+    indices: np.ndarray,
+    fractions: np.ndarray,
+) -> np.ndarray:
+    waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
+    idx = np.asarray(indices, dtype=np.int64)
+    fractions = np.asarray(fractions, dtype=np.float64).reshape(-1)
+    if np.any((fractions <= 0.0) | (fractions > 1.0)):
+        raise ValueError("CFD fractions must lie in (0, 1]")
+    output = np.full((idx.size, 2, fractions.size), np.nan, dtype=np.float64)
+    for row, event in enumerate(idx):
+        for detector in range(2):
+            signal = np.asarray(waves[event, detector], dtype=np.float64)
+            a, b = int(rising_start[event, detector]), int(rising_stop[event, detector])
+            peak = float(np.nanmax(signal[a : b + 1])) if b >= a else np.nan
+            if not np.isfinite(peak) or peak <= 0.0:
+                continue
+            for column, fraction in enumerate(fractions):
+                output[row, detector, column] = _crossing_ps(
+                    signal,
+                    starts[event, detector],
+                    intervals[event, detector],
+                    a,
+                    b,
+                    float(fraction) * peak,
+                )
+    return output
+
+
+def anchor_grid(
+    data: PreprocessedData,
+    family: str,
+    threshold_mV: float,
+    *,
+    baseline_window_ns=None,
+) -> np.ndarray:
+    """Return native-grid anchor indices nearest to the interpolated LED crossing."""
+    waves, starts, intervals, rising_start, rising_stop = family_arrays(data, family)
+    indices = np.full((data.n_events, 2), -1, dtype=np.int32)
+    before_ns = _materialized_before_ns(data) if baseline_window_ns is not None else None
+    for event in range(data.n_events):
+        for detector in range(2):
+            start = float(starts[event, detector])
+            interval = float(intervals[event, detector])
+            a, b = int(rising_start[event, detector]), int(rising_stop[event, detector])
+            baseline = 0.0
+            if baseline_window_ns is not None:
+                baseline = _baseline_level_mV(
+                    waves[event, detector],
+                    interval,
+                    float(before_ns),
+                    baseline_window_ns,
+                )
+                if not np.isfinite(baseline):
+                    continue
+            led_ps = _crossing_ps(
+                waves[event, detector],
+                start,
+                interval,
+                a,
+                b,
+                baseline + float(threshold_mV),
+            )
+            if not np.isfinite(led_ps) or interval <= 0.0 or b <= a:
+                continue
+            fractional = (led_ps * 1.0e-12 - start) / interval
+            lower = int(np.floor(fractional))
+            upper = lower + 1
+            candidates = [sample for sample in (lower, upper) if a <= sample <= b]
+            if not candidates:
+                continue
+            sample = min(
+                candidates,
+                key=lambda index: abs(
+                    (start + float(index) * interval) * 1.0e12 - led_ps
+                ),
+            )
+            indices[event, detector] = sample
+    return indices
+
+
+def pair_delta(times_ps: np.ndarray) -> np.ndarray:
+    values = np.asarray(times_ps, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 2:
+        raise ValueError("Expected [event, detector] timing array")
+    return values[:, 0] - values[:, 1]
+
+
+def _baseline_quality_metrics(signal_mV,trigger_index,sample_interval_s,window_ns,vertical_limits_mV,clipping_margin_mV):
+    y=np.asarray(signal_mV,float);dt=float(sample_interval_s)*1e9;a0,b0=map(float,window_ns)
+    a=max(0,int(trigger_index)+int(np.floor(a0/dt)));b=min(y.size,int(trigger_index)+int(np.ceil(b0/dt))+1);v=y[a:b];v=v[np.isfinite(v)]
+    if v.size<2:return float("nan"),False,float("nan")
+    center=float(np.mean(v));rms=float(np.sqrt(np.mean((v-center)**2)));low,high=map(float,np.sort(np.asarray(vertical_limits_mV,float)));margin=float(clipping_margin_mV)
+    clearance=float(min(np.min(v)-low,high-np.max(v)))
+    return rms,bool(clearance<=margin),clearance
+
+
+def rmse_ps(values: np.ndarray) -> float:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    values = values[np.isfinite(values)]
+    if not values.size:
+        return float("nan")
+    return float(np.sqrt(np.mean(values**2)))
+
+
+def metric_values(residuals_ps, fit_cfg: dict, *, seed: int) -> dict[str, float]:
+    residuals = np.asarray(residuals_ps, dtype=np.float64).reshape(-1)
+    residuals = residuals[np.isfinite(residuals)]
+    if residuals.size < 1:
+        raise ValueError("metric calculation requires finite residuals")
+    ctr = ctr_estimate(residuals, fit_cfg, seed=int(seed), bootstrap=False)
+    return {"ctr_ps": float(ctr.ctr_ps), "rmse_ps": rmse_ps(residuals)}
+
+from utils_fit import fit_ctr_ps as ctr_estimate
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Hit:
+    leading_index:int;stop_index:int;duration_ns:float
+
+
+def robust_center_scale(values):
+    x=np.asarray(values,float);x=x[np.isfinite(x)]
+    if not x.size:return float("nan"),float("nan")
+    c=float(np.median(x));mad=float(np.median(np.abs(x-c)));return c,1.4826*mad
+
+
+def decode_oriented(raw,gain_v_per_count,offset_v,polarity):
+    if int(polarity) not in (-1,1):raise ValueError("polarity must be +1 or -1")
+    return float(polarity)*((np.asarray(raw,float)*float(gain_v_per_count)-float(offset_v))*1000.0)
+
+
+def pulse_hits(signal_mV,threshold_mV,sample_interval_s):
+    y=np.asarray(signal_mV,float);threshold=float(threshold_mV);dt=float(sample_interval_s)*1e9
+    if y.size<2 or threshold<=0 or dt<=0:return []
+    y0,y1=y[:-1],y[1:];finite=np.isfinite(y0)&np.isfinite(y1)
+    rising=np.flatnonzero(finite&(y0<threshold)&(y1>=threshold));falling=np.flatnonzero(finite&(y0>=threshold)&(y1<threshold))
+    def pos(i):
+        d=float(y[i+1]-y[i]);return float(i+1) if not np.isfinite(d) or d==0 else float(i)+float(np.clip((threshold-y[i])/d,0,1))
+    leads=np.asarray([pos(int(i)) for i in rising]);trails=np.asarray([pos(int(i)) for i in falling]);out=[]
+    for j,(lower,lead) in enumerate(zip(rising,leads)):
+        next_lead=leads[j+1] if j+1<leads.size else float(y.size-1)
+        cand=trails[(trails>lead)&(trails<=next_lead)];stop=float(cand[0]) if cand.size else next_lead
+        out.append(Hit(int(lower)+1,min(y.size-1,int(np.ceil(stop))),max(0.0,float(stop-lead)*dt)))
+    return out
+
+
+def _photo_mask(amps,rules):
+    m=np.all(np.isfinite(amps),axis=1)
+    for d,(lo,hi) in enumerate(rules["photopeak_intervals_mV"]):m&=(amps[:,d]>=float(lo))&(amps[:,d]<=float(hi))
+    return m

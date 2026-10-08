@@ -1,5 +1,10 @@
 # Waveform ML pipeline
 
+Implementation packages are `core/`, `signal/`, `data/`, `models/`, `engine/`,
+and `reporting/`. Existing `ml_pipeline` imports remain compatible. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the full migration map, typed interfaces,
+pure NumPy timing/baseline APIs and exact numerical regression checks.
+
 The pipeline uses three explicit scientific dataset roles:
 
 1. **control** — fit preprocessing, event-selection and LED criteria once;
@@ -129,6 +134,11 @@ Changes are scoped:
 Old fixed-validation and replica result schemas are intentionally unsupported. There are no compatibility readers or legacy execution modes.
 
 ## Reporting
+
+Development CV plots use one-based candidate order numbers on the x-axis, sorted
+by evaluation order. Optuna runs use saved trial numbers; new fixed/grid runs
+record `candidate_order` in `metadata/candidates.json`. Older fixed/grid results
+without that metadata use stable numbering from their saved CV table order.
 
 Reporting consumes persisted numeric artifacts and produces validation/blind summaries, model-output correlations aligned by blind event ID, paired CTR/RMSE model-difference matrices with paired event bootstrap, blind RMSE-vs-CTR plots, validation-vs-blind plots, and window comparisons.
 

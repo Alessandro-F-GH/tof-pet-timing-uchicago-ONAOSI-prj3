@@ -1,3 +1,5 @@
-from __future__ import annotations
-from .report_engine import collect_runs,generate_report
-__all__=["collect_runs","generate_report"]
+"""Compatibility alias for :mod:`waveform_analysis.reporting.report`."""
+from importlib import import_module as _import_module
+import sys as _sys
+
+_sys.modules[__name__] = _import_module('waveform_analysis.reporting.report')
