@@ -51,7 +51,7 @@ def plot_run_blind(run,cfg):
             ax.hist(values[np.isfinite(values)],bins=int(cfg["histogram"]["bins"]),range=(lo,hi),alpha=float(cfg["histogram"]["alpha"]),label=label)
         ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg)
         return _save(fig,output_path(run/"plots","blind",cfg))
-def _xai_one_ns(time,importance):
+def _xai_one_ns(time,importance,*,normalize=True):
     # Aggregate per-sample group importance in fixed 1 ns time bins.
     edges=np.arange(np.floor(time.min()),np.ceil(time.max())+1,1.0)
     if edges.size<2:edges=np.array([time.min()-0.5,time.max()+0.5])
@@ -64,7 +64,7 @@ def _xai_one_ns(time,importance):
         if portion.size:values[i]=float(np.mean(portion))
     maximum=float(np.nanmax(values)) if np.any(np.isfinite(values)) else 0.0
     normalized=np.nan_to_num(values/maximum,nan=0.0,posinf=0.0,neginf=0.0) if maximum>0 else np.zeros_like(values)
-    return edges,centers,normalized
+    return edges,centers,normalized if normalize else np.nan_to_num(values,nan=0.0,posinf=0.0,neginf=0.0)
 
 def plot_run_xai(run,cfg):
     run=Path(run);path=run/"artifacts"/"xai.npz"
@@ -100,15 +100,12 @@ def plot_run_xai(run,cfg):
         else:
             # Independent interventions for each input channel; normalize to
             # one common maximum so channel values and colors are comparable.
-            bins=[_xai_one_ns(time,importance[channel]) for channel in range(2)]
-            maxima=[max(float(np.nanmax(importance[channel])),0.0) for channel in range(2)]
-            # Per-bin values returned by _xai_one_ns are individually normalized;
-            # rescale using each channel's maximum relative to the global maximum.
-            global_max=max(maxima)
+            bins=[_xai_one_ns(time,importance[channel],normalize=False) for channel in range(2)]
+            global_max=max(max(float(np.max(v)),0.0) for _,_,v in bins)
             fig,axes=plt.subplots(2,1,figsize=(max(float(width),7.2),max(float(height),5.8)),sharex=True,layout="constrained")
             for channel,ax in enumerate(axes):
-                edges,_,relative=bins[channel]
-                values=relative*(maxima[channel]/global_max) if global_max>0 else np.zeros_like(relative)
+                edges,_,raw_scores=bins[channel]
+                values=raw_scores/global_max if global_max>0 else np.zeros_like(raw_scores)
                 ax.plot(time,example[channel],color=colors[channel],label=f"Detector {channel+1}",zorder=3)
                 for left,right,value in zip(edges[:-1],edges[1:],values):
                     ax.axvspan(left,right,color=cmap(norm(value)),alpha=float(style.get("band_alpha",0.32)),linewidth=0,zorder=0)
