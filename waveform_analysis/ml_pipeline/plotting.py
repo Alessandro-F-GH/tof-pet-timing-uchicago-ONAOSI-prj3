@@ -5,6 +5,7 @@ from pathlib import Path
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from .stats import residual_summary
 def load_plot_config(root):return json.loads((Path(root).resolve()/"plots.json").read_text(encoding="utf-8"))
 @contextmanager
 def plot_context(config):
@@ -28,9 +29,24 @@ def plot_run_cv(run,cfg):
 def plot_run_blind(run,cfg):
     run=Path(run);path=run/"artifacts"/"pred.npz"
     if not path.is_file():return None
-    with np.load(path) as d:corrected=np.asarray(d["corrected_ps"]);led=np.asarray(d["led_residual_ps"])
+    with np.load(path) as d:
+        corrected=np.asarray(d["corrected_ps"]);led=np.asarray(d["led_residual_ps"])
+    summaries=[residual_summary(a) for a in (led,corrected)]
+    valid=[s for s in summaries if s["n_finite"]]
+    if not valid:return None
+    lo=min(s["q01_ps"] for s in valid);hi=max(s["q99_ps"] for s in valid)
+    span=hi-lo
+    if span<=0:
+        span=max(abs(lo)*0.1,1.0);lo-=span/2;hi+=span/2
+    else:
+        lo-=0.05*span;hi+=0.05*span
     with plot_context(cfg):
-        fig,ax=plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]));ax.hist(led,bins=int(cfg["histogram"]["bins"]),alpha=float(cfg["histogram"]["alpha"]),label="LED");ax.hist(corrected,bins=int(cfg["histogram"]["bins"]),alpha=float(cfg["histogram"]["alpha"]),label="ML corrected");ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg);return _save(fig,output_path(run/"plots","blind",cfg))
+        fig,ax=plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]))
+        for values,label in ((led,"LED"),(corrected,"ML corrected")):
+            values=np.asarray(values,float).ravel()
+            ax.hist(values[np.isfinite(values)],bins=int(cfg["histogram"]["bins"]),range=(lo,hi),alpha=float(cfg["histogram"]["alpha"]),label=label)
+        ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg)
+        return _save(fig,output_path(run/"plots","blind",cfg))
 def plot_run_xai(run,cfg):
     run=Path(run);path=run/"artifacts"/"xai.npz"
     if not path.is_file():return None
