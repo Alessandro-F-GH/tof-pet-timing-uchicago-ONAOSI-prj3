@@ -65,5 +65,7 @@ def grouped_bar(labels,series,path,cfg,*,ylabel,title):
         for index,item in enumerate(series):
             off=(index-(len(series)-1)/2)*bar_width;v=np.asarray(item["values"],float);e=np.asarray(item.get("errors",np.zeros_like(v)),float);bars=ax.bar(x+off,v,width=bar_width,yerr=e,capsize=float(style["error_capsize"]),label=item["label"])
             for bar,value,error in zip(bars,v,e):
-                text=f"{int(round(value))} ± {int(round(error))} ps" if np.isfinite(error) and error>0 else f"{int(round(value))} ps";ax.annotate(text,(bar.get_x()+bar.get_width()/2,bar.get_height()),xytext=(0,float(style["annotation_offset_points"])),textcoords="offset points",ha="center",va="bottom",fontsize=float(cfg["font"]["annotation_size"]),rotation=90)
+                if not np.isfinite(value):continue
+                text=f"{int(round(value))} ± {int(round(error))} ps" if np.isfinite(error) and error>0 else f"{int(round(value))} ps"
+                ax.annotate(text,(bar.get_x()+bar.get_width()/2,bar.get_height()),xytext=(0,float(style["annotation_offset_points"])),textcoords="offset points",ha="center",va="bottom",fontsize=float(cfg["font"]["annotation_size"]),rotation=90)
         ax.set_xticks(x);ax.set_xticklabels(labels);ax.set_ylabel(ylabel);ax.set_title(title);ax.legend();_finish(ax,cfg);return _save(fig,path)
