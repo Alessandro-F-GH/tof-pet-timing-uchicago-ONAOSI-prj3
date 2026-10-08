@@ -66,6 +66,8 @@ def _scatters(group,directory,cfg):
 def _windows(runs,root,cfg):
     for mode in sorted({r["manifest"]["mode"] for r in runs}):
         mr=[r for r in runs if r["manifest"]["mode"]==mode];windows=sorted({r["manifest"].get("window_name") for r in mr});directory=root/"plots"/("energy" if mode=="energy_to_energy" else "timing")
+        for stale in directory.glob("windows_*"):stale.unlink()
+        if len(windows)<2:continue
         for metric in ("ctr","rmse"):
             labels=[];values={"shared":[],"direct":[]};errors={"shared":[],"direct":[]}
             for window in windows:
@@ -84,7 +86,7 @@ def _windows(runs,root,cfg):
                     led_values.append(float(wr[0]["blind"][f"led_{metric}_ps"]));led_errors.append(0.0)
                 else:
                     led_values.append(np.nan);led_errors.append(np.nan)
-            series=[{"label":cfg["formulations"][f]["label"],"values":values[f],"errors":errors[f]} for f in ("shared","direct")]
+            series=[{"label":cfg["formulations"][f]["label"],"values":values[f],"errors":errors[f]} for f in ("shared","direct") if np.any(np.isfinite(values[f]))]
             series.append({"label":cfg["reference"]["label"],"values":led_values,"errors":led_errors})
             grouped_bar(labels,series,output_path(directory,f"windows_{metric}",cfg),cfg,ylabel=f"Blind {metric.upper()} [ps]",title=f"Waveform-window comparison — winners selected by development CV {metric.upper()}")
 def _read_matrix(path):
