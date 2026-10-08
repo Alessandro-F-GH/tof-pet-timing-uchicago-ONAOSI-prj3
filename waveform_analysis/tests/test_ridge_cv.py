@@ -282,3 +282,30 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     (outputs[0] / "artifacts/pred.npz").unlink()
     study.run_study(runs[0])
     assert len(fit_calls) == (3 if mixed else 2)
+
+
+def test_log_spaced_alpha_range_matches_explicit_grid():
+    grid = np.geomspace(1e-8, 1e3, 23)
+    ranged = {"ridge_cv": {"alphas": {"low": 1e-8, "high": 1e3, "num": 23}}}
+    explicit = {"ridge_cv": {"alphas": grid.tolist()}}
+    assert ridge_cv_config(ranged) == ridge_cv_config(explicit)
+    assert normalize_ridge_space(
+        ranged, "direct_linear_ridge"
+    ) == normalize_ridge_space(explicit, "direct_linear_ridge")
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"low": 0, "high": 1, "num": 3},
+        {"low": 2, "high": 1, "num": 3},
+        {"low": 1, "high": float("inf"), "num": 3},
+        {"low": 1, "high": 10, "num": 0},
+        {"low": 1, "high": 10, "num": 2.5},
+        {"low": 1, "high": 10, "num": True},
+        {"low": 1, "high": 10},
+    ],
+)
+def test_invalid_log_spaced_alpha_range(limits):
+    with pytest.raises(ValueError):
+        ridge_cv_config({"ridge_cv": {"alphas": limits}})

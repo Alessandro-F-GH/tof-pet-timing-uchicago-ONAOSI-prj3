@@ -33,13 +33,15 @@ Model-space settings:
 
 ```json
 {"model": "direct_linear_ridge", "ridge_cv": {
-  "alphas": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
+  "alphas": {"low": 0.001, "high": 100.0, "num": 6},
   "cv": null, "gcv_mode": "auto", "scoring": "neg_mean_squared_error"
 }}
 ```
 
 `cv: null` selects efficient leave-one-out CV; an integer >= 2 selects sklearn
-K-fold CV. Defaults contain 23 logarithmically spaced positive alphas from
+K-fold CV. `alphas.low` and `alphas.high` are inclusive endpoints;
+`alphas.num` is the number of logarithmically spaced values. Explicit lists
+remain supported for compatibility. Defaults contain 23 logarithmically spaced positive alphas from
 1e-8 to 1e3. This intentionally changes lambda selection from CTR-based outer
 validation to MSE on the estimator's unmodified predictions. Output clipping,
 preprocessing, blind CTR/RMSE, bootstrap and XAI keep their existing definitions.

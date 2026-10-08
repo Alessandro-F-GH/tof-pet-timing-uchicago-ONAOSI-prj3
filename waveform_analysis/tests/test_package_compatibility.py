@@ -141,6 +141,12 @@ def test_normalized_configuration_and_fingerprints_are_unchanged(tmp_path):
         expected = reference.public_batch_config(
             reference.load_batch_config(config_path, project)
         )
+        # The original parser preserves raw ranges; the new parser expands them.
+        from waveform_analysis.core.ridge import normalize_ridge_space
+
+        for run in expected["runs"]:
+            model = run["model"]
+            model["space"] = normalize_ridge_space(model["space"], model["name"])
         actual = public_batch_config(load_batch_config(config_path, project))
         assert actual == expected
         assert canonical_hash(actual) == canonical_hash(expected)

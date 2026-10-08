@@ -75,7 +75,20 @@ def ridge_cv_config(space: dict[str, Any]) -> RidgeCVConfig:
     extra = set(raw) - {"alphas", "cv", "gcv_mode", "scoring"}
     if extra:
         raise ValueError(f"Unsupported ridge_cv fields: {sorted(extra)}")
-    alphas = np.asarray(raw.get("alphas", DEFAULT_ALPHAS), dtype=np.float64)
+    alpha_values = raw.get("alphas", DEFAULT_ALPHAS)
+    if isinstance(alpha_values, dict):
+        if set(alpha_values) != {"low", "high", "num"}:
+            raise ValueError("ridge_cv.alphas range requires exactly low, high and num")
+        low, high = float(alpha_values["low"]), float(alpha_values["high"])
+        num = alpha_values["num"]
+        if not np.isfinite(low) or not np.isfinite(high) or low <= 0 or high < low:
+            raise ValueError(
+                "ridge_cv.alphas range must be finite, positive and increasing"
+            )
+        if isinstance(num, bool) or not isinstance(num, int) or num < 1:
+            raise ValueError("ridge_cv.alphas.num must be a positive integer")
+        alpha_values = np.geomspace(low, high, num)
+    alphas = np.asarray(alpha_values, dtype=np.float64)
     if (
         alphas.ndim != 1
         or not alphas.size
