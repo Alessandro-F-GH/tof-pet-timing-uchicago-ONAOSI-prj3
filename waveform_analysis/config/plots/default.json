@@ -1,19 +1,222 @@
 {
-  "output": {"format": "png", "dpi": 160},
-  "font": {"family": "DejaVu Sans", "size": 10, "title_size": 11, "label_size": 10, "tick_size": 9, "legend_size": 9, "annotation_size": 8},
-  "grid": {"enabled": true, "alpha": 0.22, "linestyle": ":"},
-  "line": {"width": 1.2},
-  "markers": {"default": "o", "size": 6.0},
-  "formulations": {
-    "shared": {"label": "Shared antisymmetric", "color": "#1f77b4", "marker": "o"},
-    "direct": {"label": "Direct / non-shared", "color": "#d95f02", "marker": "^"}
+  "output": {
+    "format": "png",
+    "dpi": 300,
+    "bbox_inches": "tight",
+    "pad_inches": 0.12
   },
-  "reference": {"label": "LED reference", "color": "#666666", "marker": "s", "linestyle": "--"},
-  "cv": {"figsize": [7.0, 4.5], "pruned_marker": "x", "label_rotation": 35},
-  "scatter": {"figsize": [6.4, 5.0], "marker_size": 60, "annotation_offset": [5, 5], "error_capsize": 3.0},
-  "bar": {"figure_width_min": 7.2, "figure_height": 4.8, "width_per_category": 1.25, "group_width": 0.78, "window_hatches": ["", "//", "\\", "xx", "..", "++"], "edge_color": "#333333", "edge_line_width": 0.6, "annotation_offset_points": 3, "error_capsize": 3.0},
-  "heatmap": {"min_figsize": [6.8, 5.4], "per_model": [0.95, 0.82], "correlation_cmap": "coolwarm", "difference_cmap": "coolwarm", "correlation_limits": [-1.0, 1.0], "label_rotation": 35, "cell_text_size": 8},
-  "histogram": {"figsize": [6.4, 4.4], "bins": 40, "histtype": "stepfilled", "alpha": 0.45},
-  "xai": {"figsize": [7.0, 4.0], "fill_alpha": 0.18},
-  "preprocessing": {"figsize": [7.2, 4.5], "waveform_figsize": [7.2, 6.0], "display_quantiles": [0.005, 0.995], "hist_alpha": 0.22, "photopeak_bins": 100, "noise_bins": 80, "tot_bins": 100, "detector_colors": ["#1f77b4", "#ff7f0e"], "selection_relative_pad": 0.25, "selection_minimum_pad": 0.15}
+  "font": {
+    "family": "DejaVu Serif",
+    "size": 11,
+    "title_size": 12,
+    "label_size": 11,
+    "tick_size": 10,
+    "legend_size": 9,
+    "annotation_size": 8,
+    "mathtext_fontset": "dejavuserif"
+  },
+  "grid": {
+    "enabled": true,
+    "alpha": 0.25,
+    "linestyle": "-",
+    "color": "#B0B0B0",
+    "line_width": 0.5,
+    "axis": "y"
+  },
+  "line": {
+    "width": 1.5
+  },
+  "markers": {
+    "default": "o",
+    "size": 5
+  },
+  "formulations": {
+    "shared": {
+      "label": "Shared antisymmetric",
+      "color": "#0072B2",
+      "marker": "o"
+    },
+    "direct": {
+      "label": "Direct / non-shared",
+      "color": "#D55E00",
+      "marker": "^"
+    }
+  },
+  "reference": {
+    "label": "LED reference",
+    "color": "#666666",
+    "marker": "s",
+    "linestyle": "--"
+  },
+  "cv": {
+    "figsize": [
+      7.0,
+      4.5
+    ],
+    "pruned_marker": "x",
+    "label_rotation": 0,
+    "error_capsize": 3,
+    "complete_color": "#0072B2",
+    "pruned_color": "#D55E00"
+  },
+  "scatter": {
+    "figsize": [
+      6.4,
+      5.0
+    ],
+    "marker_size": 60,
+    "annotation_offset": [
+      5,
+      5
+    ],
+    "error_capsize": 3.0,
+    "edge_color": "white",
+    "edge_line_width": 0.5,
+    "error_color": "#777777"
+  },
+  "bar": {
+    "figure_width_min": 7.2,
+    "figure_height": 4.8,
+    "width_per_category": 1.25,
+    "group_width": 0.78,
+    "window_hatches": [
+      "",
+      "//",
+      "\\",
+      "xx",
+      "..",
+      "++"
+    ],
+    "edge_color": "#333333",
+    "edge_line_width": 0.6,
+    "annotation_offset_points": 3,
+    "error_capsize": 3.0,
+    "show_values": false,
+    "annotation_rotation": 90,
+    "headroom_fraction": 0.25
+  },
+  "heatmap": {
+    "min_figsize": [
+      6.8,
+      5.4
+    ],
+    "per_model": [
+      0.95,
+      0.82
+    ],
+    "correlation_cmap": "RdBu_r",
+    "difference_cmap": "RdBu_r",
+    "correlation_limits": [
+      -1.0,
+      1.0
+    ],
+    "label_rotation": 35,
+    "cell_text_size": 8,
+    "text_color": "#222222",
+    "contrast_text_color": "white",
+    "contrast_threshold": 0.7
+  },
+  "histogram": {
+    "figsize": [
+      6.4,
+      4.4
+    ],
+    "bins": 40,
+    "histtype": "step",
+    "alpha": 1.0,
+    "corrected_color": "#0072B2"
+  },
+  "xai": {
+    "figsize": [
+      7.0,
+      4.0
+    ],
+    "fill_alpha": 0.18,
+    "cmap": "viridis",
+    "detector_colors": [
+      "#0072B2",
+      "#D55E00"
+    ],
+    "detector_linestyles": [
+      "-",
+      "--"
+    ],
+    "importance_color": "#333333",
+    "importance_marker": "o",
+    "importance_marker_size": 2.5,
+    "band_alpha": 0.25
+  },
+  "preprocessing": {
+    "figsize": [
+      7.2,
+      4.5
+    ],
+    "waveform_figsize": [
+      7.2,
+      6.0
+    ],
+    "display_quantiles": [
+      0.005,
+      0.995
+    ],
+    "hist_alpha": 0.22,
+    "photopeak_bins": 100,
+    "noise_bins": 80,
+    "tot_bins": 100,
+    "detector_colors": [
+      "#0072B2",
+      "#D55E00"
+    ],
+    "selection_relative_pad": 0.25,
+    "selection_minimum_pad": 0.15,
+    "legend": {
+      "location": "upper left",
+      "bbox_to_anchor": [
+        1.02,
+        1.0
+      ],
+      "title": "Filled histogram = selected range"
+    }
+  },
+  "palette": [
+    "#0072B2",
+    "#D55E00",
+    "#009E73",
+    "#CC79A7",
+    "#E69F00",
+    "#56B4E9",
+    "#F0E442",
+    "#333333"
+  ],
+  "axes": {
+    "line_width": 0.8,
+    "edge_color": "#333333",
+    "label_color": "#222222",
+    "title_weight": "normal",
+    "title_pad": 10,
+    "label_pad": 6,
+    "spines": {
+      "top": false,
+      "right": false,
+      "bottom": true,
+      "left": true
+    },
+    "axis_below": true
+  },
+  "ticks": {
+    "direction": "out",
+    "major_size": 4,
+    "major_width": 0.8,
+    "minor_size": 2,
+    "minor_width": 0.6,
+    "color": "#333333"
+  },
+  "legend": {
+    "location": "best",
+    "frame": false,
+    "columns": 1,
+    "handle_length": 2,
+    "label_spacing": 0.4,
+    "border_axes_pad": 0.5
+  }
 }

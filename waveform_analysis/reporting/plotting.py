@@ -15,20 +15,60 @@ def load_plot_config(root):
 @contextmanager
 def plot_context(config):
     f = config["font"]
-    with mpl.rc_context(
+    settings = {
+        "font.family": f["family"],
+        "font.size": float(f["size"]),
+        "axes.titlesize": float(f["title_size"]),
+        "axes.labelsize": float(f["label_size"]),
+        "xtick.labelsize": float(f["tick_size"]),
+        "ytick.labelsize": float(f["tick_size"]),
+        "legend.fontsize": float(f["legend_size"]),
+        "figure.dpi": float(config["output"]["dpi"]),
+        "savefig.dpi": float(config["output"]["dpi"]),
+        "lines.linewidth": float(config["line"]["width"]),
+    }
+    axes = config.get("axes", {})
+    ticks = config.get("ticks", {})
+    legend = config.get("legend", {})
+    settings.update(
         {
-            "font.family": f["family"],
-            "font.size": float(f["size"]),
-            "axes.titlesize": float(f["title_size"]),
-            "axes.labelsize": float(f["label_size"]),
-            "xtick.labelsize": float(f["tick_size"]),
-            "ytick.labelsize": float(f["tick_size"]),
-            "legend.fontsize": float(f["legend_size"]),
-            "figure.dpi": float(config["output"]["dpi"]),
-            "savefig.dpi": float(config["output"]["dpi"]),
-            "lines.linewidth": float(config["line"]["width"]),
+            "axes.prop_cycle": mpl.cycler(
+                color=config.get("palette", ["#0072B2", "#D55E00", "#009E73"])
+            ),
+            "axes.linewidth": axes.get("line_width", 0.8),
+            "axes.edgecolor": axes.get("edge_color", "#333333"),
+            "axes.labelcolor": axes.get("label_color", "#222222"),
+            "axes.titleweight": axes.get("title_weight", "normal"),
+            "axes.titlepad": axes.get("title_pad", 10),
+            "axes.labelpad": axes.get("label_pad", 6),
+            "axes.axisbelow": axes.get("axis_below", True),
+            "legend.loc": legend.get("location", "best"),
+            "legend.frameon": legend.get("frame", False),
+            "legend.handlelength": legend.get("handle_length", 2),
+            "legend.labelspacing": legend.get("label_spacing", 0.4),
+            "legend.borderaxespad": legend.get("border_axes_pad", 0.5),
+            "mathtext.fontset": f.get("mathtext_fontset", "dejavuserif"),
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "savefig.bbox": config["output"].get("bbox_inches", "tight"),
+            "savefig.pad_inches": config["output"].get("pad_inches", 0.12),
         }
-    ):
+    )
+    for side in ("top", "right", "bottom", "left"):
+        settings[f"axes.spines.{side}"] = axes.get("spines", {}).get(
+            side, side in {"bottom", "left"}
+        )
+    for axis in ("x", "y"):
+        for key, default in (
+            ("direction", "out"),
+            ("color", "#333333"),
+            ("major.size", 4),
+            ("major.width", 0.8),
+            ("minor.size", 2),
+            ("minor.width", 0.6),
+        ):
+            settings[f"{axis}tick.{key}"] = ticks.get(key.replace(".", "_"), default)
+    with mpl.rc_context(settings):
         yield
 
 
@@ -41,7 +81,16 @@ def output_path(directory, stem, config):
 
 def _finish(ax, cfg):
     g = cfg["grid"]
-    ax.grid(bool(g["enabled"]), alpha=float(g["alpha"]), linestyle=g["linestyle"])
+    ax.grid(False)
+    if g["enabled"]:
+        ax.grid(
+            True,
+            axis=g.get("axis", "both"),
+            alpha=float(g["alpha"]),
+            linestyle=g["linestyle"],
+            color=g.get("color", "#B0B0B0"),
+            linewidth=g.get("line_width", 0.5),
+        )
 
 
 def _save(fig, path):
@@ -110,11 +159,23 @@ def plot_run_cv(run, cfg):
             v[~pr],
             yerr=e[~pr],
             fmt=cfg["markers"]["default"],
-            capsize=3,
-            label="complete",
+            capsize=cfg["cv"].get("error_capsize", 3),
+            color=cfg["cv"].get(
+                "complete_color", cfg["formulations"]["shared"]["color"]
+            ),
+            markersize=cfg["markers"]["size"],
+            label="Complete",
         )
         if np.any(pr):
-            ax.scatter(x[pr], v[pr], marker=cfg["cv"]["pruned_marker"], label="pruned")
+            ax.scatter(
+                x[pr],
+                v[pr],
+                marker=cfg["cv"]["pruned_marker"],
+                color=cfg["cv"].get(
+                    "pruned_color", cfg["formulations"]["direct"]["color"]
+                ),
+                label="Pruned",
+            )
         ax.set_xticks(x)
         ax.set_xticklabels(
             [str(number) for number in x],
@@ -123,7 +184,7 @@ def plot_run_cv(run, cfg):
         )
         ax.set_xlabel("Candidate order")
         ax.set_ylabel(f"Development CV {metric.upper()} [ps]")
-        ax.legend()
+        ax.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
         _finish(ax, cfg)
         return _save(fig, output_path(run / "plots", "cv", cfg))
 
@@ -157,9 +218,15 @@ def plot_run_blind(run, cfg):
         hi += 0.05 * span
     with plot_context(cfg):
         fig, ax = plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]))
-        for values, label in (
-            (led, "LED (mean-centered)"),
-            (corrected, "ML corrected"),
+        for values, label, color in (
+            (led, "LED (mean-centered)", cfg["reference"]["color"]),
+            (
+                corrected,
+                "ML corrected",
+                cfg["histogram"].get(
+                    "corrected_color", cfg["formulations"]["shared"]["color"]
+                ),
+            ),
         ):
             values = np.asarray(values, float).ravel()
             ax.hist(
@@ -167,11 +234,13 @@ def plot_run_blind(run, cfg):
                 bins=int(cfg["histogram"]["bins"]),
                 range=(lo, hi),
                 alpha=float(cfg["histogram"]["alpha"]),
+                histtype=cfg["histogram"]["histtype"],
+                color=color,
                 label=label,
             )
         ax.set_xlabel("Blind residual [ps]")
         ax.set_ylabel("Events")
-        ax.legend()
+        ax.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
         _finish(ax, cfg)
         return _save(fig, output_path(run / "plots", "blind", cfg))
 
@@ -231,7 +300,10 @@ def plot_run_xai(run, cfg):
     width, height = style["figsize"]
     cmap = mpl.colormaps.get_cmap(style.get("cmap", "viridis"))
     norm = mpl.colors.Normalize(vmin=0, vmax=1)
-    colors = ("#0072B2", "#D55E00")
+    colors = style.get(
+        "detector_colors",
+        cfg.get("preprocessing", {}).get("detector_colors", ["#0072B2", "#D55E00"]),
+    )
     with plot_context(cfg):
         if formulation == "shared":
             edges, centers, values = _xai_one_ns(time, importance)
@@ -243,7 +315,9 @@ def plot_run_xai(run, cfg):
                 gridspec_kw={"height_ratios": [2.0, 1.0]},
                 layout="constrained",
             )
-            for index, (color, linestyle) in enumerate(zip(colors, ("-", "--"))):
+            for index, (color, linestyle) in enumerate(
+                zip(colors, style.get("detector_linestyles", ["-", "--"]))
+            ):
                 top.plot(
                     time,
                     example[index],
@@ -252,7 +326,7 @@ def plot_run_xai(run, cfg):
                     label=f"Detector {index + 1}",
                     zorder=3,
                 )
-            top.legend(loc="upper right")
+            top.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
             top.set_ylabel("Signal [mV]")
             for left, right, value in zip(edges[:-1], edges[1:], values):
                 top.axvspan(
@@ -274,10 +348,9 @@ def plot_run_xai(run, cfg):
             bottom.plot(
                 centers,
                 values,
-                color="#222222",
-                linewidth=1,
-                marker="o",
-                markersize=2.5,
+                color=style.get("importance_color", "#333333"),
+                marker=style.get("importance_marker", "o"),
+                markersize=style.get("importance_marker_size", 2.5),
             )
             bottom.set_ylim(0, 1.08)
             bottom.set_ylabel("Normalized importance")
@@ -321,7 +394,7 @@ def plot_run_xai(run, cfg):
                         zorder=0,
                     )
                 ax.set_ylabel(f"Detector {channel + 1} [mV]")
-                ax.legend(loc="upper right")
+                ax.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
         axes[-1].set_xlabel("Time relative to LED [ns]")
         axes[0].set_xlim(time.min(), time.max())
         for ax in axes:
@@ -336,7 +409,7 @@ def plot_run_xai(run, cfg):
         colorbar.set_label("Normalized importance", labelpad=9)
         output = output_path(run / "plots", "xai", cfg)
         output.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(output, bbox_inches="tight", pad_inches=0.16)
+        fig.savefig(output)
         plt.close(fig)
         return output
 
@@ -365,7 +438,11 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
         if limit > 0:
             kwargs.update(vmin=-limit, vmax=limit)
     with plot_context(cfg):
-        fig, ax = plt.subplots(figsize=tuple(style["min_figsize"]))
+        figsize = [
+            max(float(minimum), float(per_model) * len(labels))
+            for minimum, per_model in zip(style["min_figsize"], style["per_model"])
+        ]
+        fig, ax = plt.subplots(figsize=tuple(figsize))
         im = ax.imshow(matrix, **kwargs)
         ax.set_xticks(range(len(labels)))
         ax.set_yticks(range(len(labels)))
@@ -382,6 +459,10 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
                         ha="center",
                         va="center",
                         fontsize=float(style["cell_text_size"]),
+                        color=style.get("contrast_text_color", "white")
+                        if abs(float(im.norm(matrix[i, j])) - 0.5) * 2
+                        > style.get("contrast_threshold", 0.7)
+                        else style.get("text_color", "#222222"),
                     )
         fig.colorbar(im, ax=ax)
         return _save(fig, path)
@@ -413,14 +494,31 @@ def scatter_with_labels(
                 yerr=yerr,
                 fmt="none",
                 capsize=float(cfg["scatter"]["error_capsize"]),
+                ecolor=cfg["scatter"].get("error_color", "#777777"),
             )
-        ax.scatter(x, y, s=float(cfg["scatter"]["marker_size"]))
+        palette = cfg.get("palette", ["#0072B2"])
+        colors = [
+            cfg["reference"]["color"]
+            if label == "LED reference"
+            else palette[index % len(palette)]
+            for index, label in enumerate(labels)
+        ]
+        ax.scatter(
+            x,
+            y,
+            s=float(cfg["scatter"]["marker_size"]),
+            c=colors,
+            edgecolors=cfg["scatter"].get("edge_color", "white"),
+            linewidths=cfg["scatter"].get("edge_line_width", 0.5),
+            zorder=3,
+        )
         for xi, yi, label in zip(x, y, labels):
             ax.annotate(
                 label,
                 (xi, yi),
                 xytext=tuple(cfg["scatter"]["annotation_offset"]),
                 textcoords="offset points",
+                fontsize=float(cfg["font"]["annotation_size"]),
             )
         if annotation:
             ax.text(0.03, 0.97, annotation, transform=ax.transAxes, ha="left", va="top")
@@ -445,6 +543,16 @@ def grouped_bar(labels, series, path, cfg, *, ylabel, title):
             off = (index - (len(series) - 1) / 2) * bar_width
             v = np.asarray(item["values"], float)
             e = np.asarray(item.get("errors", np.zeros_like(v)), float)
+            color = next(
+                (
+                    style["color"]
+                    for style in [*cfg["formulations"].values(), cfg["reference"]]
+                    if style["label"] == item["label"]
+                ),
+                cfg.get("palette", ["#0072B2"])[
+                    index % len(cfg.get("palette", ["#0072B2"]))
+                ],
+            )
             bars = ax.bar(
                 x + off,
                 v,
@@ -452,9 +560,12 @@ def grouped_bar(labels, series, path, cfg, *, ylabel, title):
                 yerr=e,
                 capsize=float(style["error_capsize"]),
                 label=item["label"],
+                color=color,
+                edgecolor=style["edge_color"],
+                linewidth=float(style["edge_line_width"]),
             )
             for bar, value, error in zip(bars, v, e):
-                if not np.isfinite(value):
+                if not np.isfinite(value) or not style.get("show_values", True):
                     continue
                 text = (
                     f"{int(round(value))} ± {int(round(error))} ps"
@@ -463,19 +574,26 @@ def grouped_bar(labels, series, path, cfg, *, ylabel, title):
                 )
                 ax.annotate(
                     text,
-                    (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                    (
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + (error if np.isfinite(error) else 0),
+                    ),
                     xytext=(0, float(style["annotation_offset_points"])),
                     textcoords="offset points",
                     ha="center",
                     va="bottom",
                     fontsize=float(cfg["font"]["annotation_size"]),
-                    rotation=90,
+                    rotation=style.get("annotation_rotation", 90),
                 )
+        lower, upper = ax.get_ylim()
+        ax.set_ylim(
+            lower, upper + (upper - lower) * float(style.get("headroom_fraction", 0.25))
+        )
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.legend()
+        ax.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
         _finish(ax, cfg)
         return _save(fig, path)
 

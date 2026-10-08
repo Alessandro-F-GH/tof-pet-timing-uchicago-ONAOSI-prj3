@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+from functools import wraps
+from waveform_analysis.reporting.plotting import plot_context, _finish as finish_axes
 from contextvars import ContextVar
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -26,8 +28,7 @@ def _save(fig, path):
 
 
 def _finish(ax):
-    g = _config()["grid"]
-    ax.grid(bool(g["enabled"]), alpha=float(g["alpha"]), linestyle=g["linestyle"])
+    finish_axes(ax, _config())
 
 
 def _finite(values):
@@ -108,13 +109,24 @@ def _hist(ax, values, bins, label, display, selection, color):
 
 
 def _legend(ax):
+    style = _config()["preprocessing"].get("legend", {})
     ax.legend(
-        loc="upper left",
-        bbox_to_anchor=(1.02, 1.0),
-        borderaxespad=0.0,
-        frameon=True,
-        title="Filled histogram = selected range",
+        loc=style.get("location", "upper left"),
+        bbox_to_anchor=style.get("bbox_to_anchor", (1.02, 1.0)),
+        title=style.get("title", "Filled histogram = selected range"),
+        ncols=int(_config().get("legend", {}).get("columns", 1)),
     )
+
+
+def _styled(function):
+    """Apply the batch style locally without changing global Matplotlib state."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with plot_context(_config()):
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _fig(wave=False):
@@ -122,6 +134,7 @@ def _fig(wave=False):
     return tuple(cfg["waveform_figsize"] if wave else cfg["figsize"])
 
 
+@_styled
 def plot_photopeak(amplitudes, intervals, path, title):
     cfg = _config()["preprocessing"]
     a = np.asarray(amplitudes, float)
@@ -149,6 +162,7 @@ def plot_photopeak(amplitudes, intervals, path, title):
     _save(fig, path)
 
 
+@_styled
 def plot_baseline_noise(rms, candidate, limits, path, title):
     cfg = _config()["preprocessing"]
     rms = np.asarray(rms, float)
@@ -176,6 +190,7 @@ def plot_baseline_noise(rms, candidate, limits, path, title):
     _save(fig, path)
 
 
+@_styled
 def plot_baseline_clipping(clearance, candidate, margin_mV, path, title):
     cfg = _config()["preprocessing"]
     clearance = np.asarray(clearance, float)
@@ -203,6 +218,7 @@ def plot_baseline_clipping(clearance, candidate, margin_mV, path, title):
     _save(fig, path)
 
 
+@_styled
 def plot_tot(hits, photo_mask, limits, path, title):
     cfg = _config()["preprocessing"]
     photo_mask = np.asarray(photo_mask, bool)
@@ -240,6 +256,7 @@ def plot_tot(hits, photo_mask, limits, path, title):
     _save(fig, path)
 
 
+@_styled
 def plot_materialized_event(preprocessed, family, channel_numbers, path, title):
     waves = (
         preprocessed.energy_windows_mV
@@ -276,6 +293,7 @@ def plot_materialized_event(preprocessed, family, channel_numbers, path, title):
     return Path(path)
 
 
+@_styled
 def plot_led_selection(scan, selected, path, title):
     rows = list(scan)
     fig, ax = plt.subplots(figsize=_fig())
