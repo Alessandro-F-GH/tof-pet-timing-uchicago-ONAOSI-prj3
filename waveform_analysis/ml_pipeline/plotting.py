@@ -1,5 +1,5 @@
 from __future__ import annotations
-import csv,json,logging
+import csv,json
 from contextlib import contextmanager
 from pathlib import Path
 import matplotlib as mpl
@@ -47,31 +47,6 @@ def plot_run_blind(run,cfg):
             ax.hist(values[np.isfinite(values)],bins=int(cfg["histogram"]["bins"]),range=(lo,hi),alpha=float(cfg["histogram"]["alpha"]),label=label)
         ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg)
         return _save(fig,output_path(run/"plots","blind",cfg))
-def _xai_example_from_cache(run, event_index, n_samples):
-    from .dataset import load_prepared_dataset
-    from .view import mode_family
-    config=json.loads((run/"config.json").read_text(encoding="utf-8"))
-    family=mode_family(config["mode"])
-    cache=Path(config["preprocessing"]["cache_dir"])/"blind_ml"/"prepared"
-    if not cache.is_dir():return None
-    for directory in cache.iterdir():
-        manifest_path=directory/"manifest.json"
-        if not manifest_path.is_file():continue
-        try:
-            meta=json.loads(manifest_path.read_text(encoding="utf-8"))
-            if meta.get("dataset_role")!="blind" or meta.get("mode")!=config["mode"] or meta.get("window_ns")!=config["window_ns"] or int(meta.get("subsampling",-1))!=int(config["ml_input"]["subsampling"]):continue
-            if str(Path(meta["dataset_source"]).resolve())!=str(Path(config["blind"]["root_file"]).resolve()):continue
-            prepared=load_prepared_dataset(directory)
-            ids=np.flatnonzero(np.asarray(prepared.event_index)==event_index)
-            if ids.size!=1:continue
-            waves=prepared.energy_windows if family=="energy" else prepared.timing_windows
-            transform=prepared.energy_transform if family=="energy" else prepared.timing_transform
-            if waves is None or transform is None or waves.shape[-1]!=n_samples:continue
-            return np.asarray(transform.inverse(waves[int(ids[0])]),float)
-        except (OSError,ValueError,KeyError,TypeError,json.JSONDecodeError):
-            continue
-    return None
-
 def _xai_one_ns(time,importance):
     # Aggregate per-sample group importance in fixed 1 ns time bins.
     edges=np.arange(np.floor(time.min()),np.ceil(time.max())+1,1.0)
@@ -93,25 +68,18 @@ def plot_run_xai(run,cfg):
     with np.load(path) as d:
         time=np.asarray(d["time_ps"],float).reshape(-1)/1000.0
         importance=np.asarray(d["importance_ps"],float).reshape(-1)
-        example=np.asarray(d["example_waveforms_mV"],float) if "example_waveforms_mV" in d else None
-        event_id=int(np.asarray(d["example_event_index"]).item()) if "example_event_index" in d else (int(np.asarray(d["event_index"])[0]) if "event_index" in d and np.asarray(d["event_index"]).size else None)
+        example=np.asarray(d["example_waveforms_mV"],float)
     if time.size<2 or importance.size!=time.size or not np.all(np.isfinite(time)):return None
-    if (example is None or example.shape!=(2,time.size)) and event_id is not None:
-        example=_xai_example_from_cache(run,event_id,time.size)
+    if example.shape!=(2,time.size):raise ValueError(f"XAI waveform pair shape mismatch in {path}: {example.shape}")
     edges,centers,values=_xai_one_ns(time,importance)
     style=cfg["xai"];width,height=style["figsize"]
     with plot_context(cfg):
         fig,(top,bottom)=plt.subplots(2,1,figsize=(max(float(width),7.2),max(float(height),5.4)),sharex=True,gridspec_kw={"height_ratios":[2.0,1.0]},layout="constrained")
         norm=mpl.colors.Normalize(vmin=0,vmax=1);cmap=mpl.colormaps.get_cmap(style.get("cmap","viridis"))
-        if example is not None and example.shape==(2,time.size):
-            for index,(color,linestyle) in enumerate((("#0072B2","-"),("#D55E00","--"))):
-                top.plot(time,example[index],color=color,linestyle=linestyle,label=f"Detector {index+1}",zorder=3)
-            top.legend(loc="upper right")
-            top.set_ylabel("Signal [mV]")
-        else:
-            top.text(0.5,0.5,"Waveform example unavailable in saved artifacts",ha="center",va="center",transform=top.transAxes)
-            top.set_ylabel("Signal [mV]")
-            logging.getLogger(__name__).warning("XAI waveform example unavailable for %s; keeping importance plot",run)
+        for index,(color,linestyle) in enumerate((("#0072B2","-"),("#D55E00","--"))):
+            top.plot(time,example[index],color=color,linestyle=linestyle,label=f"Detector {index+1}",zorder=3)
+        top.legend(loc="upper right")
+        top.set_ylabel("Signal [mV]")
         for left,right,value in zip(edges[:-1],edges[1:],values):
             top.axvspan(left,right,color=cmap(norm(value)),alpha=float(style.get("band_alpha",0.25)),linewidth=0,zorder=0)
         bottom.bar(centers,values,width=np.diff(edges),color=[cmap(norm(v)) for v in values],edgecolor="white",linewidth=0.5,align="center")
