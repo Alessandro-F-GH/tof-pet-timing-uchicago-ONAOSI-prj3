@@ -71,28 +71,54 @@ def plot_run_xai(run,cfg):
     if not path.is_file():return None
     with np.load(path) as d:
         time=np.asarray(d["time_ps"],float).reshape(-1)/1000.0
-        importance=np.asarray(d["importance_ps"],float).reshape(-1)
+        importance=np.asarray(d["importance_ps"],float)
         example=np.asarray(d["example_waveforms_mV"],float)
-    if time.size<2 or importance.size!=time.size or not np.all(np.isfinite(time)):return None
+        formulation=str(np.asarray(d["estimator_formulation"]).item())
+    if formulation not in {"shared","direct"}:raise ValueError(f"Unknown XAI formulation {formulation!r} in {path}")
+    if time.size<2 or not np.all(np.isfinite(time)):return None
     if example.shape!=(2,time.size):raise ValueError(f"XAI waveform pair shape mismatch in {path}: {example.shape}")
-    edges,centers,values=_xai_one_ns(time,importance)
+    expected_shape=(time.size,) if formulation=="shared" else (2,time.size)
+    if importance.shape!=expected_shape:raise ValueError(f"XAI importance shape mismatch in {path}: {importance.shape}, expected {expected_shape}")
     style=cfg["xai"];width,height=style["figsize"]
+    cmap=mpl.colormaps.get_cmap(style.get("cmap","viridis"))
+    norm=mpl.colors.Normalize(vmin=0,vmax=1)
+    colors=("#0072B2","#D55E00")
     with plot_context(cfg):
-        fig,(top,bottom)=plt.subplots(2,1,figsize=(max(float(width),7.2),max(float(height),5.4)),sharex=True,gridspec_kw={"height_ratios":[2.0,1.0]},layout="constrained")
-        norm=mpl.colors.Normalize(vmin=0,vmax=1);cmap=mpl.colormaps.get_cmap(style.get("cmap","viridis"))
-        for index,(color,linestyle) in enumerate((("#0072B2","-"),("#D55E00","--"))):
-            top.plot(time,example[index],color=color,linestyle=linestyle,label=f"Detector {index+1}",zorder=3)
-        top.legend(loc="upper right")
-        top.set_ylabel("Signal [mV]")
-        for left,right,value in zip(edges[:-1],edges[1:],values):
-            top.axvspan(left,right,color=cmap(norm(value)),alpha=float(style.get("band_alpha",0.25)),linewidth=0,zorder=0)
-        bottom.bar(centers,values,width=np.diff(edges),color=[cmap(norm(v)) for v in values],edgecolor="white",linewidth=0.5,align="center")
-        bottom.plot(centers,values,color="#222222",linewidth=1,marker="o",markersize=2.5)
-        bottom.set_ylim(0,1.08);bottom.set_ylabel("Normalized importance");bottom.set_xlabel("Time relative to LED [ns]")
-        top.set_xlim(time.min(),time.max())
-        colorbar=fig.colorbar(mpl.cm.ScalarMappable(norm=norm,cmap=cmap),ax=[top,bottom],location="right",fraction=0.035,pad=0.035)
+        if formulation=="shared":
+            edges,centers,values=_xai_one_ns(time,importance)
+            fig,(top,bottom)=plt.subplots(2,1,figsize=(max(float(width),7.2),max(float(height),5.4)),sharex=True,gridspec_kw={"height_ratios":[2.0,1.0]},layout="constrained")
+            for index,(color,linestyle) in enumerate(zip(colors,("-","--"))):
+                top.plot(time,example[index],color=color,linestyle=linestyle,label=f"Detector {index+1}",zorder=3)
+            top.legend(loc="upper right")
+            top.set_ylabel("Signal [mV]")
+            for left,right,value in zip(edges[:-1],edges[1:],values):
+                top.axvspan(left,right,color=cmap(norm(value)),alpha=float(style.get("band_alpha",0.25)),linewidth=0,zorder=0)
+            bottom.bar(centers,values,width=np.diff(edges),color=[cmap(norm(v)) for v in values],edgecolor="white",linewidth=0.5)
+            bottom.plot(centers,values,color="#222222",linewidth=1,marker="o",markersize=2.5)
+            bottom.set_ylim(0,1.08);bottom.set_ylabel("Normalized importance")
+            axes=[top,bottom]
+        else:
+            # Independent interventions for each input channel; normalize to
+            # one common maximum so channel values and colors are comparable.
+            bins=[_xai_one_ns(time,importance[channel]) for channel in range(2)]
+            maxima=[max(float(np.nanmax(importance[channel])),0.0) for channel in range(2)]
+            # Per-bin values returned by _xai_one_ns are individually normalized;
+            # rescale using each channel's maximum relative to the global maximum.
+            global_max=max(maxima)
+            fig,axes=plt.subplots(2,1,figsize=(max(float(width),7.2),max(float(height),5.8)),sharex=True,layout="constrained")
+            for channel,ax in enumerate(axes):
+                edges,_,relative=bins[channel]
+                values=relative*(maxima[channel]/global_max) if global_max>0 else np.zeros_like(relative)
+                ax.plot(time,example[channel],color=colors[channel],label=f"Detector {channel+1}",zorder=3)
+                for left,right,value in zip(edges[:-1],edges[1:],values):
+                    ax.axvspan(left,right,color=cmap(norm(value)),alpha=float(style.get("band_alpha",0.32)),linewidth=0,zorder=0)
+                ax.set_ylabel(f"Detector {channel+1} [mV]")
+                ax.legend(loc="upper right")
+        axes[-1].set_xlabel("Time relative to LED [ns]")
+        axes[0].set_xlim(time.min(),time.max())
+        for ax in axes:_finish(ax,cfg)
+        colorbar=fig.colorbar(mpl.cm.ScalarMappable(norm=norm,cmap=cmap),ax=axes,location="right",fraction=0.035,pad=0.045)
         colorbar.set_label("Normalized importance",labelpad=9)
-        _finish(top,cfg);_finish(bottom,cfg)
         output=output_path(run/"plots","xai",cfg);output.parent.mkdir(parents=True,exist_ok=True)
         fig.savefig(output,bbox_inches="tight",pad_inches=0.16);plt.close(fig)
         return output
