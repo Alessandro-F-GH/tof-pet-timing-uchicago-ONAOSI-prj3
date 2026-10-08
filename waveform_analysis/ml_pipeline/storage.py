@@ -20,6 +20,7 @@ class RunStore:
         self.root=Path(root).resolve();self.root.mkdir(parents=True,exist_ok=True);self._organize_existing_layout()
     def _organize_existing_layout(self):
         moves={
+            **{f"{name}.json":self.root/"metadata"/f"{name}.json" for name in ['manifest','state','config','candidates','best','final_fit','blind','bootstrap']},
             "folds.csv":self.root/"tables"/"folds.csv",
             "cv.csv":self.root/"tables"/"cv.csv",
             "pred.npz":self.root/"artifacts"/"pred.npz",
@@ -31,9 +32,11 @@ class RunStore:
             if source.is_file() and not destination.exists():
                 destination.parent.mkdir(parents=True,exist_ok=True);shutil.move(str(source),str(destination))
     @property
-    def manifest_path(self):return self.root/"manifest.json"
+    def metadata_dir(self):return self.root/"metadata"
     @property
-    def state_path(self):return self.root/"state.json"
+    def manifest_path(self):return self.metadata_dir/"manifest.json"
+    @property
+    def state_path(self):return self.metadata_dir/"state.json"
     @property
     def tables_dir(self):return self.root/"tables"
     @property
@@ -43,15 +46,15 @@ class RunStore:
     @property
     def cv_path(self):return self.tables_dir/"cv.csv"
     @property
-    def candidates_path(self):return self.root/"candidates.json"
+    def candidates_path(self):return self.metadata_dir/"candidates.json"
     @property
-    def best_path(self):return self.root/"best.json"
+    def best_path(self):return self.metadata_dir/"best.json"
     @property
-    def final_fit_path(self):return self.root/"final_fit.json"
+    def final_fit_path(self):return self.metadata_dir/"final_fit.json"
     @property
-    def blind_path(self):return self.root/"blind.json"
+    def blind_path(self):return self.metadata_dir/"blind.json"
     @property
-    def bootstrap_path(self):return self.root/"bootstrap.json"
+    def bootstrap_path(self):return self.metadata_dir/"bootstrap.json"
     @property
     def bootstrap_draws_path(self):return self.artifacts_dir/"bootstrap.npz"
     @property
@@ -63,7 +66,7 @@ class RunStore:
     @property
     def plots_dir(self):return self.root/"plots"
     def write_manifest(self,v):atomic_json(self.manifest_path,v)
-    def write_resolved_config(self,v):atomic_json(self.root/"config.json",v)
+    def write_resolved_config(self,v):atomic_json(self.metadata_dir/"config.json",v)
     def write_candidates(self,v):atomic_json(self.candidates_path,v)
     def write_best(self,v):atomic_json(self.best_path,v)
     def write_final_fit(self,v):atomic_json(self.final_fit_path,v)
