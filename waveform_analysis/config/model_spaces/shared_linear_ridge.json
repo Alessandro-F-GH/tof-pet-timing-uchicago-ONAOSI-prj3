@@ -3,8 +3,8 @@
   "ridge_cv": {
     "alphas": {
       "low": 1e-08,
-      "high": 1000.0,
-      "num": 23
+      "high": 1e3,
+      "num": 50
     },
     "cv": null,
     "scoring": "neg_mean_squared_error",

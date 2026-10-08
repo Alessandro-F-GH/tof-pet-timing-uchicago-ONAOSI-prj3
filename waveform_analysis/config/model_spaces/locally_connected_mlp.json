@@ -29,16 +29,16 @@
       "value": 1
     },
     "max_correction_ps": {
-      "type": "categorical",
-      "choices": [20, 60, 120, 500]
+      "type": "fixed",
+      "choices": [500]
     },
     "learning_rate": {
       "type": "categorical",
       "choices": [1e-2, 1e-3, 1e-4, 1e-5]
     },
     "batch_size": {
-      "type": "fixed",
-      "value": 32
+      "type": "categorical",
+      "choices": [32, 128]
     }
   },
   "training": {
