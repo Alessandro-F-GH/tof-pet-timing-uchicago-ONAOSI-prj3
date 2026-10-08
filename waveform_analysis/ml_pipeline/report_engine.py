@@ -6,6 +6,7 @@ from .common import atomic_json,write_csv
 from .plotting import grouped_bar,heatmap,load_plot_config,output_path,render_run_plots,scatter_with_labels
 from .splits import semantic_seed
 from .stats import align_by_event_id,paired_model_bootstrap,pearson_r
+from .storage import RunStore
 
 def _json(path):return json.loads(Path(path).read_text(encoding="utf-8"))
 def _csv(path):
@@ -22,11 +23,11 @@ def collect_runs(root):
     if not index.is_file():raise FileNotFoundError(f"Result root has no tables/runs.csv: {root}")
     runs=[]
     for row in _csv(index):
-        d=(root/row["path"]).resolve();m=d/"manifest.json"
+        d=(root/row["path"]).resolve();RunStore(d);m=d/"metadata"/"manifest.json"
         if not m.is_file():continue
         manifest=_json(m)
         if manifest.get("status")!="complete":continue
-        runs.append({"directory":d,"manifest":manifest,"best":_json(d/"best.json"),"blind":_json(d/"blind.json"),"bootstrap":_json(d/"bootstrap.json")})
+        runs.append({"directory":d,"manifest":manifest,"best":_json(d/"metadata"/"best.json"),"blind":_json(d/"metadata"/"blind.json"),"bootstrap":_json(d/"metadata"/"bootstrap.json")})
     if not runs:raise RuntimeError("No complete model results found")
     return runs
 def _summaries(runs):
