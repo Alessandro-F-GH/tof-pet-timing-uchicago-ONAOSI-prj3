@@ -154,7 +154,10 @@ processes. Real MiniRocket transforms are exercised. Comparisons cover trained
 weights/coefficients, predictions, feature arrays, gradient explanations,
 metadata, logs, filenames, checkpoint payloads, legacy pickle loading, common
 CV folds and paired blind bootstrap arrays. The baseline Git object must remain
-available; these tests use no network and skip no model.
+available; these tests use no network. Following the requested RidgeCV change,
+the two linear Ridge variants are compared with sklearn in `test_ridge_cv.py`
+instead of requiring the old outer-search Ridge outputs. The other eight model
+families and scientific protocol retain exact baseline comparisons.
 
 `test_package_compatibility.py` checks module identity, serialized class names,
 typed defaults, tensor conversion, the model adapter, Torch-free signal imports,
@@ -171,7 +174,7 @@ python -m pytest waveform_analysis/tests/test_signal_regression.py waveform_anal
 python -m pytest waveform_analysis/tests -q --continue-on-collection-errors
 ```
 
-Observed: 59 added checks passed. The full suite ran **101 passing tests, 2 failing
+Original architectural migration verification: 59 added checks passed. The full suite ran **101 passing tests, 2 failing
 tests and 1 collection error**. The untouched baseline ran 42 passing tests with
 the same two failures and error:
 
@@ -188,3 +191,11 @@ Validation uses synthetic inputs and CPU execution with identical installed
 dependencies. GPU behavior and end-to-end production acquisition datasets were
 not verified. Exact equality here establishes the tested cases rather than a
 proof over all possible inputs, hardware or library versions.
+
+The subsequent linear RidgeCV selection change is intentional and described in
+[README.md](README.md#linear-ridgecv). Its tests also cover full development
+fitting, blind isolation, batch reports, cache invalidation and saved-fit resume.
+
+RidgeCV verification: 16 dedicated checks pass, including Ridge-only and mixed
+Ridge/MLP batches with real fitting, persistence, blind evaluation and reporting.
+The outer-search configuration tests now validate RidgeCV spaces separately.

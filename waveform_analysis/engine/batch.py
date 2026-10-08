@@ -10,6 +10,7 @@ from waveform_analysis.engine.preprocessing import (
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.engine.study import run_study
 from waveform_analysis.engine.xai import XAI_METHOD_VERSION
+from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
 
 BATCH_SCHEMA_VERSION = 11
 
@@ -65,14 +66,17 @@ def _planner_fingerprints(config):
             "ml_input": config["ml_input"],
         }
     )
-    cv = canonical_hash(
-        {
-            "development": dev,
-            "cross_validation": config["cross_validation"],
-            "model": config["model"],
-            "seed": config["seed"],
-        }
-    )
+    cv_dependencies = {
+        "development": dev,
+        "cross_validation": config["cross_validation"],
+        "model": config["model"],
+        "seed": config["seed"],
+    }
+    if config["model"]["name"] in LINEAR_RIDGE_MODELS:
+        cv_dependencies.pop("cross_validation")
+        cv_dependencies["selection_method"] = "ridge_cv"
+        cv_dependencies["ridge_cv_version"] = RIDGE_CV_VERSION
+    cv = canonical_hash(cv_dependencies)
     final = canonical_hash(
         {"cv": cv, "development": dev, "model": config["model"], "seed": config["seed"]}
     )

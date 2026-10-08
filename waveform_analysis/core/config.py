@@ -16,6 +16,7 @@ from .exceptions import ConfigError
 from pathlib import Path
 
 from waveform_analysis.core.io import canonical_hash
+from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, normalize_ridge_space
 
 CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
 MODEL_SELECTION_METRICS = ("rmse", "ctr")
@@ -119,6 +120,13 @@ def _model(owner: Path, raw: str | dict[str, Any], root: Path) -> dict[str, Any]
         raise ConfigError(
             "model optimization must not define its own seed; use protocol.seed"
         )
+    if name in LINEAR_RIDGE_MODELS:
+        try:
+            space = normalize_ridge_space(space, name)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ConfigError(
+                f"Invalid RidgeCV configuration for {name}: {exc}"
+            ) from exc
     return {"name": name, "space": space}
 
 
@@ -435,7 +443,6 @@ def load_batch_config(
     protocol_required = {
         "seed",
         "preprocessing_config",
-        "cross_validation",
         "bootstrap",
         "fit",
         "ml_output",
@@ -443,14 +450,16 @@ def load_batch_config(
     if not protocol_required <= set(protocol):
         raise ConfigError(f"protocol requires {sorted(protocol_required)}")
     extra_protocol = set(protocol) - (
-        protocol_required | {"ml_input", "runtime", "xai"}
+        protocol_required | {"cross_validation", "ml_input", "runtime", "xai"}
     )
     if extra_protocol:
         raise ConfigError(f"Unsupported protocol fields: {sorted(extra_protocol)}")
     normalized_protocol = {
         "seed": int(protocol["seed"]),
         "preprocessing_config": str(protocol["preprocessing_config"]),
-        "cross_validation": _cross_validation(protocol["cross_validation"]),
+        "cross_validation": _cross_validation(protocol["cross_validation"])
+        if protocol.get("cross_validation") is not None
+        else None,
         "bootstrap": _bootstrap(protocol["bootstrap"]),
         "fit": copy.deepcopy(protocol["fit"]),
         "ml_input": copy.deepcopy(protocol.get("ml_input", {"subsampling": 1})),
@@ -495,6 +504,13 @@ def load_batch_config(
                 if _excluded(model_name, mode, str(window_name), rules):
                     continue
                 model = _model(source, model_raw, root)
+                if (
+                    model_name not in LINEAR_RIDGE_MODELS
+                    and normalized_protocol["cross_validation"] is None
+                ):
+                    raise ConfigError(
+                        f"protocol.cross_validation is required for {model_name}"
+                    )
                 output_dir = (
                     Path(results["directory"])
                     / _mode_tag(mode)

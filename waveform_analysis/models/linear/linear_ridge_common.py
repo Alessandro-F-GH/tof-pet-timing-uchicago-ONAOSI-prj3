@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import RidgeCV
+from waveform_analysis.core.ridge import ridge_cv_config
 
 
 @dataclass
@@ -16,7 +17,7 @@ class LinearTransformArtifact:
 
 @dataclass
 class LinearRidgeArtifact:
-    regressor: Ridge
+    regressor: RidgeCV
     metadata: dict[str, Any]
 
 
@@ -75,6 +76,7 @@ def fit_ridge(
     model_name: str,
     fit_intercept: bool,
     metadata: dict[str, Any],
+    config: dict[str, Any],
 ):
     x = np.asarray(train_x, dtype=np.float64)
     y = np.asarray(train_target, dtype=np.float64).reshape(-1)
@@ -89,15 +91,18 @@ def fit_ridge(
     if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
         raise ValueError(f"{model_name} input/target contains non-finite values")
 
-    alpha = float(params["ridge_alpha"])
-    if not np.isfinite(alpha) or alpha <= 0:
-        raise ValueError(f"{model_name} ridge_alpha must be finite and positive")
-
-    regressor = Ridge(
-        alpha=alpha,
+    del params  # Lambda is selected internally, never by manual/Optuna candidates.
+    settings = ridge_cv_config(config)
+    if y.size < 2:
+        raise ValueError(
+            f"{model_name} RidgeCV requires at least two development events"
+        )
+    regressor = RidgeCV(
+        alphas=settings.alphas,
         fit_intercept=bool(fit_intercept),
-        solver="lsqr",
-        tol=1e-4,
+        cv=settings.cv,
+        scoring=settings.scoring,
+        gcv_mode=settings.gcv_mode,
     )
     regressor.fit(x, y)
 
@@ -105,10 +110,12 @@ def fit_ridge(
         regressor=regressor,
         metadata={
             **metadata,
-            "ridge_alpha": alpha,
+            "ridge_alpha": float(regressor.alpha_),
             "fit_intercept": bool(fit_intercept),
-            "solver": "lsqr",
-            "tol": 1e-4,
+            "selection_method": "ridge_cv",
+            "ridge_cv": settings.as_dict(),
+            "internal_cv_mse_ps2": -float(regressor.best_score_),
+            "internal_cv": "leave_one_out" if settings.cv is None else "k_fold",
             "training_events": int(y.size),
             "feature_count": int(x.shape[1]),
         },

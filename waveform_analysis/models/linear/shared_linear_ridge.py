@@ -39,13 +39,14 @@ def transform(artifact: LinearTransformArtifact, pair: np.ndarray) -> np.ndarray
 
 
 def fit(params, train_x, train_target, *, seed, config):
-    del seed, config
+    del seed
     return fit_ridge(
         params,
         train_x,
         train_target,
         model_name="shared_linear_ridge",
         fit_intercept=False,
+        config=config,
         metadata={
             "input_definition": "sample-wise difference of normalized detector waveforms: s1-s2",
             "prediction_definition": "w^T(s1-s2) = g(s1)-g(s2) [ps]",
@@ -72,6 +73,7 @@ MODEL_SPEC = ModelSpec(
     explain=explain,
     estimator_formulation="shared",
     feature_transform=FEATURE_TRANSFORM,
+    selection_method="ridge_cv",
 )
 
 

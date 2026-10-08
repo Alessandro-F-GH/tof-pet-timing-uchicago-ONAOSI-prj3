@@ -40,13 +40,14 @@ def transform(artifact: LinearTransformArtifact, pair: np.ndarray) -> np.ndarray
 
 
 def fit(params, train_x, train_target, *, seed, config):
-    del seed, config
+    del seed
     return fit_ridge(
         params,
         train_x,
         train_target,
         model_name="direct_linear_ridge",
         fit_intercept=True,
+        config=config,
         metadata={
             "input_definition": "concatenated normalized detector waveforms [s1,s2]",
             "prediction_definition": "w1^T s1 + w2^T s2 + b [ps]",
@@ -74,6 +75,7 @@ MODEL_SPEC = ModelSpec(
     explain=explain,
     estimator_formulation="direct",
     feature_transform=FEATURE_TRANSFORM,
+    selection_method="ridge_cv",
 )
 
 

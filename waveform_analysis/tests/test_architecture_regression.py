@@ -1,4 +1,4 @@
-"""Compare all registered models with the untouched Git baseline, exactly."""
+"""Compare unchanged registered models with the untouched Git baseline, exactly."""
 
 from __future__ import annotations
 
@@ -17,14 +17,12 @@ ROOT = Path(__file__).resolve().parents[2]
 PROBE = Path(__file__).parent / "fixtures" / "model_probe.py"
 MODELS = (
     "antisymmetric_mlp",
-    "direct_linear_ridge",
     "direct_minirocket",
     "direct_mlp",
     "independent_cnn1d",
     "locally_connected_mlp",
     "onishi_cnn",
     "shared_cnn1d",
-    "shared_linear_ridge",
     "shared_minirocket",
     "protocol",
 )

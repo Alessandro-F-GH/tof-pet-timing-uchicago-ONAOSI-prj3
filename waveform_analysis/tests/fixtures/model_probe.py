@@ -116,7 +116,11 @@ def main() -> None:
                 loaded = pickle.load(stream)
             np.testing.assert_array_equal(spec.predict(loaded, predict_x), prediction)
         # Load baseline pickles using migrated import paths and frozen transforms.
-        if len(sys.argv) > 3 and not hasattr(artifact, "model"):
+        if (
+            len(sys.argv) > 3
+            and not hasattr(artifact, "model")
+            and name not in {"direct_linear_ridge", "shared_linear_ridge"}
+        ):
             source = Path(sys.argv[3]) / name
             with (source / "model.pkl").open("rb") as stream:
                 loaded = pickle.load(stream)

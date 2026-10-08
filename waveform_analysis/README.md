@@ -8,7 +8,7 @@ pure NumPy timing/baseline APIs and exact numerical regression checks.
 The pipeline uses three explicit scientific dataset roles:
 
 1. **control** — fit preprocessing, event-selection and LED criteria once;
-2. **development** — apply the frozen control rules, run deterministic common-fold K-fold CV, tune/select the model, and train the final selected configuration;
+2. **development** — apply the frozen control rules, select/train the model using the method described below;
 3. **blind** — apply the same frozen rules and evaluate the already-selected final model once.
 
 The blind dataset never participates in preprocessing fitting, fold construction, hyperparameter tuning, pruning, model/window/formulation selection, or final training.
@@ -17,13 +17,51 @@ The blind dataset never participates in preprocessing fitting, fold construction
 
 Model-input transforms are prepared outside the fold loop when they do not belong to the downstream estimator fit.
 
-- Linear Ridge inputs are deterministic: `s1-s2` for the shared model and `[s1,s2]` concatenation for the direct model are materialized once per dataset and CV folds only slice rows.
+- Linear Ridge inputs are deterministic: `s1-s2` for the shared model and `[s1,s2]` concatenation for the direct model are materialized once per dataset; RidgeCV uses the entire development feature matrix.
 - MiniRocket transforms (including their fitted scaling) are fitted once on the prepared control dataset, then frozen and applied once to development and blind. CV tunes/fits only the downstream estimator on the cached features.
 - The frozen transform identity is part of the CV/final-fit fingerprints, so results produced with fold-fitted transforms are not resume-compatible.
 
+## Linear RidgeCV
+
+`direct_linear_ridge` and `shared_linear_ridge` use sklearn `RidgeCV` to select
+lambda and fit all development events. They bypass the normal fixed/grid/Optuna
+search, common outer folds and pruning. Direct Ridge retains an intercept;
+shared Ridge remains a difference scorer without an intercept. MiniRocket's
+Ridge estimator continues to use the existing outer validation pipeline.
+
+Model-space settings:
+
+```json
+{"model": "direct_linear_ridge", "ridge_cv": {
+  "alphas": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
+  "cv": null, "gcv_mode": "auto", "scoring": "neg_mean_squared_error"
+}}
+```
+
+`cv: null` selects efficient leave-one-out CV; an integer >= 2 selects sklearn
+K-fold CV. Defaults contain 23 logarithmically spaced positive alphas from
+1e-8 to 1e3. This intentionally changes lambda selection from CTR-based outer
+validation to MSE on the estimator's unmodified predictions. Output clipping,
+preprocessing, blind CTR/RMSE, bootstrap and XAI keep their existing definitions.
+The independent control/blind populations never become Ridge training events.
+
+Legacy `parameters.ridge_alpha` fixed/categorical grids are migrated;
+continuous ranges become 23 linear/logarithmic grid points. Obsolete outer
+optimization/solver settings are ignored for these two models. New `ridge_cv`
+settings take precedence. Ridge-only batches may omit `protocol.cross_validation`;
+mixed batches retain it for the other models.
+
+Ridge outputs retain `best.json`, `final_fit.json`, saved models and blind
+artifacts. Outer validation fields are null and no outer fold/candidate table
+is generated. `report/tables/ridge_cv.csv` records lambda, internal MSE in ps²
+and full development training count. Validation tables/plots and development
+CV winner comparisons include only models using outer CV; Ridge window plots
+show every window separately. Existing Ridge runs rebuild once; alpha-grid
+changes invalidate their fit, while unused outer-CV changes do not.
+
 ## Development CV and pruning
 
-Every `(mode, window)` development population gets one deterministic K-fold definition derived from the single batch seed. Every model and every candidate uses the same folds in the same order. CTR and RMSE are always computed, together with LED CTR/RMSE on the exact same validation events.
+For models other than the two linear Ridge variants, every `(mode, window)` development population gets one deterministic K-fold definition derived from the single batch seed. Every model and every candidate uses the same folds in the same order. CTR and RMSE are always computed, together with LED CTR/RMSE on the exact same validation events.
 
 Pruning is controlled by `protocol.cross_validation.pruning`. Startup candidates complete all folds. Later candidates are compared only on folds already completed by that candidate. LED comparison is evaluated first; then, if available, the best fully evaluated incumbent is compared on those same fold IDs. Lower is better and pruning uses a strict `degradation_ps > tolerance_ps` rule, so equality does not prune. Tolerances may be scalar or fold-count mappings.
 

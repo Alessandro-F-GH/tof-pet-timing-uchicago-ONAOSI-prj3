@@ -72,6 +72,10 @@ def collect_runs(root):
     return runs
 
 
+def _uses_development_cv(run):
+    return run["manifest"].get("selection_method", "development_cv") != "ridge_cv"
+
+
 def _summaries(runs):
     validation = []
     blind = []
@@ -84,17 +88,18 @@ def _summaries(runs):
             "formulation": m["estimator_formulation"],
             "candidate_id": b["candidate_id"],
         }
-        validation.append(
-            {
-                **base,
-                "selection_metric": b["selection_metric"],
-                "ctr_mean_ps": b["validation_ctr_mean_ps"],
-                "ctr_std_ps": b["validation_ctr_std_ps"],
-                "rmse_mean_ps": b["validation_rmse_mean_ps"],
-                "rmse_std_ps": b["validation_rmse_std_ps"],
-                "folds": b["folds"],
-            }
-        )
+        if _uses_development_cv(run):
+            validation.append(
+                {
+                    **base,
+                    "selection_metric": b["selection_metric"],
+                    "ctr_mean_ps": b["validation_ctr_mean_ps"],
+                    "ctr_std_ps": b["validation_ctr_std_ps"],
+                    "rmse_mean_ps": b["validation_rmse_mean_ps"],
+                    "rmse_std_ps": b["validation_rmse_std_ps"],
+                    "folds": b["folds"],
+                }
+            )
         blind.append(
             {
                 **base,
@@ -208,6 +213,22 @@ def _scatters(group, directory, cfg):
         if np.isfinite(r)
         else "Model-only Pearson r = n/a",
     )
+    group = [run for run in group if _uses_development_cv(run)]
+    if not group:
+        for metric in ("ctr", "rmse"):
+            output_path(directory, f"validation_vs_blind_{metric}", cfg).unlink(
+                missing_ok=True
+            )
+        return
+    labels = [run["manifest"]["model"] for run in group]
+    ctr = np.asarray([run["blind"]["ctr_ps"] for run in group], float)
+    rmse = np.asarray([run["blind"]["rmse_ps"] for run in group], float)
+    ctr_e = np.asarray(
+        [run["bootstrap"]["ctr_bootstrap_std_ps"] for run in group], float
+    )
+    rmse_e = np.asarray(
+        [run["bootstrap"]["rmse_bootstrap_std_ps"] for run in group], float
+    )
     vctr = np.asarray([r["best"]["validation_ctr_mean_ps"] for r in group])
     vrmse = np.asarray([r["best"]["validation_rmse_mean_ps"] for r in group])
     for metric, x, y, e in (("ctr", vctr, ctr, ctr_e), ("rmse", vrmse, rmse, rmse_e)):
@@ -239,6 +260,33 @@ def _windows(runs, root, cfg):
             stale.unlink()
         if len(windows) < 2:
             continue
+        for model in sorted(
+            {r["manifest"]["model"] for r in mr if not _uses_development_cv(r)}
+        ):
+            model_runs = sorted(
+                [r for r in mr if r["manifest"]["model"] == model],
+                key=lambda r: str(r["manifest"].get("window_name")),
+            )
+            for metric in ("ctr", "rmse"):
+                grouped_bar(
+                    [str(r["manifest"].get("window_name")) for r in model_runs],
+                    [
+                        {
+                            "label": model,
+                            "values": [r["blind"][f"{metric}_ps"] for r in model_runs],
+                            "errors": [
+                                r["bootstrap"][f"{metric}_bootstrap_std_ps"]
+                                for r in model_runs
+                            ],
+                        }
+                    ],
+                    output_path(directory, f"windows_{model}_{metric}", cfg),
+                    cfg,
+                    ylabel=f"Blind {metric.upper()} [ps]",
+                    title=f"{model}: all waveform windows (RidgeCV lambda selection)",
+                )
+        if not any(_uses_development_cv(r) for r in mr):
+            continue
         for metric in ("ctr", "rmse"):
             labels = []
             values = {"shared": [], "direct": []}
@@ -248,7 +296,10 @@ def _windows(runs, root, cfg):
                 selected = {}
                 for form in ("shared", "direct"):
                     candidates = [
-                        r for r in wr if r["manifest"]["estimator_formulation"] == form
+                        r
+                        for r in wr
+                        if r["manifest"]["estimator_formulation"] == form
+                        and _uses_development_cv(r)
                     ]
                     if candidates:
                         selection_metric = str(
@@ -339,7 +390,27 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False):
     for run in runs:
         render_run_plots(run["directory"], cfg)
     validation, blind = _summaries(runs)
-    write_csv(tables / "validation.csv", validation)
+    if validation:
+        write_csv(tables / "validation.csv", validation)
+    else:
+        (tables / "validation.csv").unlink(missing_ok=True)
+    ridge_rows = [
+        {
+            "mode": r["manifest"]["mode"],
+            "window": r["manifest"].get("window_name"),
+            "model": r["manifest"]["model"],
+            "ridge_alpha": r["best"]["parameters"]["ridge_alpha"],
+            "internal_cv": r["best"]["internal_cv"],
+            "internal_cv_mse_ps2": r["best"]["internal_cv_mse_ps2"],
+            "n_train": r["best"]["n_train"],
+        }
+        for r in runs
+        if not _uses_development_cv(r)
+    ]
+    if ridge_rows:
+        write_csv(tables / "ridge_cv.csv", ridge_rows)
+    else:
+        (tables / "ridge_cv.csv").unlink(missing_ok=True)
     write_csv(tables / "blind.csv", blind)
     seed = int(root_config["protocol"]["seed"])
     for (mode, window), group in _groups(runs).items():

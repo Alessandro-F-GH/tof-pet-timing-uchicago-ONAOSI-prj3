@@ -51,8 +51,11 @@ class ModelSpec:
     preserve_temporal_grid: bool = False
     estimator_formulation: str = "shared"
     feature_transform: FeatureTransformSpec | None = None
+    selection_method: str = "development_cv"
 
     def __post_init__(self) -> None:
+        if self.selection_method not in {"development_cv", "ridge_cv"}:
+            raise ValueError("selection_method must be development_cv or ridge_cv")
         formulation = str(self.estimator_formulation).strip().lower()
         if formulation not in {"shared", "direct"}:
             raise ValueError(
