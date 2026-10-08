@@ -4,6 +4,7 @@ from pathlib import Path
 from .common import atomic_json,canonical_hash,write_csv
 from .config import BatchConfig,public_batch_config
 from .preprocessing import fit_control,publish_preprocessing_diagnostics
+from .storage import RunStore
 from .study import run_study
 BATCH_SCHEMA_VERSION=11
 
@@ -27,7 +28,8 @@ def _planner_fingerprints(config):
 def _run_state(config,previous):
     path=Path(config["output_dir"]);current=_planner_fingerprints(config)
     if not path.exists() or not any(path.iterdir()):return "run","all",current
-    manifest=_read_json(path/"manifest.json")
+    RunStore(path)
+    manifest=_read_json(path/"metadata"/"manifest.json")
     if manifest is not None and int(manifest.get("schema_version",-1))!=51:return "rebuild","incompatible_schema",current
     old=(previous or {}).get(config["run_id"])
     if not isinstance(old,dict):return "rebuild","unknown_dependencies",current
