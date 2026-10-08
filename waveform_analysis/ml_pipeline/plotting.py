@@ -1,5 +1,5 @@
 from __future__ import annotations
-import csv,json
+import csv,json,logging
 from contextlib import contextmanager
 from pathlib import Path
 import matplotlib as mpl
@@ -47,12 +47,83 @@ def plot_run_blind(run,cfg):
             ax.hist(values[np.isfinite(values)],bins=int(cfg["histogram"]["bins"]),range=(lo,hi),alpha=float(cfg["histogram"]["alpha"]),label=label)
         ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg)
         return _save(fig,output_path(run/"plots","blind",cfg))
+def _xai_example_from_cache(run, event_index, n_samples):
+    from .dataset import load_prepared_dataset
+    from .view import mode_family
+    config=json.loads((run/"config.json").read_text(encoding="utf-8"))
+    family=mode_family(config["mode"])
+    cache=Path(config["preprocessing"]["cache_dir"])/"blind_ml"/"prepared"
+    if not cache.is_dir():return None
+    for directory in cache.iterdir():
+        manifest_path=directory/"manifest.json"
+        if not manifest_path.is_file():continue
+        try:
+            meta=json.loads(manifest_path.read_text(encoding="utf-8"))
+            if meta.get("dataset_role")!="blind" or meta.get("mode")!=config["mode"] or meta.get("window_ns")!=config["window_ns"] or int(meta.get("subsampling",-1))!=int(config["ml_input"]["subsampling"]):continue
+            if str(Path(meta["dataset_source"]).resolve())!=str(Path(config["blind"]["root_file"]).resolve()):continue
+            prepared=load_prepared_dataset(directory)
+            ids=np.flatnonzero(np.asarray(prepared.event_index)==event_index)
+            if ids.size!=1:continue
+            waves=prepared.energy_windows if family=="energy" else prepared.timing_windows
+            transform=prepared.energy_transform if family=="energy" else prepared.timing_transform
+            if waves is None or transform is None or waves.shape[-1]!=n_samples:continue
+            return np.asarray(transform.inverse(waves[int(ids[0])]),float)
+        except (OSError,ValueError,KeyError,TypeError,json.JSONDecodeError):
+            continue
+    return None
+
+def _xai_one_ns(time,importance):
+    # Aggregate per-sample group importance in fixed 1 ns time bins.
+    edges=np.arange(np.floor(time.min()),np.ceil(time.max())+1,1.0)
+    if edges.size<2:edges=np.array([time.min()-0.5,time.max()+0.5])
+    centers=(edges[:-1]+edges[1:])/2
+    values=np.full(centers.size,np.nan)
+    indices=np.clip(np.searchsorted(edges,time,side="right")-1,0,centers.size-1)
+    for i in range(centers.size):
+        portion=importance[indices==i]
+        portion=portion[np.isfinite(portion)]
+        if portion.size:values[i]=float(np.mean(portion))
+    maximum=float(np.nanmax(values)) if np.any(np.isfinite(values)) else 0.0
+    normalized=np.nan_to_num(values/maximum,nan=0.0,posinf=0.0,neginf=0.0) if maximum>0 else np.zeros_like(values)
+    return edges,centers,normalized
+
 def plot_run_xai(run,cfg):
     run=Path(run);path=run/"artifacts"/"xai.npz"
     if not path.is_file():return None
-    with np.load(path) as d:time=np.asarray(d["time_ps"],float)/1000.0;importance=np.asarray(d["importance_ps"],float)
+    with np.load(path) as d:
+        time=np.asarray(d["time_ps"],float).reshape(-1)/1000.0
+        importance=np.asarray(d["importance_ps"],float).reshape(-1)
+        example=np.asarray(d["example_waveforms_mV"],float) if "example_waveforms_mV" in d else None
+        event_id=int(np.asarray(d["example_event_index"]).item()) if "example_event_index" in d else (int(np.asarray(d["event_index"])[0]) if "event_index" in d and np.asarray(d["event_index"]).size else None)
+    if time.size<2 or importance.size!=time.size or not np.all(np.isfinite(time)):return None
+    if (example is None or example.shape!=(2,time.size)) and event_id is not None:
+        example=_xai_example_from_cache(run,event_id,time.size)
+    edges,centers,values=_xai_one_ns(time,importance)
+    style=cfg["xai"];width,height=style["figsize"]
     with plot_context(cfg):
-        fig,ax=plt.subplots(figsize=tuple(cfg["xai"]["figsize"]));ax.plot(time,importance);ax.fill_between(time,0,importance,alpha=float(cfg["xai"]["fill_alpha"]));ax.set_xlabel("Waveform time [ns]");ax.set_ylabel("Mean |prediction change| [ps]");_finish(ax,cfg);return _save(fig,output_path(run/"plots","xai",cfg))
+        fig,(top,bottom)=plt.subplots(2,1,figsize=(max(float(width),7.2),max(float(height),5.4)),sharex=True,gridspec_kw={"height_ratios":[2.0,1.0]},layout="constrained")
+        norm=mpl.colors.Normalize(vmin=0,vmax=1);cmap=mpl.colormaps.get_cmap(style.get("cmap","viridis"))
+        if example is not None and example.shape==(2,time.size):
+            for index,(color,linestyle) in enumerate((("#0072B2","-"),("#D55E00","--"))):
+                top.plot(time,example[index],color=color,linestyle=linestyle,label=f"Detector {index+1}",zorder=3)
+            top.legend(loc="upper right")
+            top.set_ylabel("Signal [mV]")
+        else:
+            top.text(0.5,0.5,"Waveform example unavailable in saved artifacts",ha="center",va="center",transform=top.transAxes)
+            top.set_ylabel("Signal [mV]")
+            logging.getLogger(__name__).warning("XAI waveform example unavailable for %s; keeping importance plot",run)
+        for left,right,value in zip(edges[:-1],edges[1:],values):
+            top.axvspan(left,right,color=cmap(norm(value)),alpha=float(style.get("band_alpha",0.25)),linewidth=0,zorder=0)
+        bottom.bar(centers,values,width=np.diff(edges),color=[cmap(norm(v)) for v in values],edgecolor="white",linewidth=0.5,align="center")
+        bottom.plot(centers,values,color="#222222",linewidth=1,marker="o",markersize=2.5)
+        bottom.set_ylim(0,1.08);bottom.set_ylabel("Normalized importance");bottom.set_xlabel("Time relative to LED [ns]")
+        top.set_xlim(time.min(),time.max())
+        colorbar=fig.colorbar(mpl.cm.ScalarMappable(norm=norm,cmap=cmap),ax=[top,bottom],location="right",fraction=0.035,pad=0.035)
+        colorbar.set_label("Normalized importance",labelpad=9)
+        _finish(top,cfg);_finish(bottom,cfg)
+        output=output_path(run/"plots","xai",cfg);output.parent.mkdir(parents=True,exist_ok=True)
+        fig.savefig(output,bbox_inches="tight",pad_inches=0.16);plt.close(fig)
+        return output
 def render_run_plots(run,cfg):return {"cv":plot_run_cv(run,cfg),"blind":plot_run_blind(run,cfg),"xai":plot_run_xai(run,cfg)}
 def heatmap(matrix,labels,path,cfg,*,title,correlation=False,value_format=".1f"):
     matrix=np.asarray(matrix,float);style=cfg["heatmap"];kwargs={"cmap":style["correlation_cmap"] if correlation else style["difference_cmap"]}
