@@ -14,7 +14,7 @@ from .storage import RUN_SCHEMA_VERSION,RunStore
 from .train import FeatureTransformCache,FitInputCache,fit_on_indices,load_fitted_model,predict_indices,release_training_memory,save_model,saved_model_complete
 from .validation import best_complete_candidate,evaluate_candidate
 from .view import model_target
-from .xai import temporal_occlusion_importance
+from .xai import XAI_METHOD_VERSION,temporal_occlusion_importance
 
 def _logger(run_dir):
     logger=logging.getLogger(f"waveform-study:{run_dir}");logger.setLevel(logging.INFO);logger.handlers.clear();logger.propagate=False;fmt=logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
@@ -184,11 +184,11 @@ def run_study(config,*,logger=None):
         logger.info("Blind uncertainty | CTR ± %.1f ps | RMSE ± %.1f ps",float(summary["ctr_bootstrap_std_ps"]),float(summary["rmse_bootstrap_std_ps"]))
     else:
         logger.info("Blind bootstrap | reusing saved uncertainty")
-    xai_fp=_stage("xai",{"final_fit":final_fp,"blind":blind.manifest["analysis_protocol_identity"],"xai":config["xai"],"seed":config["seed"]})
+    xai_fp=_stage("xai",{"final_fit":final_fp,"blind":blind.manifest["analysis_protocol_identity"],"xai":config["xai"],"seed":config["seed"],"method_version":XAI_METHOD_VERSION,"formulation":spec.estimator_formulation})
     if config["xai"]["enabled"] and (_sync(store,"xai",xai_fp)!="complete" or not store.xai_path.is_file()):
         logger.info("XAI | grouped temporal occlusion | max_events=%d | group=%d samples",int(config["xai"]["max_events"]),int(config["xai"]["group_size_samples"]))
         if fitted is None:fitted=_model(store,spec,space,config,development,best,final_fp,logger)
-        store.save_xai(**temporal_occlusion_importance(spec,fitted,blind,config["mode"],group_size_samples=int(config["xai"]["group_size_samples"]),max_events=int(config["xai"]["max_events"]),seed=semantic_seed(config["seed"],spec.name,"xai")));store.mark_stage("xai",xai_fp,metadata={"method":"grouped_temporal_occlusion"})
+        store.save_xai(**temporal_occlusion_importance(spec,fitted,blind,config["mode"],group_size_samples=int(config["xai"]["group_size_samples"]),max_events=int(config["xai"]["max_events"]),seed=semantic_seed(config["seed"],spec.name,"xai")));store.mark_stage("xai",xai_fp,metadata={"method":"grouped_temporal_occlusion","formulation":spec.estimator_formulation,"method_version":XAI_METHOD_VERSION})
         logger.info("XAI complete")
     elif not config["xai"]["enabled"]:
         store.mark_stage("xai",xai_fp,metadata={"enabled":False})
