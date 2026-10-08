@@ -3,6 +3,7 @@ import json,shutil
 from pathlib import Path
 from .common import atomic_json,canonical_hash,write_csv
 from .config import BatchConfig,public_batch_config
+from .dataset import DATASET_FORMAT_VERSION
 from .preprocessing import fit_control,publish_preprocessing_diagnostics
 from .study import run_study
 BATCH_SCHEMA_VERSION=11
@@ -23,7 +24,7 @@ def _runtime_configs(batch):
         item=dict(config);item["_control_modes"]=all_modes;item["_control_fit_by_mode"]={mode:dict(fit_by_mode[mode]) for mode in all_modes};out.append(item)
     return out
 def _planner_fingerprints(config):
-    pre=canonical_hash({"control":config["control"],"preprocessing":config["preprocessing"],"mode":config["mode"],"fit":config["fit"]});dev=canonical_hash({"preprocessing":pre,"development":config["development"],"window":config["window_ns"],"ml_input":config["ml_input"]});cv=canonical_hash({"development":dev,"cross_validation":config["cross_validation"],"model":config["model"],"seed":config["seed"]});final=canonical_hash({"cv":cv,"development":dev,"model":config["model"],"seed":config["seed"]});blind=canonical_hash({"final_fit":final,"preprocessing":pre,"blind":config["blind"],"window":config["window_ns"],"ml_input":config["ml_input"],"fit":config["fit"]});bootstrap=canonical_hash({"blind":blind,"bootstrap":config["bootstrap"],"seed":config["seed"]});xai=canonical_hash({"final_fit":final,"blind":blind,"xai":config["xai"],"seed":config["seed"]});plots=canonical_hash({"plot_config":config["plot_config"]});return {"preprocessing":pre,"development":dev,"cv":cv,"final_fit":final,"blind":blind,"bootstrap":bootstrap,"xai":xai,"plots":plots}
+    pre=canonical_hash({"control":config["control"],"preprocessing":config["preprocessing"],"mode":config["mode"],"fit":config["fit"]});dev=canonical_hash({"preprocessing":pre,"development":config["development"],"window":config["window_ns"],"ml_input":config["ml_input"],"prepared_dataset_format_version":DATASET_FORMAT_VERSION});cv=canonical_hash({"development":dev,"cross_validation":config["cross_validation"],"model":config["model"],"seed":config["seed"]});final=canonical_hash({"cv":cv,"development":dev,"model":config["model"],"seed":config["seed"]});blind=canonical_hash({"final_fit":final,"preprocessing":pre,"blind":config["blind"],"window":config["window_ns"],"ml_input":config["ml_input"],"fit":config["fit"]});bootstrap=canonical_hash({"blind":blind,"bootstrap":config["bootstrap"],"seed":config["seed"]});xai=canonical_hash({"final_fit":final,"blind":blind,"xai":config["xai"],"seed":config["seed"]});plots=canonical_hash({"plot_config":config["plot_config"]});return {"preprocessing":pre,"development":dev,"cv":cv,"final_fit":final,"blind":blind,"bootstrap":bootstrap,"xai":xai,"plots":plots}
 def _run_state(config,previous):
     path=Path(config["output_dir"]);current=_planner_fingerprints(config)
     if not path.exists() or not any(path.iterdir()):return "run","all",current
