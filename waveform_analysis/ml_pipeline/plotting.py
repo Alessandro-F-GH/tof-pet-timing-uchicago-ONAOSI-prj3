@@ -31,6 +31,10 @@ def plot_run_blind(run,cfg):
     if not path.is_file():return None
     with np.load(path) as d:
         corrected=np.asarray(d["corrected_ps"]);led=np.asarray(d["led_residual_ps"])
+    # Display a zero-centered LED reference; numerical blind metrics remain unchanged.
+    led=np.asarray(led,dtype=float)
+    finite_led=np.isfinite(led)
+    if np.any(finite_led):led=led-np.mean(led[finite_led])
     summaries=[residual_summary(a) for a in (led,corrected)]
     valid=[s for s in summaries if s["n_finite"]]
     if not valid:return None
@@ -42,7 +46,7 @@ def plot_run_blind(run,cfg):
         lo-=0.05*span;hi+=0.05*span
     with plot_context(cfg):
         fig,ax=plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]))
-        for values,label in ((led,"LED"),(corrected,"ML corrected")):
+        for values,label in ((led,"LED (mean-centered)"),(corrected,"ML corrected")):
             values=np.asarray(values,float).ravel()
             ax.hist(values[np.isfinite(values)],bins=int(cfg["histogram"]["bins"]),range=(lo,hi),alpha=float(cfg["histogram"]["alpha"]),label=label)
         ax.set_xlabel("Blind residual [ps]");ax.set_ylabel("Events");ax.legend();_finish(ax,cfg)
