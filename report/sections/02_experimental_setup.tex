@@ -7,7 +7,8 @@ between the modules. The University of Chicago (UC) and Fondazione Bruno Kessler
 measurements use the same crystals and SiPMs; the two arrangements differ in their
 analog front-end (AFE) electronics.
 
-Each AFE uses two cascaded amplification stages. The first amplifier, or preamplifier,
+Figure~\ref{fig:amplification-stages} shows the readout chain from the LYSO crystal
+and SiPM through the two cascaded AFE amplification stages. The first amplifier, or preamplifier,
 provides initial amplification and an accessible intermediate waveform. The second
 amplifier, or postamplifier, processes this signal with additional gain and provides the
 final waveform. Both outputs are acquired simultaneously for each detector. They
@@ -19,6 +20,16 @@ and second-stage waveforms, respectively; they identify successive outputs of th
 cascaded readout circuit. The role of electronic readout design in timing has been
 investigated in studies of SiPM preamplifiers and TOF-PET signal-processing
 chains~\cite{huizenga2012,pourashraf2022}.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/Amplifier_schema.png}
+\caption{Detector readout schematic common to the UC and FBK arrangements. The first-stage
+and second-stage output taps provide the intermediate (energy) and final (timing)
+waveforms from the same SiPM pulse. Each of the two coincident detectors has this
+readout chain, yielding four recorded waveforms per event.}
+\label{fig:amplification-stages}
+\end{figure*}
 
 The energy output is recorded to retain the energy information required for event
 selection. Its complete pulse amplitude lies within the oscilloscope's vertical range,

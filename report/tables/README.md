@@ -19,3 +19,6 @@ Tables group shared estimators before direct estimators, with multirow formulati
 labels and dashed separators. Dataset tables similarly group modes and windows;
 appendix tables group formulations and estimator parameters. Load `booktabs`,
 `multirow` and `arydshln` when using exported fragments outside this manuscript.
+
+Every included table must have a label and an explicit reference in the section
+text, including result placeholders and appendix tables.
