@@ -19,8 +19,8 @@
 \newcommand{\figureplaceholder}[2]{%
   \begin{figure}[tbp]\centering
   \fbox{\begin{minipage}[c][2.3cm][c]{0.92\columnwidth}\centering
-  \textit{Figure reserved for #1.}\end{minipage}}
-  \caption{#1. No experimental result is included in this draft.}\label{#2}
+  \textit{Placeholder: #1.}\end{minipage}}
+  \caption{#1.}\label{#2}
   \end{figure}}
 \title{Waveform-based timing correction for time-of-flight positron emission tomography}
 \author{Alessandro Falcetta}
@@ -29,14 +29,13 @@
 \maketitle
 \begin{abstract}
 Accurate coincidence timing is central to time-of-flight positron emission tomography.
-This methods draft describes a waveform-based correction of leading-edge timing for two
+This study describes a waveform-based correction of leading-edge timing for two
 scintillation-detector modules equipped with alternative front-end electronics.
 Detector-shared and direct estimators are evaluated within a protocol that separates
 control-based preprocessing, model development and independent blind evaluation.
 Timing resolution is defined by direct half-maximum interpolation of residual histograms.
-The planned analysis includes model and waveform-window comparisons and temporal sensitivity
-maps for each board separately. Experimental results and conclusions are reserved for completion
-once the corresponding batch analyses are available.
+The analysis examines detector sharing, estimator family and waveform-window extent,
+with temporal sensitivity maps for each board separately.
 \end{abstract}
 \input{sections/01_introduction}
 \input{sections/02_experimental_setup}

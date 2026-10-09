@@ -6,7 +6,7 @@ and counts. The maximum bin defines the peak height; when several bins share the
 the middlemost maximum is selected. On either side of this bin, the nearest count strictly
 below half the peak height brackets a crossing with its adjacent inner bin. Linear
 interpolation between the two bin centres locates each crossing, and their separation is
-the FWHM. No Gaussian fit or conversion from a standard deviation is used for this measure.
+the FWHM.
 
 The physical bin width and histogram phase are fixed for a given waveform mode; zero is a
 bin centre. The benchmark settings use $10\,\mathrm{ps}$ bins for energy-waveform timing and
@@ -45,7 +45,7 @@ The UC benchmark uses a short interval from $-1$ to $+2\,\mathrm{ns}$; the FBK
 benchmark uses $-1.5$ to $+2\,\mathrm{ns}$. Both use an extended interval from
 $-2$ to $+30\,\mathrm{ns}$ relative to the crossing. The UC benchmark evaluates
 timing waveforms, whereas the FBK benchmark includes energy and timing waveforms.
-The interval is a study setting, rather than a model-dependent crop.
+Each input interval is shared by the models evaluated within that board and mode.
 The difference between the LED arrival times, after subtracting the configured true TOF,
 is the supervised correction target. If $s_1$ and $s_2$ denote the normalized waveforms and
 $h_{\theta}$ the predicted correction, the final residual is
@@ -53,8 +53,7 @@ $h_{\theta}$ the predicted correction, the final residual is
  r=(t_{1,\mathrm{LED}}-t_{2,\mathrm{LED}}-\tau)-h_{\theta}(s_1,s_2),
  \label{eq:residual}
 \end{equation}
-where $\tau$ is the configured true TOF. A correction is therefore learnt for the conventional
-timing residual, rather than for an absolute source-position label.
+where $\tau$ is the configured true TOF.
 
 \subsection{Shared and direct estimator architectures}
 In a shared formulation, one detector-level scorer is applied independently to both
@@ -66,8 +65,7 @@ waveforms:
 Exchanging the detector inputs reverses the correction sign, and identical normalized
 pulses yield zero correction. Sharing the scorer removes
 arbitrary detector-specific parameter differences while retaining waveform-dependent
-corrections. This is an architectural constraint; the adequacy of the constraint for each
-board is assessed within that board's data. Alignment to the individual LED crossings
+corrections. Alignment to the individual LED crossings
 also prevents absolute acquisition times from entering the waveform inputs.
 
 A multilayer perceptron (MLP) implements a fully connected shared scorer.
@@ -85,9 +83,7 @@ regression on the concatenated samples with an intercept. The independent CNN us
 separately parameterized detector branches and subtracts their scalar outputs; independent
 weights do not enforce detector-exchange antisymmetry. The Onishi-inspired paired CNN
 fuses the detector dimension in its first convolution, applies further temporal
-convolution and uses a dense scalar head~\cite{onishi2022}. Its configured architecture is
-a tunable implementation of this correction approach, rather than an assertion of identical
-training conditions to the published experiment.
+convolution and uses a dense scalar head~\cite{onishi2022}.
 
 MiniRocket supplies a largely deterministic convolutional feature representation~\cite{minirocket2021}.
 The shared variant applies one control-fitted transform and scaling to both detectors,
@@ -122,10 +118,10 @@ without the internal early-stopping holdout.
 
 The two linear ridge estimators bypass outer CV and candidate pruning. Their regularization
 strength is selected by internal leave-one-out CV using MSE, and the final regression is
-fitted on the full development population. Internal ridge MSE is not an outer-validation
-CTR and will not be entered as one in the result tables. MiniRocket ridge regression remains
+fitted on the full development population. The result tables distinguish internal ridge
+MSE from outer-validation CTR. MiniRocket ridge regression remains
 within the outer-CV protocol. One configured random seed determines splitting, model
-training and subsequent resampling; multiple-seed replicas are not part of the benchmark.
+training and subsequent resampling.
 
 \subsection{Blind evaluation and temporal sensitivity}
 The final model is applied to the independent blind acquisition with all preprocessing,
@@ -145,5 +141,4 @@ most $4096$ blind events. Shared estimators perturb both detector inputs togethe
 one temporal importance profile. Direct estimators perturb one detector at a time, producing
 two channel-specific profiles. For display, importance is aggregated into $1\,\mathrm{ns}$
 bins and normalized; the direct channels use a common maximum. These maps quantify model
-sensitivity to the defined perturbation, rather than a causal attribution. XAI is not used
-for hyperparameter selection.
+sensitivity to the defined perturbation. XAI is applied after model selection.

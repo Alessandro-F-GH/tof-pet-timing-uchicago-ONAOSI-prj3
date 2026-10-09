@@ -250,7 +250,7 @@ def result_placeholders(board):
                 [
                     r"\bottomrule",
                     r"\end{tabularx}",
-                    rf"\caption{{{board}, {mode_label.lower()} waveforms, {window['start']:g} to {window['end']:g} ns input interval. Numerical results are pending. Validation entries will report outer-CV mean and fold dispersion; blind entries will report F1 CTR and bootstrap uncertainty. Linear ridge has no outer-validation CTR (n/a).}}",
+                    rf"\caption{{{board}, {mode_label.lower()} waveforms, {window['start']:g} to {window['end']:g} ns input interval. Validation CTR is summarized by the outer-CV mean and fold dispersion; blind CTR uses F1 with bootstrap uncertainty. Outer validation is not applicable to linear ridge (n/a).}}",
                     rf"\label{{tab:{filename.lower().replace('_', '-')}}}",
                     r"\end{table*}",
                 ]

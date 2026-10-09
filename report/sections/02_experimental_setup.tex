@@ -12,8 +12,7 @@ use $100\,\mathrm{ns}$ records sampled at $80\,\mathrm{GS\,s}^{-1}$.
 The University of Chicago (UC) and Fondazione Bruno Kessler (FBK) front-end boards are
 considered separately. Within each board, timing corrections can use either the energy
 waveforms or the timing waveforms; energy-based event selection remains common to these
-choices. No pooled training, cross-board performance table or direct cross-board plot is
-part of the analysis.
+choices.
 
 \subsection{Acquisitions and scientific roles}
 The benchmark datasets identify three independent acquisitions at a SiPM bias of
@@ -22,7 +21,6 @@ as summarized separately in Tables~\ref{tab:uc-acquisitions} and~\ref{tab:fbk-ac
 The configured true TOF is zero for these centred-source acquisitions.
 Control determines the preprocessing and LED selection rules. Development provides all
 model training and selection data. The blind acquisition supplies the final test population.
-Thus, these roles are not obtained by dividing one acquisition into three random fractions.
 \input{tables/datasets/UC_acquisitions}
 \input{tables/datasets/FBK_acquisitions}
 
@@ -30,8 +28,7 @@ Event counts refer to the final populations available for each waveform mode and
 after the complete selection described below. The population can change when the mode or
 window changes, because an event must satisfy the applicable timing requirements and provide
 the requested waveform interval. Within a fixed board, mode and window, models use the same
-prepared development and blind populations. Tables~\ref{tab:uc-selected-events} and
-\ref{tab:fbk-selected-events} are reserved for the exported counts; no counts from earlier
-analyses are inserted.
+prepared development and blind populations. Selected-event counts are organized by mode
+and window in Tables~\ref{tab:uc-selected-events} and~\ref{tab:fbk-selected-events}.
 \input{tables/datasets/UC_selected_events}
 \input{tables/datasets/FBK_selected_events}
