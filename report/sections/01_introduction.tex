@@ -23,17 +23,16 @@ For bismuth germanate (BGO) detectors, Loignon-Houle et al. compared LED, a
 two-threshold time-walk correction and CNN-based timing, showing that performance gains
 and timing-distribution tails depend on detector characteristics~\cite{loignon2025}.
 
-An important question is how much of the recorded waveform is useful for timing correction.
-Several waveform-based CNN approaches have emphasized short intervals near the rising
-edge~\cite{onishi2022,loignon2025}. Nevertheless, later pulse samples may encode
-event-dependent shape variations relevant to correcting the threshold-crossing time.
-Ruiz-Gonzalez et al. investigated waveform-based timing using
-maximum-likelihood estimation, observing diminishing returns from additional
-samples and a dependence on sampling rate. Their method outperformed conventional
-digital timing at 500 MS/s and 1 GS/s, but lost this advantage above
-2 GS/s~\cite{ruiz2018}. This motivates investigating whether extended waveform
-windows benefit ML-based LED corrections at the substantially higher acquisition
-rate of 80 GS/s used in this study.
+An open question is whether waveform samples beyond the rising edge improve
+ML-based LED timing corrections, and which temporal regions contribute most.
+Previous CNN studies have primarily examined short windows near the rising
+edge~\cite{onishi2022,loignon2025}, leaving extended-window performance at high
+sampling rates insufficiently characterized. In related model-based work,
+Ruiz-Gonzalez et al. observed diminishing returns from additional samples
+and found that the advantage of maximum-likelihood timing over digital
+discrimination disappeared above 2 GS/s~\cite{ruiz2018}. These results do
+not establish whether extending the waveform window benefits data-driven
+corrections at the 80 GS/s acquisition rate used here.
 
 The analog readout chain is another determinant of timing performance. Amplification can
 change signal amplitude, bandwidth, noise and rise time, affecting both LED timing
