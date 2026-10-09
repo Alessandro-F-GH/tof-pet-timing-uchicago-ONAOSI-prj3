@@ -14,6 +14,13 @@ The `figures/` directory is reserved for the completed analysis.
 From this directory:
 
 ```bash
+latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error main.tex
+```
+
+This runs BibTeX and repeats LaTeX until citations and references are resolved.
+If `latexmk` is unavailable, use the equivalent sequence:
+
+```bash
 pdflatex -interaction=nonstopmode -halt-on-error main.tex
 bibtex main
 pdflatex -interaction=nonstopmode -halt-on-error main.tex
@@ -23,6 +30,25 @@ pdflatex -interaction=nonstopmode -halt-on-error main.tex
 The output is `main.pdf`. The template uses Times-style text and mathematics,
 with `newtx` when installed and `mathptmx` as a fallback. Tables use `booktabs`, `multirow` and `arydshln` for grouped labels and dashed separators;
 references use numerical citations and BibTeX.
+
+### Build troubleshooting
+
+Undefined citations and references on the first LaTeX pass are expected; they
+should disappear after BibTeX and the subsequent LaTeX passes. An underfull box
+is a layout diagnostic and does not cause a failed build.
+
+If the build fails, inspect the **first error** in `main.log`, rather than only
+the final unresolved-reference summary. With `-file-line-error`, this includes
+the source file and line. After correcting the error, clear stale intermediate
+files and rebuild from this directory:
+
+```bash
+latexmk -c main.tex
+latexmk -pdf -interaction=nonstopmode -halt-on-error -file-line-error main.tex
+```
+
+The preamble loads `amsmath` before the font packages and avoids loading
+`amssymb` after `newtxmath`, which supplies its own mathematical symbols.
 
 ## Sources and structure
 
