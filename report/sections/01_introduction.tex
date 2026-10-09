@@ -27,11 +27,13 @@ An important question is how much of the recorded waveform is useful for timing 
 Several waveform-based CNN approaches have emphasized short intervals near the rising
 edge~\cite{onishi2022,loignon2025}. Nevertheless, later pulse samples may encode
 event-dependent shape variations relevant to correcting the threshold-crossing time.
-Ruiz-Gonzalez et al. used maximum-likelihood timing estimation and Fisher-information
-analysis to study waveform segments, finding that timing resolution approaches a limit
-as the number of samples increases~\cite{ruiz2018}. Their analysis motivates examining
-whether extending the input window beyond the rising edge benefits ML-based LED
-correction and which temporal regions influence the resulting estimates.
+Ruiz-Gonzalez et al. investigated waveform-based timing using
+maximum-likelihood estimation, observing diminishing returns from additional
+samples and a dependence on sampling rate. Their method outperformed conventional
+digital timing at 500 MS/s and 1 GS/s, but lost this advantage above
+2 GS/s~\cite{ruiz2018}. This motivates investigating whether extended waveform
+windows benefit ML-based LED corrections at the substantially higher acquisition
+rate of 80 GS/s used in this study.
 
 The analog readout chain is another determinant of timing performance. Amplification can
 change signal amplitude, bandwidth, noise and rise time, affecting both LED timing
