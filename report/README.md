@@ -1,6 +1,8 @@
 # Waveform timing manuscript
 
 This is a two-column academic draft for the current waveform-analysis pipeline.
+For an LLM handoff covering the scientific protocol, experimental clarifications and
+author's writing requirements, read [LLM_CONTEXT.md](LLM_CONTEXT.md).
 It describes the ten implemented estimators, detector-shared and direct formulations,
 control-fitted preprocessing, development validation, the linear RidgeCV exception,
 independent blind evaluation and temporal occlusion. Pico-TDC is outside its scope.
