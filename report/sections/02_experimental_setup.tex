@@ -5,7 +5,7 @@ lutetium--yttrium oxyorthosilicate (LYSO) crystals of dimensions
 $2\times2\times3\,\mathrm{mm}^{3}$. A $^{22}\mathrm{Na}$ source is positioned centrally
 between the modules. The University of Chicago (UC) and Fondazione Bruno Kessler (FBK)
 measurements use the same crystals and SiPMs; the two arrangements differ in their
-front-end electronics. Each board provides an energy output from the first amplification
+front-end electronics. Both boards provide an energy output from the first amplification
 stage and a timing output from a second stage that increases the gain to improve
 sensitivity to pulse arrival.
 
@@ -28,9 +28,11 @@ approach the best timing resolution attainable with the same crystal and SiPM.
 A narrow vertical range emphasizing pulse arrival has also been used in the waveform
 acquisitions of Onishi et al.~\cite{onishi2022}.
 
-Four oscilloscope channels record both modules: channels 1 and 2 contain the energy
-waveforms, while channels 3 and 4 contain the timing waveforms. The documented acquisitions
-use $100\,\mathrm{ns}$ records sampled at $80\,\mathrm{GS\,s}^{-1}$.
+Each dataset consists of coincidence events with four waveforms recorded together:
+one energy waveform and one timing waveform from each detector. Channels 1 and 2
+contain the energy waveforms, while channels 3 and 4 contain the corresponding timing
+waveforms. The energy and timing modes are therefore derived from the same four-channel
+event records. The documented acquisitions use $100\,\mathrm{ns}$ records sampled at $80\,\mathrm{GS\,s}^{-1}$.
 Each board is analysed independently, with energy-based event selection common to both
 waveform modes. The energy mode examines timing information in the standard first-stage
 signal; the timing mode examines the dedicated high-gain, narrow-range acquisition.
@@ -45,7 +47,8 @@ model training and selection data. The blind acquisition supplies the final test
 \input{tables/datasets/UC_acquisitions}
 \input{tables/datasets/FBK_acquisitions}
 
-Event counts refer to the final populations available for each waveform mode and window,
+Event counts denote coincidence events, each containing four recorded waveforms, and
+refer to the final populations available for each waveform mode and window,
 after the complete selection described below. The population can change when the mode or
 window changes, because an event must satisfy the applicable timing requirements and provide
 the requested waveform interval. Within a fixed board, mode and window, models use the same

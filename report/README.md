@@ -69,7 +69,8 @@ The preamble loads `amsmath` before the font packages and avoids loading
 
 Hardware and acquisition descriptions were checked against `update_report/` and
 `presentation/` and incorporate the supplied experimental clarification: the two boards
-use the same crystals and SiPMs, the first-stage energy output retains the full pulse
+use the same crystals and SiPMs and each coincidence event contains four waveforms
+(two energy and two timing), the first-stage energy output retains the full pulse
 amplitude for selection, and the additional timing stage uses high gain with an
 intentionally narrow oscilloscope vertical range. The slides' shared-scorer explanation motivates the antisymmetric
 formulation. Pipeline descriptions follow `waveform_analysis/` and its current
