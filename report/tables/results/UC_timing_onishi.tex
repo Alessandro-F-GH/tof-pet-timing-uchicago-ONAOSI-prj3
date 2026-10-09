@@ -2,20 +2,23 @@
 \begin{table*}[t]
 \centering
 \small
-\begin{tabularx}{\textwidth}{@{}Xrrr@{}}
+\begin{tabularx}{\textwidth}{@{}lXrrr@{}}
 \toprule
-Estimator & Validation CTR [ps] & Blind CTR [ps] & Blind LED CTR [ps] \\
+Formulation & Estimator & Validation CTR [ps] & Blind CTR [ps] & Blind LED CTR [ps] \\
 \midrule
-Direct MiniRocket & --- & --- & --- \\
-Shared MiniRocket & --- & --- & --- \\
-Direct linear ridge & n/a & --- & --- \\
-Shared linear ridge & n/a & --- & --- \\
-Direct dense MLP & --- & --- & --- \\
-Shared dense MLP & --- & --- & --- \\
-Shared locally connected MLP & --- & --- & --- \\
-Onishi-inspired paired CNN & --- & --- & --- \\
-Shared temporal CNN & --- & --- & --- \\
-Independent temporal CNN & --- & --- & --- \\
+\multirow{5}{*}{Shared} & MiniRocket & --- & --- & --- \\
+ & Linear ridge & n/a & --- & --- \\
+ & Dense MLP & --- & --- & --- \\
+ & Locally connected MLP & --- & --- & --- \\
+ & Temporal CNN & --- & --- & --- \\
+\addlinespace[3pt]
+\hdashline
+\addlinespace[3pt]
+\multirow{5}{*}{Direct} & MiniRocket & --- & --- & --- \\
+ & Linear ridge & n/a & --- & --- \\
+ & Dense MLP & --- & --- & --- \\
+ & Onishi-inspired paired CNN & --- & --- & --- \\
+ & Independent temporal CNN & --- & --- & --- \\
 \bottomrule
 \end{tabularx}
 \caption{UC, timing waveforms, -1 to 2 ns input interval. Numerical results are pending. Validation entries will report outer-CV mean and fold dispersion; blind entries will report F1 CTR and bootstrap uncertainty. Linear ridge has no outer-validation CTR (n/a).}

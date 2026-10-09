@@ -54,7 +54,11 @@ def test_board_table_deduplicates_models_and_keeps_modes_windows(board, tmp_path
     assert f"{board} selected waveform populations" in text
     assert text.count("Train (development) &") == 3
     assert text.count("Control &") == 3
-    assert "Control & Timing & wide (-2 to 30) & control\\_48V.root & 48 & 0" in text
+    assert r"\multirow[t]{6}{*}{Timing}" in text
+    assert r"\multirow[t]{3}{*}{wide (-2 to 30)}" in text
+    assert r"Control & control\_48V.root & \multirow{3}{*}{48} & 0" in text
+    assert text.count(r"\hdashline") == 1
+    assert text.count(r"\cdashline{2-6}") == 1
     assert not (
         paths[0].parent / f"{'FBK' if board == 'UC' else 'UC'}_selected_events.tex"
     ).exists()
@@ -82,8 +86,7 @@ def test_missing_metadata_is_a_dash_not_zero_and_unknown_board_stays_csv(tmp_pat
         0
     ]
     assert (
-        "Control & Timing & short (-1 to 2) & control\\_48V.root & --- & ---"
-        in path.read_text()
+        r"Control & control\_48V.root & \multirow{3}{*}{---} & ---" in path.read_text()
     )
     other = tmp_path / "undeclared"
     assert export_dataset_tables(other, [item], {"results": {"folder": "study"}}) == []

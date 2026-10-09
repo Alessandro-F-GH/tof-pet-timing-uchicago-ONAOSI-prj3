@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ import numpy as np
 
 from waveform_analysis.core.io import write_csv
 
-DATASET_TABLE_VERSION = 1
+DATASET_TABLE_VERSION = 2
 ROLES = {
     "control": "Control",
     "development": "Train (development)",
@@ -179,20 +180,52 @@ def export_dataset_tables(
         r"\small",
         r"\begin{tabular}{lll l r r}",
         r"\toprule",
-        r"Population & Mode & Window [ns] & Acquisition & Bias [V] & Selected events \\",
+        r"Mode & Window [ns] & Population & Acquisition & Bias [V] & Selected events \\",
         r"\midrule",
     ]
-    for row in rows:
-        interval = f"{row['start_ns']:g} to {row['end_ns']:g}"
-        fields = [
-            ROLES[row["role"]],
-            MODES[row["mode"]],
-            f"{row['window']} ({interval})",
-            Path(row["source"]).name,
-            row["bias_voltage_V"] or "---",
-            str(row["n_selected"]) if row["n_selected"] is not None else "---",
-        ]
-        lines.append(" & ".join(escape_latex(field) for field in fields) + r" \\")
+    for mode_index, (mode, mode_rows) in enumerate(
+        groupby(rows, key=lambda row: row["mode"])
+    ):
+        if mode_index:
+            lines.extend([r"\addlinespace[3pt]", r"\hdashline", r"\addlinespace[3pt]"])
+        mode_rows = list(mode_rows)
+        windows = groupby(
+            mode_rows, key=lambda row: (row["window"], row["start_ns"], row["end_ns"])
+        )
+        for window_index, ((window, start, end), window_rows) in enumerate(windows):
+            if window_index:
+                lines.extend(
+                    [r"\addlinespace[3pt]", r"\cdashline{2-6}", r"\addlinespace[3pt]"]
+                )
+            window_rows = list(window_rows)
+            bias_values = {row["bias_voltage_V"] or "---" for row in window_rows}
+            for row_index, row in enumerate(window_rows):
+                mode_cell = (
+                    rf"\multirow[t]{{{len(mode_rows)}}}{{*}}{{{escape_latex(MODES[mode])}}}"
+                    if window_index == row_index == 0
+                    else ""
+                )
+                window_cell = (
+                    rf"\multirow[t]{{{len(window_rows)}}}{{*}}{{{escape_latex(f'{window} ({start:g} to {end:g})')}}}"
+                    if row_index == 0
+                    else ""
+                )
+                bias_cell = escape_latex(row["bias_voltage_V"] or "---")
+                if len(bias_values) == 1:
+                    bias_cell = (
+                        rf"\multirow{{{len(window_rows)}}}{{*}}{{{bias_cell}}}"
+                        if row_index == 0
+                        else ""
+                    )
+                fields = [
+                    mode_cell,
+                    window_cell,
+                    escape_latex(ROLES[row["role"]]),
+                    escape_latex(Path(row["source"]).name),
+                    bias_cell,
+                    str(row["n_selected"]) if row["n_selected"] is not None else "---",
+                ]
+                lines.append(" & ".join(fields) + r" \\")
     lines += [
         r"\bottomrule",
         r"\end{tabular}",

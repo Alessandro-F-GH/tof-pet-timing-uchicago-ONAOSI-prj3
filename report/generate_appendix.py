@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
+from itertools import groupby
 from pathlib import Path
 
 REPORT = Path(__file__).resolve().parent
@@ -46,6 +47,31 @@ LABELS = {
     "kernels": "Temporal kernel sizes",
     "dense_units": "Dense hidden width",
 }
+
+
+SHARED_MODELS = {
+    "antisymmetric_mlp",
+    "locally_connected_mlp",
+    "shared_cnn1d",
+    "shared_linear_ridge",
+    "shared_minirocket",
+}
+
+
+def formulation(name):
+    return "Shared" if name in SHARED_MODELS else "Direct"
+
+
+def estimator_label(name):
+    label = NAMES[name].removeprefix("Shared ").removeprefix("Direct ")
+    return label[0].upper() + label[1:]
+
+
+def model_groups(names):
+    """Keep model order within each formulation, with shared estimators first."""
+    return groupby(
+        sorted(names, key=lambda name: name not in SHARED_MODELS), formulation
+    )
 
 
 def value(raw):
@@ -135,19 +161,35 @@ def table(filename, names, caption):
         r"\begin{table*}[t]",
         r"\centering",
         r"\small",
-        r"\begin{tabularx}{\textwidth}{@{}p{0.25\textwidth}p{0.30\textwidth}X@{}}",
+        r"\begin{tabularx}{\textwidth}{@{}p{0.09\textwidth}p{0.22\textwidth}p{0.27\textwidth}X@{}}",
         r"\toprule",
-        r"Estimator & Parameter & Configured space or value \\",
+        r"Formulation & Estimator & Parameter & Configured space or value \\",
         r"\midrule",
     ]
-    for index, name in enumerate(names):
-        if index:
-            lines.append(r"\addlinespace")
-        for row_index, (parameter, choice) in enumerate(rows(name)):
-            lines.append(
-                f"{NAMES[name] if row_index == 0 else ''} & {parameter} & {choice} "
-                + r"\\"
-            )
+    for group_index, (group_label, group) in enumerate(model_groups(names)):
+        if group_index:
+            lines.extend([r"\addlinespace[3pt]", r"\hdashline", r"\addlinespace[3pt]"])
+        group = [(name, rows(name)) for name in group]
+        row_count = sum(len(parameters) for _, parameters in group)
+        for model_index, (name, parameters) in enumerate(group):
+            if model_index:
+                lines.extend(
+                    [r"\addlinespace[3pt]", r"\cdashline{2-4}", r"\addlinespace[3pt]"]
+                )
+            for row_index, (parameter, choice) in enumerate(parameters):
+                group_cell = (
+                    rf"\multirow[t]{{{row_count}}}{{*}}{{{group_label}}}"
+                    if model_index == row_index == 0
+                    else ""
+                )
+                model_cell = (
+                    rf"\multirow[t]{{{len(parameters)}}}{{=}}{{{estimator_label(name)}}}"
+                    if row_index == 0
+                    else ""
+                )
+                lines.append(
+                    f"{group_cell} & {model_cell} & {parameter} & {choice} " + r"\\"
+                )
     lines.extend(
         [
             r"\bottomrule",
@@ -180,14 +222,30 @@ def result_placeholders(board):
                 r"\begin{table*}[t]",
                 r"\centering",
                 r"\small",
-                r"\begin{tabularx}{\textwidth}{@{}Xrrr@{}}",
+                r"\begin{tabularx}{\textwidth}{@{}lXrrr@{}}",
                 r"\toprule",
-                r"Estimator & Validation CTR [ps] & Blind CTR [ps] & Blind LED CTR [ps] \\",
+                r"Formulation & Estimator & Validation CTR [ps] & Blind CTR [ps] & Blind LED CTR [ps] \\",
                 r"\midrule",
             ]
-            for name in batch["sweep"]["models"]:
-                validation = "n/a" if name.endswith("linear_ridge") else "---"
-                lines.append(f"{NAMES[name]} & {validation} & --- & --- " + r"\\")
+            for group_index, (group_label, group) in enumerate(
+                model_groups(batch["sweep"]["models"])
+            ):
+                if group_index:
+                    lines.extend(
+                        [r"\addlinespace[3pt]", r"\hdashline", r"\addlinespace[3pt]"]
+                    )
+                group = list(group)
+                for row_index, name in enumerate(group):
+                    validation = "n/a" if name.endswith("linear_ridge") else "---"
+                    group_cell = (
+                        rf"\multirow{{{len(group)}}}{{*}}{{{group_label}}}"
+                        if row_index == 0
+                        else ""
+                    )
+                    lines.append(
+                        f"{group_cell} & {estimator_label(name)} & {validation} & --- & --- "
+                        + r"\\"
+                    )
             lines.extend(
                 [
                     r"\bottomrule",

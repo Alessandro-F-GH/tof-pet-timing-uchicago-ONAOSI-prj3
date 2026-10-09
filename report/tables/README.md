@@ -14,3 +14,8 @@ Selected-event fragments are produced automatically by waveform batch reporting.
 Copy only fragments belonging to the analysis described in the manuscript.
 A dash marks unavailable data; zero is reserved for a measured empty population.
 All result entries are placeholders until the matching experiments are available.
+
+Tables group shared estimators before direct estimators, with multirow formulation
+labels and dashed separators. Dataset tables similarly group modes and windows;
+appendix tables group formulations and estimator parameters. Load `booktabs`,
+`multirow` and `arydshln` when using exported fragments outside this manuscript.

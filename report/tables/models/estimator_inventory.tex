@@ -1,21 +1,23 @@
 \begin{table*}[t]
 \centering
 \small
-\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}p{0.14\textwidth}X@{}}
+\begin{tabularx}{\textwidth}{@{}p{0.14\textwidth}p{0.28\textwidth}X@{}}
 \toprule
-Estimator & Formulation & Detector processing \\
+Formulation & Estimator & Detector processing \\
 \midrule
-Dense MLP & Shared & One dense scorer for both waveforms; score difference. \\
-Locally connected MLP & Shared & Two position-specific local layers and a dense scorer; smoothly bounded score difference. \\
-Temporal CNN & Shared & One temporal backbone and dense head; score difference. \\
-Linear ridge & Shared & Sample-wise detector difference; no intercept. \\
-MiniRocket with ridge & Shared & One control-fitted transform and scaling; feature difference; no regression intercept. \\
-\addlinespace
-Dense MLP & Direct & Joint dense regression on concatenated waveforms. \\
-Independent temporal CNN & Direct & Two independent backbones and heads; detector-specific score difference. \\
-Onishi-inspired paired CNN & Direct & Detector-fusing first convolution, temporal convolution and dense regression. \\
-Linear ridge & Direct & Concatenated samples with an intercept. \\
-MiniRocket with ridge & Direct & Paired multivariate transform and ridge regression with an intercept. \\
+\multirow[t]{5}{*}{Shared} & Dense MLP & One dense scorer for both waveforms; score difference. \\
+ & Locally connected MLP & Two position-specific local layers and a dense scorer; smoothly bounded score difference. \\
+ & Temporal CNN & One temporal backbone and dense head; score difference. \\
+ & Linear ridge & Sample-wise detector difference; no intercept. \\
+ & MiniRocket with ridge & One control-fitted transform and scaling; feature difference; no regression intercept. \\
+\addlinespace[3pt]
+\hdashline
+\addlinespace[3pt]
+\multirow[t]{5}{*}{Direct} & Dense MLP & Joint dense regression on concatenated waveforms. \\
+ & Independent temporal CNN & Two independent backbones and heads; detector-specific score difference. \\
+ & Onishi-inspired paired CNN & Detector-fusing first convolution, temporal convolution and dense regression. \\
+ & Linear ridge & Concatenated samples with an intercept. \\
+ & MiniRocket with ridge & Paired multivariate transform and ridge regression with an intercept. \\
 \bottomrule
 \end{tabularx}
 \caption{Estimator inventory. Shared denotes detector-exchange antisymmetry imposed by a common detector scorer or transform. Direct denotes absence of that imposed constraint, including independently parameterized detector branches.}

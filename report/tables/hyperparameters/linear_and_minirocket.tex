@@ -2,29 +2,35 @@
 \begin{table*}[t]
 \centering
 \small
-\begin{tabularx}{\textwidth}{@{}p{0.25\textwidth}p{0.30\textwidth}X@{}}
+\begin{tabularx}{\textwidth}{@{}p{0.09\textwidth}p{0.22\textwidth}p{0.27\textwidth}X@{}}
 \toprule
-Estimator & Parameter & Configured space or value \\
+Formulation & Estimator & Parameter & Configured space or value \\
 \midrule
-Shared linear ridge & Regularization grid & 50 logarithmically spaced values from $10^{-8}$ to 1000 \\
- & Internal selection & Leave-one-out CV; MSE \\
- & Intercept & None \\
-\addlinespace
-Direct linear ridge & Regularization grid & 50 logarithmically spaced values from $10^{-8}$ to 1000 \\
- & Internal selection & Leave-one-out CV; MSE \\
- & Intercept & Included \\
-\addlinespace
-Shared MiniRocket & Requested MiniRocket features & 10000 \\
- & Ridge regularization strengths & \{0.1, 0.3, 1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1e+06\} \\
- & Feature fitting & Control acquisition; scaling without centring \\
- & Regression intercept & None \\
- & Selection & Outer CV; mean CTR \\
-\addlinespace
-Direct MiniRocket & Requested MiniRocket features & 10000 \\
- & Ridge regularization strengths & \{0.1, 0.3, 1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1e+06\} \\
- & Feature fitting & Control acquisition; scaling without centring \\
- & Regression intercept & Included \\
- & Selection & Outer CV; mean CTR \\
+\multirow[t]{8}{*}{Shared} & \multirow[t]{3}{=}{Linear ridge} & Regularization grid & 50 logarithmically spaced values from $10^{-8}$ to 1000 \\
+ &  & Internal selection & Leave-one-out CV; MSE \\
+ &  & Intercept & None \\
+\addlinespace[3pt]
+\cdashline{2-4}
+\addlinespace[3pt]
+ & \multirow[t]{5}{=}{MiniRocket} & Requested MiniRocket features & 10000 \\
+ &  & Ridge regularization strengths & \{0.1, 0.3, 1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1e+06\} \\
+ &  & Feature fitting & Control acquisition; scaling without centring \\
+ &  & Regression intercept & None \\
+ &  & Selection & Outer CV; mean CTR \\
+\addlinespace[3pt]
+\hdashline
+\addlinespace[3pt]
+\multirow[t]{8}{*}{Direct} & \multirow[t]{3}{=}{Linear ridge} & Regularization grid & 50 logarithmically spaced values from $10^{-8}$ to 1000 \\
+ &  & Internal selection & Leave-one-out CV; MSE \\
+ &  & Intercept & Included \\
+\addlinespace[3pt]
+\cdashline{2-4}
+\addlinespace[3pt]
+ & \multirow[t]{5}{=}{MiniRocket} & Requested MiniRocket features & 10000 \\
+ &  & Ridge regularization strengths & \{0.1, 0.3, 1, 3, 10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000, 300000, 1e+06\} \\
+ &  & Feature fitting & Control acquisition; scaling without centring \\
+ &  & Regression intercept & Included \\
+ &  & Selection & Outer CV; mean CTR \\
 \bottomrule
 \end{tabularx}
 \caption{Linear and MiniRocket spaces. Only the two linear estimators use internal ridge CV. MiniRocket transforms are frozen before outer supervised validation.}

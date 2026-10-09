@@ -21,7 +21,7 @@ pdflatex -interaction=nonstopmode -halt-on-error main.tex
 ```
 
 The output is `main.pdf`. The template uses Times-style text and mathematics,
-with `newtx` when installed and `mathptmx` as a fallback. Tables use `booktabs`;
+with `newtx` when installed and `mathptmx` as a fallback. Tables use `booktabs`, `multirow` and `arydshln` for grouped labels and dashed separators;
 references use numerical citations and BibTeX.
 
 ## Sources and structure

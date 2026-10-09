@@ -240,6 +240,8 @@ saved in each new run manifest; standalone reporting reads them without fitting.
 For older runs, matching prepared caches can supply counts. Unavailable or ambiguous
 historical counts are exported as a dash, not zero.
 
-The LaTeX fragments use `booktabs` and a two-column `table*` environment. Copy the
+The LaTeX fragments use `booktabs`, `multirow`, `arydshln` and a two-column
+`table*` environment. Mode and window labels span their grouped rows, with dashed
+separators between groups. Copy the
 matching board fragment into the manuscript's `report/tables/datasets/` directory
 after checking the experiment identity. Reporting never overwrites manuscript sources.
