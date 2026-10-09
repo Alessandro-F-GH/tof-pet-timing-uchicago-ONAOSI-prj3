@@ -9,7 +9,10 @@
 \usepackage{graphicx}
 \usepackage{booktabs,tabularx,array,multirow}
 \usepackage{arydshln}
-\usepackage{caption,placeins}
+\usepackage{caption}
+\usepackage[section]{placeins}
+\usepackage{etoolbox}
+\pretocmd{\subsection}{\FloatBarrier}{}{\PackageError{report}{Cannot install subsection float barriers}{}}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}
 \hypersetup{pdftitle={Waveform-based timing correction for time-of-flight positron emission tomography}, pdfauthor={Alessandro Falcetta}}
@@ -40,9 +43,7 @@ with temporal sensitivity maps for each board separately.
 \input{sections/01_introduction}
 \input{sections/02_experimental_setup}
 \input{sections/03_methods}
-\FloatBarrier
 \input{sections/04_results}
-\FloatBarrier
 \input{sections/05_conclusions}
 \appendix
 \input{sections/06_hyperparameters_libraries}

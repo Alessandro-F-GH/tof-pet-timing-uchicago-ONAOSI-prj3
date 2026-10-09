@@ -31,6 +31,11 @@ The output is `main.pdf`. The template uses Times-style text and mathematics,
 with `newtx` when installed and `mathptmx` as a fallback. Tables use `booktabs`, `multirow` and `arydshln` for grouped labels and dashed separators;
 references use numerical citations and BibTeX.
 
+Float barriers at every section and subsection keep tables within
+the heading that includes them. Wide tables retain their two-column layout and
+can continue onto subsequent pages within that section or subsection. A final
+barrier keeps appendix tables before the bibliography.
+
 ### Build troubleshooting
 
 Undefined citations and references on the first LaTeX pass are expected; they
