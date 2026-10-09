@@ -66,13 +66,19 @@ The preamble loads `amsmath` before the font packages and avoids loading
 - `sections/06_hyperparameters_libraries.tex`: configured spaces and declared library requirements.
 - `tables/<type>/<name>.tex`: every table, separated from section prose.
 - `references.bib`: literature cited in the draft, including the five supplied papers.
+  The Huizenga (2012) and Pourashraf (2022) entries use the author surnames, titles
+  and years supplied with the AFE clarification; complete publisher metadata has
+  not been verified for these two entries.
 
 Hardware and acquisition descriptions were checked against `update_report/` and
 `presentation/` and incorporate the supplied experimental clarification: the two boards
-use the same crystals and SiPMs and each coincidence event contains four waveforms
-(two energy and two timing), the first-stage energy output retains the full pulse
-amplitude for selection, and the additional timing stage uses high gain with an
-intentionally narrow oscilloscope vertical range. The slides' shared-scorer explanation motivates the antisymmetric
+use the same crystals and SiPMs and two cascaded amplification stages. Each coincidence
+event contains four waveforms: the intermediate and final outputs from each detector.
+The experimental labels energy and timing identify their roles; they are successive-stage
+outputs of the same SiPM pulse. The intermediate waveform retains the full pulse amplitude
+for selection, and the postamplified waveform is acquired with an intentionally narrow
+oscilloscope vertical range. Models currently evaluate a detector pair from one stage at
+a time. The slides' shared-scorer explanation motivates the antisymmetric
 formulation. Pipeline descriptions follow `waveform_analysis/` and its current
 `benchmark_UC.json`, `benchmark_FBK.json`, preprocessing and model-space files;
 older split policies, architecture settings and results are not carried forward.

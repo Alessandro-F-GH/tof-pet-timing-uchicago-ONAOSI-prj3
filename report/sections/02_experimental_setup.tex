@@ -5,22 +5,33 @@ lutetium--yttrium oxyorthosilicate (LYSO) crystals of dimensions
 $2\times2\times3\,\mathrm{mm}^{3}$. A $^{22}\mathrm{Na}$ source is positioned centrally
 between the modules. The University of Chicago (UC) and Fondazione Bruno Kessler (FBK)
 measurements use the same crystals and SiPMs; the two arrangements differ in their
-front-end electronics. Both boards provide an energy output from the first amplification
-stage and a timing output from a second stage that increases the gain to improve
-sensitivity to pulse arrival.
+analog front-end (AFE) electronics.
+
+Each AFE uses two cascaded amplification stages. The first amplifier, or preamplifier,
+provides initial amplification and an accessible intermediate waveform. The second
+amplifier, or postamplifier, processes this signal with additional gain and provides the
+final waveform. Both outputs are acquired simultaneously for each detector. They
+originate from the same SiPM pulse and are correlated, while the subsequent amplification
+can modify the amplitude, bandwidth, noise and temporal characteristics. The final
+waveform can therefore differ in shape as well as amplitude from the intermediate waveform.
+The labels \emph{energy} and \emph{timing} denote the experimental roles of the first-stage
+and second-stage waveforms, respectively; they identify successive outputs of this
+cascaded readout circuit. The role of electronic readout design in timing has been
+investigated in studies of SiPM preamplifiers and TOF-PET signal-processing
+chains~\cite{huizenga2012,pourashraf2022}.
 
 The energy output is recorded to retain the energy information required for event
 selection. Its complete pulse amplitude lies within the oscilloscope's vertical range,
-and the maximum amplitude is used as the energy-selection observable. This first-stage
-output represents the standard signal available for energy measurement in clinical
-systems. The additional high-gain timing stage used here is costly and is not part of
-standard clinical readout, motivating the application of LED and ML timing methods to
-the energy signal as well. Timing analysis of waveforms that also provide energy
+and the maximum amplitude is used as the energy-selection observable. The intermediate
+waveform supplies the energy measurement required in clinical readout. The additional
+high-gain postamplification used here is costly and is not part of standard clinical
+readout, motivating the application of LED and ML timing methods to the first-stage
+waveform as well. Timing analysis of waveforms that also provide energy
 information has been investigated in previous work~\cite{berg2018}.
 
-The two outputs have different signal characteristics. The energy waveform is cleaner
-and more stable, but its leading-edge timing is more affected by time walk. The higher
-gain of the timing output makes it more susceptible to noise and waveform instability.
+In the present acquisition, the first-stage waveform is cleaner and more stable, but
+its leading-edge timing is more affected by time walk. The high-gain second-stage
+waveform is more susceptible to noise and waveform instability.
 For this output, the oscilloscope vertical range is deliberately much smaller than the
 full pulse amplitude. This setting emphasizes the initial rising edge, while the pulse
 peak is clipped in amplitude. It provides a timing-oriented acquisition intended to
@@ -29,9 +40,9 @@ A narrow vertical range emphasizing pulse arrival has also been used in the wave
 acquisitions of Onishi et al.~\cite{onishi2022}.
 
 Each dataset consists of coincidence events with four waveforms recorded together:
-one energy waveform and one timing waveform from each detector. Channels 1 and 2
-contain the energy waveforms, while channels 3 and 4 contain the corresponding timing
-waveforms. The energy and timing modes are therefore derived from the same four-channel
+one intermediate waveform and one final waveform from each detector. Channels 1 and 2
+contain the first-stage (energy) waveforms, while channels 3 and 4 contain the corresponding
+second-stage (timing) waveforms. The energy and timing modes are therefore derived from the same four-channel
 event records. The documented acquisitions use $100\,\mathrm{ns}$ records sampled at $80\,\mathrm{GS\,s}^{-1}$.
 Each board is analysed independently, with energy-based event selection common to both
 waveform modes. The energy mode examines timing information in the standard first-stage

@@ -36,8 +36,9 @@ with the lowest control CTR is retained, with the smaller threshold breaking a t
 This threshold is then fixed for model selection and blind evaluation.
 
 \subsection{Waveform representation and correction target}
-For the selected waveform mode, each model receives the two energy waveforms or the
-two timing waveforms belonging to the same coincidence event.
+The amplification stages are evaluated separately. For the selected waveform mode,
+each model receives a detector pair of first-stage (energy) or second-stage (timing)
+waveforms belonging to the same coincidence event.
 Waveforms are oriented according to detector polarity and limited to the configured
 physical amplitude range. The baseline sets the LED crossing level, but the waveform
 inputs are not subjected to event-wise baseline subtraction or denoising.
