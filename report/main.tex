@@ -9,7 +9,7 @@
 \usepackage{graphicx}
 \usepackage{booktabs,tabularx,array,multirow}
 \usepackage{arydshln}
-\usepackage{caption}
+\usepackage{caption,float}
 \usepackage[section]{placeins}
 \usepackage{etoolbox}
 \pretocmd{\subsection}{\FloatBarrier}{}{\PackageError{report}{Cannot install subsection float barriers}{}}
@@ -33,7 +33,9 @@
 \begin{abstract}
 Accurate coincidence timing is central to time-of-flight positron emission tomography.
 This study describes a waveform-based correction of leading-edge timing for two
-scintillation-detector modules equipped with alternative front-end electronics.
+scintillation-detector modules using the same crystals and photodetectors with alternative
+front-end electronics. Signal inputs comprise the standard energy output and a dedicated
+high-gain timing output acquired with a narrow oscilloscope vertical range.
 Detector-shared and direct estimators are evaluated within a protocol that separates
 control-based preprocessing, model development and independent blind evaluation.
 Timing resolution is defined by direct half-maximum interpolation of residual histograms.

@@ -3,16 +3,37 @@
 Two opposing detector modules comprise silicon photomultipliers (SiPMs) coupled to
 lutetium--yttrium oxyorthosilicate (LYSO) crystals of dimensions
 $2\times2\times3\,\mathrm{mm}^{3}$. A $^{22}\mathrm{Na}$ source is positioned centrally
-between the modules. Each front end provides an energy output after the first amplification
-stage and a timing output after a second stage designed for timing measurements.
+between the modules. The University of Chicago (UC) and Fondazione Bruno Kessler (FBK)
+measurements use the same crystals and SiPMs; the two arrangements differ in their
+front-end electronics. Each board provides an energy output from the first amplification
+stage and a timing output from a second stage that increases the gain to improve
+sensitivity to pulse arrival.
+
+The energy output is recorded to retain the energy information required for event
+selection. Its complete pulse amplitude lies within the oscilloscope's vertical range,
+and the maximum amplitude is used as the energy-selection observable. This first-stage
+output represents the standard signal available for energy measurement in clinical
+systems. The additional high-gain timing stage used here is costly and is not part of
+standard clinical readout, motivating the application of LED and ML timing methods to
+the energy signal as well. Timing analysis of waveforms that also provide energy
+information has been investigated in previous work~\cite{berg2018}.
+
+The two outputs have different signal characteristics. The energy waveform is cleaner
+and more stable, but its leading-edge timing is more affected by time walk. The higher
+gain of the timing output makes it more susceptible to noise and waveform instability.
+For this output, the oscilloscope vertical range is deliberately much smaller than the
+full pulse amplitude. This setting emphasizes the initial rising edge, while the pulse
+peak is clipped in amplitude. It provides a timing-oriented acquisition intended to
+approach the best timing resolution attainable with the same crystal and SiPM.
+A narrow vertical range emphasizing pulse arrival has also been used in the waveform
+acquisitions of Onishi et al.~\cite{onishi2022}.
+
 Four oscilloscope channels record both modules: channels 1 and 2 contain the energy
 waveforms, while channels 3 and 4 contain the timing waveforms. The documented acquisitions
 use $100\,\mathrm{ns}$ records sampled at $80\,\mathrm{GS\,s}^{-1}$.
-
-The University of Chicago (UC) and Fondazione Bruno Kessler (FBK) front-end boards are
-considered separately. Within each board, timing corrections can use either the energy
-waveforms or the timing waveforms; energy-based event selection remains common to these
-choices.
+Each board is analysed independently, with energy-based event selection common to both
+waveform modes. The energy mode examines timing information in the standard first-stage
+signal; the timing mode examines the dedicated high-gain, narrow-range acquisition.
 
 \subsection{Acquisitions and scientific roles}
 The benchmark datasets identify three independent acquisitions at a SiPM bias of

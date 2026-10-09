@@ -68,7 +68,10 @@ The preamble loads `amsmath` before the font packages and avoids loading
 - `references.bib`: literature cited in the draft, including the five supplied papers.
 
 Hardware and acquisition descriptions were checked against `update_report/` and
-`presentation/`. The slides' shared-scorer explanation motivates the antisymmetric
+`presentation/` and incorporate the supplied experimental clarification: the two boards
+use the same crystals and SiPMs, the first-stage energy output retains the full pulse
+amplitude for selection, and the additional timing stage uses high gain with an
+intentionally narrow oscilloscope vertical range. The slides' shared-scorer explanation motivates the antisymmetric
 formulation. Pipeline descriptions follow `waveform_analysis/` and its current
 `benchmark_UC.json`, `benchmark_FBK.json`, preprocessing and model-space files;
 older split policies, architecture settings and results are not carried forward.

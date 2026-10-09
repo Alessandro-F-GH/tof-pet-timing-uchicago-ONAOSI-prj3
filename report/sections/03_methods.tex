@@ -15,14 +15,17 @@ the same estimator. The root mean squared error (RMSE), measured relative to the
 true TOF, is retained as a complementary measure that also reflects residual bias.
 
 \subsection{Control-fitted event selection}
-The two-detector photopeak selection is fitted from the control energy amplitudes using
-iterative Gaussian peak fits. For timing-mode analysis, accepted threshold-exceeding
-intervals must also satisfy control-fitted time-over-threshold (ToT) ranges.
+The two-detector photopeak selection uses the maximum amplitudes of the fully recorded
+energy pulses. Its acceptance ranges are fitted on control using iterative Gaussian
+peak fits and applied to both waveform modes. For timing-mode analysis, accepted
+threshold-exceeding intervals must also satisfy control-fitted time-over-threshold (ToT) ranges.
 Baseline quality is evaluated in a trigger-relative pre-pulse interval, from
 $-2$ to $-1\,\mathrm{ns}$ in the supplied configuration. For each detector and waveform family,
 the baseline root mean square noise is compared with a control-derived robust upper limit,
 obtained from the median plus five scaled median absolute deviations. Events with
 baseline samples within $1\,\mathrm{mV}$ of an acquisition rail are rejected.
+This check concerns the pre-pulse baseline; intentional amplitude clipping of the
+high-gain timing-pulse peak is part of the acquisition described above.
 These criteria are frozen and applied to the development and blind acquisitions.
 
 For each mode, the LED threshold is selected on control alone from offsets of
@@ -36,10 +39,11 @@ This threshold is then fixed for model selection and blind evaluation.
 Waveforms are oriented according to detector polarity and limited to the configured
 physical amplitude range. The baseline sets the LED crossing level, but the waveform
 inputs are not subjected to event-wise baseline subtraction or denoising.
-Each detector waveform is cropped relative to its own LED crossing on the native sample
-grid and scaled to the interval from zero to one using fixed detector-specific amplitude
-limits. Events lacking either finite crossing, the required coincidence, or the complete
-input window are excluded.
+After acquisition, each detector waveform is cropped in time relative to its own LED
+crossing on the native sample grid and scaled to the interval from zero to one using
+fixed detector-specific amplitude limits. Events lacking either finite crossing, the required coincidence, or the complete
+input window are excluded. This temporal input window is distinct from the
+oscilloscope amplitude clipping of the timing signal.
 
 The UC benchmark uses a short interval from $-1$ to $+2\,\mathrm{ns}$; the FBK
 benchmark uses $-1.5$ to $+2\,\mathrm{ns}$. Both use an extended interval from
