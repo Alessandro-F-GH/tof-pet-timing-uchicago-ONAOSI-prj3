@@ -1,4 +1,4 @@
-"""Original Onishi full-split MSE trainer, separate from RMSE/holdout fitting."""
+"""Original Onishi full-split MSE trainer."""
 
 from __future__ import annotations
 
