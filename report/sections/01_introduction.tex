@@ -5,35 +5,54 @@ photon arrival times to constrain the annihilation position along the line joini
 detectors and can improve image signal-to-noise performance. The precision of this
 information depends on the coincidence timing resolution (CTR), conventionally expressed
 as the full width at half maximum (FWHM) of the time-difference distribution~\cite{surti2015}.
-Waveform-based timing estimation seeks to extract the timing information contained in the
-detector signals.
 
 A leading-edge discriminator (LED) assigns an arrival time when a pulse crosses a fixed
 amplitude threshold. Variations in pulse amplitude and rising-edge shape shift the crossing
 time, producing time walk. Digitized waveforms retain information about these variations,
-which machine learning (ML) can use to estimate a timing correction.
+which machine learning (ML) can exploit to estimate event-specific timing corrections.
 
 Waveform-based approaches include direct TOF estimation and correction of conventional
 timing measurements. Berg and Cherry demonstrated direct TOF estimation from detector
-waveform pairs using a convolutional neural network (CNN), with labels obtained from
-controlled source positions~\cite{berg2018}. Onishi et al. trained a network to correct the
-LED time-difference error using waveforms acquired at one source position~\cite{onishi2022}.
-This approach combines the conventional threshold-crossing measurement with a
-waveform-dependent correction. Feng et al. explored richer representations by combining
-convolutional features with transformer-based attention to capture local and global temporal
-information~\cite{feng2024}. For bismuth germanate (BGO) detectors, Loignon-Houle et al.
-compared leading-edge timing, a two-threshold time-walk correction and a CNN-based method,
-including their effects on the tails of the timing distribution~\cite{loignon2025}.
-Evaluation of such timing estimators also requires a specified FWHM estimation method,
-since the width can be estimated using different procedures~\cite{rainio2025}.
+waveform pairs using a convolutional neural network (CNN), improving CTR by 20\% relative
+to LED, from 231 to 185 ps~\cite{berg2018}. Onishi et al. combined LED with a CNN
+trained using waveforms acquired at a single source position, improving timing
+resolution while avoiding the position-dependent bias associated with direct TOF
+estimation~\cite{onishi2022}. Feng et al. explored convolutional features combined with
+transformer-based attention to capture local and global temporal information~\cite{feng2024}.
+For bismuth germanate (BGO) detectors, Loignon-Houle et al. compared LED, a
+two-threshold time-walk correction and CNN-based timing, showing that performance gains
+and timing-distribution tails depend on detector characteristics~\cite{loignon2025}.
 
-This study investigates waveform-based corrections of LED timing using detector-shared
-and direct estimators. Shared estimators apply a common detector-level function to both
-waveforms and form their difference, imposing detector-exchange antisymmetry. The analysis
-examines how amplification stage, detector sharing, estimator family and input waveform
-window affect timing resolution within each electronics board. Signal inputs are acquired
-at different stages of cascaded analog amplification, using the same crystals and
-photodetectors. The two boards are analysed independently using control,
-development and blind acquisitions. Temporal sensitivity
-analysis complements timing evaluation by identifying waveform regions to which the fitted
-corrections are sensitive.
+An important question is how much of the recorded waveform is useful for timing correction.
+Several waveform-based CNN approaches have emphasized short intervals near the rising
+edge~\cite{onishi2022,loignon2025}. Nevertheless, later pulse samples may encode
+event-dependent shape variations relevant to correcting the threshold-crossing time.
+Ruiz-Gonzalez et al. used maximum-likelihood timing estimation and Fisher-information
+analysis to study waveform segments, finding that timing resolution approaches a limit
+as the number of samples increases~\cite{ruiz2018}. Their analysis motivates examining
+whether extending the input window beyond the rising edge benefits ML-based LED
+correction and which temporal regions influence the resulting estimates.
+
+The analog readout chain is another determinant of timing performance. Amplification can
+change signal amplitude, bandwidth, noise and rise time, affecting both LED timing
+and the waveform features accessible to ML. Pourashraf et al. compared front-end
+readout configurations for silicon photomultiplier (SiPM)-based TOF-PET detectors,
+reporting a best CTR of $99.4 \pm 1.9$ ps, more than 20 ps better than two alternative
+configurations~\cite{pourashraf2022}. These results establish the importance of
+electronics choices, but do not determine whether ML corrections applied to outputs
+of successive stages of cascaded amplification perform differently.
+
+This study systematically characterizes waveform-based LED timing corrections in terms
+of amplification stage, estimator family, detector sharing and input-window extent.
+Beyond identifying the lowest CTR among the evaluated configurations, it examines
+improvements relative to LED, residual timing errors, the value of waveform samples
+beyond the rising edge and the dependence of correction performance on the readout stage.
+Detector-shared estimators apply a common detector-level function to both waveforms
+and subtract its outputs, enforcing detector-exchange antisymmetry; direct estimators
+do not impose this shared-function constraint. Two electronics boards, using the
+same crystals and photodetectors, are evaluated independently through control,
+development and blind acquisitions. Temporal sensitivity analysis complements
+the performance comparison by identifying waveform regions to which fitted corrections
+are sensitive, rather than treating sensitivity as a direct measure of intrinsic
+timing information. CTR is evaluated using a consistent FWHM estimation
+procedure~\cite{rainio2025}.
