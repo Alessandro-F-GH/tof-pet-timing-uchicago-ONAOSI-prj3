@@ -271,6 +271,14 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         manifest = json.loads((output / "metadata/manifest.json").read_text())
         best = json.loads((output / "metadata/best.json").read_text())
         assert manifest["blind_used_in_selection"] is False
+        assert set(manifest["dataset_populations"]) == {
+            "control",
+            "development",
+            "blind",
+        }
+        assert all(
+            row["n_selected"] == 256 for row in manifest["dataset_populations"].values()
+        )
         if manifest["selection_method"] == "ridge_cv":
             assert manifest["cv"]["enabled"] is False
             assert best["n_train"] == datasets["development"].n_events
@@ -278,6 +286,10 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         else:
             assert (output / "tables/cv.csv").exists()
         assert (output / "artifacts/pred.npz").exists()
+    table = tmp_path / "report/tables/datasets/FBK_selected_events.tex"
+    assert table.is_file()
+    assert table.read_text().count(" & 256") == 3  # Once per role, not once per model.
+    assert not (table.parent / "UC_selected_events.tex").exists()
     assert (tmp_path / "report/tables/ridge_cv.csv").is_file()
     assert (tmp_path / "report/tables/validation.csv").exists() == mixed
     assert batch_engine.run_batch(resolved) == outputs

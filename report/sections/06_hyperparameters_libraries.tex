@@ -1,0 +1,17 @@
+\section{Hyperparameter spaces and model libraries}
+\label{app:spaces}
+The following tables specify the currently configured model spaces and training settings.
+They describe the planned analysis, not selected hyperparameters or measured performance.
+Square brackets denote hidden-layer widths or convolutional channel sequences; braces denote
+alternative grid values. A stated range with a count denotes logarithmic spacing.
+All model comparisons use the same input intervals within each board.
+\input{tables/hyperparameters/dense_and_local}
+\input{tables/hyperparameters/temporal_cnn}
+\input{tables/hyperparameters/paired_cnn}
+\input{tables/hyperparameters/linear_and_minirocket}
+
+The model libraries and supporting scientific software are listed in
+Table~\ref{tab:model-libraries}. Version bounds are declared minimum requirements;
+they do not certify the versions of an experiment that has not yet been run.
+Exact runtime versions should accompany the final frozen analysis.
+\input{tables/libraries/model_libraries}

@@ -663,6 +663,7 @@ def run_study(config, *, logger=None):
     )
     frozen_transform = None
     frozen_development = None
+    control_prepared = None
     if uses_frozen_model_input(spec):
         _, _, control_prepared = prepare_role_dataset(
             config, "control", control, rebuild=False, logger=None
@@ -966,6 +967,22 @@ def run_study(config, *, logger=None):
         store.mark_stage("xai", xai_fp, metadata={"enabled": False})
     else:
         logger.info("XAI | reusing saved importance")
+    # Reporting-only control population: never passed to neural estimator fitting.
+    # Allow zero rows so bookkeeping cannot reject an otherwise valid study.
+    if control_prepared is None:
+        _, _, control_prepared = prepare_role_dataset(
+            config, "control", control, rebuild=False, logger=None, allow_empty=True
+        )
+    from waveform_analysis.reporting.latex_tables import population_metadata
+
+    dataset_populations = {
+        role: population_metadata(dataset, config[role]["root_file"])
+        for role, dataset in (
+            ("control", control_prepared),
+            ("development", development),
+            ("blind", blind),
+        )
+    }
     manifest = {
         "schema_version": RUN_SCHEMA_VERSION,
         "status": "complete",
@@ -977,6 +994,7 @@ def run_study(config, *, logger=None):
         "window_ns": config["window_ns"],
         "model": spec.name,
         "estimator_formulation": spec.estimator_formulation,
+        "dataset_populations": dataset_populations,
         "control_dataset": config["control"],
         "development_dataset": config["development"],
         "blind_dataset": config["blind"],

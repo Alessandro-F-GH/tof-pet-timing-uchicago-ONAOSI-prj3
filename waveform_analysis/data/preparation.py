@@ -66,6 +66,7 @@ def prepare_ml_dataset(
     cache_dir,
     rebuild=False,
     logger=None,
+    allow_empty=False,
 ):
     dataset_config = dict(dataset_config or config[str(dataset_role)])
     fp = dataset_fingerprint(
@@ -75,7 +76,9 @@ def prepare_ml_dataset(
     if base.is_dir() and not rebuild:
         try:
             dataset = load_prepared_dataset(base)
-            if dataset.manifest.get("fingerprint") == fp:
+            if dataset.manifest.get("fingerprint") == fp and (
+                allow_empty or dataset.n_events
+            ):
                 return dataset
         except Exception:
             pass
@@ -124,7 +127,7 @@ def prepare_ml_dataset(
         axis=1,
     )
     rows = np.flatnonzero(coincidence & window_valid)
-    if not rows.size:
+    if not rows.size and not allow_empty:
         raise RuntimeError(
             "No events remain after frozen selection, fixed LED coincidence, and waveform-window availability"
         )

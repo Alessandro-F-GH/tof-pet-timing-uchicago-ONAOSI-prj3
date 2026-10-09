@@ -18,6 +18,10 @@ from waveform_analysis.reporting.stats import (
     pearson_r,
 )
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.reporting.latex_tables import (
+    DATASET_TABLE_VERSION,
+    export_dataset_tables,
+)
 
 
 def _json(path):
@@ -389,6 +393,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False):
             shutil.rmtree(legacy_dir)
     for run in runs:
         render_run_plots(run["directory"], cfg)
+    dataset_tables = export_dataset_tables(root, runs, root_config)
     validation, blind = _summaries(runs)
     if validation:
         write_csv(tables / "validation.csv", validation)
@@ -472,6 +477,10 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False):
         {
             "source_result_root": str(root),
             "runs": len(runs),
+            "dataset_table_version": DATASET_TABLE_VERSION,
+            "dataset_tables": [
+                str(path.relative_to(report)) for path in dataset_tables
+            ],
             "plot_regeneration_requires_training": False,
             "pairwise_difference_convention": "metric(row)-metric(column); negative means row model is better",
             "window_winner_source": "development_cv_only",

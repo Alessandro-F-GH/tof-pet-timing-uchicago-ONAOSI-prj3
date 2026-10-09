@@ -69,7 +69,9 @@ def apply_frozen_preprocessing(
     return selection, native
 
 
-def prepare_role_dataset(config, role, control_artifact, *, rebuild=False, logger=None):
+def prepare_role_dataset(
+    config, role, control_artifact, *, rebuild=False, logger=None, allow_empty=False
+):
     selection, native = apply_frozen_preprocessing(
         config, role, control_artifact, rebuild=rebuild, logger=logger
     )
@@ -79,6 +81,7 @@ def prepare_role_dataset(config, role, control_artifact, *, rebuild=False, logge
         config,
         dataset_config=config[role],
         dataset_role=role,
+        allow_empty=allow_empty,
         cache_dir=Path(config["preprocessing"]["cache_dir"]) / f"{role}_ml",
         rebuild=rebuild,
         logger=logger,

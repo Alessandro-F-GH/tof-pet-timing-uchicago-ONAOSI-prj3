@@ -1,0 +1,51 @@
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[margin=1.75cm,columnsep=0.65cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\IfFileExists{newtxtext.sty}{\usepackage{newtxtext,newtxmath}}{\usepackage{mathptmx}}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{caption,placeins}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={Waveform-based timing correction for time-of-flight positron emission tomography}, pdfauthor={Alessandro Falcetta}}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\emergencystretch}{1.5em}
+\newcommand{\placeholder}[1]{\par\noindent\textit{[Placeholder: #1]}\par}
+\newcommand{\figureplaceholder}[2]{%
+  \begin{figure}[tbp]\centering
+  \fbox{\begin{minipage}[c][2.3cm][c]{0.92\columnwidth}\centering
+  \textit{Figure reserved for #1.}\end{minipage}}
+  \caption{#1. No experimental result is included in this draft.}\label{#2}
+  \end{figure}}
+\title{Waveform-based timing correction for time-of-flight positron emission tomography}
+\author{Alessandro Falcetta}
+\date{}
+\begin{document}
+\maketitle
+\begin{abstract}
+Accurate coincidence timing is central to time-of-flight positron emission tomography.
+This methods draft describes a waveform-based correction of leading-edge timing for two
+scintillation-detector modules equipped with alternative front-end electronics.
+Detector-shared and direct estimators are evaluated within a protocol that separates
+control-based preprocessing, model development and independent blind evaluation.
+Timing resolution is defined by direct half-maximum interpolation of residual histograms.
+The planned analysis includes model and waveform-window comparisons and temporal sensitivity
+maps for each board separately. Experimental results and conclusions are reserved for completion
+once the corresponding batch analyses are available.
+\end{abstract}
+\input{sections/01_introduction}
+\input{sections/02_experimental_setup}
+\input{sections/03_methods}
+\FloatBarrier
+\input{sections/04_results}
+\FloatBarrier
+\input{sections/05_conclusions}
+\appendix
+\input{sections/06_hyperparameters_libraries}
+\FloatBarrier
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+\end{document}

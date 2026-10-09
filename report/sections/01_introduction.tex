@@ -1,0 +1,38 @@
+\section{Introduction}
+Positron emission tomography (PET) detects pairs of annihilation photons to reconstruct
+radiotracer distributions. Time-of-flight (TOF) information constrains the annihilation position
+along the line joining the detectors and can improve image signal-to-noise performance.
+The precision of this information depends on the coincidence timing resolution (CTR),
+conventionally expressed as the full width at half maximum (FWHM) of the time-difference
+distribution~\cite{surti2015}. Improving the extraction of timing information from detector
+signals is therefore relevant in addition to improvements in scintillators, photodetectors
+and front-end electronics.
+
+A leading-edge discriminator (LED) assigns an arrival time when a pulse crosses a fixed
+amplitude threshold. Its response depends on the pulse amplitude and rising-edge shape.
+Digitized waveforms retain information that a single threshold crossing does not explicitly
+use. Machine learning (ML) provides a means of combining this information in a timing estimator.
+Berg and Cherry demonstrated TOF estimation from pairs of detector waveforms using a
+convolutional neural network (CNN), with training labels obtained from controlled source
+positions~\cite{berg2018}. Onishi et al. instead trained a network to correct the LED
+time-difference error using waveforms acquired at one source position~\cite{onishi2022}.
+This correction-based formulation separates the conventional timing measurement from the
+waveform-dependent adjustment and motivates the approach considered here.
+
+Subsequent work has explored richer waveform representations. Feng et al. combined
+convolutional features with transformer-based attention to capture local and global temporal
+information~\cite{feng2024}. For bismuth germanate (BGO) detectors, Loignon-Houle et al.
+compared leading-edge timing, a two-threshold time-walk correction and a CNN-based method,
+including their effects on the tails of the timing distribution~\cite{loignon2025}.
+These studies motivate examining both the information used by a model and the definition of
+timing resolution. Their detector materials and acquisition conditions differ from those
+of the present study; their numerical performance is not used as a benchmark for our boards.
+
+The present analysis compares waveform-based corrections with a common LED reference.
+A detector-shared formulation applies the same scorer to each pulse and subtracts its outputs,
+thereby imposing detector-exchange antisymmetry. Direct estimators provide alternatives
+without this constraint. Linear regression, multilayer neural networks and convolutional
+feature transforms are considered with short and extended waveform windows.
+Two front-end boards are analysed independently. The objectives are to evaluate model and
+window dependence within each board and to identify temporal regions to which the fitted
+corrections are sensitive. No performance outcome is assumed in this draft.

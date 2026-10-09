@@ -1,0 +1,149 @@
+\section{Methods}
+\subsection{Timing-resolution definition}
+CTR is measured from the distribution of timing residuals using method F1 of Rainio
+et al.~\cite{rainio2025}. A uniformly binned histogram is represented by its bin centres
+and counts. The maximum bin defines the peak height; when several bins share the maximum,
+the middlemost maximum is selected. On either side of this bin, the nearest count strictly
+below half the peak height brackets a crossing with its adjacent inner bin. Linear
+interpolation between the two bin centres locates each crossing, and their separation is
+the FWHM. No Gaussian fit or conversion from a standard deviation is used for this measure.
+
+The physical bin width and histogram phase are fixed for a given waveform mode; zero is a
+bin centre. The benchmark settings use $10\,\mathrm{ps}$ bins for energy-waveform timing and
+$5\,\mathrm{ps}$ bins for timing-waveform timing. LED and ML residuals are evaluated with
+the same estimator. The root mean squared error (RMSE), measured relative to the configured
+true TOF, is retained as a complementary measure that also reflects residual bias.
+
+\subsection{Control-fitted event selection}
+The two-detector photopeak selection is fitted from the control energy amplitudes using
+iterative Gaussian peak fits. For timing-mode analysis, accepted threshold-exceeding
+intervals must also satisfy control-fitted time-over-threshold (ToT) ranges.
+Baseline quality is evaluated in a trigger-relative pre-pulse interval, from
+$-2$ to $-1\,\mathrm{ns}$ in the supplied configuration. For each detector and waveform family,
+the baseline root mean square noise is compared with a control-derived robust upper limit,
+obtained from the median plus five scaled median absolute deviations. Events with
+baseline samples within $1\,\mathrm{mV}$ of an acquisition rail are rejected.
+These criteria are frozen and applied to the development and blind acquisitions.
+
+For each mode, the LED threshold is selected on control alone from offsets of
+$5$, $15$, $25$, $35$, $45$ and $55\,\mathrm{mV}$ above the event baseline.
+An eligible threshold requires at least $95\%$ valid coincident pairs within
+$\pm2\,\mathrm{ns}$ of the configured true TOF. Among eligible candidates, the threshold
+with the lowest control CTR is retained, with the smaller threshold breaking a tie.
+This threshold is then fixed for model selection and blind evaluation.
+
+\subsection{Waveform representation and correction target}
+Waveforms are oriented according to detector polarity and limited to the configured
+physical amplitude range. The baseline sets the LED crossing level, but the waveform
+inputs are not subjected to event-wise baseline subtraction or denoising.
+Each detector waveform is cropped relative to its own LED crossing on the native sample
+grid and scaled to the interval from zero to one using fixed detector-specific amplitude
+limits. Events lacking either finite crossing, the required coincidence, or the complete
+input window are excluded.
+
+The UC benchmark uses a short interval from $-1$ to $+2\,\mathrm{ns}$; the FBK
+benchmark uses $-1.5$ to $+2\,\mathrm{ns}$. Both use an extended interval from
+$-2$ to $+30\,\mathrm{ns}$ relative to the crossing. The UC benchmark evaluates
+timing waveforms, whereas the FBK benchmark includes energy and timing waveforms.
+The interval is a study setting, rather than a model-dependent crop.
+The difference between the LED arrival times, after subtracting the configured true TOF,
+is the supervised correction target. If $s_1$ and $s_2$ denote the normalized waveforms and
+$h_{\theta}$ the predicted correction, the final residual is
+\begin{equation}
+ r=(t_{1,\mathrm{LED}}-t_{2,\mathrm{LED}}-\tau)-h_{\theta}(s_1,s_2),
+ \label{eq:residual}
+\end{equation}
+where $\tau$ is the configured true TOF. A correction is therefore learnt for the conventional
+timing residual, rather than for an absolute source-position label.
+
+\subsection{Shared and direct estimator architectures}
+In a shared formulation, one detector-level scorer is applied independently to both
+waveforms:
+\begin{equation}
+ h_{\theta}(s_1,s_2)=g_{\theta}(s_1)-g_{\theta}(s_2).
+ \label{eq:shared}
+\end{equation}
+Exchanging the detector inputs reverses the correction sign, and identical normalized
+pulses yield zero correction. Sharing the scorer removes
+arbitrary detector-specific parameter differences while retaining waveform-dependent
+corrections. This is an architectural constraint; the adequacy of the constraint for each
+board is assessed within that board's data. Alignment to the individual LED crossings
+also prevents absolute acquisition times from entering the waveform inputs.
+
+A multilayer perceptron (MLP) implements a fully connected shared scorer.
+The configured neural hidden layers use the rectified linear unit (ReLU) activation. A locally
+connected MLP uses two temporal layers with position-specific weights, followed by a dense
+scorer. Local connectivity retains neighbourhood information without the translation-based
+weight sharing of convolution, an established architectural alternative~\cite{elsayed2020}.
+Its score difference is passed through an odd, smooth hyperbolic-tangent transformation
+with a $500\,\mathrm{ps}$ bound, preserving antisymmetry. A shared one-dimensional CNN uses
+one temporal backbone and one dense head for both detectors. Shared linear ridge regression
+uses the difference of normalized waveforms without an intercept.
+
+Direct alternatives include an MLP operating on the concatenated pair and linear ridge
+regression on the concatenated samples with an intercept. The independent CNN uses two
+separately parameterized detector branches and subtracts their scalar outputs; independent
+weights do not enforce detector-exchange antisymmetry. The Onishi-inspired paired CNN
+fuses the detector dimension in its first convolution, applies further temporal
+convolution and uses a dense scalar head~\cite{onishi2022}. Its configured architecture is
+a tunable implementation of this correction approach, rather than an assertion of identical
+training conditions to the published experiment.
+
+MiniRocket supplies a largely deterministic convolutional feature representation~\cite{minirocket2021}.
+The shared variant applies one control-fitted transform and scaling to both detectors,
+subtracts their features and fits ridge regression without an intercept. The direct variant
+uses a multivariate transform of the paired waveforms and ridge regression with an intercept.
+In both cases the transform and scaling are fitted once on control and then frozen; supervised
+regression uses development targets only.
+For dense MLPs, constant samples are removed using the current fitting population and a
+$99\%$ identical-value criterion. Convolutional and locally connected neural architectures
+retain the temporal grid; the frozen linear and MiniRocket inputs also retain it.
+The estimator inventory is given in Table~\ref{tab:model-inventory}.
+\input{tables/models/estimator_inventory}
+
+\subsection{Model development and validation}
+Model selection uses only the development acquisition. For each board, mode and window,
+the supplied benchmark protocol assigns three deterministic, shuffled folds shared by the
+models using outer cross-validation (CV). Every candidate is fitted on the other folds,
+and validation CTR, RMSE and the LED reference are computed on the held-out fold.
+The candidate spaces in Appendix~\ref{app:spaces} are finite grids in the supplied benchmarks.
+Selection minimizes the mean validation CTR. Pruning compares candidates with the LED
+reference and completed incumbents on the same evaluated folds using prespecified tolerances;
+partially evaluated candidates cannot replace a fully evaluated selection.
+
+After selection, the search fit is discarded and the final estimator is refitted from
+scratch using the development population. MLP-based and one-dimensional CNN training use
+an RMSE loss, reserving $20\%$ of each fitting population for epoch-level early stopping.
+The antisymmetric dense MLP uses stochastic gradient descent (SGD) with Nesterov momentum;
+the other such neural models use Adam. Gradient clipping and the configured loss and
+gradient stopping criteria are retained. The Onishi-inspired CNN instead uses a mean
+squared error (MSE) loss, Adam and a fixed epoch schedule on its full fitting population,
+without the internal early-stopping holdout.
+
+The two linear ridge estimators bypass outer CV and candidate pruning. Their regularization
+strength is selected by internal leave-one-out CV using MSE, and the final regression is
+fitted on the full development population. Internal ridge MSE is not an outer-validation
+CTR and will not be entered as one in the result tables. MiniRocket ridge regression remains
+within the outer-CV protocol. One configured random seed determines splitting, model
+training and subsequent resampling; multiple-seed replicas are not part of the benchmark.
+
+\subsection{Blind evaluation and temporal sensitivity}
+The final model is applied to the independent blind acquisition with all preprocessing,
+threshold and model choices frozen. Predicted corrections are limited to an absolute
+magnitude of $2000\,\mathrm{ps}$ before residual evaluation; the locally connected model
+also retains its narrower smooth bound. LED and corrected residuals use the same events.
+CTR and RMSE uncertainties are estimated by paired blind-event bootstrap resampling,
+without retraining. The supplied settings use $1000$ draws for UC and $100$ for FBK. These uncertainties describe
+event-level variation conditional on the fitted model, whereas validation dispersion is
+fold-to-fold variability. Within-board differences between models are also evaluated by
+matching blind-event identities and resampling the matched events jointly.
+
+Explainable artificial intelligence (XAI) is based on temporal occlusion. Groups of eight
+retained samples are replaced by interpolation between adjacent samples, and the mean
+absolute change in the predicted correction is measured over a reproducible subset of at
+most $4096$ blind events. Shared estimators perturb both detector inputs together, producing
+one temporal importance profile. Direct estimators perturb one detector at a time, producing
+two channel-specific profiles. For display, importance is aggregated into $1\,\mathrm{ns}$
+bins and normalized; the direct channels use a common maximum. These maps quantify model
+sensitivity to the defined perturbation, rather than a causal attribution. XAI is not used
+for hyperparameter selection.

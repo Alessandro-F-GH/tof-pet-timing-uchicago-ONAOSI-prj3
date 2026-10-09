@@ -302,13 +302,20 @@ def run_batch(batch, *, logger=None):
                 config, "blind", control, batch.output_dir, logger=logger
             )
         from waveform_analysis.reporting.report import generate_report
+        from waveform_analysis.reporting.latex_tables import DATASET_TABLE_VERSION
 
         report_manifest = Path(batch.output_dir).resolve() / "report" / "manifest.json"
         if not (
             all(i["action"] == "keep" for i in plan["studies"])
             and report_manifest.is_file()
+            and (_read_json(report_manifest) or {}).get("dataset_table_version")
+            == DATASET_TABLE_VERSION
         ):
-            generate_report(batch.output_dir, logger=logger)
+            generate_report(
+                batch.output_dir,
+                logger=logger,
+                reuse_numeric=all(i["action"] == "keep" for i in plan["studies"]),
+            )
         _write(batch, plan, "complete", statuses)
         return outputs
     except Exception:
