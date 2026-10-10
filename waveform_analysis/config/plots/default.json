@@ -126,6 +126,21 @@
     "alpha": 1.0,
     "corrected_color": "#0072B2"
   },
+  "boxplot": {
+    "legend_location": "upper left",
+    "legend_anchor": [1.02, 1.0],
+    "figure_width_min": 6.4,
+    "figure_height": 5.0,
+    "width_per_model": 1.15,
+    "pair_separation": 0.36,
+    "box_width": 0.28,
+    "whisker_iqr": 1.5,
+    "box_alpha": 0.55,
+    "median_color": "#222222",
+    "outlier_marker": ".",
+    "outlier_size": 2.5,
+    "outlier_alpha": 0.3
+  },
   "xai": {
     "figsize": [
       7.0,

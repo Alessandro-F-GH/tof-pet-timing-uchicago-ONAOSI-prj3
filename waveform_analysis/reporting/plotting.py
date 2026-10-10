@@ -268,6 +268,90 @@ def plot_run_development(run, cfg):
     return _plot_run_residual_distribution(run, cfg, dataset_role="development")
 
 
+def blind_residual_boxplot(
+    pairs: list[dict[str, Any]], path: str | Path, cfg: dict[str, Any], *, title: str
+) -> Path | None:
+    """Compare paired blind residuals without centering or truncating tails.
+
+    Each entry has a label and one-dimensional LED/corrected residual arrays.
+    Whiskers use the configured multiple of the interquartile range. Every finite
+    paired event is included and all points beyond the whiskers are displayed.
+    """
+    style = cfg.get("boxplot", {})
+    data, labels = [], []
+    for pair in pairs:
+        led = np.asarray(pair["led"], dtype=float).reshape(-1)
+        corrected = np.asarray(pair["corrected"], dtype=float).reshape(-1)
+        if led.shape != corrected.shape:
+            raise ValueError("LED and corrected boxplot residuals must be paired")
+        valid = np.isfinite(led) & np.isfinite(corrected)
+        if np.any(valid):
+            labels.append(pair["label"])
+            data.extend([led[valid], corrected[valid]])
+    if not data:
+        Path(path).unlink(missing_ok=True)
+        return None
+    whis = float(style.get("whisker_iqr", 1.5))
+    centers = np.arange(len(labels), dtype=float)
+    separation = float(style.get("pair_separation", 0.36))
+    positions = np.column_stack([centers - separation / 2, centers + separation / 2]).ravel()
+    colors = [cfg["reference"]["color"], style.get(
+        "corrected_color", cfg["histogram"].get("corrected_color", "#0072B2"))]
+    with plot_context(cfg):
+        fig, ax = plt.subplots(figsize=(
+            max(float(style.get("figure_width_min", 6.4)),
+                float(style.get("width_per_model", 1.15)) * len(labels)),
+            float(style.get("figure_height", 5.0)),
+        ))
+        boxes = ax.boxplot(
+            data, positions=positions, widths=float(style.get("box_width", 0.28)),
+            whis=whis, patch_artist=True, showfliers=True,
+            medianprops={"color": style.get("median_color", "#222222")},
+            flierprops={"marker": style.get("outlier_marker", "."),
+                        "markersize": float(style.get("outlier_size", 2.5)),
+                        "alpha": float(style.get("outlier_alpha", 0.3))},
+        )
+        for index, (box, flier) in enumerate(zip(boxes["boxes"], boxes["fliers"])):
+            color = colors[index % 2]
+            box.set_facecolor(color)
+            box.set_alpha(float(style.get("box_alpha", 0.55)))
+            flier.set_markerfacecolor(color)
+            flier.set_markeredgecolor(color)
+        ax.axhline(0, color=cfg["reference"]["color"], linestyle=":", linewidth=0.8)
+        ax.set_xticks(centers, labels)
+        ax.set_xlim(-0.6, len(labels) - 0.4)
+        ax.set_ylabel("Blind residual [ps]")
+        ax.set_xlabel(
+            "Boxes: 25th–75th percentiles; line: median\n"
+            f"Whiskers: {whis:g} × interquartile range; all outliers shown",
+            fontsize=float(cfg["font"]["annotation_size"]),
+        )
+        ax.set_title(title)
+        ax.legend(
+            boxes["boxes"][:2], ["LED", "ML corrected"],
+            loc=style.get("legend_location", "upper left"),
+            bbox_to_anchor=style.get("legend_anchor", [1.02, 1.0]),
+        )
+        _finish(ax, cfg)
+        return _save(fig, path)
+
+
+def plot_run_blind_boxplot(run, cfg):
+    """Render the LED/correction comparison for one saved blind population."""
+    run = Path(run)
+    output = output_path(run / "plots", "blind_boxplot", cfg)
+    path = run / "artifacts" / "pred.npz"
+    if not path.is_file():
+        output.unlink(missing_ok=True)
+        return None
+    with np.load(path) as data:
+        return blind_residual_boxplot(
+            [{"label": "Blind events", "led": data["led_residual_ps"],
+              "corrected": data["corrected_ps"]}], output, cfg,
+            title="Blind LED and corrected residual distributions",
+        )
+
+
 def _xai_one_ns(time, importance, *, normalize=True):
     # Aggregate per-sample group importance in fixed 1 ns time bins.
     edges = np.arange(np.floor(time.min()), np.ceil(time.max()) + 1, 1.0)
@@ -441,6 +525,7 @@ def render_run_plots(run, cfg):
     return {
         "cv": plot_run_cv(run, cfg),
         "blind": plot_run_blind(run, cfg),
+        "blind_boxplot": plot_run_blind_boxplot(run, cfg),
         "development": plot_run_development(run, cfg),
         "xai": plot_run_xai(run, cfg),
     }

@@ -27,7 +27,8 @@ def report_inputs(tmp_path, monkeypatch):
         directory = tmp_path / name
         (directory / "artifacts").mkdir(parents=True)
         np.savez(directory / "artifacts/pred.npz", event_id=np.arange(32),
-                 prediction_ps=np.arange(32) * ctr, corrected_ps=np.arange(32))
+                 prediction_ps=np.arange(32) * ctr, corrected_ps=np.arange(32),
+                 led_residual_ps=np.arange(32) * 1.3)
         runs.append({
             "directory": directory,
             "manifest": {"model": name, "estimator_formulation": form,
@@ -49,6 +50,7 @@ def report_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "export_dataset_tables", lambda *args: [])
     monkeypatch.setattr(engine, "heatmap", lambda *args, **kwargs: None)
     monkeypatch.setattr(engine, "blind_metric_bar", lambda *args, **kwargs: None)
+    monkeypatch.setattr(engine, "blind_residual_boxplot", lambda *args, **kwargs: None)
     monkeypatch.setattr(engine, "_scatters", lambda *args: None)
     calls = []
 
@@ -110,6 +112,19 @@ def test_invalid_and_empty_exclusions_fail_before_output(report_inputs):
     with pytest.raises(ValueError, match="No complete models remain"):
         engine.generate_report(root, exclude_models=[r["manifest"]["model"] for r in runs])
     assert not (root / "report").exists()
+
+
+def test_aggregate_boxplot_orders_and_filters_models(report_inputs, monkeypatch):
+    root, runs, _ = report_inputs
+    captured = []
+    monkeypatch.setattr(engine, "blind_residual_boxplot",
+                        lambda pairs, *args, **kwargs: captured.append(pairs))
+    engine.generate_report(root, exclude_models=["independent_cnn1d"])
+    assert len(captured) == 1
+    assert [pair["label"] for pair in captured[0]] == ["D-MLP", "S-MLP", "S-CNN"]
+    for pair in captured[0]:
+        np.testing.assert_array_equal(pair["led"], np.arange(32) * 1.3)
+        np.testing.assert_array_equal(pair["corrected"], np.arange(32))
 
 
 @pytest.mark.parametrize("command", [["report", "results"], ["plots", "--results", "results"]])

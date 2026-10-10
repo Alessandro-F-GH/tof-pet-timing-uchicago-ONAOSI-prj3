@@ -6,6 +6,7 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
 from waveform_analysis.reporting.plotting import (
     blind_metric_bar,
+    blind_residual_boxplot,
     grouped_bar,
     heatmap,
     load_plot_config,
@@ -547,6 +548,15 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             blind_metric_bar(rows, output_path(plot_dir, f"blind_{metric}", cfg), cfg,
                              metric=metric, led_value=led_value)
         _scatters(group, plot_dir, cfg)
+        payload_by_model = {run["manifest"]["model"]: payload
+                            for run, payload in zip(group, payloads)}
+        blind_residual_boxplot(
+            [{"label": model_label(name)[0],
+              "led": payload_by_model[name]["led_residual_ps"],
+              "corrected": payload_by_model[name]["corrected_ps"]} for name in ordered],
+            output_path(plot_dir, "blind_boxplot", cfg), cfg,
+            title="Blind LED and corrected residual distributions by model",
+        )
     _windows(runs, report, cfg)
     atomic_json(
         report / "manifest.json",
@@ -557,6 +567,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "matrix_order": "direct_then_shared_alphabetical",
             "dataset_table_version": DATASET_TABLE_VERSION,
             "development_distribution_version": DEVELOPMENT_DISTRIBUTION_VERSION,
+            "blind_boxplot_version": 1,
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables
             ],

@@ -207,6 +207,18 @@ Missing models/caches or ambiguous cache identities produce a warning
 and leave the development plot unavailable; blind reporting remains available.
 Once saved, subsequent plot regeneration reads the diagnostic arrays directly.
 
+Blind distribution comparisons also include `plots/blind_boxplot.png` for each
+model and a combined `report/plots/<mode>/<window>/blind_boxplot.png`. The combined
+plot uses stable model codes, orders direct models before shared models and obeys
+CLI reporting exclusions. Each model has adjacent LED and corrected boxes for
+its paired finite blind events. Original residuals retain their offsets; unlike
+the histogram's display-only LED centering, boxplots do not center either series.
+Boxes show the 25th–75th percentiles and median. Whiskers extend to the most extreme
+observations within 1.5 interquartile ranges of the box by default; every outlier
+is displayed and the axis covers the full finite range. The `boxplot` section of
+the plot configuration controls whiskers, dimensions, colours and outlier styling.
+These plots help inspect central spread, bias and tails; quartile widths are not CTR.
+
 All matrix axes list direct models first, then shared models, alphabetically within
 each formulation. Numerical comparisons retain their original bootstrap seeds;
 cached matrices are reordered or subsetted without recomputing their entries.

@@ -313,6 +313,7 @@ def run_batch(batch, *, logger=None):
             == DATASET_TABLE_VERSION
             and (_read_json(report_manifest) or {}).get("development_distribution_version")
             == DEVELOPMENT_DISTRIBUTION_VERSION
+            and (_read_json(report_manifest) or {}).get("blind_boxplot_version") == 1
         ):
             generate_report(
                 batch.output_dir,

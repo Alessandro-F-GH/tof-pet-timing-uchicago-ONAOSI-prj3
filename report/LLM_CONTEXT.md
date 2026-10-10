@@ -315,6 +315,14 @@ preprocessing. A missing control JSON does not prevent inference when saved
 protocol identities or fingerprints verify the cache. Relocated checkout paths
 are resolved locally. Missing prerequisites leave the plot unavailable with a warning.
 
+Blind LED-versus-corrected boxplots are produced per model and per board/mode/window.
+They retain original residual offsets, show quartiles and median, use 1.5-times-
+interquartile-range whiskers by default, and display all finite paired outliers
+without trimming the axis. Combined comparisons use stable model codes and honour
+reporting exclusions. Interpret quartile spread separately from F1 CTR; these
+visualizations can support investigation of bias and tails but do not establish
+the proposed mechanism for an RMSE/CTR disagreement by themselves.
+
 Selected-event fragments are exported under
 `<batch-result-root>/report/tables/datasets/` and a `selected_events.csv`. Counts
 describe final selected control, complete development/train and blind/test events
