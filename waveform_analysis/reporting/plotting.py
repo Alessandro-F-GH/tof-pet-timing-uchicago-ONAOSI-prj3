@@ -190,15 +190,27 @@ def plot_run_cv(run, cfg):
         return _save(fig, output_path(run / "plots", "cv", cfg))
 
 
-def plot_run_blind(run, cfg):
+def _plot_run_residual_distribution(run, cfg, *, dataset_role):
     run = Path(run)
-    path = run / "artifacts" / "pred.npz"
+    filename = "pred.npz" if dataset_role == "blind" else "development_pred.npz"
+    stem = "blind" if dataset_role == "blind" else "development"
+    path = run / "artifacts" / filename
     if not path.is_file():
+        output_path(run / "plots", stem, cfg).unlink(missing_ok=True)
         return None
     with np.load(path) as d:
+        if dataset_role == "development":
+            manifest_path = run / "metadata" / "manifest.json"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text())
+                fingerprint = manifest.get("stage_fingerprints", {}).get("final_fit")
+                if ("final_fit_fingerprint" not in d
+                        or str(d["final_fit_fingerprint"].item()) != fingerprint):
+                    output_path(run / "plots", stem, cfg).unlink(missing_ok=True)
+                    return None
         corrected = np.asarray(d["corrected_ps"])
         led = np.asarray(d["led_residual_ps"])
-    # Display a zero-centered LED reference; numerical blind metrics remain unchanged.
+    # Display a zero-centered LED reference; numerical residuals remain unchanged.
     led = np.asarray(led, dtype=float)
     finite_led = np.isfinite(led)
     if np.any(finite_led):
@@ -239,11 +251,21 @@ def plot_run_blind(run, cfg):
                 color=color,
                 label=label,
             )
-        ax.set_xlabel("Blind residual [ps]")
+        ax.set_xlabel("Blind residual [ps]" if dataset_role == "blind"
+                      else "Development residual [ps] (final model)")
         ax.set_ylabel("Events")
         ax.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
         _finish(ax, cfg)
-        return _save(fig, output_path(run / "plots", "blind", cfg))
+        return _save(fig, output_path(run / "plots", stem, cfg))
+
+
+def plot_run_blind(run, cfg):
+    return _plot_run_residual_distribution(run, cfg, dataset_role="blind")
+
+
+def plot_run_development(run, cfg):
+    """Plot final-model training residuals with the blind distribution style."""
+    return _plot_run_residual_distribution(run, cfg, dataset_role="development")
 
 
 def _xai_one_ns(time, importance, *, normalize=True):
@@ -419,6 +441,7 @@ def render_run_plots(run, cfg):
     return {
         "cv": plot_run_cv(run, cfg),
         "blind": plot_run_blind(run, cfg),
+        "development": plot_run_development(run, cfg),
         "xai": plot_run_xai(run, cfg),
     }
 

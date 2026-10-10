@@ -50,6 +50,11 @@ from waveform_analysis.engine.xai import (
     XAI_METHOD_VERSION,
     temporal_occlusion_importance,
 )
+from waveform_analysis.engine.diagnostics import (
+    development_predictions_current,
+    diagnostic_random_state,
+    save_development_diagnostic,
+)
 
 
 def _logger(run_dir):
@@ -1037,6 +1042,18 @@ def run_study(config, *, logger=None):
         },
     }
     store.write_manifest(manifest)
+    # Run after all scientific evaluation; diagnostic inference never selects a model.
+    if not development_predictions_current(store, final_fp):
+        if fitted is None and saved_model_complete(spec, store.model_dir):
+            with diagnostic_random_state():
+                fitted = load_fitted_model(spec, store.model_dir, best["parameters"], config)
+        if fitted is not None:
+            save_development_diagnostic(
+                store, spec, fitted, development, config, final_fp,
+                frozen_features=frozen_development,
+            )
+        else:
+            logger.warning("Development diagnostic unavailable | no saved final model")
     release_training_memory()
     logger.info(
         "Study complete | %s | %s | %s",

@@ -303,6 +303,7 @@ def run_batch(batch, *, logger=None):
             )
         from waveform_analysis.reporting.report import generate_report
         from waveform_analysis.reporting.latex_tables import DATASET_TABLE_VERSION
+        from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
 
         report_manifest = Path(batch.output_dir).resolve() / "report" / "manifest.json"
         if not (
@@ -310,6 +311,8 @@ def run_batch(batch, *, logger=None):
             and report_manifest.is_file()
             and (_read_json(report_manifest) or {}).get("dataset_table_version")
             == DATASET_TABLE_VERSION
+            and (_read_json(report_manifest) or {}).get("development_distribution_version")
+            == DEVELOPMENT_DISTRIBUTION_VERSION
         ):
             generate_report(
                 batch.output_dir,

@@ -120,6 +120,10 @@ class RunStore:
         return self.artifacts_dir / "pred.npz"
 
     @property
+    def development_predictions_path(self):
+        return self.artifacts_dir / "development_pred.npz"
+
+    @property
     def xai_path(self):
         return self.artifacts_dir / "xai.npz"
 
@@ -219,7 +223,7 @@ class RunStore:
                 self.root / "optuna_sampler.pkl",
             ],
             "selection": [self.best_path],
-            "final_fit": [self.final_fit_path, self.model_dir],
+            "final_fit": [self.final_fit_path, self.model_dir, self.development_predictions_path],
             "blind": [self.blind_path, self.predictions_path],
             "bootstrap": [self.bootstrap_path, self.bootstrap_draws_path],
             "xai": [self.xai_path],
@@ -281,16 +285,22 @@ class RunStore:
         write_csv(self.cv_path, rows)
 
     def save_predictions(
-        self, *, event_id, prediction_ps, corrected_ps, led_residual_ps
+        self, *, event_id, prediction_ps, corrected_ps, led_residual_ps,
+        dataset_role="blind", metadata=None,
     ):
+        if dataset_role not in {"blind", "development"}:
+            raise ValueError(f"Unsupported prediction dataset role: {dataset_role}")
+        path = (self.predictions_path if dataset_role == "blind"
+                else self.development_predictions_path)
         _atomic_npz(
-            self.predictions_path,
+            path,
             event_id=np.asarray(event_id, dtype=np.int64),
             prediction_ps=np.asarray(prediction_ps, dtype=np.float64),
             corrected_ps=np.asarray(corrected_ps, dtype=np.float64),
             led_residual_ps=np.asarray(led_residual_ps, dtype=np.float64),
+            **(metadata or {}),
         )
-        return self.predictions_path
+        return path
 
     def load_predictions(self):
         with np.load(self.predictions_path) as data:

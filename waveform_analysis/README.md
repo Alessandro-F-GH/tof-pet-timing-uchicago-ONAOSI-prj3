@@ -188,6 +188,22 @@ without that metadata use stable numbering from their saved CV table order.
 
 Reporting consumes persisted numeric artifacts and produces validation/blind summaries, model-output correlations aligned by blind event ID, paired CTR/RMSE model-difference matrices with paired event bootstrap, blind RMSE-vs-CTR plots, validation-vs-blind plots, and window comparisons.
 
+At model level, `plots/development.png` mirrors `plots/blind.png` for the complete
+prepared development population: final-model corrected residuals and the
+display-only mean-centred LED reference. Both use the same histogram styling.
+This is a training-population diagnostic, not out-of-fold validation. Future runs
+save its arrays in `artifacts/development_pred.npz` after scientific evaluation;
+refitting invalidates that artifact, while bootstrap-only changes preserve it.
+Diagnostic inference preserves Python, NumPy and PyTorch random-generator states.
+
+For older runs, CLI reporting can backfill the development arrays by loading the
+saved final model and a uniquely matching prepared development cache. It performs
+inference only, using the existing preprocessing, sample mask, feature transform
+and output limits. It never loads raw acquisitions, refits preprocessing or trains
+a model. Missing models/caches or ambiguous cache identities produce a warning
+and leave the development plot unavailable; blind reporting remains available.
+Once saved, subsequent plot regeneration reads the diagnostic arrays directly.
+
 All matrix axes list direct models first, then shared models, alphabetically within
 each formulation. Numerical comparisons retain their original bootstrap seeds;
 cached matrices are reordered or subsetted without recomputing their entries.

@@ -286,6 +286,15 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         else:
             assert (output / "tables/cv.csv").exists()
         assert (output / "artifacts/pred.npz").exists()
+        development_path = output / "artifacts/development_pred.npz"
+        assert development_path.exists()
+        with np.load(development_path) as diagnostic:
+            assert diagnostic["dataset_role"].item() == "development"
+            np.testing.assert_array_equal(diagnostic["event_id"], datasets["development"].event_index)
+            np.testing.assert_array_equal(diagnostic["led_residual_ps"], datasets["development"].timing_target_ps)
+            np.testing.assert_array_equal(diagnostic["corrected_ps"],
+                                          diagnostic["led_residual_ps"] - diagnostic["prediction_ps"])
+        assert (output / "plots/development.png").exists()
     table = tmp_path / "report/tables/datasets/FBK_selected_events.tex"
     assert table.is_file()
     assert table.read_text().count(" & 256") == 3  # Once per role, not once per model.
@@ -297,6 +306,11 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     # Missing predictions recover through the persisted model, without fitting.
     (outputs[0] / "artifacts/pred.npz").unlink()
     study.run_study(runs[0])
+    assert len(fit_calls) == (3 if mixed else 2)
+    # Missing development predictions also recover by inference, never another fit.
+    (outputs[0] / "artifacts/development_pred.npz").unlink()
+    study.run_study(runs[0])
+    assert (outputs[0] / "artifacts/development_pred.npz").exists()
     assert len(fit_calls) == (3 if mixed else 2)
 
 

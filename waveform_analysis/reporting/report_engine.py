@@ -26,6 +26,8 @@ from waveform_analysis.reporting.latex_tables import (
     export_blind_metric_table,
 )
 from waveform_analysis.reporting.model_labels import model_label
+from waveform_analysis.reporting.development import ensure_development_predictions
+from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
 
 
 def _json(path):
@@ -453,6 +455,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
         if legacy_dir.is_dir():
             shutil.rmtree(legacy_dir)
     for run in runs:
+        ensure_development_predictions(run, logger=logger)
         render_run_plots(run["directory"], cfg)
     dataset_tables = export_dataset_tables(root, runs, root_config)
     validation, blind = _summaries(runs)
@@ -553,6 +556,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "excluded_models": sorted(excluded),
             "matrix_order": "direct_then_shared_alphabetical",
             "dataset_table_version": DATASET_TABLE_VERSION,
+            "development_distribution_version": DEVELOPMENT_DISTRIBUTION_VERSION,
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables
             ],

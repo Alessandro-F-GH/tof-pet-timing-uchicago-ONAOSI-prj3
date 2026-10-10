@@ -305,6 +305,14 @@ external legends, with no text labels inside the plotting area. The `report` and
 `plots` commands accept `--exclude-models NAME NAME ...` to filter reporting only;
 these exclusions do not change stored runs, fitting or scientific metrics.
 
+Each model also has a `plots/development.png` residual histogram matching the blind
+distribution style, using the final model on all prepared development events.
+Its arrays are saved as `artifacts/development_pred.npz`; LED centering is applied
+only for display. Interpret this as a training-population diagnostic, not outer-CV
+or blind performance. CLI reporting may backfill missing arrays by saved-model
+inference on a uniquely matching prepared cache, without fitting or raw-data
+preprocessing. Missing prerequisites leave the plot unavailable with a warning.
+
 Selected-event fragments are exported under
 `<batch-result-root>/report/tables/datasets/` and a `selected_events.csv`. Counts
 describe final selected control, complete development/train and blind/test events
