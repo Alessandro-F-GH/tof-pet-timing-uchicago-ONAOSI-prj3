@@ -1,63 +1,59 @@
 \section{Experimental setup and datasets}
+
 \subsection{Detector modules and acquisition}
-Two opposing detector modules comprise silicon photomultipliers (SiPMs) coupled to
-lutetium--yttrium oxyorthosilicate (LYSO) crystals of dimensions
-$2\times2\times3\,\mathrm{mm}^{3}$. A $^{22}\mathrm{Na}$ source is positioned centrally
-between the modules. The University of Chicago (UC) and Fondazione Bruno Kessler (FBK)
-measurements use the same crystals and SiPMs; the two arrangements differ in their
-analog front-end (AFE) electronics.
 
-Figure~\ref{fig:amplification-stages} shows the readout chain from the LYSO crystal
-and SiPM through the two cascaded AFE amplification stages. The first amplifier, or preamplifier,
-provides initial amplification and an accessible intermediate waveform. The second
-amplifier, or postamplifier, processes this signal with additional gain and provides the
-final waveform. Both outputs are acquired simultaneously for each detector. They
-originate from the same SiPM pulse and are correlated, while the subsequent amplification
-can modify the amplitude, bandwidth, noise and temporal characteristics. The final
-waveform can therefore differ in shape as well as amplitude from the intermediate waveform.
-The labels \emph{energy} and \emph{timing} denote the experimental roles of the first-stage
-and second-stage waveforms, respectively; they identify successive outputs of this
-cascaded readout circuit. The role of electronic readout design in timing has been
-investigated in studies of SiPM preamplifiers and TOF-PET signal-processing
-chains~\cite{huizenga2012,pourashraf2022}.
+Two opposing detector modules consist of silicon photomultipliers
+(SiPMs) coupled to lutetium--yttrium oxyorthosilicate (LYSO)
+crystals measuring $2\times2\times3\,\mathrm{mm}^{3}$, with a
+$^{22}\mathrm{Na}$ source positioned centrally between them.
+The University of Chicago (UC) and Fondazione Bruno Kessler
+(FBK) configurations use the same crystals and SiPMs but
+different analog front-end electronics.
 
-\begin{figure*}[t]
+Figure~\ref{fig:amplification-stages} shows the two-stage
+amplification chain. The first stage produces a relatively long
+waveform used for energy estimation, while also providing good
+timing performance with conventional discrimination methods.
+The second stage further amplifies and sharpens the signal
+for timing measurements. However, it requires an additional
+5 V supply, increasing hardware complexity and limiting its
+practicality in clinical PET systems. The first- and second-stage
+outputs are hereafter referred to as \emph{energy} and
+\emph{timing}, respectively. Comparing them allows us to
+investigate whether ML can improve timing using the simpler
+first-stage readout. The importance of front-end electronics
+for SiPM timing has been investigated in previous
+studies~\cite{huizenga2012,pourashraf2022}.
+
+\begin{figure}[H]
 \centering
-\includegraphics[width=0.95\textwidth]{figures/Amplifier_schema.png}
-\caption{Detector readout schematic common to the UC and FBK arrangements. The first-stage
-and second-stage output taps provide the intermediate (energy) and final (timing)
-waveforms from the same SiPM pulse. Each of the two coincident detectors has this
-readout chain, yielding four recorded waveforms per event.}
+\includegraphics[width=\columnwidth]{figures/Amplifier_schema.png}
+\caption{Two-stage analog readout chain used for each detector.
+The first-stage (energy) and second-stage (timing) outputs
+are acquired simultaneously from the same SiPM pulse.}
 \label{fig:amplification-stages}
-\end{figure*}
+\end{figure}
 
-The energy output is recorded to retain the energy information required for event
-selection. Its complete pulse amplitude lies within the oscilloscope's vertical range,
-and the maximum amplitude is used as the energy-selection observable. The intermediate
-waveform supplies the energy measurement required in clinical readout. The additional
-high-gain postamplification used here is costly and is not part of standard clinical
-readout, motivating the application of LED and ML timing methods to the first-stage
-waveform as well. Timing analysis of waveforms that also provide energy
-information has been investigated in previous work~\cite{berg2018}.
+The energy waveform is acquired without amplitude clipping,
+allowing its maximum to be used for photopeak event selection.
+In contrast, the oscilloscope vertical range for the high-gain
+timing waveform is deliberately restricted to emphasize the
+rising edge, clipping the pulse peak. This acquisition strategy,
+also adopted by Onishi et al.~\cite{onishi2022}, aims to
+maximize timing precision. In these measurements, the energy
+waveform is cleaner and more stable but exhibits greater
+time walk, whereas the timing waveform is more susceptible
+to noise and pulse-shape variations.
 
-In the present acquisition, the first-stage waveform is cleaner and more stable, but
-its leading-edge timing is more affected by time walk. The high-gain second-stage
-waveform is more susceptible to noise and waveform instability.
-For this output, the oscilloscope vertical range is deliberately much smaller than the
-full pulse amplitude. This setting emphasizes the initial rising edge, while the pulse
-peak is clipped in amplitude. It provides a timing-oriented acquisition intended to
-approach the best timing resolution attainable with the same crystal and SiPM.
-A narrow vertical range emphasizing pulse arrival has also been used in the waveform
-acquisitions of Onishi et al.~\cite{onishi2022}.
+Each coincidence event contains four simultaneously recorded
+waveforms: energy signals from the two detectors on channels
+1 and 2, and their corresponding timing signals on channels
+3 and 4. The records span $100\,\mathrm{ns}$ at a sampling
+rate of $80\,\mathrm{GS\,s}^{-1}$. Both waveform modes share
+the same energy-based event selection, while timing corrections
+are evaluated independently for each amplification stage
+and electronics board.
 
-Each dataset consists of coincidence events with four waveforms recorded together:
-one intermediate waveform and one final waveform from each detector. Channels 1 and 2
-contain the first-stage (energy) waveforms, while channels 3 and 4 contain the corresponding
-second-stage (timing) waveforms. The energy and timing modes are therefore derived from the same four-channel
-event records. The documented acquisitions use $100\,\mathrm{ns}$ records sampled at $80\,\mathrm{GS\,s}^{-1}$.
-Each board is analysed independently, with energy-based event selection common to both
-waveform modes. The energy mode examines timing information in the standard first-stage
-signal; the timing mode examines the dedicated high-gain, narrow-range acquisition.
 
 \subsection{Acquisitions and scientific roles}
 The benchmark datasets identify three independent acquisitions at a SiPM bias of

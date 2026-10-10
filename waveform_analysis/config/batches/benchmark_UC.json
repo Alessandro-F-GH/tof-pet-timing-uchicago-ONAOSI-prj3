@@ -26,5 +26,5 @@
                       "locally_connected_mlp", "onishi_cnn", "shared_cnn1d", "independent_cnn1d"], 
 
             "modes": ["timing_to_timing"], 
-            "windows": {"onishi": {"start": -1.0, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
+            "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
 }
