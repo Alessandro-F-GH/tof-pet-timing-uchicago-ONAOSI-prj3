@@ -84,11 +84,14 @@ random fractions of a single dataset:
 
 | Board | Modes currently evaluated | Short window relative to LED | Extended window | Blind bootstrap draws |
 | --- | --- | --- | --- | --- |
-| UC | Second-stage/timing | −1 to +2 ns | −2 to +30 ns | 1000 |
+| UC | Second-stage/timing | −1.5 to +2 ns | −2 to +30 ns | 1000 |
 | FBK | First-stage/energy and second-stage/timing | −1.5 to +2 ns | −2 to +30 ns | 100 |
 
 Both benchmarks use seed 1001, native-grid subsampling factor 1 and ten estimators.
-Do not silently give UC the FBK modes, short window or bootstrap settings.
+The UC short window was updated to −1.5 to +2 ns in the current configuration;
+earlier manuscript text or saved experiments may still describe −1 to +2 ns.
+Use the configuration saved with the experiment when reporting its results.
+Do not silently give UC the FBK modes or bootstrap settings.
 Prepared event counts can vary with mode and window. Within a fixed board, mode
 and window, models use the same prepared development and blind populations.
 
@@ -262,15 +265,15 @@ appendix and must be taken from current model-space configurations.
 ## Literature and evidence gaps
 
 Existing citation keys include `surti2015`, `berg2018`, `onishi2022`, `feng2024`,
-`loignon2025`, `rainio2025`, `elsayed2020`, `minirocket2021`, `huizenga2012` and
+`loignon2025`, `rainio2025`, `ruiz2018`, `elsayed2020`, `minirocket2021`, `huizenga2012` and
 `pourashraf2022`. The supplied papers cover waveform-based timing, BGO comparisons
 and FWHM estimation. Consult the papers before extending their claims.
 
 Huizenga (2012), *A fast preamplifier concept for SiPM-based time-of-flight PET
-detectors*, and Pourashraf (2022), *Investigation of Electronic Signal Processing
-Chains for a Prototype TOF-PET System With 100-ps Coincidence Time Resolution*,
-currently have only author surnames, titles and years supplied by the author.
-Complete publisher metadata has not been verified. Do not invent DOI, journal,
+detectors*, currently has only author surnames, title and year supplied by the
+author. Complete publisher metadata has not been verified for this entry.
+The Pourashraf (2022) entry now includes full bibliographic metadata.
+Do not invent DOI, journal,
 author initials or additional experimental details. Library requirement versions
 are not evidence of actual versions used in an experiment.
 
@@ -291,7 +294,16 @@ Scientific sources, relative to the repository root:
 - `waveform_analysis/config/plots/default.json`: scientific plot style choices.
 - `report/README.md`, `tables/README.md`, `figures/README.md`: build and artifact rules.
 
-Batch reporting creates per-board selected-event fragments under
+CLI reporting orders all matrix axes with direct models
+first, then shared models, alphabetically within each formulation. It does not
+export standard-deviation matrices. Blind CTR bar charts are ranked by ascending
+CTR with a dashed LED reference and stable model codes; matching `blind_ctr.csv`
+and `blind_ctr.tex` fragments include those codes. Scatter model names appear in
+external legends, with no text labels inside the plotting area. The `report` and
+`plots` commands accept `--exclude-models NAME NAME ...` to filter reporting only;
+these exclusions do not change stored runs, fitting or scientific metrics.
+
+Selected-event fragments are exported under
 `<batch-result-root>/report/tables/datasets/` and a `selected_events.csv`. Counts
 describe final selected control, complete development/train and blind/test events
 per mode/window, including LED coincidence and input-window availability, and are

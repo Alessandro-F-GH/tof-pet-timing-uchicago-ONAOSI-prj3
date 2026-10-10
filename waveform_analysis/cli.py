@@ -37,6 +37,11 @@ def _parser() -> argparse.ArgumentParser:
         "report", help="Regenerate plots and report without retraining"
     )
     report.add_argument("results", type=Path)
+    for command in (plots, report):
+        command.add_argument(
+            "--exclude-models", nargs="+", default=[], metavar="MODEL",
+            help="Model names to omit from reporting only (space-separated)",
+        )
     return parser
 
 
@@ -48,7 +53,9 @@ def main() -> None:
         return
     logger = configure_logging()
     if args.command in {"plots", "report"}:
-        print(remake_plots(Path(args.results), logger=logger))
+        print(remake_plots(
+            Path(args.results), logger=logger, exclude_models=args.exclude_models,
+        ))
         return
     batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
     for output in run_batch(batch, logger=logger):

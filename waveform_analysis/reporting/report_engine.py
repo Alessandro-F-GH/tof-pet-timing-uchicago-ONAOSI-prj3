@@ -1,9 +1,11 @@
 from __future__ import annotations
 import csv, json, shutil
 from pathlib import Path
+from typing import Any
 import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
 from waveform_analysis.reporting.plotting import (
+    blind_ctr_bar,
     grouped_bar,
     heatmap,
     load_plot_config,
@@ -21,7 +23,9 @@ from waveform_analysis.data.storage import RunStore
 from waveform_analysis.reporting.latex_tables import (
     DATASET_TABLE_VERSION,
     export_dataset_tables,
+    export_blind_ctr_table,
 )
+from waveform_analysis.reporting.model_labels import model_label
 
 
 def _json(path):
@@ -377,16 +381,73 @@ def _read_matrix(path):
     )
 
 
-def generate_report(result_root, *, logger=None, reuse_numeric=False):
+def _matrix_order(group: list[dict[str, Any]]) -> list[str]:
+    """Order display axes by formulation, then model name, without refitting."""
+    ordered = sorted(
+        group,
+        key=lambda r: (
+            r["manifest"]["estimator_formulation"] != "direct",
+            r["manifest"]["model"],
+        ),
+    )
+    return [r["manifest"]["model"] for r in ordered]
+
+
+def _reorder_matrix(
+    labels: list[str], matrix: np.ndarray, ordered: list[str]
+) -> np.ndarray:
+    """Reindex both matrix axes, preserving entries for retained models."""
+    indices = [labels.index(name) for name in ordered]
+    return np.asarray(matrix)[np.ix_(indices, indices)]
+
+
+def _blind_ctr_rows(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank stored blind metrics for display only; codes remain stable."""
+    rows = []
+    for run in group:
+        name = run["manifest"]["model"]
+        code, display_name = model_label(name)
+        rows.append({
+            "model": name, "code": code, "display_name": display_name,
+            "formulation": run["manifest"]["estimator_formulation"],
+            "ctr_ps": run["blind"]["ctr_ps"],
+            "ctr_std_ps": run["bootstrap"]["ctr_bootstrap_std_ps"],
+        })
+    return sorted(
+        rows,
+        key=lambda r: (
+            not np.isfinite(r["ctr_ps"]),
+            r["ctr_ps"] if np.isfinite(r["ctr_ps"]) else np.inf,
+            r["model"],
+        ),
+    )
+
+
+def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_models=()):
     root = Path(result_root).resolve()
     cfg = load_plot_config(root)
     root_config = _json(root / "config.json")
     runs = collect_runs(root)
+    excluded = set(exclude_models)
+    known = {r["manifest"]["model"] for r in runs} | set(
+        root_config.get("sweep", {}).get("models", []))
+    if excluded - known:
+        raise ValueError(f"Unknown excluded models: {sorted(excluded - known)}")
+    all_runs = runs
+    runs = [r for r in runs if r["manifest"]["model"] not in excluded]
+    if not runs:
+        raise ValueError("No complete models remain after reporting exclusions")
     report = root / "report"
     tables = report / "tables"
     plots = report / "plots"
     tables.mkdir(parents=True, exist_ok=True)
     plots.mkdir(parents=True, exist_ok=True)
+    # Remove obsolete aggregate groups when all of their models are excluded.
+    for mode, window in _groups(all_runs).keys() - _groups(runs).keys():
+        mode_name = "energy" if mode == "energy_to_energy" else "timing"
+        for directory in (tables / mode_name / str(window), plots / mode_name / str(window)):
+            if directory.is_dir():
+                shutil.rmtree(directory)
     for legacy_name in ("energy", "timing"):
         legacy_dir = report / legacy_name
         if legacy_dir.is_dir():
@@ -425,11 +486,14 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False):
         table_dir.mkdir(parents=True, exist_ok=True)
         plot_dir.mkdir(parents=True, exist_ok=True)
         labels, corr, corr_n, payloads = _correlation(group)
-        _matrix(table_dir / "output_correlation.csv", labels, corr)
-        _matrix(table_dir / "output_correlation_n.csv", labels, corr_n)
+        ordered = _matrix_order(group)
+        corr = _reorder_matrix(labels, corr, ordered)
+        corr_n = _reorder_matrix(labels, corr_n, ordered)
+        _matrix(table_dir / "output_correlation.csv", ordered, corr)
+        _matrix(table_dir / "output_correlation_n.csv", ordered, corr_n)
         heatmap(
             corr,
-            labels,
+            ordered,
             output_path(plot_dir, "output_correlation", cfg),
             cfg,
             title="Blind model-output correlation",
@@ -443,33 +507,38 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False):
             if (
                 reuse_numeric
                 and central_path.is_file()
-                and std_path.is_file()
                 and count_path.is_file()
             ):
                 labels, central = _read_matrix(central_path)
-                _, std = _read_matrix(std_path)
-                _, counts = _read_matrix(count_path)
+                count_labels, counts = _read_matrix(count_path)
+                can_reuse = set(ordered).issubset(labels) and count_labels == labels
             else:
-                labels, central, std, counts = _paired(
+                can_reuse = False
+            if not can_reuse:
+                labels, central, _, counts = _paired(
                     group, payloads, metric, root_config, seed
                 )
-                _matrix(central_path, labels, central)
-                _matrix(std_path, labels, std)
-                _matrix(count_path, labels, counts)
+            central = _reorder_matrix(labels, central, ordered)
+            counts = _reorder_matrix(labels, counts, ordered)
+            _matrix(central_path, ordered, central)
+            _matrix(count_path, ordered, counts)
+            std_path.unlink(missing_ok=True)
+            for stale in plot_dir.glob(f"paired_{metric}_std.*"):
+                stale.unlink()
             heatmap(
                 central,
-                labels,
+                ordered,
                 output_path(plot_dir, f"paired_{metric}", cfg),
                 cfg,
                 title=f"Paired blind Δ {metric.upper()} (row − column) [ps]",
             )
-            heatmap(
-                std,
-                labels,
-                output_path(plot_dir, f"paired_{metric}_std", cfg),
-                cfg,
-                title=f"Paired blind Δ {metric.upper()} bootstrap std [ps]",
-            )
+        rows = _blind_ctr_rows(group)
+        led_ctr = float(group[0]["blind"]["led_ctr_ps"])
+        write_csv(table_dir / "blind_ctr.csv", rows)
+        export_blind_ctr_table(table_dir / "blind_ctr.tex", rows, led_ctr,
+                              mode=mode_name, window=str(window),
+                              report_id=root_config.get("results", {}).get("folder", root.name))
+        blind_ctr_bar(rows, output_path(plot_dir, "blind_ctr", cfg), cfg, led_ctr=led_ctr)
         _scatters(group, plot_dir, cfg)
     _windows(runs, report, cfg)
     atomic_json(
@@ -477,6 +546,8 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False):
         {
             "source_result_root": str(root),
             "runs": len(runs),
+            "excluded_models": sorted(excluded),
+            "matrix_order": "direct_then_shared_alphabetical",
             "dataset_table_version": DATASET_TABLE_VERSION,
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables

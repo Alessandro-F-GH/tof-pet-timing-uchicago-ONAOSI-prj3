@@ -2,6 +2,7 @@ from __future__ import annotations
 import csv, json
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -503,28 +504,59 @@ def scatter_with_labels(
             else palette[index % len(palette)]
             for index, label in enumerate(labels)
         ]
-        ax.scatter(
-            x,
-            y,
-            s=float(cfg["scatter"]["marker_size"]),
-            c=colors,
-            edgecolors=cfg["scatter"].get("edge_color", "white"),
-            linewidths=cfg["scatter"].get("edge_line_width", 0.5),
-            zorder=3,
-        )
-        for xi, yi, label in zip(x, y, labels):
-            ax.annotate(
-                label,
-                (xi, yi),
-                xytext=tuple(cfg["scatter"]["annotation_offset"]),
-                textcoords="offset points",
-                fontsize=float(cfg["font"]["annotation_size"]),
+        for xi, yi, label, color in zip(x, y, labels, colors):
+            ax.scatter(
+                xi, yi, label=label,
+                s=float(cfg["scatter"]["marker_size"]), color=color,
+                edgecolors=cfg["scatter"].get("edge_color", "white"),
+                linewidths=cfg["scatter"].get("edge_line_width", 0.5), zorder=3,
             )
-        if annotation:
-            ax.text(0.03, 0.97, annotation, transform=ax.transAxes, ha="left", va="top")
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
+        ax.set_title(title + (f"\n{annotation}" if annotation else ""))
+        ax.legend(
+            loc=cfg["scatter"].get("legend_location", "upper left"),
+            bbox_to_anchor=cfg["scatter"].get("legend_anchor", [1.02, 1.0]),
+        )
+        _finish(ax, cfg)
+        return _save(fig, path)
+
+
+def blind_ctr_bar(
+    rows: list[dict[str, Any]], path: str | Path, cfg: dict[str, Any], *, led_ctr: float
+) -> Path:
+    """Plot performance-ranked persisted CTRs with bootstrap error bars.
+
+    ``rows`` contains rank-ordered code, display name, formulation, CTR and error.
+    No fitting, selection or numerical metric calculation is performed here.
+    """
+    style = cfg["bar"]
+    with plot_context(cfg):
+        fig, ax = plt.subplots(figsize=(
+            max(float(style["figure_width_min"]),
+                float(style["width_per_category"]) * len(rows)),
+            float(style["figure_height"]),
+        ))
+        handles = []
+        for index, row in enumerate(rows):
+            handles.append(ax.bar(index, row["ctr_ps"], yerr=row["ctr_std_ps"],
+                   width=float(style["group_width"]),
+                   capsize=float(style["error_capsize"]),
+                   color=cfg["formulations"][row["formulation"]]["color"],
+                   edgecolor=style["edge_color"],
+                   linewidth=float(style["edge_line_width"]),
+                   label=f"{row['code']}: {row['display_name']}"))
+        handles.append(ax.axhline(
+            led_ctr, color=cfg["reference"]["color"], linestyle="--",
+            label=cfg["reference"]["label"]))
+        ax.set_xticks(range(len(rows)), [row["code"] for row in rows])
+        ax.set_ylabel("Blind CTR [ps]")
+        ax.set_xlabel("Model (ascending blind CTR)")
+        ax.set_title("Blind coincidence timing resolution")
+        ax.legend(
+            handles=handles, loc=style.get("legend_location", "upper left"),
+            bbox_to_anchor=style.get("legend_anchor", [1.02, 1.0]),
+        )
         _finish(ax, cfg)
         return _save(fig, path)
 

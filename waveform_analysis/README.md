@@ -188,6 +188,33 @@ without that metadata use stable numbering from their saved CV table order.
 
 Reporting consumes persisted numeric artifacts and produces validation/blind summaries, model-output correlations aligned by blind event ID, paired CTR/RMSE model-difference matrices with paired event bootstrap, blind RMSE-vs-CTR plots, validation-vs-blind plots, and window comparisons.
 
+All matrix axes list direct models first, then shared models, alphabetically within
+each formulation. Numerical comparisons retain their original bootstrap seeds;
+cached matrices are reordered or subsetted without recomputing their entries.
+Standard-deviation matrices are no longer exported or plotted; obsolete outputs
+are removed during regeneration. Blind metric uncertainties remain in summary
+tables and plot error bars. Scatter model labels appear in an external legend,
+with Pearson statistics in the title rather than inside the plotting area.
+
+Each mode/window also has a `blind_ctr` bar chart sorted by ascending blind CTR
+(best first), bootstrap error bars and a dashed LED reference. Stable codes such as
+`D-MLP` and `S-CNN` identify bars; the external legend gives full model names.
+Matching `blind_ctr.csv` and `blind_ctr.tex` files are written under
+`report/tables/<mode>/<window>/`, with a code column for manuscript use. Each
+result root is reported independently; boards are not pooled. Reference the
+generated LaTeX table label explicitly when including the fragment in the paper.
+
+To omit models from all regenerated summaries and comparisons:
+
+```bash
+python -m waveform_analysis.cli report waveform_analysis/results/FBK/benchmark_48V_R1_R2 --exclude-models direct_mlp independent_cnn1d
+python -m waveform_analysis.cli plots --results waveform_analysis/results/FBK/benchmark_48V_R1_R2 --exclude-models direct_mlp independent_cnn1d
+```
+
+Exclusions use exact space-separated model names and affect reporting only.
+Unknown names and excluding every completed model produce an error. Running again
+without exclusions restores the full report from the saved runs.
+
 Window comparison winners are selected from development CV only; their blind performance is then displayed together with the LED reference baseline. Aggregate blind RMSE-vs-CTR comparison plots also include the LED reference. CTR/RMSE bar annotations use integer-rounded picoseconds. XAI is grouped temporal occlusion and stores numeric importance separately from its plot.
 
 ## Scientific figure styling

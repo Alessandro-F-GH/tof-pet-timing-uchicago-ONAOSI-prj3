@@ -68,9 +68,9 @@ The preamble loads `amsmath` before the font packages and avoids loading
 - `sections/06_hyperparameters_libraries.tex`: configured spaces and declared library requirements.
 - `tables/<type>/<name>.tex`: every table, separated from section prose.
 - `references.bib`: literature cited in the draft, including the five supplied papers.
-  The Huizenga (2012) and Pourashraf (2022) entries use the author surnames, titles
-  and years supplied with the AFE clarification; complete publisher metadata has
-  not been verified for these two entries.
+  The Huizenga (2012) entry uses the author surname, title and year supplied with
+  the AFE clarification; complete publisher metadata has not been verified for
+  this entry. The Pourashraf (2022) entry includes full bibliographic metadata.
 
 Hardware and acquisition descriptions were checked against `update_report/` and
 `presentation/` and incorporate the supplied experimental clarification: the two boards
@@ -84,7 +84,9 @@ a time. The slides' shared-scorer explanation motivates the antisymmetric
 formulation. Pipeline descriptions follow `waveform_analysis/` and its current
 `benchmark_UC.json`, `benchmark_FBK.json`, preprocessing and model-space files;
 older split policies, architecture settings and results are not carried forward.
-The UC benchmark evaluates timing waveforms with windows -1 to +2 ns and -2 to +30 ns.
+The current UC benchmark evaluates timing waveforms with windows -1.5 to +2 ns and -2 to +30 ns;
+older manuscript text and saved experiments may retain the earlier -1 to +2 ns window.
+Always use the configuration saved with the experiment to describe its results.
 The FBK benchmark evaluates energy and timing waveforms with windows -1.5 to +2 ns
 and -2 to +30 ns. The blind bootstrap settings are 1000 draws for UC and 100 for FBK.
 

@@ -65,16 +65,16 @@
       5.0
     ],
     "marker_size": 60,
-    "annotation_offset": [
-      5,
-      5
-    ],
+    "legend_location": "upper left",
+    "legend_anchor": [1.02, 1.0],
     "error_capsize": 3.0,
     "edge_color": "white",
     "edge_line_width": 0.5,
     "error_color": "#777777"
   },
   "bar": {
+    "legend_location": "upper left",
+    "legend_anchor": [1.02, 1.0],
     "figure_width_min": 7.2,
     "figure_height": 4.8,
     "width_per_category": 1.25,
