@@ -11,7 +11,7 @@
   "parameters": {
     "learning_rate": {
       "type": "categorical",
-      "choices": [1e-3, 1e-4, 1e-5]
+      "choices": [1e-3, 1e-4]
     },
     "batch_size": {
       "type": "categorical",
