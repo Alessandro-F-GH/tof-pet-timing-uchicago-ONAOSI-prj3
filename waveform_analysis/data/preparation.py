@@ -112,6 +112,14 @@ def prepare_ml_dataset(
         config["preprocessing"]["led_selection"]["coincidence_window_ns"]
     )
     residual = pair_delta(led) - true_tof_ps
+    # Selection uses the original residual; calibration must not change event masks.
+    try:
+        control_mean_ps = float(control_artifact["led_control_mean_ps"][config["mode"]])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Control LED mean missing; rebuild control preprocessing") from exc
+    if not np.isfinite(control_mean_ps):
+        raise ValueError("Control LED mean must be finite")
+    centered_residual = residual - control_mean_ps
     finite_led = np.all(np.isfinite(led), axis=1) & np.isfinite(residual)
     coincidence = finite_led & (np.abs(residual) <= coincidence_window_ps)
     anchors = anchor_grid(preprocessed, family, threshold, baseline_window_ns=baseline)
@@ -145,7 +153,7 @@ def prepare_ml_dataset(
     np.save(base / f"{family}_time_ps.npy", time_ps)
     np.savez(base / f"{family}_transform.npz", minimum=minimum, maximum=maximum)
     np.save(base / f"{family}_led_time_ps.npy", np.asarray(led[rows], np.float64))
-    np.save(base / f"{family}_target_ps.npy", np.asarray(residual[rows], np.float64))
+    np.save(base / f"{family}_target_ps.npy", np.asarray(centered_residual[rows], np.float64))
     event_index = np.asarray(preprocessed.event_index)[rows]
     np.save(base / "event_index.npy", event_index)
     np.save(base / "bias_voltage_V.npy", np.asarray(preprocessed.bias_voltage_V)[rows])
@@ -181,13 +189,15 @@ def prepare_ml_dataset(
         "family": family,
         "fixed_led_threshold_mV": threshold,
         "true_tof_ps": true_tof_ps,
+        "led_control_mean_ps": control_mean_ps,
+        "led_centering_fit_role": "control",
         "window_ns": config["window_ns"],
         "subsampling": int(config["ml_input"]["subsampling"]),
         "n_before_fixed_led": int(preprocessed.n_events),
         "n_after_fixed_led": int(coincidence.sum()),
         "n_dropped_window": int(np.count_nonzero(coincidence & ~window_valid)),
         "n_final": int(rows.size),
-        "target_definition": "fixed_LED_delta_t - true_tof (control-derived LED threshold)",
+        "target_definition": "fixed_LED_delta_t - true_tof - control_LED_residual_mean",
     }
     atomic_json(base / "manifest.json", manifest)
     write_csv(

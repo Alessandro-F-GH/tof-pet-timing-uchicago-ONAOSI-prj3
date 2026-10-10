@@ -869,11 +869,14 @@ def run_study(config, *, logger=None):
             prediction_ps=prediction,
             corrected_ps=corrected,
             led_residual_ps=led,
+            metadata={"led_control_mean_ps": np.asarray(blind.manifest["led_control_mean_ps"])},
         )
         store.write_blind(
             {
                 **central,
                 "dataset_role": "blind",
+                "led_control_mean_ps": blind.manifest["led_control_mean_ps"],
+                "led_centering_fit_role": "control",
                 "dataset_source": blind.manifest["dataset_source"],
                 "event_population_identity": blind.manifest[
                     "event_population_identity"
@@ -1005,6 +1008,8 @@ def run_study(config, *, logger=None):
         "blind_dataset": config["blind"],
         "control_artifact": str(Path(control_dir).resolve()),
         "preprocessing_fit_role": "control",
+        "led_control_mean_ps": development.manifest["led_control_mean_ps"],
+        "led_centering_fit_role": "control",
         "model_selection_role": "development",
         "blind_role": "final_one_time_evaluation_only",
         "blind_used_in_selection": False,

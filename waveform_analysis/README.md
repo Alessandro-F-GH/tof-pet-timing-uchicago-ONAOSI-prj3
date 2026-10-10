@@ -190,13 +190,13 @@ Reporting consumes persisted numeric artifacts and produces validation/blind sum
 
 At model level, `plots/development.png` mirrors `plots/blind.png` for the complete
 prepared development population: final-model corrected residuals and the
-display-only mean-centred LED reference. Both use the same histogram styling.
+LED reference centered using the fixed control mean. Both use the same histogram styling.
 This is a training-population diagnostic, not out-of-fold validation. Future runs
 save its arrays in `artifacts/development_pred.npz` after scientific evaluation;
 refitting invalidates that artifact, while bootstrap-only changes preserve it.
 Diagnostic inference preserves Python, NumPy and PyTorch random-generator states.
 
-For older runs, CLI reporting can backfill the development arrays by loading the
+For compatible runs, CLI reporting can backfill the development arrays by loading the
 saved final model and a uniquely matching prepared development cache. It performs
 inference only, using the existing preprocessing, sample mask, feature transform
 and output limits. It never loads raw acquisitions, refits preprocessing or trains
@@ -211,8 +211,8 @@ Blind distribution comparisons also include `plots/blind_boxplot.png` for each
 model and a combined `report/plots/<mode>/<window>/blind_boxplot.png`. The combined
 plot uses stable model codes, orders direct models before shared models and obeys
 CLI reporting exclusions. Each model has adjacent LED and corrected boxes for
-its paired finite blind events. Original residuals retain their offsets; unlike
-the histogram's display-only LED centering, boxplots do not center either series.
+its paired finite blind events. LED residuals already subtract the fixed control
+mean, exactly as in metrics and histograms. Neither series is recentered in plots.
 Boxes show the 25th–75th percentiles and median. Whiskers extend to the most extreme
 observations within 1.5 interquartile ranges of the box by default; every outlier
 is displayed and the axis covers the full finite range. The `boxplot` section of
@@ -305,3 +305,17 @@ The LaTeX fragments use `booktabs`, `multirow`, `arydshln` and a two-column
 separators between groups. Copy the
 matching board fragment into the manuscript's `report/tables/datasets/` directory
 after checking the experiment identity. Reporting never overwrites manuscript sources.
+
+LED calibration is fitted separately for each board and readout mode. After the
+control threshold has been selected, the mean of the control LED time difference
+minus its configured true TOF is computed on finite events within the existing
+coincidence window, before ML input-window availability is checked. This fixed
+mean is subtracted from every prepared control, development and blind residual,
+and therefore from the supervised target. Event masks, waveform anchors and
+threshold selection remain unchanged. RMSE is the square root of the mean
+squared calibrated residual; it includes any remaining development/blind bias.
+Neither validation folds, bootstrap draws nor plots estimate another mean.
+Calibration is persisted in control/dataset/run manifests and prediction archives.
+Older uncentered runs are incompatible with run schema 52: rerun the batch to
+rebuild caches and models before reporting. They cannot be repaired by relabelling
+saved predictions or centering each dataset independently.

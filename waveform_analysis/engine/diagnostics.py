@@ -69,6 +69,7 @@ def save_development_diagnostic(
         dataset_role="development",
         metadata={
             "dataset_role": np.asarray("development"),
+            "led_control_mean_ps": np.asarray(dataset.manifest["led_control_mean_ps"]),
             "final_fit_fingerprint": np.asarray(final_fit_fingerprint),
             "analysis_protocol_identity": np.asarray(dataset.manifest["analysis_protocol_identity"]),
         },

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
 
-RUN_SCHEMA_VERSION = 51
+RUN_SCHEMA_VERSION = 52
 STAGE_ORDER = ("cv", "selection", "final_fit", "blind", "bootstrap", "xai", "plots")
 
 

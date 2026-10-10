@@ -12,7 +12,7 @@ from waveform_analysis.data.preprocessing import preprocess_selected
 from waveform_analysis.data.timing_adapter import led_grid, pair_delta
 from waveform_analysis.reporting.stats import ctr_estimate
 
-CONTROL_ARTIFACT_VERSION = 7
+CONTROL_ARTIFACT_VERSION = 8
 
 
 def _supported_modes(dataset):
@@ -95,7 +95,8 @@ def _select_led(preprocessed, mode, control_dataset, preprocessing, fit_cfg):
         if n and eff >= minimum:
             ctr = float(ctr_estimate(residual[valid], fit_cfg, bootstrap=False).ctr_ps)
         rows.append(
-            {"threshold_mV": float(threshold), "ctr_ps": ctr, "n": n, "efficiency": eff}
+            {"threshold_mV": float(threshold), "ctr_ps": ctr, "n": n, "efficiency": eff,
+             "control_mean_ps": float(np.mean(residual[valid])) if n else None}
         )
     finite = [r for r in rows if np.isfinite(r["ctr_ps"])]
     if not finite:
@@ -172,6 +173,7 @@ def fit_control_artifact(
         logger=logger,
     )
     selected = {}
+    control_means = {}
     led = {}
     mode_fingerprints = {}
     for mode in selected_modes:
@@ -199,6 +201,9 @@ def fit_control_artifact(
             prepared, mode, control_dataset, preprocessing, mode_fits[mode]
         )
         selected[mode] = threshold
+        # Freeze calibration before any ML-window selection or dataset splitting.
+        selected_row = next(row for row in scan if row["threshold_mV"] == threshold)
+        control_means[mode] = float(selected_row["control_mean_ps"])
         led[mode] = {
             "selected_threshold_mV": threshold,
             "candidates": scan,
@@ -214,7 +219,10 @@ def fit_control_artifact(
             f"Control LED selection: {mode}",
         )
         if logger:
-            logger.info("Control LED selected | %s | %.6g mV", mode, threshold)
+            logger.info(
+                "Control LED selected | %s | %.6g mV | residual mean=%.6g ps",
+                mode, threshold, control_means[mode],
+            )
     manifest = {
         "format_version": CONTROL_ARTIFACT_VERSION,
         "fingerprint": fp,
@@ -226,6 +234,8 @@ def fit_control_artifact(
         "mode_fingerprints": mode_fingerprints,
         "selection_rules": rules,
         "selected_led_threshold_mV": selected,
+        "led_control_mean_ps": control_means,
+        "led_centering_population": "finite control LED coincidences before ML-window selection",
         "led_selection": led,
         "criteria_fit_role": "control",
     }

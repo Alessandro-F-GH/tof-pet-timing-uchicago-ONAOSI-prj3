@@ -175,6 +175,7 @@ def test_empty_control_bookkeeping_does_not_relax_training_requirements(
     artifact = {
         "fingerprint": "control",
         "selected_led_threshold_mV": {config["mode"]: 5},
+        "led_control_mean_ps": {config["mode"]: 0.0},
     }
     monkeypatch.setattr(preparation, "led_grid", lambda *a, **kw: np.zeros((2, 2, 1)))
     # Every pulse lacks the requested pre-crossing part of the window.

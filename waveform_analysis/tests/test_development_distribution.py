@@ -22,7 +22,7 @@ def test_development_predictions_use_all_events_and_output_limit(tmp_path):
         n_events=4, event_index=np.array([9, 8, 7, 6]),
         energy_windows=np.arange(16, dtype=np.float32).reshape(4, 2, 2),
         energy_time_ps=np.array([0., 1.]), energy_target_ps=np.array([1., 3., 9., 20.]),
-        manifest={"analysis_protocol_identity": "prepared"},
+        manifest={"analysis_protocol_identity": "prepared", "led_control_mean_ps": 10.0},
     )
     spec = SimpleNamespace(predict=lambda artifact, pair: pair[:, 0, 0])
     fitted = FittedModel(None, {}, output_max_abs_ps=5.)
@@ -78,7 +78,7 @@ def test_development_and_blind_use_identical_histogram_style(tmp_path, monkeypat
     for blind, train in zip(captured[0][1], captured[1][1]):
         np.testing.assert_array_equal(blind, train)
     with np.load(store.development_predictions_path) as data:
-        np.testing.assert_array_equal(data["led_residual_ps"], led)  # centering is display-only
+        np.testing.assert_array_equal(data["led_residual_ps"], led)  # persisted residuals are already control-centered
     # A diagnostic from a different final fit must never be presented as current.
     store.write_manifest({"stage_fingerprints": {"final_fit": "new-fit"}})
     stale_plot = plotting.output_path(store.plots_dir, "development", cfg)

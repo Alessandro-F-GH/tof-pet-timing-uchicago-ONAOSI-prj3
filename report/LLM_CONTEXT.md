@@ -121,7 +121,12 @@ and window, models use the same prepared development and blind populations.
   sample grid, then scale to [0, 1] with fixed detector-specific amplitude limits.
 - Exclude events without finite paired crossings, the required coincidence or
   the complete requested input window.
-- The regression target is the LED time difference minus the configured true TOF.
+- The regression target is the LED time difference minus the configured true TOF
+  and the fixed control LED residual mean for that board and mode. This mean is
+  fitted after threshold selection on finite control coincidences, before any ML
+  window availability selection, and frozen for all roles, CV folds and bootstrap
+  draws. Selection masks and waveform anchors use the original times. RMSE includes
+  any residual bias after this calibration; plots never subtract a dataset mean.
   Subtract the predicted correction from that target to obtain the final residual.
   Models learn timing-error correction, rather than replacing the LED measurement
   with an unconstrained absolute timestamp estimate.
@@ -307,8 +312,8 @@ these exclusions do not change stored runs, fitting or scientific metrics.
 
 Each model also has a `plots/development.png` residual histogram matching the blind
 distribution style, using the final model on all prepared development events.
-Its arrays are saved as `artifacts/development_pred.npz`; LED centering is applied
-only for display. Interpret this as a training-population diagnostic, not outer-CV
+Its arrays are saved as `artifacts/development_pred.npz`; LED residuals already
+subtract the fixed control mean, consistently with metrics and blind plots. Interpret this as a training-population diagnostic, not outer-CV
 or blind performance. CLI reporting may backfill missing arrays by saved-model
 inference on a uniquely matching prepared cache, without fitting or raw-data
 preprocessing. A missing control JSON does not prevent inference when saved
@@ -316,7 +321,8 @@ protocol identities or fingerprints verify the cache. Relocated checkout paths
 are resolved locally. Missing prerequisites leave the plot unavailable with a warning.
 
 Blind LED-versus-corrected boxplots are produced per model and per board/mode/window.
-They retain original residual offsets, show quartiles and median, use 1.5-times-
+They use control-centered LED residuals and model-corrected residuals without
+further recentering, show quartiles and median, use 1.5-times-
 interquartile-range whiskers by default, and display all finite paired outliers
 without trimming the axis. Combined comparisons use stable model codes and honour
 reporting exclusions. Interpret quartile spread separately from F1 CTR; these

@@ -7,7 +7,9 @@ from waveform_analysis.engine.preprocessing import (
     fit_control,
     publish_preprocessing_diagnostics,
 )
-from waveform_analysis.data.storage import RunStore
+from waveform_analysis.data.storage import RUN_SCHEMA_VERSION, RunStore
+from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
+from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
 from waveform_analysis.engine.study import run_study
 from waveform_analysis.engine.xai import XAI_METHOD_VERSION
 from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
@@ -53,6 +55,7 @@ def _planner_fingerprints(config):
     pre = canonical_hash(
         {
             "control": config["control"],
+            "control_artifact_version": CONTROL_ARTIFACT_VERSION,
             "preprocessing": config["preprocessing"],
             "mode": config["mode"],
             "fit": config["fit"],
@@ -62,6 +65,7 @@ def _planner_fingerprints(config):
         {
             "preprocessing": pre,
             "development": config["development"],
+            "dataset_format_version": DATASET_FORMAT_VERSION,
             "window": config["window_ns"],
             "ml_input": config["ml_input"],
         }
@@ -122,7 +126,7 @@ def _run_state(config, previous):
         return "run", "all", current
     RunStore(path)
     manifest = _read_json(path / "metadata" / "manifest.json")
-    if manifest is not None and int(manifest.get("schema_version", -1)) != 51:
+    if manifest is not None and int(manifest.get("schema_version", -1)) != RUN_SCHEMA_VERSION:
         return "rebuild", "incompatible_schema", current
     old = (previous or {}).get(config["run_id"])
     if not isinstance(old, dict):

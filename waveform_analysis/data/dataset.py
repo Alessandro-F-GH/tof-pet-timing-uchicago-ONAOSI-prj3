@@ -6,7 +6,7 @@ from typing import Any
 from numpy.typing import ArrayLike, NDArray
 import numpy as np
 
-DATASET_FORMAT_VERSION = 33
+DATASET_FORMAT_VERSION = 34
 
 
 @dataclass(frozen=True)

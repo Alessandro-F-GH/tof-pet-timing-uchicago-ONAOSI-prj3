@@ -53,14 +53,19 @@ benchmark uses $-1.5$ to $+2\,\mathrm{ns}$. Both use an extended interval from
 $-2$ to $+30\,\mathrm{ns}$ relative to the crossing. The UC benchmark evaluates
 timing waveforms, whereas the FBK benchmark includes energy and timing waveforms.
 Each input interval is shared by the models evaluated within that board and mode.
-The difference between the LED arrival times, after subtracting the configured true TOF,
-is the supervised correction target. If $s_1$ and $s_2$ denote the normalized waveforms and
+For each board and readout mode, a fixed timing offset is estimated as the mean
+control LED time difference minus the configured true TOF, using finite control
+coincidences at the selected threshold before input-window availability selection.
+This offset is subtracted from control, development and blind LED residuals.
+The resulting calibrated LED residual is the supervised correction target. If $s_1$ and $s_2$ denote the normalized waveforms and
 $h_{\theta}$ the predicted correction, the final residual is
 \begin{equation}
- r=(t_{1,\mathrm{LED}}-t_{2,\mathrm{LED}}-\tau)-h_{\theta}(s_1,s_2),
+ r=(t_{1,\mathrm{LED}}-t_{2,\mathrm{LED}}-\tau-\mu_{\mathrm{control}})-h_{\theta}(s_1,s_2),
  \label{eq:residual}
 \end{equation}
-where $\tau$ is the configured true TOF.
+where $\tau$ is the configured true TOF and $\mu_{\mathrm{control}}$ is the fixed
+control offset. Validation folds, bootstrap draws and distribution plots use this
+same calibration. RMSE includes any remaining bias after calibration.
 
 \subsection{Shared and direct estimator architectures}
 In a shared formulation, one detector-level scorer is applied independently to both

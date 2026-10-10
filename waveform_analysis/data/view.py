@@ -46,6 +46,7 @@ def waveform_view(
 def standard_delta(
     dataset: PreparedDataset, mode: str, method: str = "led"
 ) -> NDArray[np.float64]:
+    """Return the LED time difference with the frozen control offset removed."""
     if method != "led":
         raise ValueError("Only the frozen LED timing is part of the study dataset")
     f = mode_family(mode)
@@ -53,7 +54,7 @@ def standard_delta(
     if v is None:
         raise ValueError(f"LED timing unavailable for {f}")
     v = np.asarray(v, np.float64)
-    return v[:, 0] - v[:, 1]
+    return v[:, 0] - v[:, 1] - float(dataset.manifest["led_control_mean_ps"])
 
 
 def model_target(dataset: PreparedDataset, mode: str) -> NDArray[np.float64]:

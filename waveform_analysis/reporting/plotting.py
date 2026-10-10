@@ -210,11 +210,9 @@ def _plot_run_residual_distribution(run, cfg, *, dataset_role):
                     return None
         corrected = np.asarray(d["corrected_ps"])
         led = np.asarray(d["led_residual_ps"])
-    # Display a zero-centered LED reference; numerical residuals remain unchanged.
+    # Prepared residuals already subtract the fixed control mean. Never recenter
+    # development/blind data: a remaining mean measures calibration transfer bias.
     led = np.asarray(led, dtype=float)
-    finite_led = np.isfinite(led)
-    if np.any(finite_led):
-        led = led - np.mean(led[finite_led])
     summaries = [residual_summary(a) for a in (led, corrected)]
     valid = [s for s in summaries if s["n_finite"]]
     if not valid:
@@ -232,7 +230,7 @@ def _plot_run_residual_distribution(run, cfg, *, dataset_role):
     with plot_context(cfg):
         fig, ax = plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]))
         for values, label, color in (
-            (led, "LED (mean-centered)", cfg["reference"]["color"]),
+            (led, "LED (control-centered)", cfg["reference"]["color"]),
             (
                 corrected,
                 "ML corrected",
@@ -271,7 +269,7 @@ def plot_run_development(run, cfg):
 def blind_residual_boxplot(
     pairs: list[dict[str, Any]], path: str | Path, cfg: dict[str, Any], *, title: str
 ) -> Path | None:
-    """Compare paired blind residuals without centering or truncating tails.
+    """Compare calibrated blind residuals without further centering or tail truncation.
 
     Each entry has a label and one-dimensional LED/corrected residual arrays.
     Whiskers use the configured multiple of the interquartile range. Every finite
@@ -522,6 +520,11 @@ def plot_run_xai(run, cfg):
 
 
 def render_run_plots(run, cfg):
+    manifest_path = Path(run) / "metadata" / "manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("led_centering_fit_role") != "control":
+            raise ValueError("Run uses obsolete LED centering; rerun the batch before plotting")
     return {
         "cv": plot_run_cv(run, cfg),
         "blind": plot_run_blind(run, cfg),

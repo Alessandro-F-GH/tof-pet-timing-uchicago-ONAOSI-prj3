@@ -20,7 +20,7 @@ from waveform_analysis.reporting.stats import (
     paired_model_bootstrap,
     pearson_r,
 )
-from waveform_analysis.data.storage import RunStore
+from waveform_analysis.data.storage import RUN_SCHEMA_VERSION, RunStore
 from waveform_analysis.reporting.latex_tables import (
     DATASET_TABLE_VERSION,
     export_dataset_tables,
@@ -69,6 +69,14 @@ def collect_runs(root):
         manifest = _json(m)
         if manifest.get("status") != "complete":
             continue
+        if (manifest.get("schema_version") != RUN_SCHEMA_VERSION
+                or manifest.get("led_centering_fit_role") != "control"
+                or not np.isfinite(float(manifest.get("led_control_mean_ps", float("nan"))))):
+            raise ValueError(
+                f"Run {d} does not use frozen control LED centering; rerun the batch "
+                "before generating comparisons. Saved models and predictions cannot "
+                "be relabelled as control-centered."
+            )
         runs.append(
             {
                 "directory": d,
