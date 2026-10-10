@@ -196,10 +196,12 @@ are removed during regeneration. Blind metric uncertainties remain in summary
 tables and plot error bars. Scatter model labels appear in an external legend,
 with Pearson statistics in the title rather than inside the plotting area.
 
-Each mode/window also has a `blind_ctr` bar chart sorted by ascending blind CTR
-(best first), bootstrap error bars and a dashed LED reference. Stable codes such as
+Each mode/window also has `blind_ctr` and `blind_rmse` bar charts sorted by ascending
+blind CTR and RMSE respectively (best first), bootstrap error bars and a dashed LED
+reference. Integer picosecond labels above the bars round only the displayed values;
+the bar heights and exported metrics retain full precision. Stable codes such as
 `D-MLP` and `S-CNN` identify bars; the external legend gives full model names.
-Matching `blind_ctr.csv` and `blind_ctr.tex` files are written under
+Matching `blind_ctr.csv`/`.tex` and `blind_rmse.csv`/`.tex` files are written under
 `report/tables/<mode>/<window>/`, with a code column for manuscript use. Each
 result root is reported independently; boards are not pooled. Reference the
 generated LaTeX table label explicitly when including the fragment in the paper.

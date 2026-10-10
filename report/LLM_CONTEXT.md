@@ -296,9 +296,11 @@ Scientific sources, relative to the repository root:
 
 CLI reporting orders all matrix axes with direct models
 first, then shared models, alphabetically within each formulation. It does not
-export standard-deviation matrices. Blind CTR bar charts are ranked by ascending
-CTR with a dashed LED reference and stable model codes; matching `blind_ctr.csv`
-and `blind_ctr.tex` fragments include those codes. Scatter model names appear in
+export standard-deviation matrices. Blind CTR and RMSE bar charts are independently
+ranked by ascending metric with a dashed LED reference, stable model codes and
+integer picosecond values above the bars. Rounding affects labels only. Matching
+`blind_ctr.csv`/`.tex` and `blind_rmse.csv`/`.tex` fragments include the codes.
+Scatter model names appear in
 external legends, with no text labels inside the plotting area. The `report` and
 `plots` commands accept `--exclude-models NAME NAME ...` to filter reporting only;
 these exclusions do not change stored runs, fitting or scientific metrics.

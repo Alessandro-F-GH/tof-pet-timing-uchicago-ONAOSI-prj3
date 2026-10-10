@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
 from waveform_analysis.reporting.plotting import (
-    blind_ctr_bar,
+    blind_metric_bar,
     grouped_bar,
     heatmap,
     load_plot_config,
@@ -23,7 +23,7 @@ from waveform_analysis.data.storage import RunStore
 from waveform_analysis.reporting.latex_tables import (
     DATASET_TABLE_VERSION,
     export_dataset_tables,
-    export_blind_ctr_table,
+    export_blind_metric_table,
 )
 from waveform_analysis.reporting.model_labels import model_label
 
@@ -401,7 +401,7 @@ def _reorder_matrix(
     return np.asarray(matrix)[np.ix_(indices, indices)]
 
 
-def _blind_ctr_rows(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _blind_metric_rows(group: list[dict[str, Any]], metric: str) -> list[dict[str, Any]]:
     """Rank stored blind metrics for display only; codes remain stable."""
     rows = []
     for run in group:
@@ -410,14 +410,14 @@ def _blind_ctr_rows(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows.append({
             "model": name, "code": code, "display_name": display_name,
             "formulation": run["manifest"]["estimator_formulation"],
-            "ctr_ps": run["blind"]["ctr_ps"],
-            "ctr_std_ps": run["bootstrap"]["ctr_bootstrap_std_ps"],
+            f"{metric}_ps": run["blind"][f"{metric}_ps"],
+            f"{metric}_std_ps": run["bootstrap"][f"{metric}_bootstrap_std_ps"],
         })
     return sorted(
         rows,
         key=lambda r: (
-            not np.isfinite(r["ctr_ps"]),
-            r["ctr_ps"] if np.isfinite(r["ctr_ps"]) else np.inf,
+            not np.isfinite(r[f"{metric}_ps"]),
+            r[f"{metric}_ps"] if np.isfinite(r[f"{metric}_ps"]) else np.inf,
             r["model"],
         ),
     )
@@ -532,13 +532,17 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 cfg,
                 title=f"Paired blind Δ {metric.upper()} (row − column) [ps]",
             )
-        rows = _blind_ctr_rows(group)
-        led_ctr = float(group[0]["blind"]["led_ctr_ps"])
-        write_csv(table_dir / "blind_ctr.csv", rows)
-        export_blind_ctr_table(table_dir / "blind_ctr.tex", rows, led_ctr,
-                              mode=mode_name, window=str(window),
-                              report_id=root_config.get("results", {}).get("folder", root.name))
-        blind_ctr_bar(rows, output_path(plot_dir, "blind_ctr", cfg), cfg, led_ctr=led_ctr)
+        for metric in ("ctr", "rmse"):
+            rows = _blind_metric_rows(group, metric)
+            led_value = float(group[0]["blind"][f"led_{metric}_ps"])
+            write_csv(table_dir / f"blind_{metric}.csv", rows)
+            export_blind_metric_table(
+                table_dir / f"blind_{metric}.tex", rows, led_value, metric=metric,
+                mode=mode_name, window=str(window),
+                report_id=root_config.get("results", {}).get("folder", root.name),
+            )
+            blind_metric_bar(rows, output_path(plot_dir, f"blind_{metric}", cfg), cfg,
+                             metric=metric, led_value=led_value)
         _scatters(group, plot_dir, cfg)
     _windows(runs, report, cfg)
     atomic_json(

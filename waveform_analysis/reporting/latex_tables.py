@@ -38,11 +38,11 @@ def escape_latex(value: Any) -> str:
     return "".join(replacements.get(character, character) for character in str(value))
 
 
-def export_blind_ctr_table(
-    path: Path, rows: list[dict[str, Any]], led_ctr: float, *, mode: str, window: str,
-    report_id: str,
+def export_blind_metric_table(
+    path: Path, rows: list[dict[str, Any]], led_value: float, *, mode: str, window: str,
+    report_id: str, metric: str,
 ) -> Path:
-    """Export ranked blind CTRs with stable codes matching the companion plot.
+    """Export ranked blind metrics with stable codes matching the companion plot.
 
     The containing report section must reference the generated label explicitly.
     Values and bootstrap uncertainties are read from completed run metadata.
@@ -52,18 +52,18 @@ def export_blind_ctr_table(
 
     lines = [r"\begin{table*}[t]", r"\centering", r"\small",
              r"\begin{tabular}{lllr}", r"\toprule",
-             r"Code & Model & Formulation & Blind CTR [ps] \\", r"\midrule"]
+             rf"Code & Model & Formulation & Blind {metric.upper()} [ps] \\", r"\midrule"]
     for row in rows:
-        value = number(row["ctr_ps"])
-        uncertainty = number(row["ctr_std_ps"])
+        value = number(row[f"{metric}_ps"])
+        uncertainty = number(row[f"{metric}_std_ps"])
         lines.append(
             f"{escape_latex(row['code'])} & {escape_latex(row['display_name'])} & "
             f"{escape_latex(row['formulation'].capitalize())} & "
             rf"${value} \pm {uncertainty}$ \\")
-    lines.extend([r"\midrule", rf"LED & Reference & & {number(led_ctr)} \\",
+    lines.extend([r"\midrule", rf"LED & Reference & & {number(led_value)} \\",
                   r"\bottomrule", r"\end{tabular}",
-                  rf"\caption{{Blind CTR for {escape_latex(mode)} waveforms, window {escape_latex(window)}, in ascending CTR order. Codes match the companion bar chart; uncertainties are blind-event bootstrap standard deviations.}}",
-                  rf"\label{{tab:blind-ctr-{re.sub(r'[^a-zA-Z0-9-]', '-', report_id)}-{mode}-{re.sub(r'[^a-zA-Z0-9-]', '-', window)}}}",
+                  rf"\caption{{Blind {metric.upper()} for {escape_latex(mode)} waveforms, window {escape_latex(window)}, in ascending {metric.upper()} order. Codes match the companion bar chart; uncertainties are blind-event bootstrap standard deviations.}}",
+                  rf"\label{{tab:blind-{metric}-{re.sub(r'[^a-zA-Z0-9-]', '-', report_id)}-{mode}-{re.sub(r'[^a-zA-Z0-9-]', '-', window)}}}",
                   r"\end{table*}"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

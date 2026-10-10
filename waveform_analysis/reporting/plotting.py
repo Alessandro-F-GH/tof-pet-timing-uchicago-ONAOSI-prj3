@@ -522,12 +522,13 @@ def scatter_with_labels(
         return _save(fig, path)
 
 
-def blind_ctr_bar(
-    rows: list[dict[str, Any]], path: str | Path, cfg: dict[str, Any], *, led_ctr: float
+def blind_metric_bar(
+    rows: list[dict[str, Any]], path: str | Path, cfg: dict[str, Any], *,
+    metric: str, led_value: float,
 ) -> Path:
-    """Plot performance-ranked persisted CTRs with bootstrap error bars.
+    """Plot performance-ranked persisted timing metrics with bootstrap errors.
 
-    ``rows`` contains rank-ordered code, display name, formulation, CTR and error.
+    ``rows`` contains rank-ordered code, display name, formulation, metric and error.
     No fitting, selection or numerical metric calculation is performed here.
     """
     style = cfg["bar"]
@@ -539,20 +540,33 @@ def blind_ctr_bar(
         ))
         handles = []
         for index, row in enumerate(rows):
-            handles.append(ax.bar(index, row["ctr_ps"], yerr=row["ctr_std_ps"],
+            value = float(row[f"{metric}_ps"])
+            error = float(row[f"{metric}_std_ps"])
+            handles.append(ax.bar(index, value, yerr=error,
                    width=float(style["group_width"]),
                    capsize=float(style["error_capsize"]),
                    color=cfg["formulations"][row["formulation"]]["color"],
                    edgecolor=style["edge_color"],
                    linewidth=float(style["edge_line_width"]),
                    label=f"{row['code']}: {row['display_name']}"))
+            if np.isfinite(value):
+                ax.annotate(
+                    f"{int(round(value))} ps",
+                    (index, value + (error if np.isfinite(error) else 0.0)),
+                    xytext=(0, float(style["annotation_offset_points"])),
+                    textcoords="offset points", ha="center", va="bottom",
+                    fontsize=float(cfg["font"]["annotation_size"]),
+                )
         handles.append(ax.axhline(
-            led_ctr, color=cfg["reference"]["color"], linestyle="--",
+            led_value, color=cfg["reference"]["color"], linestyle="--",
             label=cfg["reference"]["label"]))
+        lower, upper = ax.get_ylim()
+        ax.set_ylim(lower, upper + (upper - lower) * float(style.get("headroom_fraction", 0.25)))
         ax.set_xticks(range(len(rows)), [row["code"] for row in rows])
-        ax.set_ylabel("Blind CTR [ps]")
-        ax.set_xlabel("Model (ascending blind CTR)")
-        ax.set_title("Blind coincidence timing resolution")
+        ax.set_ylabel(f"Blind {metric.upper()} [ps]")
+        ax.set_xlabel(f"Model (ascending blind {metric.upper()})")
+        ax.set_title("Blind coincidence timing resolution" if metric == "ctr"
+                     else "Blind root mean squared error")
         ax.legend(
             handles=handles, loc=style.get("legend_location", "upper left"),
             bbox_to_anchor=style.get("legend_anchor", [1.02, 1.0]),

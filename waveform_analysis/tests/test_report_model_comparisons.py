@@ -35,7 +35,7 @@ def report_inputs(tmp_path, monkeypatch):
             "best": {"candidate_id": "stored", "selection_metric": "ctr",
                      "validation_ctr_mean_ps": ctr + 1, "validation_ctr_std_ps": 2.,
                      "validation_rmse_mean_ps": 55., "validation_rmse_std_ps": 1., "folds": 3},
-            "blind": {"ctr_ps": ctr, "rmse_ps": 50., "n_events": 32,
+            "blind": {"ctr_ps": ctr, "rmse_ps": 200. - ctr, "n_events": 32,
                       "led_ctr_ps": 130., "led_rmse_ps": 70.,
                       "ctr_improvement_ps": 130. - ctr, "rmse_improvement_ps": 20.},
             "bootstrap": {"ctr_bootstrap_std_ps": 2., "rmse_bootstrap_std_ps": 1.,
@@ -48,7 +48,7 @@ def report_inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "render_run_plots", lambda *args: None)
     monkeypatch.setattr(engine, "export_dataset_tables", lambda *args: [])
     monkeypatch.setattr(engine, "heatmap", lambda *args, **kwargs: None)
-    monkeypatch.setattr(engine, "blind_ctr_bar", lambda *args, **kwargs: None)
+    monkeypatch.setattr(engine, "blind_metric_bar", lambda *args, **kwargs: None)
     monkeypatch.setattr(engine, "_scatters", lambda *args: None)
     calls = []
 
@@ -91,6 +91,11 @@ def test_sorted_matrices_cached_subset_and_removed_std(report_inputs):
     tex = (tables / "blind_ctr.tex").read_text()
     assert "Code & Model" in tex and "D-MLP" in tex and "130.00" in tex
     assert "D-CNN" not in tex
+    rmse_rows = engine._csv(tables / "blind_rmse.csv")
+    assert [r["code"] for r in rmse_rows] == ["S-CNN", "S-MLP", "D-MLP"]
+    assert [float(r["rmse_ps"]) for r in rmse_rows] == [90., 95., 110.]
+    rmse_tex = (tables / "blind_rmse.tex").read_text()
+    assert "Blind RMSE [ps]" in rmse_tex and "70.00" in rmse_tex
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["excluded_models"] == ["independent_cnn1d"]
     # Restoring a missing model requires recalculation rather than stale subsets.
@@ -113,13 +118,14 @@ def test_cli_exclusions(command):
     assert args.exclude_models == ["direct_mlp", "shared_cnn1d"]
 
 
-def test_ranked_ctr_bar_and_unannotated_scatter(tmp_path, monkeypatch):
+@pytest.mark.parametrize("metric", ["ctr", "rmse"])
+def test_ranked_metric_bar_and_unannotated_scatter(tmp_path, monkeypatch, metric):
     cfg = plot_config()
     rows = [
         {"code": "S-MLP", "display_name": "Shared MLP", "formulation": "shared",
-         "ctr_ps": 90., "ctr_std_ps": 2.},
+         f"{metric}_ps": 90.4, f"{metric}_std_ps": 2.},
         {"code": "D-CNN", "display_name": "Independent CNN", "formulation": "direct",
-         "ctr_ps": 100., "ctr_std_ps": 3.},
+         f"{metric}_ps": 100.6, f"{metric}_std_ps": 3.},
     ]
     captured = []
 
@@ -128,9 +134,13 @@ def test_ranked_ctr_bar_and_unannotated_scatter(tmp_path, monkeypatch):
         plt.close(fig)
 
     monkeypatch.setattr(plotting, "_save", inspect)
-    plotting.blind_ctr_bar(rows, tmp_path / "ctr.png", cfg, led_ctr=130.)
+    plotting.blind_metric_bar(rows, tmp_path / f"{metric}.png", cfg,
+                             metric=metric, led_value=130.)
     ax = captured.pop()
-    assert [p.get_height() for p in ax.patches] == [90., 100.]
+    assert [p.get_height() for p in ax.patches] == [90.4, 100.6]
+    assert [t.get_text() for t in ax.texts] == ["90 ps", "101 ps"]
+    assert ax.texts[0].xy == (0, 92.4)
+    assert ax.get_ylabel() == f"Blind {metric.upper()} [ps]"
     assert [t.get_text() for t in ax.get_xticklabels()] == ["S-MLP", "D-CNN"]
     reference = next(line for line in ax.lines if line.get_label() == "LED reference")
     assert reference.get_linestyle() == "--"
