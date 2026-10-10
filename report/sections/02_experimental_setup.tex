@@ -17,13 +17,15 @@ timing performance with conventional discrimination methods.
 The second stage further amplifies and sharpens the signal
 for timing measurements. However, it requires an additional
 5 V supply, increasing hardware complexity and limiting its
-practicality in clinical PET systems. The first- and second-stage
-outputs are hereafter referred to as \emph{energy} and
-\emph{timing}, respectively. Comparing them allows us to
-investigate whether ML can improve timing using the simpler
-first-stage readout. The importance of front-end electronics
-for SiPM timing has been investigated in previous
-studies~\cite{huizenga2012,pourashraf2022}.
+practicality in clinical PET systems. 
+The first- and second-stage outputs are hereafter referred 
+to as \emph{energy} and \emph{timing}, respectively. 
+The energy signal represents the standard readout, for which 
+ML-based timing correction has already shown promising results. 
+The timing signal instead benefits from dedicated hardware 
+optimization and a restricted acquisition range designed to 
+minimize LED timing error, allowing us to investigate whether ML 
+can provide further improvements.
 
 \begin{figure}[H]
 \centering
@@ -57,20 +59,17 @@ and electronics board.
 
 \subsection{Acquisitions and scientific roles}
 The benchmark datasets identify three independent acquisitions at a SiPM bias of
-$48\,\mathrm{V}$ for each board. They are assigned to control, development and blind roles,
-as summarized separately in Tables~\ref{tab:uc-acquisitions} and~\ref{tab:fbk-acquisitions}.
+$48\,\mathrm{V}$ for each board: control, train and test sets.
 The configured true TOF is zero for these centred-source acquisitions.
-Control determines the preprocessing and LED selection rules. Development provides all
-model training and selection data. The blind acquisition supplies the final test population.
-\input{tables/datasets/UC_acquisitions}
-\input{tables/datasets/FBK_acquisitions}
+Control determines the preprocessing and LED selection rules. The train set provides all
+model training and selection data. The test set supplies the final test population.
 
 Event counts denote coincidence events, each containing four recorded waveforms, and
 refer to the final populations available for each waveform mode and window,
 after the complete selection described below. The population can change when the mode or
 window changes, because an event must satisfy the applicable timing requirements and provide
 the requested waveform interval. Within a fixed board, mode and window, models use the same
-prepared development and blind populations. Selected-event counts are organized by mode
+prepared train and test populations. Selected-event counts are organized by mode
 and window in Tables~\ref{tab:uc-selected-events} and~\ref{tab:fbk-selected-events}.
 \input{tables/datasets/UC_selected_events}
 \input{tables/datasets/FBK_selected_events}

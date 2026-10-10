@@ -16,6 +16,11 @@
 \pretocmd{\subsection}{\FloatBarrier}{}{\PackageError{report}{Cannot install subsection float barriers}{}}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hidelinks]{hyperref}
+\usepackage{siunitx}
+\sisetup{
+    group-separator = {\,},
+    group-minimum-digits = 4
+}
 \hypersetup{pdftitle={Waveform-based timing correction for time-of-flight positron emission tomography}, pdfauthor={Alessandro Falcetta}}
 \captionsetup{font=small,labelfont=bf}
 \setlength{\emergencystretch}{1.5em}

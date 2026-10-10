@@ -1,19 +1,42 @@
+
 \begin{table*}[t]
 \centering
 \small
-\begin{tabular}{lllrrr}
+\begin{tabular}{lll S[table-format=5.0]}
 \toprule
-Mode & Window & Interval [ns] & Control & Train & Test \\
+Mode & Window [ns] & Population & {Selected events} \\
 \midrule
-\multirow{2}{*}{Energy} & Short & -1.5 to 2 & --- & --- & --- \\
- & Extended & -2 to 30 & --- & --- & --- \\
+\multirow[t]{6}{*}{Energy}
+ & \multirow[t]{3}{*}{Onishi ($-1.5$ to $2$)}
+ & Control & 15488 \\
+ & & Development & 77252 \\
+ & & Blind & 80365 \\
+\addlinespace[3pt]
+\cdashline{2-4}
+\addlinespace[3pt]
+ & \multirow[t]{3}{*}{Wide ($-2$ to $30$)}
+ & Control & 15482 \\
+ & & Development & 77227 \\
+ & & Blind & 80346 \\
 \addlinespace[3pt]
 \hdashline
 \addlinespace[3pt]
-\multirow{2}{*}{Timing} & Short & -1.5 to 2 & --- & --- & --- \\
- & Extended & -2 to 30 & --- & --- & --- \\
+\multirow[t]{6}{*}{Timing}
+ & \multirow[t]{3}{*}{Onishi ($-1.5$ to $2$)}
+ & Control & 14107 \\
+ & & Development & 70385 \\
+ & & Blind & 73227 \\
+\addlinespace[3pt]
+\cdashline{2-4}
+\addlinespace[3pt]
+ & \multirow[t]{3}{*}{Wide ($-2$ to $30$)}
+ & Control & 14107 \\
+ & & Development & 70385 \\
+ & & Blind & 73227 \\
 \bottomrule
 \end{tabular}
-\caption{FBK selected-event counts by waveform mode and input window. Train denotes the full development population; test denotes blind data. Dashes denote unavailable counts.}
+\caption{FBK selected event populations by waveform mode and
+input window, after event selection, LED coincidence requirements
+and window availability.}
 \label{tab:fbk-selected-events}
 \end{table*}

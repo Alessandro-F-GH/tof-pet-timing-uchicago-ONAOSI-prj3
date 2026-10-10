@@ -1,5 +1,5 @@
 {
-  "name": "timing_benchmark_48V_R1_R2",
+  "name": "energy_benchmark_48V_R1_R2",
   "control_dataset": "../datasets/control.json",
   "development_dataset": {"root_file": "processed_data/10-03/48V-R1.root", 
                           "true_tof_ps": 0.0, "channels": {"energy": [1, 2], "polarities": [1, 1], "timing": [3, 4], "timing_polarities": [1, 1]}},
@@ -7,7 +7,7 @@
   "blind_dataset": {"root_file": "processed_data/10-03/48V-R2.root", 
                     "true_tof_ps": 0.0, "channels": {"energy": [1, 2], "polarities": [1, 1], "timing": [3, 4], "timing_polarities": [1, 1]}},
 
-  "results": {"root": "results", "folder": "UC/timing_benchmark_48V_R1_R2"},
+  "results": {"root": "results", "folder": "UC/energy_benchmark_48V_R1_R2"},
   "save_model": true,
 
   "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/default_ctr.json", 
@@ -25,6 +25,6 @@
                       "shared_linear_ridge", "direct_mlp", "antisymmetric_mlp", 
                       "locally_connected_mlp", "onishi_cnn", "shared_cnn1d", "independent_cnn1d"], 
 
-            "modes": ["timing_to_timing"], 
+            "modes": ["energy_to_energy"], 
             "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
 }

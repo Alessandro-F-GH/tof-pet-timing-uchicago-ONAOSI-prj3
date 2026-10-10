@@ -43,16 +43,22 @@ configurations~\cite{pourashraf2022}. These results establish the importance of
 electronics choices, but do not determine whether ML corrections applied to outputs
 of successive stages of cascaded amplification perform differently.
 
-This study systematically characterizes waveform-based LED timing corrections in terms
-of amplification stage, estimator family, detector sharing and input-window extent.
-Beyond identifying the lowest CTR among the evaluated configurations, it examines
-improvements relative to LED, residual timing errors, the value of waveform samples
-beyond the rising edge and the dependence of correction performance on the readout stage.
-Detector-shared estimators apply a common detector-level function to both waveforms
-and subtract its outputs, enforcing detector-exchange antisymmetry; direct estimators
-do not impose this shared-function constraint. Two electronics boards, using the
-same crystals and photodetectors, are evaluated independently through control,
-development and blind acquisitions. Temporal sensitivity analysis complements
-the performance comparison by identifying waveform regions to which fitted corrections
-are sensitive, rather than treating sensitivity as a direct measure of intrinsic
-timing information.
+Building on previous waveform-based timing studies, this work investigates how different 
+ML approaches exploit detector signals to correct leading-edge timing, rather than focusing 
+exclusively on achieving the lowest CTR. 
+By comparing multiple estimator families and temporal windows, we aim to characterize the timing 
+information available across the waveform and assess the potential of both conventional and 
+dedicated high-gain readouts.
+
+A further objective is to investigate the scalability of ML-based timing calibration. 
+Training a separate model for every detector pair would become impractical in complex PET systems. 
+We therefore introduce detector-shared estimators, which apply the same correction function to both 
+detector waveforms, enforcing antisymmetry under detector exchange. Comparing these models with 
+unconstrained estimators allows us to assess whether detector-specific relationships are necessary 
+or whether general waveform characteristics are sufficient for effective timing correction.
+
+Although complete waveform acquisition may not be practical in clinical systems, this analysis 
+provides a way to investigate which signal characteristics ML models exploit and which temporal 
+regions are most relevant to their predictions. The two electronics boards are evaluated 
+independently using control, development, and blind acquisitions, with temporal sensitivity 
+analysis complementing the timing-performance evaluation.
