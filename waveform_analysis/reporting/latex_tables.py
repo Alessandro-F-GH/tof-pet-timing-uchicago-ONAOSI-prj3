@@ -79,6 +79,7 @@ def population_metadata(dataset: Any, source: str) -> dict[str, Any]:
         "n_selected": int(dataset.n_events),
         "bias_voltage_V": np.unique(bias[np.isfinite(bias)]).tolist(),
         "population_identity": manifest.get("event_population_identity"),
+        "analysis_protocol_identity": manifest.get("analysis_protocol_identity"),
         "n_before_fixed_led": manifest.get("n_before_fixed_led"),
         "n_after_fixed_led": manifest.get("n_after_fixed_led"),
         "n_dropped_window": manifest.get("n_dropped_window"),

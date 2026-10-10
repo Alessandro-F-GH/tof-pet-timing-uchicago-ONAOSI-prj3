@@ -200,7 +200,10 @@ For older runs, CLI reporting can backfill the development arrays by loading the
 saved final model and a uniquely matching prepared development cache. It performs
 inference only, using the existing preprocessing, sample mask, feature transform
 and output limits. It never loads raw acquisitions, refits preprocessing or trains
-a model. Missing models/caches or ambiguous cache identities produce a warning
+a model. The control JSON is optional when the cache can be verified from the
+saved development protocol, control-directory hash or neural final-fit fingerprint.
+Saved cache paths are also resolved within a relocated `waveform_analysis` checkout.
+Missing models/caches or ambiguous cache identities produce a warning
 and leave the development plot unavailable; blind reporting remains available.
 Once saved, subsequent plot regeneration reads the diagnostic arrays directly.
 

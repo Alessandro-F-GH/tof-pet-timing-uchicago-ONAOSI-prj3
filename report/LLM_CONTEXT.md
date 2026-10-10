@@ -311,7 +311,9 @@ Its arrays are saved as `artifacts/development_pred.npz`; LED centering is appli
 only for display. Interpret this as a training-population diagnostic, not outer-CV
 or blind performance. CLI reporting may backfill missing arrays by saved-model
 inference on a uniquely matching prepared cache, without fitting or raw-data
-preprocessing. Missing prerequisites leave the plot unavailable with a warning.
+preprocessing. A missing control JSON does not prevent inference when saved
+protocol identities or fingerprints verify the cache. Relocated checkout paths
+are resolved locally. Missing prerequisites leave the plot unavailable with a warning.
 
 Selected-event fragments are exported under
 `<batch-result-root>/report/tables/datasets/` and a `selected_events.csv`. Counts

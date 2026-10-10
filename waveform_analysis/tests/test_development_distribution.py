@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import numpy as np
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.engine.diagnostics import diagnostic_random_state, save_development_diagnostic
 from waveform_analysis.engine.train import FittedModel
 from waveform_analysis.reporting import development, plotting
@@ -127,3 +128,72 @@ def test_reporting_backfills_only_unique_matching_cache(tmp_path, monkeypatch):
     (other / "manifest.json").write_text(json.dumps(cache_metadata))
     assert development.ensure_development_predictions(run) is None
     assert not calls
+
+
+def test_missing_control_json_uses_saved_protocol_identity(tmp_path, monkeypatch):
+    store = RunStore(tmp_path / "run")
+    config = {"mode": "timing_to_timing", "window_ns": {"start": -1.5, "end": 2.},
+              "ml_input": {"subsampling": 1}, "preprocessing": {"cache_dir": str(tmp_path)},
+              "development": {"root_file": "train.root", "true_tof_ps": 0.}}
+    store.write_resolved_config(config)
+    cache = tmp_path / "development_ml/prepared/one"
+    cache.mkdir(parents=True)
+    metadata = {"dataset_role": "development", "dataset_source": "train.root",
+                "mode": config["mode"], "window_ns": config["window_ns"], "subsampling": 1,
+                "true_tof_ps": 0., "analysis_protocol_identity": "trained-protocol",
+                "event_population_identity": "events"}
+    (cache / "manifest.json").write_text(json.dumps(metadata))
+    run = {"directory": store.root, "best": {"parameters": {}},
+           "manifest": {"model": "independent_cnn1d", "control_artifact": "missing/control",
+                        "stage_fingerprints": {"final_fit": "final"},
+                        "dataset_populations": {"development": {
+                            "population_identity": "events", "analysis_protocol_identity": "trained-protocol"}}}}
+    calls = []
+    monkeypatch.setattr(development, "saved_model_complete", lambda *args: True)
+    monkeypatch.setattr(development, "load_prepared_dataset", lambda _: SimpleNamespace(n_events=12))
+    monkeypatch.setattr(development, "load_fitted_model", lambda *args: calls.append("load"))
+    monkeypatch.setattr(development, "save_development_diagnostic",
+                        lambda *args: calls.append("predict") or store.development_predictions_path)
+    monkeypatch.setattr(development, "release_training_memory", lambda: None)
+    assert development.ensure_development_predictions(run) == store.development_predictions_path
+    assert calls == ["load", "predict"]
+    calls.clear()
+    (cache / "manifest.json").write_text(json.dumps({**metadata, "analysis_protocol_identity": "wrong"}))
+    assert development.ensure_development_predictions(run) is None
+    assert not calls
+
+
+def test_old_neural_run_matches_exact_final_fit_without_control_json():
+    from waveform_analysis.models import get_model
+    spec = get_model("independent_cnn1d")
+    config = {"model": {"name": spec.name}, "seed": 1001}
+    best = {"candidate_id": "selected", "parameters": {"architecture": [8]}}
+    payload = {"development": "protocol", "model": config["model"],
+               "candidate_id": best["candidate_id"], "parameters": best["parameters"],
+               "seed": 1001, "frozen_transform": None}
+    fingerprint = canonical_hash({"schema_version": 51, "stage": "final_fit", "payload": payload})
+    run = {"best": best, "manifest": {"schema_version": 51,
+           "stage_fingerprints": {"final_fit": fingerprint}, "control_artifact": "missing/control"}}
+    assert development._matches_training_identity(
+        {"analysis_protocol_identity": "protocol"}, run, config, spec, None)
+    assert not development._matches_training_identity(
+        {"analysis_protocol_identity": "other"}, run, config, spec, None)
+
+
+def test_missing_control_json_uses_directory_fingerprint():
+    from waveform_analysis.models import get_model
+    spec = get_model("shared_linear_ridge")
+    run = {"manifest": {"control_artifact": r"C:\old\control\1234567890abcdef"}}
+    assert development._matches_training_identity(
+        {"control_fingerprint": "1234567890abcdef" + "a" * 48}, run, {}, spec, None)
+    assert not development._matches_training_identity(
+        {"control_fingerprint": "wrong"}, run, {}, spec, None)
+
+
+def test_cache_path_resolves_after_moving_windows_checkout(tmp_path):
+    root = tmp_path / "waveform_analysis"
+    cache = root / "processed_data/ml_protocol_v3"
+    (cache / "development_ml/prepared").mkdir(parents=True)
+    run = root / "results/FBK/batch/timing/short/independent_cnn1d"
+    config = {"preprocessing": {"cache_dir": r"C:\old\waveform_analysis\processed_data\ml_protocol_v3"}}
+    assert development._development_cache_root(config, run) == cache
