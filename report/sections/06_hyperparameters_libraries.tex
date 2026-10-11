@@ -1,17 +1,31 @@
-\section{Hyperparameter spaces and model libraries}
+\section{Model architectures and training settings}
 \label{app:spaces}
-The configured model spaces and training settings are listed for dense and locally
-connected estimators in Table~\ref{tab:space-dense-and-local}, temporal CNNs in
-Table~\ref{tab:space-temporal-cnn}, the paired CNN in Table~\ref{tab:space-paired-cnn},
-and linear and MiniRocket estimators in Table~\ref{tab:space-linear-and-minirocket}.
-Square brackets denote hidden-layer widths or convolutional channel sequences; braces denote
-alternative grid values. A stated range with a count denotes logarithmic spacing.
-All model comparisons use the same input intervals within each board.
+The following model families represent different assumptions about how waveform information can correct LED timing. Their scientific motivation and detector-pair formulations are described before the configured hyperparameter tables.
+
+\subsection{Linear ridge regression}
+Linear models provide a computationally inexpensive baseline for testing whether a weighted combination of waveform samples is sufficient for timing correction. The direct estimator uses independent weights on the concatenated detector waveforms and an intercept. The shared estimator instead applies common weights to the sample-wise waveform difference, without an intercept, enforcing detector-exchange antisymmetry. Ridge regularization limits sensitivity to highly correlated samples. For these two estimators, its strength is selected by internal leave-one-out cross-validation minimizing mean squared error (MSE), rather than the outer CTR-based selection.
+
+\subsection{Convolutional neural networks}
+Convolutional neural networks (CNNs) are established waveform-timing models, including for LED correction~\cite{onishi2022,loignon2025}. Their temporal filters exploit local waveform structure with weights shared across sample positions. The Onishi-inspired direct CNN combines the detector dimension in the first convolution and predicts a joint correction. The independent CNN uses separately parameterized temporal backbones and scalar heads for the two detector signals, then subtracts the outputs. The shared CNN uses one backbone and head for both signals, imposing the antisymmetric correction. Comparing these latter two variants tests the effect of detector-level parameter sharing.
+
+\subsection{Multilayer perceptrons and local connectivity}
+Because the waveforms are aligned to their individual LED crossings, relevant features occur at approximately consistent input positions, so translation-invariant representations are not necessarily required. A direct dense multilayer perceptron (MLP) regresses on the concatenated detector waveforms. The shared MLP is implemented as two evaluations of the same dense scalar scorer with identical parameters, followed by subtraction; it is not a standard unconstrained paired MLP.
+
+The shared locally connected MLP preserves temporal neighborhoods without sharing convolutional filters across positions. Two successive layers have independent kernels at each temporal position, followed by a dense detector scorer. An odd, smoothly bounded transformation is applied to the score difference, limiting correction amplitude while preserving antisymmetry. Local connectivity provides an intermediate architectural assumption between dense and convolutional processing~\cite{elsayed2020}.
+
+\subsection{MiniRocket feature regression}
+MiniRocket is an efficient, largely deterministic convolutional feature transformation developed for time-series classification~\cite{minirocket2021}. We use its features for timing-error regression with ridge regularization. The direct model applies a multivariate MiniRocket transform jointly to the two signals; the shared model applies a common univariate transform to each detector and regresses on their feature difference, without an intercept. Feature transforms and scaling are fitted on the calibration acquisition and frozen before supervised fitting. Unlike the two linear ridge estimators, MiniRocket models select ridge regularization using outer CTR-based cross-validation.
+
+\subsection{Neural training procedures}
+Dense MLPs, the locally connected MLP and temporal CNNs minimize root mean squared error (RMSE) using an internal training holdout for early stopping. The shared dense MLP uses Nesterov stochastic gradient descent; the other models in this group use Adam. The Onishi-inspired paired CNN instead minimizes MSE using Adam and a fixed epoch schedule without an internal early-stopping holdout. For all these neural models, the hyperparameters are selected using mean held-out coincidence timing resolution (CTR) in the three common outer folds, even though the fitting loss is squared-error-based.
+
+\subsection{Configured hyperparameter spaces}
+Tables~\ref{tab:space-dense-and-local} and~\ref{tab:space-temporal-cnn} list the dense, locally connected and temporal CNN settings. Table~\ref{tab:space-paired-cnn} describes the paired CNN, while Table~\ref{tab:space-linear-and-minirocket} gives the linear and MiniRocket settings. Square brackets indicate sequences of layer widths or channels, braces indicate alternative values, and stated ranges with a count use logarithmic spacing.
 \input{tables/hyperparameters/dense_and_local}
 \input{tables/hyperparameters/temporal_cnn}
 \input{tables/hyperparameters/paired_cnn}
 \input{tables/hyperparameters/linear_and_minirocket}
 
-The model libraries and supporting scientific software are listed in
-Table~\ref{tab:model-libraries}. The listed version bounds are declared minimum requirements.
+\subsection{Software libraries}
+Table~\ref{tab:model-libraries} summarizes the scientific software used. Version bounds are declared minimum requirements rather than measured installation versions.
 \input{tables/libraries/model_libraries}
