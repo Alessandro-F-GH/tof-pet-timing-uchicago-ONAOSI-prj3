@@ -1,0 +1,71 @@
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=1.8cm and 1.8cm,
+    >=Latex,
+    box/.style={
+        draw,
+        rounded corners,
+        align=center,
+        minimum width=4.1cm,
+        minimum height=1.5cm,
+        font=\small
+    },
+    smallbox/.style={
+        draw,
+        rounded corners,
+        align=center,
+        minimum width=3.6cm,
+        minimum height=1.1cm,
+        font=\small
+    },
+    arrow/.style={->, thick}
+]
+
+\node[box] (cal) {
+    \textbf{Calibration acquisition}\\
+    $\sim 2\times 10^4$ raw events
+};
+
+\node[smallbox, below=0.45cm of cal] (caluse) {
+    Photopeak / ToT selection\\
+    Baseline-quality cuts\\
+    LED threshold choice\\
+    Fixed timing-offset estimate
+};
+
+\node[box, right=3.2cm of cal] (train) {
+    \textbf{Training acquisition}\\
+    $\sim 10^5$ raw events
+};
+
+\node[smallbox, below=0.45cm of train] (trainuse) {
+    Fixed preprocessing\\
+    3-fold cross-validation\\
+    Model / hyperparameter selection by CTR\\
+    Final fit on full training set
+};
+
+\node[box, right=3.2cm of train] (test) {
+    \textbf{Test acquisition}\\
+    $\sim 10^5$ raw events
+};
+
+\node[smallbox, below=0.45cm of test] (testuse) {
+    Fixed preprocessing\\
+    Final model evaluation\\
+    CTR and RMSE\\
+    Bootstrap uncertainty
+};
+
+\draw[arrow] (cal.east) -- node[above, font=\small, align=center] {fixed selection rules\\and LED calibration} (train.west);
+\draw[arrow] (train.east) -- node[above, font=\small, align=center] {selected model\\and fitted parameters} (test.west);
+
+\draw[arrow] (cal) -- (caluse);
+\draw[arrow] (train) -- (trainuse);
+\draw[arrow] (test) -- (testuse);
+
+\end{tikzpicture}
+\caption{Schematic overview of the experimental protocol. The calibration acquisition is used to determine fixed event-selection and LED-calibration criteria. Model selection and fitting are performed on the independent training acquisition. Final performance is assessed on the independent test acquisition.}
+\label{fig:workflow}
+\end{figure*}

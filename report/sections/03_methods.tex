@@ -99,18 +99,17 @@ locally connected networks and MiniRocket-based estimators,
 are considered to assess the influence of model architecture.
 Table~\ref{tab:model-inventory} summarizes the estimators,
 while implementation details are provided in the appendix.
-\input{tables/models/estimator_inventory.tex}
+
 \subsection{Model comparison and training protocol}
-For each board, amplification stage, and waveform window, the same
-eligible training events are used to compare estimators. Model
-selection takes place exclusively within the training acquisition,
+Model selection takes place exclusively within the training acquisition,
 using three common cross-validation folds for estimators subject
-to outer cross-validation. The selection criterion is mean
-held-out CTR. Neural estimators are optimized using squared-error
-losses with the specified training controls, so their fitting
-objective is distinct from the CTR used for model selection.
-After selection, the chosen estimator is fitted again using the
-training acquisition.
+to outer cross-validation. The overall protocol is summarized in Figure~\ref{fig:workflow}. 
+The calibration acquisition fixes the preprocessing and LED-calibration rules, 
+the training acquisition is used for model selection and final fitting, and 
+the test acquisition is reserved for independent evaluation.
+
+\input{tables/models/estimator_inventory.tex}
+\input{figures/ml_pipeline.tex}
 
 Linear ridge regression is the methodological exception:
 regularization is chosen by internal leave-one-out cross-validation
@@ -144,7 +143,7 @@ of the central timing peak. Both metrics are therefore needed
 to characterize the effects of calibration and waveform-based
 correction.
 
-Frozen preprocessing and the fitted model are applied to the
+Fixed preprocessing and the fitted model are applied to the
 independent test acquisition. Test-event bootstrap resampling
 provides uncertainties on CTR and RMSE without retraining;
 these estimates are conditional on the selected fitted model.
