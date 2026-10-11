@@ -101,29 +101,36 @@ Table~\ref{tab:model-inventory} summarizes the estimators,
 while implementation details are provided in the appendix.
 
 \subsection{Model comparison and training protocol}
-Model selection takes place exclusively within the training acquisition,
-using three common cross-validation folds for estimators subject
-to outer cross-validation. The overall protocol is summarized in Figure~\ref{fig:workflow}. 
-The calibration acquisition fixes the preprocessing and LED-calibration rules, 
-the training acquisition is used for model selection and final fitting, and 
-the test acquisition is reserved for independent evaluation.
+The independent calibration, training and test acquisitions serve distinct
+roles, as summarized in Figure~\ref{fig:workflow}. Calibration fixes event
+selection, LED thresholds and timing offsets. Model fitting and selection
+use only the training acquisition; the test acquisition is reserved for
+final evaluation.
+
+The neural estimators learn the calibrated LED-error target by minimizing
+a squared-error-based objective. Mean squared error (MSE) is
+\begin{equation}
+\mathrm{MSE}=\frac{1}{N}\sum_{i=1}^{N}
+\left[y_i-h_\theta(s_{1,i},s_{2,i})\right]^2.
+\label{eq:training-mse}
+\end{equation}
+Dense and locally connected MLPs and temporal CNNs minimize its square
+root (RMSE), with internal early stopping. The Onishi-inspired paired
+CNN instead minimizes MSE with a fixed-epoch schedule. Thus, fitting
+loss and model-selection criterion are distinct.
+
+For estimators using outer cross-validation, three common training
+folds are used to select hyperparameters by mean held-out CTR.
+After selection, the model is fitted again on the complete training
+population. Linear ridge regression is an exception: its
+regularization is selected by internal leave-one-out cross-validation
+minimizing MSE, followed by a full-data fit. MiniRocket-based ridge
+estimators use squared-error fitting but retain the outer CTR-based
+selection. Further model descriptions and training settings are
+provided in Appendix~\ref{app:spaces}.
 
 \input{tables/models/estimator_inventory.tex}
 \input{figures/ml_pipeline.tex}
-
-Linear ridge regression is the methodological exception:
-regularization is chosen by internal leave-one-out cross-validation
-minimizing mean squared error, and the resulting model is fitted
-on the full training population without the outer CTR-based
-selection. MiniRocket-based ridge estimators follow the ordinary
-outer cross-validation protocol. Hyperparameter search spaces and
-training specifications are documented in Appendix~\ref{app:spaces}.
-
-The calibration, training, and test acquisitions are independent:
-the calibration acquisition fixes signal-selection and reference
-parameters, the training acquisition determines supervised model
-parameters, and the test acquisition is reserved for final
-performance characterization.
 
 \subsection{Timing performance and independent evaluation}
 All configurations are evaluated against LED on the same selected
