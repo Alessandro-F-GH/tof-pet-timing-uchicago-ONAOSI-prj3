@@ -64,6 +64,67 @@ The configured true TOF is zero for these centred-source acquisitions.
 Control determines the preprocessing and LED selection rules. The train set provides all
 model training and selection data. The test set supplies the final test population.
 
+Raw coincidence examples from event 0 are shown separately for each electronics
+board: Figures~\ref{fig:uc-raw-energy} and~\ref{fig:uc-raw-timing} show the UC
+energy and timing waveforms, while Figures~\ref{fig:fbk-raw-energy}
+and~\ref{fig:fbk-raw-timing} show the corresponding FBK waveforms.
+Each figure contains the two detector signals from the same coincidence event,
+with a shared time axis in nanoseconds relative to the oscilloscope trigger signal.
+The waveforms are displayed before event selection or signal preprocessing;
+only the sample amplitudes are clipped to the oscilloscope vertical-scale range.
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/UC_raw_energy_event_0.png}{%
+  \includegraphics[width=\columnwidth]{figures/UC_raw_energy_event_0.png}%
+}{%
+  \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
+    \textit{UC raw energy waveform figure}}}%
+}
+\caption{UC first-stage (energy) waveforms from coincidence event 0.
+\textit{[Placeholder: short image description.]}}
+\label{fig:uc-raw-energy}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/UC_raw_timing_event_0.png}{%
+  \includegraphics[width=\columnwidth]{figures/UC_raw_timing_event_0.png}%
+}{%
+  \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
+    \textit{UC raw timing waveform figure}}}%
+}
+\caption{UC second-stage (timing) waveforms from coincidence event 0.
+\textit{[Placeholder: short image description.]}}
+\label{fig:uc-raw-timing}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/FBK_raw_energy_event_0.png}{%
+  \includegraphics[width=\columnwidth]{figures/FBK_raw_energy_event_0.png}%
+}{%
+  \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
+    \textit{FBK raw energy waveform figure}}}%
+}
+\caption{FBK first-stage (energy) waveforms from coincidence event 0.
+\textit{[Placeholder: short image description.]}}
+\label{fig:fbk-raw-energy}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/FBK_raw_timing_event_0.png}{%
+  \includegraphics[width=\columnwidth]{figures/FBK_raw_timing_event_0.png}%
+}{%
+  \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
+    \textit{FBK raw timing waveform figure}}}%
+}
+\caption{FBK second-stage (timing) waveforms from coincidence event 0.
+\textit{[Placeholder: short image description.]}}
+\label{fig:fbk-raw-timing}
+\end{figure}
+
 Event counts denote coincidence events, each containing four recorded waveforms, and
 refer to the final populations available for each waveform mode and window,
 after the complete selection described below. The population can change when the mode or
