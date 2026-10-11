@@ -1,14 +1,42 @@
+
 \begin{table*}[t]
 \centering
 \small
-\begin{tabular}{lllrrr}
+\begin{tabular}{lllr}
 \toprule
-Mode & Window & Interval [ns] & Control & Train & Test \\
+Mode & Window [ns] & Population & Selected events \\
 \midrule
-\multirow{2}{*}{Timing} & Short & -1 to 2 & --- & --- & --- \\
- & Extended & -2 to 30 & --- & --- & --- \\
+\multirow[t]{6}{*}{Energy}
+ & \multirow[t]{3}{*}{Onishi ($-1.5$ to $2$)}
+ & Calibration & 16632 \\
+ & & Train & 75941 \\
+ & & Test & 76315 \\
+\addlinespace[3pt]
+\cdashline{2-4}
+\addlinespace[3pt]
+ & \multirow[t]{3}{*}{Wide ($-2$ to $30$)}
+ & Calibration & 16627 \\
+ & & Train & 75926 \\
+ & & Test & 76294 \\
+\addlinespace[3pt]
+\hdashline
+\addlinespace[3pt]
+\multirow[t]{6}{*}{Timing}
+ & \multirow[t]{3}{*}{Onishi ($-1.5$ to $2$)}
+ & Calibration & 14388 \\
+ & & Train & 64878 \\
+ & & Test & 64763 \\
+\addlinespace[3pt]
+\cdashline{2-4}
+\addlinespace[3pt]
+ & \multirow[t]{3}{*}{Wide ($-2$ to $30$)}
+ & Calibration & 14388 \\
+ & & Train & 64878 \\
+ & & Test & 64763 \\
 \bottomrule
 \end{tabular}
-\caption{UC selected-event counts by waveform mode and input window. Train denotes the full development population; test denotes blind data. Dashes denote unavailable counts.}
+\caption{UC selected event populations by amplification stage
+and waveform window, after event selection, LED coincidence
+requirements and window availability.}
 \label{tab:uc-selected-events}
 \end{table*}

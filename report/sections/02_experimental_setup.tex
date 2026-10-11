@@ -2,135 +2,87 @@
 
 \subsection{Detector modules and acquisition}
 
-Two opposing detector modules consist of silicon photomultipliers
-(SiPMs) coupled to lutetium--yttrium oxyorthosilicate (LYSO)
-crystals measuring $2\times2\times3\,\mathrm{mm}^{3}$, with a
-$^{22}\mathrm{Na}$ source positioned centrally between them.
-The University of Chicago (UC) and Fondazione Bruno Kessler
-(FBK) configurations use the same crystals and SiPMs but
-different analog front-end electronics.
+Two opposing detector modules consist of silicon photomultipliers (SiPMs)
+coupled to $2\times2\times3\,\mathrm{mm}^{3}$ lutetium--yttrium
+oxyorthosilicate (LYSO) crystals, with a $^{22}\mathrm{Na}$ source
+positioned centrally between them. The University of Chicago (UC)
+and Fondazione Bruno Kessler (FBK) configurations use the same
+crystals and SiPMs but different analog front-end electronics.
 
-Figure~\ref{fig:amplification-stages} shows the two-stage
-amplification chain. The first stage produces a relatively long
-waveform used for energy estimation, while also providing good
-timing performance with conventional discrimination methods.
-The second stage further amplifies and sharpens the signal
-for timing measurements. However, it requires an additional
-5 V supply, increasing hardware complexity and limiting its
-practicality in clinical PET systems. 
-The first- and second-stage outputs are hereafter referred 
-to as \emph{energy} and \emph{timing}, respectively. 
-The energy signal represents the standard readout, for which 
-ML-based timing correction has already shown promising results. 
-The timing signal instead benefits from dedicated hardware 
-optimization and a restricted acquisition range designed to 
-minimize LED timing error, allowing us to investigate whether ML 
-can provide further improvements.
+The two-stage readout chain is shown in
+Figure~\ref{fig:amplification-stages}. Its first stage produces a
+relatively long signal suitable for energy estimation and conventional
+timing. The second provides additional amplification and a sharper
+signal optimized for timing. This dedicated stage requires a separate
+5 V supply, adding hardware and integration challenges that make it
+chalenging to deploy in clinical PET systems. The two outputs are referred to as
+\emph{energy} and \emph{timing}, respectively.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\columnwidth]{figures/Amplifier_schema.png}
-\caption{Two-stage analog readout chain used for each detector.
-The first-stage (energy) and second-stage (timing) outputs
-are acquired simultaneously from the same SiPM pulse.}
+\caption{Two-stage readout chain. Energy and timing waveforms
+are sampled from successive amplification stages of the same SiPM pulse.}
 \label{fig:amplification-stages}
 \end{figure}
 
-The energy waveform is acquired without amplitude clipping,
-allowing its maximum to be used for photopeak event selection.
-In contrast, the oscilloscope vertical range for the high-gain
-timing waveform is deliberately restricted to emphasize the
-rising edge, clipping the pulse peak. This acquisition strategy,
-also adopted by Onishi et al.~\cite{onishi2022}, aims to
-maximize timing precision. In these measurements, the energy
-waveform is cleaner and more stable but exhibits greater
-time walk, whereas the timing waveform is more susceptible
-to noise and pulse-shape variations.
-
-Each coincidence event contains four simultaneously recorded
-waveforms: energy signals from the two detectors on channels
-1 and 2, and their corresponding timing signals on channels
-3 and 4. The records span $100\,\mathrm{ns}$ at a sampling
-rate of $80\,\mathrm{GS\,s}^{-1}$. Both waveform modes share
-the same energy-based event selection, while timing corrections
-are evaluated independently for each amplification stage
-and electronics board.
-
+The energy signal is acquired without amplitude clipping, and its
+maximum is used for photopeak selection. For the high-gain timing
+signal, the oscilloscope's narrower vertical range emphasizes the
+rising edge while clipping the pulse peak, following a strategy
+also used by Onishi et al.~\cite{onishi2022}. In these acquisitions,
+the energy waveform is cleaner and more stable but exhibits greater
+time walk; the timing waveform is more susceptible to noise and
+pulse-shape variations.
 
 \subsection{Acquisitions and scientific roles}
-The benchmark datasets identify three independent acquisitions at a SiPM bias of
-$48\,\mathrm{V}$ for each board: control, train and test sets.
-The configured true TOF is zero for these centred-source acquisitions.
-Control determines the preprocessing and LED selection rules. The train set provides all
-model training and selection data. The test set supplies the final test population.
 
-Raw coincidence examples from event 0 are shown separately for each electronics
-board: Figures~\ref{fig:uc-raw-energy} and~\ref{fig:uc-raw-timing} show the UC
-energy and timing waveforms, while Figures~\ref{fig:fbk-raw-energy}
-and~\ref{fig:fbk-raw-timing} show the corresponding FBK waveforms.
-Each figure contains the two detector signals from the same coincidence event,
-with a shared time axis in nanoseconds relative to the oscilloscope trigger signal.
-The waveforms are displayed before event selection or signal preprocessing;
-only the sample amplitudes are clipped to the oscilloscope vertical-scale range.
+Each coincidence event contains four simultaneous waveforms:
+first-stage outputs from detectors 1 and 2 on channels 1 and 2,
+and second-stage outputs on channels 3 and 4. The $100\,\mathrm{ns}$
+records are sampled at $80\,\mathrm{GS\,s}^{-1}$ with a SiPM bias
+of $48\,\mathrm{V}$. The centrally located source defines a
+true TOF of zero.
+
+For each board, three independent acquisitions are used:
+\emph{calibration} to determine preprocessing and LED selection criteria,
+\emph{train} for model training and selection, and
+\emph{test} for final evaluation. Each calibration dataset
+contains approximately 20,000 raw coincidence events, while
+the train and test sets contain approximately 100,000
+events each, before event selection. The two boards are
+analyzed independently.
+
+Figures~\ref{fig:uc-raw-waveforms} and~\ref{fig:fbk-raw-waveforms}
+show the energy and timing waveforms of the same illustrative
+coincidence event for UC and FBK, respectively. Both detector
+signals are shown for each amplification stage. These are raw
+waveforms before event selection or preprocessing, with only the
+acquisition vertical-range clipping applied.
 
 \begin{figure}[H]
 \centering
-\IfFileExists{figures/UC_raw_energy_event_0.png}{%
-  \includegraphics[width=\columnwidth]{figures/UC_raw_energy_event_0.png}%
+\IfFileExists{figures/UC_raw_waveforms_event_0.png}{%
+  \includegraphics[width=\columnwidth]{figures/UC_raw_waveforms_event_0.png}%
 }{%
   \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
-    \textit{UC raw energy waveform figure}}}%
+    \textit{UC raw energy and timing waveforms}}}%
 }
-\caption{UC first-stage (energy) waveforms from coincidence event 0.
-\textit{[Placeholder: short image description.]}}
-\label{fig:uc-raw-energy}
+\caption{UC raw waveforms: first-stage (energy) and
+second-stage (timing) signals from both detectors in one event.}
+\label{fig:uc-raw-waveforms}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\IfFileExists{figures/UC_raw_timing_event_0.png}{%
-  \includegraphics[width=\columnwidth]{figures/UC_raw_timing_event_0.png}%
+\IfFileExists{figures/FBK_raw_waveforms_event_0.png}{%
+  \includegraphics[width=\columnwidth]{figures/FBK_raw_waveforms_event_0.png}%
 }{%
   \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
-    \textit{UC raw timing waveform figure}}}%
+    \textit{FBK raw energy and timing waveforms}}}%
 }
-\caption{UC second-stage (timing) waveforms from coincidence event 0.
-\textit{[Placeholder: short image description.]}}
-\label{fig:uc-raw-timing}
+\caption{FBK raw waveforms: first-stage (energy) and
+second-stage (timing) signals from both detectors in one event.}
+\label{fig:fbk-raw-waveforms}
 \end{figure}
 
-\begin{figure}[H]
-\centering
-\IfFileExists{figures/FBK_raw_energy_event_0.png}{%
-  \includegraphics[width=\columnwidth]{figures/FBK_raw_energy_event_0.png}%
-}{%
-  \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
-    \textit{FBK raw energy waveform figure}}}%
-}
-\caption{FBK first-stage (energy) waveforms from coincidence event 0.
-\textit{[Placeholder: short image description.]}}
-\label{fig:fbk-raw-energy}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\IfFileExists{figures/FBK_raw_timing_event_0.png}{%
-  \includegraphics[width=\columnwidth]{figures/FBK_raw_timing_event_0.png}%
-}{%
-  \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
-    \textit{FBK raw timing waveform figure}}}%
-}
-\caption{FBK second-stage (timing) waveforms from coincidence event 0.
-\textit{[Placeholder: short image description.]}}
-\label{fig:fbk-raw-timing}
-\end{figure}
-
-Event counts denote coincidence events, each containing four recorded waveforms, and
-refer to the final populations available for each waveform mode and window,
-after the complete selection described below. The population can change when the mode or
-window changes, because an event must satisfy the applicable timing requirements and provide
-the requested waveform interval. Within a fixed board, mode and window, models use the same
-prepared train and test populations. Selected-event counts are organized by mode
-and window in Tables~\ref{tab:uc-selected-events} and~\ref{tab:fbk-selected-events}.
-\input{tables/datasets/UC_selected_events}
-\input{tables/datasets/FBK_selected_events}

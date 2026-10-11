@@ -1,156 +1,172 @@
 \section{Methods}
-\subsection{Timing-resolution definition}
-CTR is measured from the distribution of timing residuals using method F1 of Rainio
-et al.~\cite{rainio2025}. A uniformly binned histogram is represented by its bin centres
-and counts. The maximum bin defines the peak height; when several bins share the maximum,
-the middlemost maximum is selected. On either side of this bin, the nearest count strictly
-below half the peak height brackets a crossing with its adjacent inner bin. Linear
-interpolation between the two bin centres locates each crossing, and their separation is
-the FWHM.
 
-The physical bin width and histogram phase are fixed for a given waveform mode; zero is a
-bin centre. The benchmark settings use $10\,\mathrm{ps}$ bins for energy-waveform timing and
-$5\,\mathrm{ps}$ bins for timing-waveform timing. LED and ML residuals are evaluated with
-the same estimator. The root mean squared error (RMSE), measured relative to the configured
-true TOF, is retained as a complementary measure that also reflects residual bias.
+\subsection{Event selection and LED calibration}
+Only photopeak events are retained, based on the maximum amplitudes of both
+first-stage (energy) waveforms. Acceptance intervals are obtained from iterative
+Gaussian fits to the photopeaks in the calibration acquisition and applied to
+both waveform modes. For timing-mode analysis, time-over-threshold (ToT)
+selection additionally rejects short, spurious crossings associated with
+noise and signal oscillations. Events with excessive pre-pulse baseline
+fluctuations or baseline samples near the acquisition limits are excluded.
+All selection criteria are established from calibration data only.
 
-\subsection{Control-fitted event selection}
-The two-detector photopeak selection uses the maximum amplitudes of the fully recorded
-energy pulses. Its acceptance ranges are fitted on control using iterative Gaussian
-peak fits and applied to both waveform modes. For timing-mode analysis, accepted
-threshold-exceeding intervals must also satisfy control-fitted time-over-threshold (ToT) ranges.
-Baseline quality is evaluated in a trigger-relative pre-pulse interval, from
-$-2$ to $-1\,\mathrm{ns}$ in the supplied configuration. For each detector and waveform family,
-the baseline root mean square noise is compared with a control-derived robust upper limit,
-obtained from the median plus five scaled median absolute deviations. Events with
-baseline samples within $1\,\mathrm{mV}$ of an acquisition rail are rejected.
-This check concerns the pre-pulse baseline; intentional amplitude clipping of the
-high-gain timing-pulse peak is part of the acquisition described above.
-These criteria are frozen and applied to the development and blind acquisitions.
+For each mode, a leading-edge discriminator (LED) threshold is chosen on the
+calibration acquisition to minimize coincidence timing resolution (CTR),
+subject to a minimum fraction of valid coincidences within the prescribed
+time range. A fixed channel-pair timing offset is subsequently estimated
+from the calibration LED residuals. Both the threshold and offset remain
+unchanged in training and testing.
 
-For each mode, the LED threshold is selected on control alone from offsets of
-$5$, $15$, $25$, $35$, $45$ and $55\,\mathrm{mV}$ above the event baseline.
-An eligible threshold requires at least $95\%$ valid coincident pairs within
-$\pm2\,\mathrm{ns}$ of the configured true TOF. Among eligible candidates, the threshold
-with the lowest control CTR is retained, with the smaller threshold breaking a tie.
-This threshold is then fixed for model selection and blind evaluation.
-
-\subsection{Waveform representation and correction target}
-The amplification stages are evaluated separately. For the selected waveform mode,
-each model receives a detector pair of first-stage (energy) or second-stage (timing)
-waveforms belonging to the same coincidence event.
-Waveforms are oriented according to detector polarity and limited to the configured
-physical amplitude range. The baseline sets the LED crossing level, but the waveform
-inputs are not subjected to event-wise baseline subtraction or denoising.
-After acquisition, each detector waveform is cropped in time relative to its own LED
-crossing on the native sample grid and scaled to the interval from zero to one using
-fixed detector-specific amplitude limits. Events lacking either finite crossing, the required coincidence, or the complete
-input window are excluded. This temporal input window is distinct from the
-oscilloscope amplitude clipping of the timing signal.
-
-The UC benchmark uses a short interval from $-1$ to $+2\,\mathrm{ns}$; the FBK
-benchmark uses $-1.5$ to $+2\,\mathrm{ns}$. Both use an extended interval from
-$-2$ to $+30\,\mathrm{ns}$ relative to the crossing. The UC benchmark evaluates
-timing waveforms, whereas the FBK benchmark includes energy and timing waveforms.
-Each input interval is shared by the models evaluated within that board and mode.
-For each board and readout mode, a fixed timing offset is estimated as the mean
-control LED time difference minus the configured true TOF, using finite control
-coincidences at the selected threshold before input-window availability selection.
-This offset is subtracted from control, development and blind LED residuals.
-The resulting calibrated LED residual is the supervised correction target. If $s_1$ and $s_2$ denote the normalized waveforms and
-$h_{\theta}$ the predicted correction, the final residual is
+\subsection{Timing-error model and learning target}
+The goal is to correct waveform-dependent errors in a conventional LED
+measurement, rather than estimate an unconstrained time of flight directly.
+For a coincidence event, let
+$\Delta t_{\mathrm{LED}}=t_{1,\mathrm{LED}}-t_{2,\mathrm{LED}}$.
+We model this measurement as
 \begin{equation}
- r=(t_{1,\mathrm{LED}}-t_{2,\mathrm{LED}}-\tau-\mu_{\mathrm{control}})-h_{\theta}(s_1,s_2),
- \label{eq:residual}
+\Delta t_{\mathrm{LED}}
+=\tau+C+\delta(s_1,s_2)+\epsilon ,
+\label{eq:led-error-model}
 \end{equation}
-where $\tau$ is the configured true TOF and $\mu_{\mathrm{control}}$ is the fixed
-control offset. Validation folds, bootstrap draws and distribution plots use this
-same calibration. RMSE includes any remaining bias after calibration.
+where $\tau$ is the true time of flight, $C$ is the fixed
+channel-pair offset, $\delta$ denotes the waveform-dependent timing
+error, and $\epsilon$ represents residual unpredictable variation.
+The waveform-dependent component $\delta$ is the quantity we aim to estimate 
+and correct using ML.
 
-\subsection{Shared and direct estimator architectures}
-In a shared formulation, one detector-level scorer is applied independently to both
-waveforms:
+Writing $\widehat C$ for the fixed offset estimated during
+calibration, the supervised target and corrected time difference are
+\begin{align}
+y &= \Delta t_{\mathrm{LED}}-\tau-\widehat C,
+\label{eq:ml-target}\\
+\widehat{\Delta t}
+&=\Delta t_{\mathrm{LED}}-\widehat C
+-h_\theta(s_1,s_2).
+\label{eq:corrected-time}
+\end{align}
+
+The final residual relative to true TOF is:
+\begin{align}
+r=\widehat{\Delta t}-\tau=y-h_\theta(s_1,s_2).
+\label{eq:residual}
+\end{align}
+
+This formulation separates waveform-dependent timing errors, 
+which can potentially be corrected, from unpredictable noise. 
+The source is positioned centrally between the detectors, 
+giving $\tau=0$. 
+Any positioning error would introduce a constant offset, 
+which can be absorbed into the calibration term without affecting CTR.
+
+Energy and timing waveforms are analyzed separately. Each input waveform
+is expressed relative to its own LED crossing and normalized using
+fixed channel-specific amplitude limits. This alignment removes
+absolute acquisition time from the input. 
+Events lacking a valid coincidence or the full
+requested window are excluded.
+
+\subsection{Detector-shared and direct corrections}
+
+Previous waveform-based timing studies have primarily used direct
+estimators, which predict the timing correction from the pair of
+detector waveforms~\cite{berg2018,onishi2022}. These models can
+learn detector-specific relationships without imposing constraints
+on how the correction changes when the detector inputs are exchanged.
+
+While effective in a two-detector setup, training a separate model
+for every detector pair would be difficult to scale to a complete
+PET system. This motivates a detector-shared formulation, in which
+the correction is expressed as the difference between two evaluations
+of the same function:
 \begin{equation}
- h_{\theta}(s_1,s_2)=g_{\theta}(s_1)-g_{\theta}(s_2).
- \label{eq:shared}
+h_\theta(s_1,s_2)=g_\theta(s_1)-g_\theta(s_2).
+\label{eq:shared}
 \end{equation}
-Exchanging the detector inputs reverses the correction sign, and identical normalized
-pulses yield zero correction. Sharing the scorer removes
-arbitrary detector-specific parameter differences while retaining waveform-dependent
-corrections. Alignment to the individual LED crossings
-also prevents absolute acquisition times from entering the waveform inputs.
+The shared function $g_\theta$ estimates a waveform-dependent
+timing contribution for each detector independently. This formulation
+enforces detector-exchange antisymmetry: swapping the inputs
+reverses the correction sign, while identical inputs yield zero
+correction. It also offers a potentially more scalable approach,
+as the same model can be applied to different detector pairs
+without requiring pair-specific parameters.
 
-A multilayer perceptron (MLP) implements a fully connected shared scorer.
-The configured neural hidden layers use the rectified linear unit (ReLU) activation. A locally
-connected MLP uses two temporal layers with position-specific weights, followed by a dense
-scorer. Local connectivity retains neighbourhood information without the translation-based
-weight sharing of convolution, an established architectural alternative~\cite{elsayed2020}.
-Its score difference is passed through an odd, smooth hyperbolic-tangent transformation
-with a $500\,\mathrm{ps}$ bound, preserving antisymmetry. A shared one-dimensional CNN uses
-one temporal backbone and one dense head for both detectors. Shared linear ridge regression
-uses the difference of normalized waveforms without an intercept.
+Comparing direct and shared estimators allows us to investigate
+whether effective timing corrections require detector-specific
+relationships or can be captured by a common waveform function.
+Different model families, including linear regression, multilayer
+perceptrons (MLPs), convolutional neural networks (CNNs),
+locally connected networks and MiniRocket-based estimators,
+are considered to assess the influence of model architecture.
+Table~\ref{tab:model-inventory} summarizes the estimators,
+while implementation details are provided in the appendix.
+\input{tables/models/estimator_inventory.tex}
+\subsection{Model comparison and training protocol}
+For each board, amplification stage, and waveform window, the same
+eligible training events are used to compare estimators. Model
+selection takes place exclusively within the training acquisition,
+using three common cross-validation folds for estimators subject
+to outer cross-validation. The selection criterion is mean
+held-out CTR. Neural estimators are optimized using squared-error
+losses with the specified training controls, so their fitting
+objective is distinct from the CTR used for model selection.
+After selection, the chosen estimator is fitted again using the
+training acquisition.
 
-Direct alternatives include an MLP operating on the concatenated pair and linear ridge
-regression on the concatenated samples with an intercept. The independent CNN uses two
-separately parameterized detector branches and subtracts their scalar outputs; independent
-weights do not enforce detector-exchange antisymmetry. The Onishi-inspired paired CNN
-fuses the detector dimension in its first convolution, applies further temporal
-convolution and uses a dense scalar head~\cite{onishi2022}.
+Linear ridge regression is the methodological exception:
+regularization is chosen by internal leave-one-out cross-validation
+minimizing mean squared error, and the resulting model is fitted
+on the full training population without the outer CTR-based
+selection. MiniRocket-based ridge estimators follow the ordinary
+outer cross-validation protocol. Hyperparameter search spaces and
+training specifications are documented in Appendix~\ref{app:spaces}.
 
-MiniRocket supplies a largely deterministic convolutional feature representation~\cite{minirocket2021}.
-The shared variant applies one control-fitted transform and scaling to both detectors,
-subtracts their features and fits ridge regression without an intercept. The direct variant
-uses a multivariate transform of the paired waveforms and ridge regression with an intercept.
-In both cases the transform and scaling are fitted once on control and then frozen; supervised
-regression uses development targets only.
-For dense MLPs, constant samples are removed using the current fitting population and a
-$99\%$ identical-value criterion. Convolutional and locally connected neural architectures
-retain the temporal grid; the frozen linear and MiniRocket inputs also retain it.
-The estimator inventory is given in Table~\ref{tab:model-inventory}.
-\input{tables/models/estimator_inventory}
+The calibration, training, and test acquisitions are independent:
+the calibration acquisition fixes signal-selection and reference
+parameters, the training acquisition determines supervised model
+parameters, and the test acquisition is reserved for final
+performance characterization.
 
-\subsection{Model development and validation}
-Model selection uses only the development acquisition. For each board, mode and window,
-the supplied benchmark protocol assigns three deterministic, shuffled folds shared by the
-models using outer cross-validation (CV). Every candidate is fitted on the other folds,
-and validation CTR, RMSE and the LED reference are computed on the held-out fold.
-The candidate spaces in Appendix~\ref{app:spaces} are finite grids in the supplied benchmarks.
-Selection minimizes the mean validation CTR. Pruning compares candidates with the LED
-reference and completed incumbents on the same evaluated folds using prespecified tolerances;
-partially evaluated candidates cannot replace a fully evaluated selection.
+\subsection{Timing performance and independent evaluation}
+All configurations are evaluated against LED on the same selected
+test events. CTR is defined as the full width at half maximum
+(FWHM) of the timing-residual distribution and computed using
+histogram-based method F1 of Rainio et al.~\cite{rainio2025}.
+Identical histogram settings are used for LED and corrected
+residuals within each mode. The fixed bin widths are
+$10\,\mathrm{ps}$ for energy and $5\,\mathrm{ps}$ for timing.
 
-After selection, the search fit is discarded and the final estimator is refitted from
-scratch using the development population. MLP-based and one-dimensional CNN training use
-an RMSE loss, reserving $20\%$ of each fitting population for epoch-level early stopping.
-The antisymmetric dense MLP uses stochastic gradient descent (SGD) with Nesterov momentum;
-the other such neural models use Adam. Gradient clipping and the configured loss and
-gradient stopping criteria are retained. The Onishi-inspired CNN instead uses a mean
-squared error (MSE) loss, Adam and a fixed epoch schedule on its full fitting population,
-without the internal early-stopping holdout.
+Root mean squared error (RMSE) relative to true TOF complements
+CTR because it captures both residual dispersion and systematic
+bias. In particular,
+$\mathrm{RMSE}^2=\operatorname{Var}(r)+[\mathbb{E}(r)]^2$;
+a reduction in RMSE need not imply a comparable narrowing
+of the central timing peak. Both metrics are therefore needed
+to characterize the effects of calibration and waveform-based
+correction.
 
-The two linear ridge estimators bypass outer CV and candidate pruning. Their regularization
-strength is selected by internal leave-one-out CV using MSE, and the final regression is
-fitted on the full development population. The result tables distinguish internal ridge
-MSE from outer-validation CTR. MiniRocket ridge regression remains
-within the outer-CV protocol. One configured random seed determines splitting, model
-training and subsequent resampling.
+Frozen preprocessing and the fitted model are applied to the
+independent test acquisition. Test-event bootstrap resampling
+provides uncertainties on CTR and RMSE without retraining;
+these estimates are conditional on the selected fitted model.
+Within-board comparisons use matched test events and joint
+resampling to assess paired model differences. The two
+electronics boards are characterized separately rather than
+treated as a direct between-board performance ranking.
 
-\subsection{Blind evaluation and temporal sensitivity}
-The final model is applied to the independent blind acquisition with all preprocessing,
-threshold and model choices frozen. Predicted corrections are limited to an absolute
-magnitude of $2000\,\mathrm{ps}$ before residual evaluation; the locally connected model
-also retains its narrower smooth bound. LED and corrected residuals use the same events.
-CTR and RMSE uncertainties are estimated by paired blind-event bootstrap resampling,
-without retraining. The supplied settings use $1000$ draws for UC and $100$ for FBK. These uncertainties describe
-event-level variation conditional on the fitted model, whereas validation dispersion is
-fold-to-fold variability. Within-board differences between models are also evaluated by
-matching blind-event identities and resampling the matched events jointly.
+\subsection{Temporal sensitivity analysis}
+To investigate which parts of each waveform influence the
+correction, temporal occlusion is applied to the trained models
+on test events. Short groups of samples are replaced by
+interpolation from neighboring samples, and their importance
+is quantified by the average absolute change in predicted
+correction. Shared estimators are perturbed synchronously in
+both detector inputs, while direct estimators are perturbed
+one input at a time.
 
-Explainable artificial intelligence (XAI) is based on temporal occlusion. Groups of eight
-retained samples are replaced by interpolation between adjacent samples, and the mean
-absolute change in the predicted correction is measured over a reproducible subset of at
-most $4096$ blind events. Shared estimators perturb both detector inputs together, producing
-one temporal importance profile. Direct estimators perturb one detector at a time, producing
-two channel-specific profiles. For display, importance is aggregated into $1\,\mathrm{ns}$
-bins and normalized; the direct channels use a common maximum. These maps quantify model
-sensitivity to the defined perturbation. XAI is applied after model selection.
+The resulting profiles reveal whether predictions depend
+primarily on the rising edge or also on later waveform
+characteristics, and allow comparisons across windows and
+amplification stages. They measure sensitivity to the chosen
+perturbation rather than causal or uniquely attributable
+timing information, particularly because adjacent samples
+are strongly correlated.

@@ -47,7 +47,7 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/benchmark_48V_R1_R2"
+    "folder": "FBK/new_test"
   },
   "save_model": true,
   "protocol": {
