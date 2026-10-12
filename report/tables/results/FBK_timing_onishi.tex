@@ -3,6 +3,7 @@
 \begin{table}[tbp]
 \centering
 \scriptsize
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps] \\
@@ -20,7 +21,8 @@ S-LCM & $57.9 \pm 1.4$ & $59.5 \pm 0.6$ & $41.7 \pm 1.8$ \\
 D-MLP & $60.6 \pm 1.9$ & $61.8 \pm 0.7$ & $42.3 \pm 1.7$ \\
 D-CNN & $61.5 \pm 0.5$ & $62.0 \pm 0.8$ & $42.3 \pm 1.6$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \caption{FBK timing onishi: validation CTR (mean $\pm$ fold SD), independent-test CTR and RMSE (estimate $\pm$ bootstrap SD). Models are ranked by unrounded test CTR; codes are defined in Table~\ref{tab:model-inventory}. LED has no outer CV; ridge uses internal LOOCV.}
 \label{tab:fbk-timing-onishi}
 \end{table}
