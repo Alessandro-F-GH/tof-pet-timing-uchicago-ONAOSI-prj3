@@ -3,6 +3,7 @@
 \begin{table}[tbp]
 \centering
 \scriptsize
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps] \\
@@ -20,7 +21,8 @@ S-MR & $109.8 \pm 0.3$ & $109.0 \pm 1.4$ & $56.4 \pm 1.4$ \\
 D-MLP & $131.0 \pm 3.9$ & $115.6 \pm 1.3$ & $58.7 \pm 1.3$ \\
 D-CNN & $128.0 \pm 9.3$ & $123.5 \pm 1.6$ & $62.4 \pm 1.2$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \caption{UC energy wide: validation CTR (mean $\pm$ fold SD), independent-test CTR and RMSE (estimate $\pm$ bootstrap SD). Models are ranked by unrounded test CTR; codes are defined in Table~\ref{tab:model-inventory}. LED has no outer CV; ridge uses internal LOOCV.}
 \label{tab:uc-energy-wide}
 \end{table}
