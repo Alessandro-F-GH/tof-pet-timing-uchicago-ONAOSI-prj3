@@ -1,0 +1,11 @@
+{
+  "name": "subsampling_short_window",
+  "window_name": "onishi",
+  "window_ns": {"start": -1.5, "end": 2.0},
+  "subsampling": [1, 2, 4, 8],
+  "output_dir": "results/subsampling_short_window",
+  "boards": {
+    "UC": "../batches/benchmark_UC.json",
+    "FBK": "../batches/benchmark_FBK.json"
+  }
+}
