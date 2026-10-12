@@ -104,30 +104,22 @@ while implementation details are provided in the appendix.
 The independent calibration, training and test acquisitions serve distinct
 roles, as summarized in Figure~\ref{fig:workflow}. Calibration fixes event
 selection, LED thresholds and timing offsets. Model fitting and selection
-use only the training acquisition; the test acquisition is reserved for
+use only the training set; the test set is reserved for
 final evaluation.
 
-The neural estimators learn the calibrated LED-error target by minimizing
-a squared-error-based objective. Mean squared error (MSE) is
+The models are trained to predict the LED timing error using
+a standard regression objective, the mean squared error (MSE):
 \begin{equation}
 \mathrm{MSE}=\frac{1}{N}\sum_{i=1}^{N}
 \left[y_i-h_\theta(s_{1,i},s_{2,i})\right]^2.
 \label{eq:training-mse}
 \end{equation}
-Dense and locally connected MLPs and temporal CNNs minimize its square
-root (RMSE), with internal early stopping. The Onishi-inspired paired
-CNN instead minimizes MSE with a fixed-epoch schedule. Thus, fitting
-loss and model-selection criterion are distinct.
-
-For estimators using outer cross-validation, three common training
-folds are used to select hyperparameters by mean held-out CTR.
-After selection, the model is fitted again on the complete training
-population. Linear ridge regression is an exception: its
-regularization is selected by internal leave-one-out cross-validation
-minimizing MSE, followed by a full-data fit. MiniRocket-based ridge
-estimators use squared-error fitting but retain the outer CTR-based
-selection. Further model descriptions and training settings are
-provided in Appendix~\ref{app:spaces}.
+Model selection is performed through three-fold cross-validation
+on the training acquisition, using mean validation CTR as the
+primary performance criterion. The selected model is then
+refitted on the full training dataset. Model-specific training
+procedures and exceptions are detailed in
+Appendix~\ref{app:spaces}.
 
 \input{tables/models/estimator_inventory.tex}
 \input{figures/ml_pipeline.tex}
@@ -141,10 +133,13 @@ Identical histogram settings are used for LED and corrected
 residuals within each mode. The fixed bin widths are
 $10\,\mathrm{ps}$ for energy and $5\,\mathrm{ps}$ for timing.
 
-Root mean squared error (RMSE) relative to true TOF complements
+Root mean squared error (RMSE) relative to true TOF
+\footnote{That is different from the RMSE used as loss function. 
+The loss function RMSE is relative to the target y, while the RMSE relative
+to true TOF is evaluated respect to $\tau$.} complements
 CTR because it captures both residual dispersion and systematic
 bias. In particular,
-$\mathrm{RMSE}^2=\operatorname{Var}(r)+[\mathbb{E}(r)]^2$;
+$\mathrm{MSE}=\operatorname{Var}(r)+[\mathbb{E}(r)]^2$;
 a reduction in RMSE need not imply a comparable narrowing
 of the central timing peak. Both metrics are therefore needed
 to characterize the effects of calibration and waveform-based
@@ -155,9 +150,7 @@ independent test acquisition. Test-event bootstrap resampling
 provides uncertainties on CTR and RMSE without retraining;
 these estimates are conditional on the selected fitted model.
 Within-board comparisons use matched test events and joint
-resampling to assess paired model differences. The two
-electronics boards are characterized separately rather than
-treated as a direct between-board performance ranking.
+resampling to assess paired model differences.
 
 \subsection{Temporal sensitivity analysis}
 To investigate which parts of each waveform influence the
@@ -172,7 +165,4 @@ one input at a time.
 The resulting profiles reveal whether predictions depend
 primarily on the rising edge or also on later waveform
 characteristics, and allow comparisons across windows and
-amplification stages. They measure sensitivity to the chosen
-perturbation rather than causal or uniquely attributable
-timing information, particularly because adjacent samples
-are strongly correlated.
+amplification stages.
