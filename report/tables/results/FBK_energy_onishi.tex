@@ -3,6 +3,7 @@
 \begin{table}[tbp]
 \centering
 \scriptsize
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps] \\
@@ -20,7 +21,8 @@ D-CNN & $123.9 \pm 4.5$ & $117.7 \pm 1.2$ & $61.2 \pm 1.2$ \\
 S-MLP & $116.9 \pm 1.9$ & $119.0 \pm 1.4$ & $62.8 \pm 1.2$ \\
 S-MR & $116.8 \pm 0.8$ & $120.4 \pm 1.1$ & $61.5 \pm 1.1$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \caption{FBK energy onishi: validation CTR (mean $\pm$ fold SD), independent-test CTR and RMSE (estimate $\pm$ bootstrap SD). Models are ranked by unrounded test CTR; codes are defined in Table~\ref{tab:model-inventory}. LED has no outer CV; ridge uses internal LOOCV.}
 \label{tab:fbk-energy-onishi}
 \end{table}
