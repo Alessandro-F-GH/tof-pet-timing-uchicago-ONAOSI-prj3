@@ -1,0 +1,17 @@
+\begin{table*}[tbp]
+\centering
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}llXXl@{}}
+\toprule
+Code & Estimator & Feature / regularization space & Selection & Intercept \\
+\midrule
+S-LIN & Shared linear ridge & 50 log-spaced ridge strengths from $10^{-8}$ to $10^{3}$ & Internal leave-one-out CV; MSE & None \\
+D-LIN & Direct linear ridge & 50 log-spaced ridge strengths from $10^{-8}$ to $10^{3}$ & Internal leave-one-out CV; MSE & Included \\
+S-MR & Shared MiniRocket + ridge & 10000 requested features; ridge $\alpha\in\{0.1,0.3,1,3,10,30,100,300,10^3,3\times10^3,10^4,3\times10^4,10^5,3\times10^5,10^6\}$ & Outer CV; mean CTR & None \\
+D-MR & Direct MiniRocket + ridge & 10000 requested features; same ridge grid & Outer CV; mean CTR & Included \\
+\bottomrule
+\end{tabularx}
+\caption{Configured linear and MiniRocket spaces. MiniRocket feature transforms
+and scaling are fixed before supervised fitting.}
+\label{tab:space-ridge-minirocket-summary}
+\end{table*}
