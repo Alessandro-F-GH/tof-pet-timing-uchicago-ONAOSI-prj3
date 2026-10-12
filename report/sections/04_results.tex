@@ -1,19 +1,45 @@
 \section{Results}
 \label{sec:results-tables}
-% Tables are organized by board and mode; CTR comparison plots are in the appendix.
-% "Blind" in exported graphics denotes the independent test acquisition.
-% Only wide-window temporal sensitivity maps are included.
+% Independent-test metrics are reported as CTR and RMSE; plots of all CTR
+% comparisons appear in Appendix~\ref{app:ctr-plots}.
 
 \subsection{University of Chicago board}
 
 \subsubsection{Energy waveforms}
-\input{tables/results/UC_energy_onishi}
+Energy-waveform corrections reduce the test CTR from the LED reference of
+approximately $142\,\mathrm{ps}$ to $110.5\,\mathrm{ps}$ with the short
+Onishi-inspired window and $105.3\,\mathrm{ps}$ with the wide window
+(Tables~\ref{tab:uc-energy-onishi} and~\ref{tab:uc-energy-wide};
+Figures~\ref{fig:uc-energy-onishi-ctr} and~\ref{fig:uc-energy-wide-ctr}).
+The Onishi-inspired paired CNN gives the lowest test CTR for the short
+window, although several shared and direct estimators cluster within a
+few picoseconds. With the wide window, direct linear ridge achieves the
+lowest CTR, while several shared estimators remain close to the best
+nonlinear methods. Most models show lower CTR and RMSE with the longer
+window, but the magnitude of the improvement differs by architecture.
+The independent temporal CNN is a notable exception to the relatively
+close model agreement in the short-window comparison and remains among
+the weaker results in the wide-window setting.
 
+\input{tables/results/UC_energy_onishi}
 \input{tables/results/UC_energy_wide}
 
 \subsubsection{Timing waveforms}
-\input{tables/results/UC_timing_onishi}
+The timing-waveform LED reference is approximately $57.1\,\mathrm{ps}$.
+With the short window, most estimators remain close to this reference,
+and the best test CTR is $56.3\,\mathrm{ps}$. With the wide window,
+the best result decreases to $52.9\,\mathrm{ps}$, and several linear,
+MiniRocket-based and shared estimators lie between approximately
+$53$ and $54\,\mathrm{ps}$
+(Tables~\ref{tab:uc-timing-onishi} and~\ref{tab:uc-timing-wide};
+Figures~\ref{fig:uc-timing-onishi-ctr} and~\ref{fig:uc-timing-wide-ctr}).
+Thus, extending the timing input produces a clearer improvement in CTR
+than the small short-window corrections. The short-window direct
+MiniRocket result is an outlier, with a test CTR exceeding the LED
+reference. RMSE changes are generally smaller than the corresponding
+CTR changes.
 
+\input{tables/results/UC_timing_onishi}
 \input{tables/results/UC_timing_wide}
 
 \subsubsection{Temporal sensitivity: wide window}
@@ -23,16 +49,57 @@
 \subsection{Fondazione Bruno Kessler board}
 
 \subsubsection{Energy waveforms}
-\input{tables/results/FBK_energy_onishi}
+For FBK energy waveforms, the LED reference is approximately
+$147.3\,\mathrm{ps}$. The best short-window correction reaches
+$115.4\,\mathrm{ps}$, with linear and nonlinear estimators giving
+similar results near the top of the comparison
+(Table~\ref{tab:fbk-energy-onishi};
+Figure~\ref{fig:fbk-energy-onishi-ctr}).
+The wide-window minimum is $111.0\,\mathrm{ps}$, obtained with
+direct MiniRocket, while several other estimators remain around
+$114$--$116\,\mathrm{ps}$
+(Table~\ref{tab:fbk-energy-wide};
+Figure~\ref{fig:fbk-energy-wide-ctr}).
+The shared temporal CNN is a marked wide-window outlier: its test CTR
+and RMSE remain approximately equal to the LED values despite a much
+lower validation CTR. This discrepancy is not representative of the
+other shared models. As with UC, the strongest wide-window results
+improve over the short-window minimum, but individual architectures
+do not all benefit equally.
 
+\input{tables/results/FBK_energy_onishi}
 \input{tables/results/FBK_energy_wide}
 
 \subsubsection{Timing waveforms}
-\input{tables/results/FBK_timing_onishi}
+In FBK timing mode, the LED reference is about $62.0\,\mathrm{ps}$.
+Short-window test CTRs range from approximately $57.7\,\mathrm{ps}$
+for the best estimator to values close to LED, whereas the wide-window
+comparison reaches $54.4\,\mathrm{ps}$
+(Tables~\ref{tab:fbk-timing-onishi} and~\ref{tab:fbk-timing-wide};
+Figures~\ref{fig:fbk-timing-onishi-ctr} and~\ref{fig:fbk-timing-wide-ctr}).
+The leading wide-window results are obtained with linear ridge and
+MiniRocket-based estimators; several shared models are also competitive.
+Conversely, some neural estimators provide little additional narrowing
+of the timing distribution in this configuration. The wider window
+produces a lower best CTR and a modest reduction in best RMSE.
 
+\input{tables/results/FBK_timing_onishi}
 \input{tables/results/FBK_timing_wide}
 
 \subsubsection{Temporal sensitivity: wide window}
 \figureplaceholder{FBK energy, wide window: temporal occlusion sensitivity of the best-performing estimator (model and figure pending)}{fig:fbk-energy-wide-xai}
 \figureplaceholder{FBK timing, wide window: temporal occlusion sensitivity of the best-performing estimator (model and figure pending)}{fig:fbk-timing-wide-xai}
 
+\subsection{Comparison across waveform modes}
+Across both boards, the best corrected timing-waveform CTRs are substantially
+lower than those obtained from energy waveforms. In the wide-window
+comparisons, the minimum energy CTRs are $105.3$ and $111.0\,\mathrm{ps}$
+for UC and FBK, respectively, compared with $52.9$ and
+$54.4\,\mathrm{ps}$ for timing waveforms
+(Tables~\ref{tab:uc-energy-wide}, \ref{tab:uc-timing-wide},
+\ref{tab:fbk-energy-wide}, and~\ref{tab:fbk-timing-wide}).
+The two timing-mode minima are similar despite different LED references.
+These comparisons describe the tested configurations; energy and timing
+modes have different acquisition scales and do not use identical
+selected event populations because timing mode includes an additional
+time-over-threshold selection.
