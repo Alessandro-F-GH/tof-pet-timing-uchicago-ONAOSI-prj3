@@ -129,8 +129,12 @@ a standard regression objective, the mean squared error (MSE):
 Model selection is performed through three-fold cross-validation
 on the training acquisition, using mean validation CTR as the
 primary performance criterion. The selected model is then
-refitted on the full training dataset. Model-specific training
-procedures and exceptions are detailed in
+refitted on the full training dataset. The independent test
+acquisition is subsequently used to compare the observed performance
+of the tested estimators. References in the Results section to the
+lowest test CTR therefore identify the best observed result within
+that specific comparison, rather than a general model ranking.
+Model-specific training procedures and exceptions are detailed in
 Appendix~\ref{app:spaces}.
 
 
