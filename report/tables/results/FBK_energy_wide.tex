@@ -3,6 +3,7 @@
 \begin{table}[tbp]
 \centering
 \scriptsize
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps] \\
@@ -20,7 +21,8 @@ S-MR & $117.0 \pm 1.6$ & $117.9 \pm 1.4$ & $59.6 \pm 1.1$ \\
 D-CNN & $131.6 \pm 3.4$ & $130.6 \pm 1.2$ & $65.2 \pm 1.1$ \\
 S-CNN & $115.0 \pm 0.2$ & $147.3 \pm 1.7$ & $70.9 \pm 1.1$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \caption{FBK energy wide: validation CTR (mean $\pm$ fold SD), independent-test CTR and RMSE (estimate $\pm$ bootstrap SD). Models are ranked by unrounded test CTR; codes are defined in Table~\ref{tab:model-inventory}. LED has no outer CV; ridge uses internal LOOCV.}
 \label{tab:fbk-energy-wide}
 \end{table}
