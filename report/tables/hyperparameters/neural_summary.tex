@@ -1,0 +1,19 @@
+\begin{table*}[tbp]
+\centering
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}llXXXl@{}}
+\toprule
+Code & Estimator & Architecture / representation & Learning rate & Batch size & Optimizer / schedule \\
+\midrule
+S-MLP & Shared dense MLP & Hidden widths $\{[16],[128],[128,64],[16,16,16]\}$; ReLU & $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$ & 32 & Nesterov SGD \\
+D-MLP & Direct dense MLP & Hidden widths $\{[16],[128],[128,64],[16,16,16]\}$; ReLU & $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$ & 32 & Adam \\
+S-LCM & Locally connected MLP & Hidden [128]; local kernels 3/3, strides 1/1; bound 500 ps & $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$ & $\{32,128\}$ & Adam \\
+S-CNN & Shared temporal CNN & Channels [16,32]; kernels [5,3]; dense [64] & $\{10^{-3},10^{-4},10^{-5}\}$ & $\{32,128\}$ & Adam \\
+D-CNN & Independent temporal CNN & Channels [16,32]; kernels [5,3]; dense [64] & $\{10^{-3},10^{-4},10^{-5}\}$ & $\{32,128\}$ & Adam \\
+D-ONI & Onishi-inspired CNN & Channels [32,64]; kernels [5,3]; dense 256 & $\{10^{-3},10^{-4},10^{-5}\}$ & $\{32,128\}$ & Adam; 100 epochs, LR drops at 30/60 \\
+\bottomrule
+\end{tabularx}
+\caption{Configured neural-model search spaces. Training settings shared across
+models are given in the text.}
+\label{tab:space-neural-summary}
+\end{table*}
