@@ -61,9 +61,21 @@ which can be absorbed into the calibration term without affecting CTR.
 Energy and timing waveforms are analyzed separately. Each input waveform
 is expressed relative to its own LED crossing and normalized using
 fixed channel-specific amplitude limits. This alignment removes
-absolute acquisition time from the input. 
-Events lacking a valid coincidence or the full
+absolute acquisition time from the input.
+Two LED-relative windows are considered. The short Onishi-inspired
+window extends from $-1.5$ to $+2\,\mathrm{ns}$ and follows the
+short rising-edge interval used in previous waveform-based timing
+work~\cite{onishi2022}. The wide window extends from $-2$ to
+$+30\,\mathrm{ns}$, covering a substantially larger portion of the
+available acquisition record. Before constant-sample removal, the two
+windows contain 279 and 2559 samples per detector, respectively.
+For the clipped timing signals, constant sample positions are removed
+using the training population; the resulting input sizes are reported
+in Table~\ref{tab:input-windows}. No samples are removed from the
+energy waveforms. Events lacking a valid coincidence or the full
 requested window are excluded.
+
+\input{tables/datasets/input_windows}
 
 \subsection{Detector-shared and direct corrections}
 
