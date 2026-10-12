@@ -100,8 +100,7 @@ Control, train (complete development) and test (independent blind) counts includ
 fixed-LED coincidence and input-window availability. Counts are deduplicated across
 models. Missing historical metadata is a dash, never an inferred count.
 
-CTR tables currently reserve all ten models for each board/mode/window in the current
-benchmark. Populate them from the corresponding validation and blind exports;
+CTR tables currently contain the completed model results for each board/mode/window from the frozen study. Regenerate them from the corresponding validation and blind exports when studies change;
 linear ridge outer-validation CTR remains not applicable. Distinguish CV fold
 dispersion from blind bootstrap uncertainty. Add XAI figures from the same frozen
 experiments, keeping boards separate.
@@ -127,4 +126,4 @@ For each completed mode/window, the exporter writes \`report/tables/results/BOAR
 
 The result tables include mean and between-fold SD of validation CTR, and the frozen test CTR/RMSE with bootstrap SD. The single LED row uses saved reference metrics and bootstrap uncertainties. Linear ridge outer-CV entries are \`n/a\`. Missing groups are skipped and report a message; the exporter fails if a populated group has a missing CTR image, duplicate completed model, inconsistent LED reference or missing numerical metadata. The study outputs are never modified, and no metrics are re-estimated.
 
-The script does not export XAI plots: the eight temporal sensitivity figure placeholders remain until the selected best-model maps are provided.
+The script does not export XAI plots: only four wide-window temporal sensitivity placeholders remain (one for each board and waveform mode), pending the selected best-model maps.
