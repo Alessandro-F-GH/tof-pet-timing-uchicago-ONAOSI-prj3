@@ -31,7 +31,13 @@ features followed by ridge regression.
 This suggests that much of the waveform-dependent timing 
 correction can be captured by linear regression or linear 
 combinations of extracted features, without requiring 
-end-to-end nonlinear neural networks.
+end-to-end nonlinear neural networks. The marked FBK
+energy-wide shared-CNN failure also highlights a practical advantage
+of the ridge-based estimators: for fixed input features, ridge
+regression has a convex objective and is not subject to the
+initialization-dependent optimization of the neural models. Together
+with their competitive timing performance, this makes the linear
+approaches particularly attractive for this correction task.
 
 \subsection{Window length and XAI}
 Extending the waveform window consistently improved
