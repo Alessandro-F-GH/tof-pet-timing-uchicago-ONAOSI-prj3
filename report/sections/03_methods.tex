@@ -28,22 +28,31 @@ We model this measurement as
 =\tau+C+\delta(s_1,s_2)+\epsilon ,
 \label{eq:led-error-model}
 \end{equation}
-where $\tau$ is the true time of flight, $C$ is the fixed
-channel-pair offset, $\delta$ denotes the waveform-dependent timing
-error, and $\epsilon$ represents residual unpredictable variation.
+where $\tau$ is the true time of flight and $C$ is the fixed
+channel-pair offset. The quantities $s_1$ and $s_2$ denote the local
+waveform segments of detectors 1 and 2, respectively. The term
+$\delta(s_1,s_2)$ represents the waveform-dependent timing error,
+while $\epsilon$ accounts for residual unpredictable variation.
 The waveform-dependent component $\delta$ is the quantity we aim to estimate 
 and correct using ML.
 
 Writing $\widehat C$ for the fixed offset estimated during
-calibration, the supervised target and corrected time difference are
+calibration, the supervised target  is
 \begin{align}
 y &= \Delta t_{\mathrm{LED}}-\tau-\widehat C,
-\label{eq:ml-target}\\
+\label{eq:ml-target}
+\end{align}
+
+and the corrected time difference is
+
+\begin{align}
 \widehat{\Delta t}
 &=\Delta t_{\mathrm{LED}}-\widehat C
 -h_\theta(s_1,s_2).
 \label{eq:corrected-time}
 \end{align}
+
+
 
 The final residual relative to true TOF is:
 \begin{align}
@@ -98,19 +107,25 @@ The shared function $g_\theta$ estimates a waveform-dependent
 timing contribution for each detector independently. This formulation
 enforces detector-exchange antisymmetry: swapping the inputs
 reverses the correction sign, while identical inputs yield zero
-correction. It also offers a potentially more scalable approach,
-as the same model can be applied to different detector pairs
-without requiring pair-specific parameters.
+correction. It also offers a potentially more scalable approach, 
+since the same model can be applied to different physical instances 
+of the same detector type, without requiring parameters specific 
+to each detector pair.
 
-Comparing direct and shared estimators allows us to investigate
-whether effective timing corrections require detector-specific
-relationships or can be captured by a common waveform function.
-Different model families, including linear regression, multilayer
-perceptrons (MLPs), convolutional neural networks (CNNs),
-locally connected networks and MiniRocket-based estimators,
-are considered to assess the influence of model architecture.
-Table~\ref{tab:model-inventory} summarizes the estimators,
-while implementation details are provided in the appendix.
+To characterize how the choice of estimator affects waveform-based timing
+correction, we consider model families with different inductive biases.
+Linear ridge regression provides a simple and stable baseline. 
+MiniRocket provides an efficient time-series-specific representation. 
+MLPs provide a general nonlinear estimator
+without explicitly exploiting temporal locality, whereas CNNs incorporate
+local waveform structure and are included both as a standard time-series
+architecture and because of their successful use in previous waveform-based
+timing studies~\cite{onishi2022,loignon2025}. Locally connected networks
+retain the local receptive-field structure of CNNs while allowing the learned
+response to depend on absolute temporal position, which is relevant here
+because the waveforms are aligned to the LED crossing.
+Table~\ref{tab:model-inventory} summarizes the resulting estimators, while
+implementation details are provided in the appendix.
 
 \subsection{Model comparison and training protocol}
 The independent calibration, training and test acquisitions serve distinct
@@ -163,10 +178,6 @@ these estimates are conditional on the selected fitted model.
 Within-board comparisons use matched test events and joint
 resampling to assess paired model differences.
 
-\input{tables/models/estimator_inventory.tex}
-\input{figures/ml_pipeline.tex}
-
-
 \subsection{Temporal sensitivity analysis}
 To investigate which parts of each waveform influence the
 correction, temporal occlusion is applied to the trained models
@@ -181,3 +192,8 @@ The resulting profiles reveal whether predictions depend
 primarily on the rising edge or also on later waveform
 characteristics, and allow comparisons across windows and
 amplification stages.
+
+\input{tables/models/estimator_inventory.tex}
+\input{figures/ml_pipeline.tex}
+
+

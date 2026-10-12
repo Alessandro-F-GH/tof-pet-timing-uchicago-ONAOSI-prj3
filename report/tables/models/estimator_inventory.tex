@@ -1,29 +1,30 @@
 \begin{table*}[t]
 \centering
 \small
-\begin{tabularx}{\textwidth}{@{}p{0.14\textwidth}p{0.27\textwidth}X@{}}
+\begin{tabularx}{\textwidth}{@{}p{0.12\textwidth}p{0.08\textwidth}p{0.24\textwidth}X@{}}
 \toprule
-Formulation & Estimator & Correction structure \\
+Formulation & Code & Estimator & Correction structure \\
 \midrule
 \multirow[t]{5}{*}{Direct}
- & Linear ridge & Joint linear regression on concatenated waveforms. \\
- & Dense MLP & Joint nonlinear regression on concatenated waveforms. \\
- & Independent CNN & Separate detector-specific CNN scorers; output difference. \\
- & Onishi-inspired CNN & Paired waveforms fused by convolution for joint regression. \\
- & MiniRocket + ridge & Multivariate features of the waveform pair; ridge regression. \\
+ & D-LIN & Linear ridge & Joint linear regression on concatenated waveforms. \\
+ & D-MLP & Dense MLP & Joint nonlinear regression on concatenated waveforms. \\
+ & D-CNN & Independent CNN & Separate detector-specific CNN scorers; output difference. \\
+ & D-ONI & Onishi-inspired CNN & Paired waveforms fused by convolution for joint regression. \\
+ & D-MR & MiniRocket + ridge & Multivariate features of the waveform pair; ridge regression. \\
 \addlinespace[3pt]
 \hdashline
 \addlinespace[3pt]
 \multirow[t]{5}{*}{Shared}
- & Linear ridge & Linear regression on the difference of waveform samples. \\
- & Dense MLP & Common nonlinear detector scorer; output difference. \\
- & Locally connected MLP & Common position-specific local scorer; bounded output difference. \\
- & Temporal CNN & Common convolutional detector scorer; output difference. \\
- & MiniRocket + ridge & Common waveform feature transform; feature difference and ridge regression. \\
+ & S-LIN & Linear ridge & Linear regression on the difference of waveform samples. \\
+ & S-MLP & Dense MLP & Common nonlinear detector scorer; output difference. \\
+ & S-LCM & Locally connected MLP & Common position-specific local scorer; bounded output difference. \\
+ & S-CNN & Temporal CNN & Common convolutional detector scorer; output difference. \\
+ & S-MR & MiniRocket + ridge & Common waveform feature transform; feature difference and ridge regression. \\
 \bottomrule
 \end{tabularx}
-\caption{Waveform-based timing estimators implemented in the benchmark. Direct
-estimators do not enforce detector-exchange antisymmetry; shared estimators
-use a common detector-level function or feature transform to enforce it.}
+\caption{Waveform-based timing estimators implemented in the benchmark. Model
+codes are used throughout the results tables. Direct estimators do not enforce
+detector-exchange antisymmetry; shared estimators use a common detector-level
+function or feature transform to enforce it.}
 \label{tab:model-inventory}
 \end{table*}
