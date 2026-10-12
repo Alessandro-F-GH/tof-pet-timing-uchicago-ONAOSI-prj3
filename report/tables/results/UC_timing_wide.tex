@@ -3,6 +3,7 @@
 \begin{table}[tbp]
 \centering
 \scriptsize
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps] \\
@@ -20,7 +21,8 @@ S-LCM & $54.3 \pm 0.6$ & $55.4 \pm 0.5$ & $36.0 \pm 1.7$ \\
 S-MLP & $54.9 \pm 1.2$ & $55.8 \pm 0.6$ & $36.0 \pm 1.7$ \\
 D-CNN & $57.6 \pm 1.6$ & $56.9 \pm 0.7$ & $36.6 \pm 1.7$ \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 \caption{UC timing wide: validation CTR (mean $\pm$ fold SD), independent-test CTR and RMSE (estimate $\pm$ bootstrap SD). Models are ranked by unrounded test CTR; codes are defined in Table~\ref{tab:model-inventory}. LED has no outer CV; ridge uses internal LOOCV.}
 \label{tab:uc-timing-wide}
 \end{table}
