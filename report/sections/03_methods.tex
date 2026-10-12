@@ -180,18 +180,25 @@ resampling to assess paired model differences.
 
 \subsection{Temporal sensitivity analysis}
 To investigate which parts of each waveform influence the
-correction, temporal occlusion is applied to the trained models
-on test events. Short groups of samples are replaced by
-interpolation from neighboring samples, and their importance
-is quantified by the average absolute change in predicted
-correction. Shared estimators are perturbed synchronously in
-both detector inputs, while direct estimators are perturbed
-one input at a time.
+correction, temporal occlusion is applied to the fitted models
+on test events. Consecutive groups of samples are replaced by
+the detector-specific mean values at the corresponding sample
+positions, calculated over all selected control events. These
+mean waveforms are computed in the same normalized representation,
+input window, and sampling grid as the model inputs, separately
+for each board and amplification stage. The replacement values
+remain fixed across the test events.
 
-The resulting profiles reveal whether predictions depend
-primarily on the rising edge or also on later waveform
-characteristics, and allow comparisons across windows and
-amplification stages.
+Shared estimators are perturbed synchronously in both detector
+inputs, while direct estimators are perturbed one detector input
+at a time. Predictions use the same sample mask, input
+transformations, and model parameters as the unperturbed
+evaluation. The importance of each
+group is quantified by the average absolute change in predicted
+correction relative to the unperturbed prediction over the
+analysed test events. The resulting profiles characterize
+sensitivity to the rising edge and later waveform intervals
+across input windows and amplification stages within each board.
 
 \input{tables/models/estimator_inventory.tex}
 \input{figures/ml_pipeline.tex}
