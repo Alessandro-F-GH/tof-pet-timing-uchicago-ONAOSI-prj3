@@ -1,64 +1,59 @@
 \section{Conclusions}
-Waveform-based correction substantially improved leading-edge timing
-on the first-stage energy signals of both boards. For the short
-Onishi-inspired window, the best test CTR decreased from
-$142.2$ to $110.5\,\mathrm{ps}$ on UC ($22.3\%$) and from
-$147.3$ to $115.4\,\mathrm{ps}$ on FBK ($21.7\%$).
-With the wider window, these reductions reached $25.9\%$ and
-$24.6\%$, respectively. The strong performance of the
+\subsection{CTR improvement}
+Waveform-based correction substantially improved leading-edge 
+timing on the first-stage energy signals of both boards. 
+The test CTR was reduced by more than $20\%$ 
+even with the short Onishi-inspired window, with reductions 
+reaching approximately $25\%$ when the wider window was used. 
+The strong performance of the
 Onishi-inspired CNN in the short-window energy comparisons is
 consistent with previous waveform-based LED correction
 studies~\cite{onishi2022,loignon2025}.
 
+\subsection{Shared detector-level models}
 The detector-shared formulation retained competitive timing
 performance without using separate detector-specific scoring
-functions. Across the eight board, mode and window comparisons,
-the best shared estimator was within $1.5\,\mathrm{ps}$ of the
-overall best in six cases; the largest gap was $3.9\,\mathrm{ps}$
-for FBK energy waveforms with the wide window. These are
-differences between test CTR point estimates, not paired-bootstrap
-significance claims. The results support detector-level parameter
-sharing within the tested detector pairs, while neither transfer
-to other physical modules nor elimination of conventional
-fixed-offset calibration has been demonstrated.
+functions. Across the eight board, mode, and window comparisons, 
+the best detector-shared estimator achieved a test CTR within 
+$2\%$ of the overall best in six cases, with a maximum relative 
+difference of approximately $3.5\%$. 
+This shows that most of the achievable timing correction can be 
+retained using a shared detector-level model, without requiring 
+separate parameters for each detector.
 
-Greater model complexity did not consistently improve CTR. The
-lowest test CTR in each of the four wide-window conditions was
-obtained either by direct linear ridge regression (UC energy and
-FBK timing) or by MiniRocket features followed by ridge regression
-(FBK energy and UC timing). For example, UC timing reached
-$52.9\,\mathrm{ps}$ with MiniRocket and $53.5\,\mathrm{ps}$
-with direct linear ridge. Thus, relatively low-complexity
-regression approaches were competitive with the investigated
-neural networks, although the best architecture depended on
-the experimental condition.
+\subsection{Model comparison}
+CNN and MLP approaches did not consistently outperform linear 
+regression, despite the successful application of CNNs in previous 
+waveform-based timing studies~\cite{onishi2022,loignon2025}. 
+In all four wide-window comparisons, the lowest test CTR 
+was achieved either by linear ridge regression or by MiniRocket 
+features followed by ridge regression. 
+This suggests that much of the waveform-dependent timing 
+correction can be captured by linear regression or linear 
+combinations of extracted features, without requiring 
+end-to-end nonlinear neural networks.
 
-Extending the input window lowered the best test CTR by
-$5.2$ and $4.4\,\mathrm{ps}$ in UC and FBK energy mode,
-respectively, and by $3.4$ and $3.3\,\mathrm{ps}$ in
-timing mode. For UC timing, the best correction relative to LED
-increased from $0.8$ to $4.2\,\mathrm{ps}$; for FBK timing,
-from $4.3$ to $7.6\,\mathrm{ps}$. Temporal occlusion indicated
-that energy-model sensitivity was concentrated near the
-LED crossing, whereas the timing models also responded to
-later waveform structures. In the additional FBK shared
-MiniRocket analysis, the sensitivity peak around
-$20$--$21\,\mathrm{ns}$ reached approximately $0.65$ of the
-normalized maximum at the crossing. This is evidence of
-model sensitivity under occlusion, not a causal attribution
-of timing information or proof of an optimal window length.
+\subsection{Window length and XAI}
+Extending the waveform window consistently improved
+ the best timing resolution on both boards, 
+ with a particularly important effect on the timing signals, 
+ where short windows provided limited correction. 
+ Temporal occlusion analysis showed that energy-channel 
+ models relied primarily on the region around the LED crossing,  
+ while timing-channel models were also sensitive to later waveform structures. 
+ This was especially evident for the FBK board, where a 
+ pronounced secondary sensitivity peak appeared around $20\,\mathrm{ns}$. 
+ These findings support the usefulness of waveform information 
+ beyond the rising edge.
 
-The choice of readout stage remained consequential after
-correction. For the wide window, the best first-stage energy
-CTRs were $105.3$ and $111.0\,\mathrm{ps}$, approximately
-twice the corresponding second-stage timing CTRs of
-$52.9\pm0.8$ and $54.4\pm0.7\,\mathrm{ps}$ on UC and FBK,
-respectively. The difference between the two boards' timing
-CTRs decreased from $4.9\,\mathrm{ps}$ for LED to
-$1.5\,\mathrm{ps}$ after the best corrections. This convergence
-may be consistent with residual timing contributions common
-to the detector response, but does not establish their
-origin or a universal resolution floor. Because the two
-waveform modes also have different acquisition scales and
-event-selection criteria, the approximately twofold observed
-advantage cannot be attributed to amplification alone.
+ \subsection{Final considerations}
+ Despite ML correction, the second-stage timing signals achieved 
+ approximately twice the timing resolution of the first-stage energy signals, 
+ highlighting that waveform-based correction cannot fully compensate for differences 
+ in analog readout quality. 
+ Nevertheless, ML consistently improved LED timing, with both boards reaching similar 
+ corrected CTRs of approximately $53$–$54\,\mathrm{ps}$ despite different amplification 
+ electronics and LED thresholds. 
+ This convergence suggests that the remaining timing uncertainty may be dominated by 
+ physical effects common to the detectors that cannot be recovered from the available 
+ waveform information, although this hypothesis requires further investigation.
