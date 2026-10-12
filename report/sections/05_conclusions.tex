@@ -11,37 +11,40 @@ consistent with previous waveform-based LED correction
 studies~\cite{onishi2022,loignon2025}.
 
 \subsection{Shared detector-level models}
-The detector-shared formulation retained competitive timing
-performance without using separate detector-specific scoring
-functions. Across the eight board, mode, and window comparisons, 
-the best detector-shared estimator achieved a test CTR within 
-$2\%$ of the overall best in six cases, with a maximum relative 
-difference of approximately $3.5\%$. 
-This shows that most of the achievable timing correction can be 
-retained using a shared detector-level model, without requiring 
-separate parameters for each detector.
+The detector-shared formulation retained essentially the same useful
+timing correction as the direct formulation without using separate
+detector-specific scoring functions. Across boards, waveform modes,
+and windows, shared estimators generally remained in the same
+performance range as the leading direct estimators. The small
+few-picosecond differences between the best shared and direct results
+are not interpreted as evidence that either formulation is intrinsically
+superior, since such differences may depend on the detector and
+acquisition setup. The main result is that most of the achievable
+waveform-based correction can be retained with a shared detector-level
+model.
 
 \subsection{Model comparison}
-CNN and MLP approaches did not consistently outperform linear 
-regression, despite the successful application of CNNs in previous 
-waveform-based timing studies~\cite{onishi2022,loignon2025}. 
-In all four wide-window comparisons, the lowest test CTR 
-was achieved either by linear ridge regression or by MiniRocket 
-features followed by ridge regression. 
-This suggests that much of the waveform-dependent timing 
-correction can be captured by linear regression or linear 
-combinations of extracted features, without requiring 
-end-to-end nonlinear neural networks. The marked FBK
-energy-wide shared-CNN failure also highlights a practical advantage
-of the ridge-based estimators: for fixed input features, ridge
-regression has a convex objective and is not subject to the
-initialization-dependent optimization of the neural models. Together
-with their competitive timing performance, this makes the linear
-approaches particularly attractive for this correction task.
+CNN and MLP approaches did not provide a systematic advantage over
+simpler estimators, despite the successful application of CNNs in
+previous waveform-based timing studies~\cite{onishi2022,loignon2025}.
+Across the tested configurations, linear ridge regression and
+MiniRocket features followed by ridge regression reached the same
+overall performance range as the neural models. Because the leading
+estimators often differ by only a few picoseconds, their exact ordering
+is not considered a general property of the model families and may
+change with detector and acquisition conditions. The broader result is
+that much of the waveform-dependent timing correction can be captured
+without requiring end-to-end nonlinear neural networks. The marked FBK
+energy-wide shared-CNN failure also highlights a practical advantage of
+the ridge-based estimators: for fixed input features, ridge regression
+has a convex objective and is not subject to the initialization-dependent
+optimization of the neural models. Together with their competitive
+timing performance, this makes the ridge-based approaches particularly
+attractive for this correction task.
 
 \subsection{Window length and XAI}
 Extending the waveform window consistently improved
- the best timing resolution on both boards, 
+ the achievable timing resolution on both boards, 
  with a particularly important effect on the timing signals, 
  where short windows provided limited correction. 
  Temporal occlusion analysis showed that energy-channel 
