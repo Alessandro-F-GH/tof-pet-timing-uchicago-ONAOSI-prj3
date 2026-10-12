@@ -111,3 +111,20 @@ spaces from model configurations. Add `--result-placeholders` to recreate blank
 result templates from the benchmark axes; this explicit option replaces the
 placeholders, including any manually inserted values. Library minimum versions
 are recorded separately; actual runtime versions belong to the completed study.
+
+
+## Export frozen CTR tables and figures
+
+From the repository root, after running the UC and/or FBK batch reports:
+
+```bash
+python report/generate_results_tables.py --uc waveform_analysis/results/UC/BATCH_RUN --fbk waveform_analysis/results/FBK/BATCH_RUN
+```
+
+Either \`--uc\` or \`--fbk\` may be omitted. Add \`--dry-run\` to validate and preview the destination paths without writing. The paths point to batch *result roots* containing \`config.json\` and \`tables/runs.csv\`.
+
+For each completed mode/window, the exporter writes \`report/tables/results/BOARD_MODE_WINDOW.tex\` and a corresponding verification CSV, and copies \`BATCH_RUN/report/plots/MODE/WINDOW/blind_ctr.png\` to \`report/figures/results/BOARD/BOARD_MODE_WINDOW_blind_ctr.png\`. It also regenerates \`BOARD_ctr.tex\` to include precisely the completed tables; figure includes in \`sections/04_results.tex\` display the exported images when present and otherwise retain placeholders.
+
+The result tables include mean and between-fold SD of validation CTR, and the frozen test CTR/RMSE with bootstrap SD. The single LED row uses saved reference metrics and bootstrap uncertainties. Linear ridge outer-CV entries are \`n/a\`. Missing groups are skipped and report a message; the exporter fails if a populated group has a missing CTR image, duplicate completed model, inconsistent LED reference or missing numerical metadata. The study outputs are never modified, and no metrics are re-estimated.
+
+The script does not export XAI plots: the eight temporal sensitivity figure placeholders remain until the selected best-model maps are provided.
