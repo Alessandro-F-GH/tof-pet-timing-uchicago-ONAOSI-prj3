@@ -11,9 +11,10 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
-from waveform_analysis.data.view import waveform_view
+from waveform_analysis.data.view import model_sample_mask, waveform_view
+from waveform_analysis.signal.sample_mask import apply_sample_mask
 
-_CACHE_VERSION = 3
+_CACHE_VERSION = 4
 _FROZEN_INPUT_MODELS = {
     "direct_linear_ridge",
     "shared_linear_ridge",
@@ -29,6 +30,7 @@ class FrozenTransform:
     identity: str
     fit_role: str
     input_samples: int
+    sample_mask: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -72,9 +74,9 @@ def _transform_parameters(spec, model_space: dict) -> dict:
 def _pair(dataset, mode, indices=None) -> np.ndarray:
     if indices is None:
         indices = np.arange(dataset.n_events, dtype=np.int64)
-    return np.asarray(
+    return apply_sample_mask(
         waveform_view(dataset, mode, np.asarray(indices, dtype=np.int64)).materialize(),
-        dtype=np.float32,
+        model_sample_mask(dataset, mode),
     )
 
 
@@ -132,16 +134,15 @@ def prepare_frozen_transform(
         spec.feature_transform.name,
         "frozen_transform",
     )
-    input_samples = int(
-        waveform_view(
-            development_dataset,
-            mode,
-            np.asarray([0], dtype=np.int64),
-        ).time_ps.size
-    )
+    sample_mask = model_sample_mask(development_dataset, mode)
+    input_samples = int(sample_mask.sum())
+    if fit_role == "control" and not np.array_equal(sample_mask, model_sample_mask(control_dataset, mode)):
+        raise ValueError("Control and development model masks differ")
     identity = canonical_hash(
         {
             "schema_version": _CACHE_VERSION,
+            "sample_mask": sample_mask.tolist(),
+            "sample_mask_identity": development_dataset.manifest.get("sample_mask_identity"),
             "model": spec.name,
             "transform": spec.feature_transform.name,
             "parameters": transform_parameters,
@@ -175,7 +176,7 @@ def prepare_frozen_transform(
                         spec.name.replace("_", " ").title(),
                         fit_role,
                     )
-                return FrozenTransform(wrapper, identity, fit_role, input_samples)
+                return FrozenTransform(wrapper, identity, fit_role, input_samples, sample_mask)
         except (OSError, ValueError, json.JSONDecodeError, pickle.PickleError):
             pass
 
@@ -230,7 +231,7 @@ def prepare_frozen_transform(
         int(seed),
         {},
     )
-    return FrozenTransform(wrapper, identity, fit_role, input_samples)
+    return FrozenTransform(wrapper, identity, fit_role, input_samples, sample_mask)
 
 
 def prepare_frozen_features(
@@ -245,6 +246,8 @@ def prepare_frozen_features(
 ) -> FrozenFeatureSet:
     mode = str(config["mode"])
     window = str(config.get("window_name") or "window")
+    if not np.array_equal(model_sample_mask(dataset, mode), frozen_transform.sample_mask):
+        raise ValueError("Dataset mask differs from the frozen model transform mask")
     dataset_identity = str(dataset.manifest["analysis_protocol_identity"])
     identity = canonical_hash(
         {
@@ -280,7 +283,7 @@ def prepare_frozen_features(
                     )
                 return FrozenFeatureSet(
                     features,
-                    np.ones(frozen_transform.input_samples, dtype=bool),
+                    np.asarray(frozen_transform.sample_mask, dtype=bool),
                     frozen_transform.transform,
                     identity,
                     str(role),
@@ -351,7 +354,7 @@ def prepare_frozen_features(
         )
     return FrozenFeatureSet(
         features,
-        np.ones(frozen_transform.input_samples, dtype=bool),
+        np.asarray(frozen_transform.sample_mask, dtype=bool),
         frozen_transform.transform,
         identity,
         str(role),

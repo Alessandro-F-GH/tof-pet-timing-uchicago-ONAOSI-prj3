@@ -48,7 +48,6 @@ class ModelSpec:
     predict: ModelPredict
     save: ModelSave
     explain: ModelExplain | None = None
-    preserve_temporal_grid: bool = False
     estimator_formulation: str = "shared"
     feature_transform: FeatureTransformSpec | None = None
     selection_method: str = "development_cv"

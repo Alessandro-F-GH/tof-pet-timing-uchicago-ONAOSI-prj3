@@ -36,7 +36,6 @@ MODEL_SPEC = ModelSpec(
     fit=fit,
     predict=predict,
     save=save,
-    preserve_temporal_grid=True,
     estimator_formulation="direct",
 )
 

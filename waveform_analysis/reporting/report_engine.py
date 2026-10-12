@@ -73,7 +73,7 @@ def collect_runs(root):
                 or manifest.get("led_centering_fit_role") != "control"
                 or not np.isfinite(float(manifest.get("led_control_mean_ps", float("nan"))))):
             raise ValueError(
-                f"Run {d} does not use frozen control LED centering; rerun the batch "
+                f"Run {d} uses an obsolete scientific input policy; rerun the batch "
                 "before generating comparisons. Saved models and predictions cannot "
                 "be relabelled as control-centered."
             )

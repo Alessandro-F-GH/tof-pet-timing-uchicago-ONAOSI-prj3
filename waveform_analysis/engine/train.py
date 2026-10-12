@@ -13,10 +13,9 @@ from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.signal.sample_mask import (
     apply_sample_mask,
     apply_sample_mask_to_time,
-    training_sample_mask,
 )
 from waveform_analysis.data.splits import semantic_seed
-from waveform_analysis.data.view import model_target, waveform_view
+from waveform_analysis.data.view import model_target, model_sample_mask, waveform_view
 
 
 _DEFAULT_PREDICTION_CHUNK_SIZE = 4096
@@ -145,7 +144,7 @@ class FitInputCache:
                 "protocol": protocol_identity,
                 "mode": mode,
                 "indices": idx.tolist(),
-                "preserve_temporal_grid": bool(spec.preserve_temporal_grid),
+                "sample_mask_identity": dataset.manifest.get("sample_mask_identity"),
             }
         )
         cached = self._items.get(key)
@@ -154,11 +153,7 @@ class FitInputCache:
 
         view = waveform_view(dataset, mode, idx)
         xfull = view.materialize()
-        mask = (
-            np.ones(xfull.shape[-1], bool)
-            if spec.preserve_temporal_grid
-            else training_sample_mask(xfull)
-        )
+        mask = model_sample_mask(dataset, mode)
         x = apply_sample_mask(xfull, mask)
         time = apply_sample_mask_to_time(view.time_ps, mask)
         y = model_target(dataset, mode)[idx]
@@ -311,7 +306,9 @@ def fit_on_indices(
     fitted.metadata.update(
         {
             "training_events": int(y.size),
-            "sample_mask_training_events": int(y.size),
+            "sample_mask_fit_role": dataset.manifest.get("sample_mask_fit_role", "not_applied"),
+            "sample_mask_identity": dataset.manifest.get("sample_mask_identity"),
+            "sample_mask_control_events": dataset.manifest.get("sample_mask_control_events", 0),
             "input_samples_before_mask": int(mask.size),
             "input_samples_after_mask": int(mask.sum()),
             "prediction_chunk_size": int(

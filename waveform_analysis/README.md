@@ -316,6 +316,20 @@ threshold selection remain unchanged. RMSE is the square root of the mean
 squared calibrated residual; it includes any remaining development/blind bias.
 Neither validation folds, bootstrap draws nor plots estimate another mean.
 Calibration is persisted in control/dataset/run manifests and prediction archives.
-Older uncentered runs are incompatible with run schema 52: rerun the batch to
+Older scientific-input policies are incompatible with run schema 53: rerun the batch to
 rebuild caches and models before reporting. They cannot be repaired by relabelling
 saved predictions or centering each dataset independently.
+
+All ML models use one common control-fitted temporal mask in timing mode. A sample
+is removed only when both detectors independently equal a single normalized
+clipping limit (0 or 1) in at least 99% of selected control events. Ordinary
+constant values inside the amplitude limits are retained. The shared mask is
+fitted once per control population, physical input window and subsampling factor;
+its provenance and values are cached and persisted with each prepared dataset.
+It is applied before linear/MiniRocket feature transforms and neural processing,
+and remains fixed across validation folds, final refitting and blind prediction.
+Energy inputs retain every sample. Event selection, LED residuals and targets are
+unchanged. Original waveform/time arrays remain available for reporting and XAI;
+fully removed occlusion groups have zero effect on predictions. Saved models retain
+the same mask for reloading and development diagnostics. Updated runs require
+retraining; the batch planner invalidates incompatible model scopes automatically.

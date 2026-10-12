@@ -48,6 +48,7 @@ from waveform_analysis.core.config import BatchConfig, load_batch_config, public
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature, write_csv
 from waveform_analysis.core.logging import configure_logging
 from waveform_analysis.data.preparation import _input_offsets
+from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
 from waveform_analysis.data.root_io import energy_sampling_interval_s
 from waveform_analysis.engine.batch import run_batch
 from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
@@ -205,6 +206,7 @@ def _shared_scope(plan: FactorBatch) -> str:
     """
     return canonical_hash({
         "version": EXPERIMENT_VERSION, "control_artifact_version": CONTROL_ARTIFACT_VERSION,
+        "prepared_dataset_version": DATASET_FORMAT_VERSION,
         "datasets": plan.batch.datasets,
         "sources": {role: source_signature(Path(dataset["root_file"]))
                     for role, dataset in plan.batch.datasets.items()},

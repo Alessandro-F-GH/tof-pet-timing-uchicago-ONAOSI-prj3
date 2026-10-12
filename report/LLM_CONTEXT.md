@@ -158,9 +158,15 @@ not enforce detector-exchange antisymmetry.
 | Direct | MiniRocket with ridge | Multivariate paired transform; regression with intercept |
 
 MiniRocket transforms and scaling are fitted on control and frozen; supervised
-ridge fitting uses development targets. Dense MLPs remove constant samples using
-their fitting population and a 99% identical-value criterion. Convolutional,
-locally connected, linear and MiniRocket inputs retain the temporal grid.
+ridge fitting uses development targets. All timing-mode models now use one frozen
+control-derived temporal mask before feature transformation or neural processing.
+A sample is removed only if each detector is clipped to a single normalized limit
+in at least 99% of control events; the mask is shared between detectors. Interior
+constant values are retained. Energy inputs are unmasked. The mask is fitted once
+per control population, window and input subsampling factor, persisted and reused
+across folds, final fitting, blind inference and XAI. Existing manuscript results
+and sample-count tables predate this policy and require regeneration from new runs;
+do not relabel their values as results of the updated mask.
 Exact widths, kernels, training settings and candidate spaces belong in the
 appendix and must be taken from current model-space configurations.
 

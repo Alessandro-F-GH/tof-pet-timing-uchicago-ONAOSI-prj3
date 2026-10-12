@@ -7,6 +7,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from waveform_analysis.reporting.stats import residual_summary
+from waveform_analysis.data.storage import RUN_SCHEMA_VERSION
 
 
 def load_plot_config(root):
@@ -523,8 +524,9 @@ def render_run_plots(run, cfg):
     manifest_path = Path(run) / "metadata" / "manifest.json"
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text())
-        if manifest.get("led_centering_fit_role") != "control":
-            raise ValueError("Run uses obsolete LED centering; rerun the batch before plotting")
+        if (manifest.get("schema_version") != RUN_SCHEMA_VERSION
+                or manifest.get("led_centering_fit_role") != "control"):
+            raise ValueError("Run uses an obsolete scientific input policy; rerun the batch before plotting")
     return {
         "cv": plot_run_cv(run, cfg),
         "blind": plot_run_blind(run, cfg),

@@ -43,6 +43,21 @@ def waveform_view(
     )
 
 
+def model_sample_mask(dataset: PreparedDataset, mode: str) -> NDArray[np.bool_]:
+    """Return the universal control mask; energy always retains the full grid."""
+    family = mode_family(mode)
+    time = getattr(dataset, f"{family}_time_ps")
+    if mode == "energy_to_energy":
+        return np.ones(len(time), dtype=bool)
+    mask = getattr(dataset, "sample_mask", None)
+    if mask is None or dataset.manifest.get("sample_mask_fit_role") != "control":
+        raise ValueError("Timing inputs require a frozen control-derived sample mask")
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape != np.asarray(time).shape or not mask.any():
+        raise ValueError("Timing sample mask does not match the prepared input grid")
+    return mask
+
+
 def standard_delta(
     dataset: PreparedDataset, mode: str, method: str = "led"
 ) -> NDArray[np.float64]:

@@ -6,7 +6,7 @@ from typing import Any
 from numpy.typing import ArrayLike, NDArray
 import numpy as np
 
-DATASET_FORMAT_VERSION = 34
+DATASET_FORMAT_VERSION = 35
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class PreparedDataset:
     timing_target_ps: np.ndarray | None
     energy_led_time_ps: np.ndarray | None
     timing_led_time_ps: np.ndarray | None
+    sample_mask: np.ndarray | None = None
 
     @property
     def n_events(self) -> int:
@@ -62,6 +63,14 @@ def _transform(directory: Path, family: str) -> InputTransform | None:
         return InputTransform(
             np.asarray(d["minimum"], np.float32), np.asarray(d["maximum"], np.float32)
         )
+
+
+def _sample_mask(directory: Path) -> np.ndarray | None:
+    path = directory / "sample_mask.npz"
+    if not path.is_file():
+        return None
+    with np.load(path) as data:
+        return np.asarray(data["mask"], dtype=bool)
 
 
 def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
@@ -84,6 +93,7 @@ def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
         _optional(directory, "timing_target_ps"),
         _optional(directory, "energy_led_time_ps"),
         _optional(directory, "timing_led_time_ps"),
+        _sample_mask(directory),
     )
 
 

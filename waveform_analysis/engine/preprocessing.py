@@ -6,6 +6,7 @@ from waveform_analysis.engine.control_preprocessing import fit_control_artifact
 from waveform_analysis.data.preprocessing import preprocess_selected
 from waveform_analysis.engine.event_selection import apply_selection_rules
 from waveform_analysis.data.preparation import prepare_ml_dataset
+from waveform_analysis.data.sample_mask import attach_control_sample_mask
 from waveform_analysis.reporting.preprocessing_plots import (
     configure_plotting,
     plot_materialized_event,
@@ -85,6 +86,22 @@ def prepare_role_dataset(
         cache_dir=Path(config["preprocessing"]["cache_dir"]) / f"{role}_ml",
         rebuild=rebuild,
         logger=logger,
+    )
+    control_prepared = None
+    if config["mode"] == "timing_to_timing":
+        if role == "control":
+            control_prepared = prepared
+        else:
+            _, control_native = apply_frozen_preprocessing(
+                config, "control", control_artifact, rebuild=rebuild, logger=None
+            )
+            control_prepared = prepare_ml_dataset(
+                control_native, control_artifact, config, dataset_config=config["control"],
+                dataset_role="control", cache_dir=Path(config["preprocessing"]["cache_dir"]) / "control_ml",
+                rebuild=rebuild,
+            )
+    prepared = attach_control_sample_mask(
+        prepared, control_prepared, cache_root=Path(config["preprocessing"]["cache_dir"]), logger=logger
     )
     return selection, native, prepared
 

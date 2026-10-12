@@ -142,7 +142,6 @@ def main() -> None:
             "logs": log.getvalue(),
             "files": sorted(p.name for p in directory.iterdir()),
             "formulation": spec.estimator_formulation,
-            "preserve_temporal_grid": spec.preserve_temporal_grid,
             "artifact_module": type(artifact).__module__,
         }
     split = make_cv_split(

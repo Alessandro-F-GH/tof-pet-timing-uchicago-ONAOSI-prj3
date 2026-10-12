@@ -275,7 +275,6 @@ MODEL_SPEC = ModelSpec(
     predict=predict,
     save=save,
     explain=explain,
-    preserve_temporal_grid=True,
 )
 
 

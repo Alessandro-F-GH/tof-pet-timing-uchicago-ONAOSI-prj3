@@ -93,3 +93,42 @@ from waveform_analysis.core.compat import (
 )
 
 _preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.sample_mask")
+
+
+def control_clipping_sample_mask(
+    control_x: np.ndarray, *, min_clipped_fraction: float = SAMPLE_CONSTANT_FRACTION,
+    chunk_size: int = 4096,
+) -> np.ndarray:
+    """Keep temporal samples unless both detectors are consistently clipped.
+
+    Parameters
+    ----------
+    control_x : ndarray, shape (n_control_events, 2, n_samples)
+        Normalized control waveforms; clipping limits are exactly zero and one.
+    min_clipped_fraction : float
+        Fraction required at a single limit independently for each detector.
+    chunk_size : int
+        Event block size, bounding temporary memory when reading cached arrays.
+
+    Returns
+    -------
+    ndarray, shape (n_samples,)
+        One shared keep-mask. Constant values inside the limits are retained.
+    """
+    x = np.asarray(control_x, dtype=np.float32)
+    if x.ndim != 3 or x.shape[1] != 2 or x.shape[0] < 1 or x.shape[2] < 1:
+        raise ValueError("Control clipping mask requires [event>=1, detector=2, sample>=1]")
+    if not 0.5 < float(min_clipped_fraction) <= 1.0 or int(chunk_size) < 1:
+        raise ValueError("Clipping fraction must lie in (0.5, 1] and chunk_size must be positive")
+    lower = np.zeros(x.shape[1:], dtype=np.int64)
+    upper = np.zeros_like(lower)
+    for start in range(0, len(x), int(chunk_size)):
+        block = x[start:start + int(chunk_size)]
+        lower += np.count_nonzero(block == 0.0, axis=0)
+        upper += np.count_nonzero(block == 1.0, axis=0)
+    required = int(np.ceil(float(min_clipped_fraction) * len(x) - 1e-12))
+    clipped = np.maximum(lower, upper) >= required
+    keep = ~np.all(clipped, axis=0)
+    if not np.any(keep):
+        raise ValueError("Control clipping mask would remove every time sample")
+    return np.asarray(keep, dtype=bool)

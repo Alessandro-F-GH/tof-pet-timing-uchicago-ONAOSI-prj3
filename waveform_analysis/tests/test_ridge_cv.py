@@ -224,6 +224,8 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         d.timing_transform = InputTransform(np.zeros((2, 1)), np.ones((2, 1)))
         d.bias_voltage_V = np.full(d.n_events, 48.0)
         d.manifest["led_control_mean_ps"] = 0.0
+        d.sample_mask = np.ones(d.timing_time_ps.size, dtype=bool)
+        d.manifest["sample_mask_fit_role"] = "control"
         datasets[role] = d
     fit_calls = []
     original_fit = study._fit_final
