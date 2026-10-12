@@ -13,6 +13,7 @@ from waveform_analysis.engine.xai import temporal_occlusion_importance
 class DummyDataset:
     def __init__(self):
         from waveform_analysis.data.dataset import InputTransform
+        self.manifest = {"dataset_role": "control", "analysis_protocol_identity": "toy-control"}
         self.n_events = 3
         self.event_index = np.arange(3, dtype=np.int64)
         self.energy_windows = np.array([
@@ -38,7 +39,7 @@ def test_xai_direct_is_channel_specific():
     fitted = SimpleNamespace(sample_mask=None, feature_transform=None, artifact=None, output_max_abs_ps=None)
     values = temporal_occlusion_importance(
         _spec("direct"), fitted, dataset, "energy_to_energy",
-        group_size_samples=2, max_events=3, seed=10,
+        control_dataset=dataset, group_size_samples=2, max_events=3, seed=10,
     )
     assert values["importance_ps"].shape == (2, 4)
     assert values["group_importance_ps"].shape == (2, 2)
@@ -51,7 +52,7 @@ def test_xai_shared_retains_joint_importance():
     fitted = SimpleNamespace(sample_mask=None, feature_transform=None, artifact=None, output_max_abs_ps=None)
     values = temporal_occlusion_importance(
         _spec("shared"), fitted, dataset, "energy_to_energy",
-        group_size_samples=2, max_events=3, seed=10,
+        control_dataset=dataset, group_size_samples=2, max_events=3, seed=10,
     )
     assert values["importance_ps"].shape == (4,)
     assert values["group_importance_ps"].shape == (2,)

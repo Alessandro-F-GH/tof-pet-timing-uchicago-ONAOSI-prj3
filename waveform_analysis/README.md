@@ -44,7 +44,7 @@ K-fold CV. `alphas.low` and `alphas.high` are inclusive endpoints;
 remain supported for compatibility. The bundled model spaces specify 50 logarithmically spaced positive alphas from
 1e-8 to 1e3. Direct API calls that omit the grid use the typed 23-value fallback. This intentionally changes lambda selection from CTR-based outer
 validation to MSE on the estimator's unmodified predictions. Output clipping,
-preprocessing, blind CTR/RMSE, bootstrap and XAI keep their existing definitions.
+preprocessing, blind CTR/RMSE, bootstrap and XAI follow the common pipeline.
 The independent control/blind populations never become Ridge training events.
 
 `ridge_cv` is the canonical lambda configuration. The parser also accepts
@@ -333,3 +333,33 @@ unchanged. Original waveform/time arrays remain available for reporting and XAI;
 fully removed occlusion groups have zero effect on predictions. Saved models retain
 the same mask for reloading and development diagnostics. Updated runs require
 retraining; the batch planner invalidates incompatible model scopes automatically.
+
+XAI temporal occlusion replaces each group with the detector-specific mean
+normalized waveform from the prepared control cohort at those same sample
+positions. This mean is cached per control input grid; blind waveforms contribute
+no replacement statistics. Shared models replace both detector groups together;
+direct models replace one detector at a time. Model masks and frozen feature
+transforms are applied after replacement, using the saved inference rules.
+
+To repeat XAI from saved models without retraining or recomputing blind metrics:
+
+```bash
+python -m waveform_analysis.cli xai \
+  --results waveform_analysis/results/FBK/benchmark_48V_R1_R2 \
+  --models direct_mlp shared_cnn1d \
+  --group-size-samples 8 --max-events 4096
+```
+
+Omit `--models` to process all saved models. A subsampling experiment root is also
+accepted; its nested batch indexes are discovered automatically. Retain the
+original prepared control and blind caches, or specify their relocated directory
+with `--cache-root`. Cache selection requires verified cohort identities and
+rejects missing or ambiguous matches. Raw acquisitions, preprocessing fits and
+model/feature-transform fitting are never invoked by this command. Compatible
+older prepared arrays can be read for diagnostics while retaining the checkpoint's
+original input mask; their scientific input policy is never upgraded. The command
+works even when the original batch disabled XAI. New `artifacts/xai.npz`,
+`metadata/xai.json` and model-level XAI plots record the replacement method, control
+cohort and settings. Model weights, CV tables, predictions and blind/bootstrap
+metrics remain intact. Existing manuscript XAI figures must be refreshed separately
+from these regenerated plots.

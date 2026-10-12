@@ -927,6 +927,10 @@ def run_study(config, *, logger=None):
         )
     else:
         logger.info("Blind bootstrap | reusing saved uncertainty")
+    if config["xai"]["enabled"] and control_prepared is None:
+        _, _, control_prepared = prepare_role_dataset(
+            config, "control", control, rebuild=False, logger=None
+        )
     xai_fp = _stage(
         "xai",
         {
@@ -935,6 +939,8 @@ def run_study(config, *, logger=None):
             "xai": config["xai"],
             "seed": config["seed"],
             "method_version": XAI_METHOD_VERSION,
+            "control": (control_prepared.manifest["analysis_protocol_identity"]
+                        if config["xai"]["enabled"] else None),
             "formulation": spec.estimator_formulation,
         },
     )
@@ -956,6 +962,8 @@ def run_study(config, *, logger=None):
                 fitted,
                 blind,
                 config["mode"],
+                control_dataset=control_prepared,
+                cache_root=config["preprocessing"]["cache_dir"],
                 group_size_samples=int(config["xai"]["group_size_samples"]),
                 max_events=int(config["xai"]["max_events"]),
                 seed=semantic_seed(config["seed"], spec.name, "xai"),
@@ -966,6 +974,7 @@ def run_study(config, *, logger=None):
             xai_fp,
             metadata={
                 "method": "grouped_temporal_occlusion",
+                "replacement_method": "control_sample_mean",
                 "formulation": spec.estimator_formulation,
                 "method_version": XAI_METHOD_VERSION,
             },

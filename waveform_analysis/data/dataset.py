@@ -73,10 +73,18 @@ def _sample_mask(directory: Path) -> np.ndarray | None:
         return np.asarray(data["mask"], dtype=bool)
 
 
-def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
+def load_prepared_dataset(
+    directory: str | Path, *, diagnostic_legacy: bool = False,
+) -> PreparedDataset:
+    """Read current inputs, or compatible old full-grid arrays for saved-model XAI.
+
+    Diagnostic reads do not upgrade input policies or refit masks. Training retains
+    strict format validation. Formats 33/34 share the same normalized array layout.
+    """
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    if int(manifest.get("format_version", -1)) != DATASET_FORMAT_VERSION:
+    formats = {DATASET_FORMAT_VERSION} | ({33, 34} if diagnostic_legacy else set())
+    if int(manifest.get("format_version", -1)) not in formats:
         raise ValueError(f"Prepared dataset format mismatch in {directory}")
     return PreparedDataset(
         directory,

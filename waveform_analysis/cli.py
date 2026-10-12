@@ -37,6 +37,12 @@ def _parser() -> argparse.ArgumentParser:
         "report", help="Regenerate plots and report without retraining"
     )
     report.add_argument("results", type=Path)
+    xai = sub.add_parser("xai", help="Repeat control-mean XAI from saved batch models without retraining")
+    xai.add_argument("--results", type=Path, required=True)
+    xai.add_argument("--models", nargs="+", metavar="MODEL")
+    xai.add_argument("--cache-root", type=Path, help="Location of original prepared control/blind caches")
+    xai.add_argument("--group-size-samples", type=int)
+    xai.add_argument("--max-events", type=int)
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -56,6 +62,13 @@ def main() -> None:
         print(remake_plots(
             Path(args.results), logger=logger, exclude_models=args.exclude_models,
         ))
+        return
+    if args.command == "xai":
+        from .engine.xai_replay import rerun_xai
+        for output in rerun_xai(args.results, models=args.models, cache_root=args.cache_root,
+                                group_size_samples=args.group_size_samples,
+                                max_events=args.max_events, logger=logger):
+            print(output)
         return
     batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
     for output in run_batch(batch, logger=logger):

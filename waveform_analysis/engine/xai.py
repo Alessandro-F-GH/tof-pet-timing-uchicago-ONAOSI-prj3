@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
 import numpy as np
+from numpy.typing import NDArray
+
+from waveform_analysis.core.io import canonical_hash
+from waveform_analysis.data.storage import _atomic_npz
+from waveform_analysis.data.dataset import PreparedDataset
 
 from waveform_analysis.signal.sample_mask import apply_sample_mask
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, waveform_view
 
 # Increment when the meaning or shape of persisted XAI scores changes.
-XAI_METHOD_VERSION = 2
+XAI_METHOD_VERSION = 3
 
 
 def _predict_array(spec, fitted, pair):
@@ -24,22 +30,48 @@ def _predict_array(spec, fitted, pair):
     return prediction
 
 
-def _interpolate_group(pair, start, stop):
-    """Replace a temporal interval using the neighboring sample values."""
-    n_samples = pair.shape[-1]
-    left = max(0, start - 1)
-    right = min(n_samples - 1, stop)
-    if left == right:
-        return pair[:, :, left : left + 1]
-    alpha = np.linspace(0.0, 1.0, stop - start + 2, dtype=np.float32)[1:-1]
-    return (
-        pair[:, :, left : left + 1] * (1.0 - alpha)[None, None, :]
-        + pair[:, :, right : right + 1] * alpha[None, None, :]
-    )
+def calibration_mean_waveform(
+    control_dataset: PreparedDataset, mode: str, *, cache_root: str | Path | None = None,
+) -> NDArray[np.float32]:
+    """Return detector-specific sample means from normalized control waveforms.
+
+    The returned shape is ``(2, n_samples)`` on the full prepared input grid,
+    before model masking or feature transformation. No blind statistics are used.
+    Accumulation uses float64 and the replacement is stored as float32.
+    """
+    manifest = control_dataset.manifest
+    if manifest.get("dataset_role") != "control" or control_dataset.n_events < 1:
+        raise ValueError("XAI replacement requires a nonempty prepared control dataset")
+    protocol = manifest.get("analysis_protocol_identity") or manifest["fingerprint"]
+    identity = canonical_hash({"method_version": XAI_METHOD_VERSION, "mode": mode,
+                               "control_protocol": protocol})
+    path = (Path(cache_root) / "xai_control_means" / identity[:16] / "mean.npz"
+            if cache_root is not None else None)
+    family = mode_family(mode)
+    time = np.asarray(getattr(control_dataset, f"{family}_time_ps"), dtype=np.float64)
+    if path is not None and path.is_file():
+        try:
+            with np.load(path) as cached:
+                mean = np.asarray(cached["mean"], dtype=np.float32)
+                if (str(cached["identity"].item()) == identity
+                        and mean.shape == (2, time.size) and np.all(np.isfinite(mean))):
+                    return mean
+        except (OSError, KeyError, ValueError):
+            pass
+    waveforms = np.asarray(getattr(control_dataset, f"{family}_windows"), dtype=np.float32)
+    if waveforms.shape != (control_dataset.n_events, 2, time.size):
+        raise ValueError("Control waveforms do not match the XAI input grid")
+    mean = np.mean(waveforms, axis=0, dtype=np.float64).astype(np.float32)
+    if not np.all(np.isfinite(mean)):
+        raise ValueError("Control sample means must be finite")
+    if path is not None:
+        _atomic_npz(path, mean=mean, identity=np.asarray(identity))
+    return mean
 
 
 def temporal_occlusion_importance(
-    spec, fitted, dataset, mode, *, group_size_samples, max_events, seed
+    spec, fitted, dataset, mode, *, control_dataset, group_size_samples, max_events, seed,
+    cache_root=None
 ):
     group_size_samples = int(group_size_samples)
     max_events = int(max_events)
@@ -49,6 +81,17 @@ def temporal_occlusion_importance(
     if n_events < 1:
         raise ValueError("XAI requires at least one blind event")
 
+    family = mode_family(mode)
+    if not np.array_equal(getattr(control_dataset, f"{family}_time_ps"),
+                          getattr(dataset, f"{family}_time_ps")):
+        raise ValueError("Control and explained waveform time grids differ")
+    control_transform = getattr(control_dataset, f"{family}_transform")
+    target_transform = getattr(dataset, f"{family}_transform")
+    if (control_transform is None or target_transform is None
+            or not np.array_equal(control_transform.minimum, target_transform.minimum)
+            or not np.array_equal(control_transform.maximum, target_transform.maximum)):
+        raise ValueError("Control and explained waveform normalization limits differ")
+    control_mean = calibration_mean_waveform(control_dataset, mode, cache_root=cache_root)
     formulation = spec.estimator_formulation
     if formulation not in {"shared", "direct"}:
         raise ValueError(f"Unsupported XAI estimator formulation: {formulation}")
@@ -68,7 +111,7 @@ def temporal_occlusion_importance(
 
     for start in range(0, n_samples, group_size_samples):
         stop = min(start + group_size_samples, n_samples)
-        replacement = _interpolate_group(pair, start, stop)
+        replacement = control_mean[None, :, start:stop]
         scores = []
         for channel in range(n_channels):
             perturbed = pair.copy()
@@ -105,6 +148,12 @@ def temporal_occlusion_importance(
     return {
         "estimator_formulation": np.asarray(formulation),
         "method_version": np.asarray(XAI_METHOD_VERSION, dtype=np.int32),
+        "replacement_method": np.asarray("control_sample_mean"),
+        "control_mean_normalized": control_mean,
+        "control_n_events": np.asarray(control_dataset.n_events, dtype=np.int64),
+        "control_analysis_protocol_identity": np.asarray(
+            control_dataset.manifest.get("analysis_protocol_identity") or control_dataset.manifest["fingerprint"]
+        ),
         "example_waveforms_mV": example,
         "example_event_index": np.asarray(
             dataset.event_index[indices[0]], dtype=np.int64

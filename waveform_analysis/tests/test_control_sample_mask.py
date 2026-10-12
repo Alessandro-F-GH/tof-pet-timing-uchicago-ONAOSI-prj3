@@ -149,14 +149,14 @@ def test_missing_timing_control_mask_and_grid_mismatch_fail(tmp_path):
 
 
 def test_prediction_and_xai_exclude_clipped_columns_but_keep_physical_axis(tmp_path):
-    _, _, blind, _ = calibrated(tmp_path)
+    control, _, blind, _ = calibrated(tmp_path)
     fitted = FittedModel(None,{},sample_mask=blind.sample_mask)
     actual = _model_input(fitted,blind,'timing_to_timing',np.arange(5))
     np.testing.assert_array_equal(actual,blind.timing_windows[:5,:,:16])
     spec = SimpleNamespace(estimator_formulation='direct',
                            predict=lambda _,x: x.sum(axis=(1,2)))
     values = temporal_occlusion_importance(spec,fitted,blind,'timing_to_timing',
-                        group_size_samples=4,max_events=5,seed=1)
+                        control_dataset=control,group_size_samples=4,max_events=5,seed=1)
     np.testing.assert_array_equal(values['time_ps'],blind.timing_time_ps)
     np.testing.assert_array_equal(values['importance_ps'][:,-8:],0.)
 

@@ -212,7 +212,8 @@ appendix and must be taken from current model-space configurations.
 - Within-board model differences use matched blind-event identities and joint
   resampling. Do not perform a direct UC-versus-FBK performance comparison.
 - Explainable artificial intelligence (XAI) uses temporal occlusion: replace
-  groups of eight retained samples by interpolation between adjacent samples;
+  configured contiguous groups on the full prepared grid by the detector-specific
+  control sample means at those positions (eight samples per group by default);
   measure mean absolute prediction change on at most 4096 reproducibly selected
   blind events. Shared models perturb both detector inputs together; direct
   models perturb one at a time. Display 1 ns bins, normalized with a common
@@ -363,3 +364,11 @@ make the smallest coherent manuscript change, preserve unresolved placeholders,
 compile and inspect the affected pages, then summarize changes and remaining
 evidence gaps. Update this handoff if the experimental protocol or author
 requirements change; it must not become a substitute for checking current sources.
+
+XAI now uses `control_sample_mean` replacement (method version 3), before applying
+the checkpoint's input mask and feature transform. Control means are cached per
+input grid. `python -m waveform_analysis.cli xai --results BATCH_ROOT` recomputes
+only XAI from saved weights and verified prepared control/blind arrays. Model
+selection and performance artifacts remain unchanged. Existing manuscript plots
+may predate this replacement policy; regenerate and replace them before describing
+them as control-mean occlusion results.
