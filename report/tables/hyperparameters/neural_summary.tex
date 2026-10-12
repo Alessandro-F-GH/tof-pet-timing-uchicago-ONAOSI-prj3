@@ -1,48 +1,49 @@
 \begin{table*}[tbp]
 \centering
 \footnotesize
-\begin{tabularx}{\textwidth}{@{}p{0.07\textwidth}p{0.18\textwidth}Xp{0.24\textwidth}p{0.15\textwidth}@{}}
+\begin{tabularx}{\textwidth}{@{}p{0.08\textwidth}Xp{0.21\textwidth}p{0.12\textwidth}p{0.18\textwidth}@{}}
 \toprule
-Code & Estimator & Architecture & Tuned parameters & Optimizer / schedule \\
+Code & Architecture & Learning rate & Batch size & Optimizer / schedule \\
 \midrule
 S-MLP
-& Shared dense MLP
-& Hidden widths $\{[16],[128],[128,64],[16,16,16]\}$
-& LR $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$; batch 32
+& $\{[16],[128],[128,64],[16,16,16]\}$
+& $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$
+& 32
 & Nesterov SGD \\
 
 D-MLP
-& Direct dense MLP
-& Hidden widths $\{[16],[128],[128,64],[16,16,16]\}$
-& LR $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$; batch 32
+& $\{[16],[128],[128,64],[16,16,16]\}$
+& $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$
+& 32
 & Adam \\
 
 S-LCM
-& Locally connected MLP
 & Dense [128]; local kernels $(3,3)$, strides $(1,1)$; correction bound $500\,\mathrm{ps}$
-& LR $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$; batch $\{32,128\}$
+& $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
 & Adam \\
 
 S-CNN
-& Shared temporal CNN
-& Channels [16,32]; kernels [5,3]; dense [64]
-& LR $\{10^{-3},10^{-4},10^{-5}\}$; batch $\{32,128\}$
+& Channels [16,32]; kernels [5,3]; dense 64
+& $\{10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
 & Adam \\
 
 D-CNN
-& Independent temporal CNN
-& Channels [16,32]; kernels [5,3]; dense [64]
-& LR $\{10^{-3},10^{-4},10^{-5}\}$; batch $\{32,128\}$
+& Channels [16,32]; kernels [5,3]; dense 64
+& $\{10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
 & Adam \\
 
 D-ONI
-& Onishi-inspired CNN
 & Channels [32,64]; kernels [5,3]; dense 256
-& LR $\{10^{-3},10^{-4},10^{-5}\}$; batch $\{32,128\}$
+& $\{10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
 & Adam; 100 epochs, LR drops at 30/60 \\
 \bottomrule
 \end{tabularx}
-\caption{Configured neural-model search spaces. All models use ReLU activations.
-Training settings shared across models are given in the text.}
+\caption{Configured neural-model search spaces. Model codes are defined in
+Table~\ref{tab:model-inventory}. All models use ReLU activations; training
+settings shared across models are given in the text.}
 \label{tab:space-neural-summary}
 \end{table*}

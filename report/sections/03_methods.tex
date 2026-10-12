@@ -141,7 +141,7 @@ a standard regression objective, the mean squared error (MSE):
 \left[y_i-h_\theta(s_{1,i},s_{2,i})\right]^2.
 \label{eq:training-mse}
 \end{equation}
-Model selection is performed through three-fold cross-validation
+Model selection is performed through grid search with three-fold cross-validation
 on the training acquisition, using mean validation CTR as the
 primary performance criterion. The selected model is then
 refitted on the full training dataset. The independent test

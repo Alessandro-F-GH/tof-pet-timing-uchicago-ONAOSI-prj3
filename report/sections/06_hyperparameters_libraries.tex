@@ -51,11 +51,12 @@ and regresses on their feature difference.
 
 \subsection{Training and configured spaces}
 Dense MLPs, the locally connected MLP and temporal CNNs use at most 300
-epochs, an internal holdout fraction of 0.2, loss-stop patience of 10 epochs,
-a minimum loss improvement of $0.1\,\mathrm{ps}$, gradient clipping at 10,
-and a gradient-stop threshold of $10^{-6}$ with patience 4. The Onishi-inspired
-CNN instead uses a fixed 100-epoch schedule with learning-rate reductions at
-epochs 30 and 60. Hyperparameters for neural and MiniRocket models are selected
+epochs, an internal holdout fraction of 0.2 for early stopping, loss-stop 
+patience of 10 epochs, a minimum loss improvement of $0.1\,\mathrm{ps}$, 
+gradient clipping at 10, and a gradient-stop threshold of $10^{-6}$ with patience 4. 
+The Onishi-inspired CNN instead uses a fixed 100-epoch schedule with learning-rate 
+reductions at epochs 30 and 60. 
+Hyperparameters for neural and MiniRocket models are selected
 from the training acquisition using mean held-out CTR in the three common
 outer folds; the two linear ridge estimators use internal leave-one-out
 cross-validation on MSE.
