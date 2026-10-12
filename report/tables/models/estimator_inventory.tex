@@ -1,7 +1,7 @@
 \begin{table*}[t]
 \centering
 \small
-\begin{tabularx}{\textwidth}{@{}p{0.12\textwidth}p{0.08\textwidth}p{0.24\textwidth}X@{}}
+\begin{tabular}{@{}p{0.12\textwidth}p{0.08\textwidth}p{0.24\textwidth}p{0.50\textwidth}@{}}
 \toprule
 Formulation & Code & Estimator & Correction structure \\
 \midrule
@@ -17,7 +17,7 @@ Shared & S-LCM & Locally connected MLP & Common position-specific local scorer; 
 Shared & S-CNN & Temporal CNN & Common convolutional detector scorer; output difference. \\
 Shared & S-MR & MiniRocket + ridge & Common waveform feature transform; feature difference and ridge regression. \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 \caption{Waveform-based timing estimators implemented in the benchmark. Model
 codes are used throughout the results tables. Direct estimators do not enforce
 detector-exchange antisymmetry; shared estimators use a common detector-level
