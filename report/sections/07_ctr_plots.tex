@@ -2,74 +2,67 @@
 \onecolumn
 \section{Independent-test CTR comparisons}
 \label{app:ctr-plots}
-The following figures collect the model-wise independent-test CTR comparisons
-for both waveform modes and input windows. Corresponding numerical results and
-uncertainty estimates are provided in Section~\ref{sec:results-tables}.
+Figure~\ref{fig:all-ctr-comparisons} collects the model-wise independent-test
+CTR comparisons for both boards, waveform modes and input windows. Numerical
+results and uncertainty estimates are reported in
+Section~\ref{sec:results-tables}.
 
 \begin{figure}[H]
 \centering
+\captionsetup[subfigure]{font=footnotesize}
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/UC/UC_energy_onishi_blind_ctr.png}
-\caption{Energy, Onishi-inspired window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/UC/UC_energy_onishi_blind_ctr.png}
+\caption{UC energy, Onishi-inspired.}
 \label{fig:uc-energy-onishi-ctr}
 \end{subfigure}\hfill
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/UC/UC_energy_wide_blind_ctr.png}
-\caption{Energy, wide window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/UC/UC_energy_wide_blind_ctr.png}
+\caption{UC energy, wide.}
 \label{fig:uc-energy-wide-ctr}
 \end{subfigure}
 
-\medskip
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/UC/UC_timing_onishi_blind_ctr.png}
-\caption{Timing, Onishi-inspired window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/UC/UC_timing_onishi_blind_ctr.png}
+\caption{UC timing, Onishi-inspired.}
 \label{fig:uc-timing-onishi-ctr}
 \end{subfigure}\hfill
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/UC/UC_timing_wide_blind_ctr.png}
-\caption{Timing, wide window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/UC/UC_timing_wide_blind_ctr.png}
+\caption{UC timing, wide.}
 \label{fig:uc-timing-wide-ctr}
 \end{subfigure}
-\caption{UC board: independent-test CTR for the compared estimators. The dashed
-line denotes the LED reference and error bars indicate bootstrap standard
-deviations.}
-\label{fig:uc-ctr-comparison}
-\end{figure}
 
-\begin{figure}[H]
-\centering
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/FBK/FBK_energy_onishi_blind_ctr.png}
-\caption{Energy, Onishi-inspired window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/FBK/FBK_energy_onishi_blind_ctr.png}
+\caption{FBK energy, Onishi-inspired.}
 \label{fig:fbk-energy-onishi-ctr}
 \end{subfigure}\hfill
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/FBK/FBK_energy_wide_blind_ctr.png}
-\caption{Energy, wide window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/FBK/FBK_energy_wide_blind_ctr.png}
+\caption{FBK energy, wide.}
 \label{fig:fbk-energy-wide-ctr}
 \end{subfigure}
 
-\medskip
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/FBK/FBK_timing_onishi_blind_ctr.png}
-\caption{Timing, Onishi-inspired window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/FBK/FBK_timing_onishi_blind_ctr.png}
+\caption{FBK timing, Onishi-inspired.}
 \label{fig:fbk-timing-onishi-ctr}
 \end{subfigure}\hfill
 \begin{subfigure}[t]{0.49\textwidth}
 \centering
-\includegraphics[width=\linewidth]{figures/results/FBK/FBK_timing_wide_blind_ctr.png}
-\caption{Timing, wide window.}
+\includegraphics[width=\linewidth,height=0.19\textheight,keepaspectratio]{figures/results/FBK/FBK_timing_wide_blind_ctr.png}
+\caption{FBK timing, wide.}
 \label{fig:fbk-timing-wide-ctr}
 \end{subfigure}
-\caption{FBK board: independent-test CTR for the compared estimators. The dashed
-line denotes the LED reference and error bars indicate bootstrap standard
-deviations.}
-\label{fig:fbk-ctr-comparison}
+
+\caption{Independent-test CTR comparisons. The dashed line denotes the LED
+reference and error bars indicate bootstrap standard deviations.}
+\label{fig:all-ctr-comparisons}
 \end{figure}
