@@ -1,0 +1,58 @@
+\begin{table*}[tbp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}p{0.11\textwidth}Xp{0.19\textwidth}p{0.11\textwidth}p{0.18\textwidth}@{}}
+\toprule
+Code & Architecture / feature space & Learning rate / regularization & Batch size & Optimizer / selection \\
+\midrule
+S-MLP
+& $\{[16],[128],[128,64],[16,16,16]\}$
+& $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$
+& 32
+& Nesterov SGD \\
+
+D-MLP
+& $\{[16],[128],[128,64],[16,16,16]\}$
+& $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$
+& 32
+& Adam \\
+
+S-LCM
+& Dense 128; local kernels $(3,3)$, strides $(1,1)$; bound $500\,\mathrm{ps}$
+& $\{10^{-2},10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
+& Adam \\
+
+S-CNN / D-CNN
+& Channels [16,32]; kernels [5,3]; dense 64
+& $\{10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
+& Adam \\
+
+D-ONI
+& Channels [32,64]; kernels [5,3]; dense 256
+& $\{10^{-3},10^{-4},10^{-5}\}$
+& $\{32,128\}$
+& Adam; fixed 100 epochs \\
+\addlinespace[3pt]
+\midrule
+S-LIN / D-LIN
+& Linear waveform samples
+& 50 log-spaced ridge strengths, $10^{-8}$--$10^{3}$
+& ---
+& Leave-one-out CV; MSE \\
+
+S-MR / D-MR
+& 10000 requested MiniRocket features
+& 11 log-spaced ridge strengths, $10^{-1}$--$10^{6}$
+& ---
+& Outer CV; mean CTR \\
+\bottomrule
+\end{tabularx}
+\caption{Configured model search spaces. Model codes are defined in
+Table~\ref{tab:model-inventory}. Neural models use ReLU activations. Shared
+and direct variants use the same search space where grouped in one row;
+formulation-specific details are described in the text.}
+\label{tab:space-model-summary}
+\end{table*}
