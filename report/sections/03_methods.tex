@@ -121,8 +121,6 @@ refitted on the full training dataset. Model-specific training
 procedures and exceptions are detailed in
 Appendix~\ref{app:spaces}.
 
-\input{tables/models/estimator_inventory.tex}
-\input{figures/ml_pipeline.tex}
 
 \subsection{Timing performance and independent evaluation}
 All configurations are evaluated against LED on the same selected
@@ -151,6 +149,10 @@ provides uncertainties on CTR and RMSE without retraining;
 these estimates are conditional on the selected fitted model.
 Within-board comparisons use matched test events and joint
 resampling to assess paired model differences.
+
+\input{tables/models/estimator_inventory.tex}
+\input{figures/ml_pipeline.tex}
+
 
 \subsection{Temporal sensitivity analysis}
 To investigate which parts of each waveform influence the
