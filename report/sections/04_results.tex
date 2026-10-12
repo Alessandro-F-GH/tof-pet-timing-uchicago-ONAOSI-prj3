@@ -1,92 +1,101 @@
 \section{Results}
-% All figures and numerical values remain placeholders until frozen results are supplied.
-% 'blind' in exported plots refers to the independent test acquisition.
+% Figures and tables are organized by board and waveform mode.
+% "Blind" in exported graphics denotes the independent test acquisition.
+% Only wide-window temporal sensitivity maps are included.
 
 \subsection{University of Chicago board}
-\subsubsection{Test CTR: model and window comparisons}
+
+\subsubsection{Energy waveforms}
 \IfFileExists{figures/results/UC/UC_energy_onishi_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/UC/UC_energy_onishi_blind_ctr.png}
-\caption{UC board: independent-test CTR across estimators, energy waveforms, onishi window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/UC/UC_energy_onishi_blind_ctr.png}
+\caption{UC board, energy waveforms, short Onishi-inspired input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:uc-energy-onishi-ctr}
 \end{figure*}
-}{\figureplaceholder{UC energy onishi blind CTR (pending exported figure)}{fig:uc-energy-onishi-ctr}}
+}{\figureplaceholder{UC energy, short Onishi-inspired window: test CTR comparison}{fig:uc-energy-onishi-ctr}}
+\input{tables/results/UC_energy_onishi}
+
 \IfFileExists{figures/results/UC/UC_energy_wide_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/UC/UC_energy_wide_blind_ctr.png}
-\caption{UC board: independent-test CTR across estimators, energy waveforms, wide window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/UC/UC_energy_wide_blind_ctr.png}
+\caption{UC board, energy waveforms, wide input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:uc-energy-wide-ctr}
 \end{figure*}
-}{\figureplaceholder{UC energy wide blind CTR (pending exported figure)}{fig:uc-energy-wide-ctr}}
+}{\figureplaceholder{UC energy, wide window: test CTR comparison}{fig:uc-energy-wide-ctr}}
+\input{tables/results/UC_energy_wide}
+
+\subsubsection{Timing waveforms}
 \IfFileExists{figures/results/UC/UC_timing_onishi_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/UC/UC_timing_onishi_blind_ctr.png}
-\caption{UC board: independent-test CTR across estimators, timing waveforms, onishi window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/UC/UC_timing_onishi_blind_ctr.png}
+\caption{UC board, timing waveforms, short Onishi-inspired input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:uc-timing-onishi-ctr}
 \end{figure*}
-}{\figureplaceholder{UC timing onishi blind CTR (pending exported figure)}{fig:uc-timing-onishi-ctr}}
+}{\figureplaceholder{UC timing, short Onishi-inspired window: test CTR comparison}{fig:uc-timing-onishi-ctr}}
+\input{tables/results/UC_timing_onishi}
+
 \IfFileExists{figures/results/UC/UC_timing_wide_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/UC/UC_timing_wide_blind_ctr.png}
-\caption{UC board: independent-test CTR across estimators, timing waveforms, wide window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/UC/UC_timing_wide_blind_ctr.png}
+\caption{UC board, timing waveforms, wide input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:uc-timing-wide-ctr}
 \end{figure*}
-}{\figureplaceholder{UC timing wide blind CTR (pending exported figure)}{fig:uc-timing-wide-ctr}}
+}{\figureplaceholder{UC timing, wide window: test CTR comparison}{fig:uc-timing-wide-ctr}}
+\input{tables/results/UC_timing_wide}
 
-\subsubsection{CTR tables: test estimate and bootstrap uncertainty}
-\input{tables/results/UC_ctr}
-
-\subsubsection{Temporal occlusion sensitivity}
-\figureplaceholder{UC temporal sensitivity of the best test-CTR model (identity pending); energy mode, short Onishi-inspired window}{fig:uc-energy-onishi-xai}
-\figureplaceholder{UC temporal sensitivity of the best test-CTR model (identity pending); energy mode, wide window}{fig:uc-energy-wide-xai}
-\figureplaceholder{UC temporal sensitivity of the best test-CTR model (identity pending); timing mode, short Onishi-inspired window}{fig:uc-timing-onishi-xai}
-\figureplaceholder{UC temporal sensitivity of the best test-CTR model (identity pending); timing mode, wide window}{fig:uc-timing-wide-xai}
+\subsubsection{Temporal sensitivity: wide window}
+\figureplaceholder{UC energy, wide window: temporal occlusion sensitivity of the best-performing estimator (model and figure pending)}{fig:uc-energy-wide-xai}
+\figureplaceholder{UC timing, wide window: temporal occlusion sensitivity of the best-performing estimator (model and figure pending)}{fig:uc-timing-wide-xai}
 
 \subsection{Fondazione Bruno Kessler board}
-\subsubsection{Test CTR: model and window comparisons}
+
+\subsubsection{Energy waveforms}
 \IfFileExists{figures/results/FBK/FBK_energy_onishi_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/FBK/FBK_energy_onishi_blind_ctr.png}
-\caption{FBK board: independent-test CTR across estimators, energy waveforms, onishi window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/FBK/FBK_energy_onishi_blind_ctr.png}
+\caption{FBK board, energy waveforms, short Onishi-inspired input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:fbk-energy-onishi-ctr}
 \end{figure*}
-}{\figureplaceholder{FBK energy onishi blind CTR (pending exported figure)}{fig:fbk-energy-onishi-ctr}}
+}{\figureplaceholder{FBK energy, short Onishi-inspired window: test CTR comparison}{fig:fbk-energy-onishi-ctr}}
+\input{tables/results/FBK_energy_onishi}
+
 \IfFileExists{figures/results/FBK/FBK_energy_wide_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/FBK/FBK_energy_wide_blind_ctr.png}
-\caption{FBK board: independent-test CTR across estimators, energy waveforms, wide window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/FBK/FBK_energy_wide_blind_ctr.png}
+\caption{FBK board, energy waveforms, wide input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:fbk-energy-wide-ctr}
 \end{figure*}
-}{\figureplaceholder{FBK energy wide blind CTR (pending exported figure)}{fig:fbk-energy-wide-ctr}}
+}{\figureplaceholder{FBK energy, wide window: test CTR comparison}{fig:fbk-energy-wide-ctr}}
+\input{tables/results/FBK_energy_wide}
+
+\subsubsection{Timing waveforms}
 \IfFileExists{figures/results/FBK/FBK_timing_onishi_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/FBK/FBK_timing_onishi_blind_ctr.png}
-\caption{FBK board: independent-test CTR across estimators, timing waveforms, onishi window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/FBK/FBK_timing_onishi_blind_ctr.png}
+\caption{FBK board, timing waveforms, short Onishi-inspired input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:fbk-timing-onishi-ctr}
 \end{figure*}
-}{\figureplaceholder{FBK timing onishi blind CTR (pending exported figure)}{fig:fbk-timing-onishi-ctr}}
+}{\figureplaceholder{FBK timing, short Onishi-inspired window: test CTR comparison}{fig:fbk-timing-onishi-ctr}}
+\input{tables/results/FBK_timing_onishi}
+
 \IfFileExists{figures/results/FBK/FBK_timing_wide_blind_ctr.png}{
-\begin{figure*}[tbp]
+\begin{figure*}[!tbp]
 \centering
-\includegraphics[width=0.86\textwidth]{figures/results/FBK/FBK_timing_wide_blind_ctr.png}
-\caption{FBK board: independent-test CTR across estimators, timing waveforms, wide window. The LED reference is shown for comparison.}
+\includegraphics[width=\textwidth]{figures/results/FBK/FBK_timing_wide_blind_ctr.png}
+\caption{FBK board, timing waveforms, wide input window: independent-test CTR of all estimators. The dashed line shows the LED reference; error bars denote test-event bootstrap uncertainties.}
 \label{fig:fbk-timing-wide-ctr}
 \end{figure*}
-}{\figureplaceholder{FBK timing wide blind CTR (pending exported figure)}{fig:fbk-timing-wide-ctr}}
+}{\figureplaceholder{FBK timing, wide window: test CTR comparison}{fig:fbk-timing-wide-ctr}}
+\input{tables/results/FBK_timing_wide}
 
-\subsubsection{CTR tables: test estimate and bootstrap uncertainty}
-\input{tables/results/FBK_ctr}
-
-\subsubsection{Temporal occlusion sensitivity}
-\figureplaceholder{FBK temporal sensitivity of the best test-CTR model (identity pending); energy mode, short Onishi-inspired window}{fig:fbk-energy-onishi-xai}
-\figureplaceholder{FBK temporal sensitivity of the best test-CTR model (identity pending); energy mode, wide window}{fig:fbk-energy-wide-xai}
-\figureplaceholder{FBK temporal sensitivity of the best test-CTR model (identity pending); timing mode, short Onishi-inspired window}{fig:fbk-timing-onishi-xai}
-\figureplaceholder{FBK temporal sensitivity of the best test-CTR model (identity pending); timing mode, wide window}{fig:fbk-timing-wide-xai}
+\subsubsection{Temporal sensitivity: wide window}
+\figureplaceholder{FBK energy, wide window: temporal occlusion sensitivity of the best-performing estimator (model and figure pending)}{fig:fbk-energy-wide-xai}
+\figureplaceholder{FBK timing, wide window: temporal occlusion sensitivity of the best-performing estimator (model and figure pending)}{fig:fbk-timing-wide-xai}
 
