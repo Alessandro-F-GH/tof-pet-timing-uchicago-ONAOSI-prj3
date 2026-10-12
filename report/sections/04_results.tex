@@ -87,12 +87,17 @@ direct MiniRocket, while several other estimators remain around
 $114$--$116\,\mathrm{ps}$
 (Table~\ref{tab:fbk-energy-wide};
 Figure~\ref{fig:fbk-energy-wide-ctr}).
-The shared temporal CNN is a marked wide-window outlier: its test CTR
-and RMSE remain approximately equal to the LED values despite a much
-lower validation CTR. This discrepancy is not representative of the
-other shared models. As with UC, the strongest wide-window results
-improve over the short-window minimum, but individual architectures
-do not all benefit equally.
+The shared temporal CNN is a marked wide-window outlier: despite a
+validation CTR of approximately $115\,\mathrm{ps}$, the final refit
+provides essentially no improvement over LED on the independent test
+set. Neural-network optimization is non-convex and stochastic, so
+different weight initializations, minibatch sequences, or changes in
+the fitting population can lead the same architecture and
+hyperparameters to different fitted solutions. The observed discrepancy
+is therefore consistent with an unstable final optimization, although
+the present analysis does not isolate its specific cause. As with UC,
+the strongest wide-window results improve over the short-window minimum,
+but individual architectures do not all benefit equally.
 
 \input{tables/results/FBK_energy_onishi}
 \input{tables/results/FBK_energy_wide}
