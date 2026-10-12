@@ -38,15 +38,21 @@
 \date{}
 \begin{document}
 \maketitle
+
 \begin{abstract}
-Accurate coincidence timing is central to time-of-flight positron emission tomography.
-This study describes a waveform-based correction of leading-edge timing for two
-scintillation-detector modules using the same crystals and photodetectors with alternative
-analog front-end electronics. Waveforms are acquired at two different stages of cascaded
-amplification and used to estimate event-specific timing corrections.
-The analysis examines amplification stage, detector sharing, estimator family and
-waveform-window extent.
+Accurate coincidence timing is essential for time-of-flight positron emission tomography. 
+This study investigates machine-learning corrections to leading-edge timing using waveforms 
+from two amplification stages and two readout boards, comparing different estimators, 
+detector-shared formulations, and waveform windows.
+
+Waveform-based correction improves first-stage coincidence timing resolution (CTR) by over $20\%$, 
+reaching approximately $25\%$ with extended windows. Linear models perform competitively with neural networks, 
+while detector-shared estimators retain most of the achievable correction. 
+Wider windows reveal useful timing information beyond the leading edge. 
+Nevertheless, second-stage signals remain superior, achieving corrected CTRs 
+of approximately $53\,\mathrm{ps}$.
 \end{abstract}
+
 \input{sections/01_introduction}
 \input{sections/02_experimental_setup}
 \input{sections/03_methods}
