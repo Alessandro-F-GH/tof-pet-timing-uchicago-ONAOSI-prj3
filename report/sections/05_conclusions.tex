@@ -1,3 +1,57 @@
 \section{Conclusions}
-\placeholder{Within-board findings and qualitative differences in model, waveform-mode,
-window and temporal-sensitivity behaviour between the electronics boards.}
+This study demonstrates that waveform-based machine learning can reduce
+event-dependent errors in leading-edge timing across two alternative
+SiPM readout configurations. The improvements obtained from first-stage
+energy waveforms, together with the competitive performance of the
+Onishi-inspired CNN on short windows, are qualitatively consistent
+with previous waveform-based timing studies~\cite{onishi2022,loignon2025}.
+The results show that useful corrections can be learned from digitized
+waveforms while retaining the conventional LED measurement and its
+fixed-offset calibration.
+
+The detector-shared formulation frequently achieved CTRs close to
+those of direct estimators despite enforcing a common detector-level
+correction function and detector-exchange antisymmetry. This supports
+the feasibility of sharing model parameters between nominally matched
+detector channels, potentially reducing the need for separate
+pair-specific correction models. Transfer to other physical detector
+modules was not evaluated, however, and fixed timing offsets still
+require conventional calibration.
+
+Model complexity did not consistently translate into better timing
+resolution. Linear ridge regression performed competitively across
+the investigated conditions and achieved the lowest test CTR in
+several wide-window comparisons; MiniRocket features combined with
+ridge regression were also effective. These results indicate that
+relatively simple estimators can capture a substantial part of the
+correctable waveform dependence. The performance of more complex
+networks was configuration-dependent, with occasional weak corrections
+or discrepancies between validation and test performance, rather than
+a systematic advantage over linear alternatives.
+
+Extending the input from the short leading-edge window to the wide
+window improved the best test CTR for both waveform modes on both
+boards, although RMSE changes were less uniform. The timing waveforms
+were particularly sensitive to the available observation interval:
+short crops often offered limited correction, whereas wider crops
+allowed stronger improvements. Temporal occlusion showed that energy
+models were most sensitive near LED crossing and the early rising edge,
+while timing models also responded to later waveform structure.
+This late sensitivity was especially evident for the FBK timing
+signal around $20\,\mathrm{ns}$. Such maps identify regions affecting
+model predictions under the chosen perturbation, not independent or
+causally established sources of timing information.
+
+Despite these improvements, the second-stage timing waveforms retained
+a marked advantage over the first-stage energy waveforms. The best
+wide-window CTRs were $52.9$ and $54.4\,\mathrm{ps}$ for UC and FBK
+timing signals, respectively, compared with $105.3$ and
+$111.0\,\mathrm{ps}$ for their energy signals. This approximately
+twofold difference describes the tested acquisition conditions;
+the waveform modes also differ in oscilloscope scaling and selected
+event populations. The two boards approached similar corrected
+timing CTRs despite different LED baselines, which may be consistent
+with residual contributions common to the detector response and
+not removed by the investigated waveform corrections. The present
+measurements do not isolate such contributions or establish a
+universal timing-resolution limit.
