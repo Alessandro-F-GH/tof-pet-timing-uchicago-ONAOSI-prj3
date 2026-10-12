@@ -1,72 +1,59 @@
 \section{Model architectures and training settings}
 \label{app:spaces}
-The model families represent different assumptions about how waveform
-information can correct LED timing. Their detector-pair formulations are
-described below; Tables~\ref{tab:space-neural-summary} and
-\ref{tab:space-ridge-minirocket-summary} collect the configured search spaces.
+The following implementation details complement the model overview in
+Table~\ref{tab:model-inventory}. The complete configured search spaces are
+summarized in Table~\ref{tab:space-model-summary}.
 
-\subsection{Linear ridge regression}
-Linear models provide a computationally inexpensive baseline for testing
-whether a weighted combination of waveform samples is sufficient for timing
-correction. The direct estimator uses independent weights on the concatenated
-detector waveforms and an intercept. The shared estimator instead applies
-common weights to the sample-wise waveform difference, without an intercept,
-enforcing detector-exchange antisymmetry:
+\paragraph{Linear ridge regression.}
+The direct estimator uses independent weights on the concatenated detector
+waveforms and an intercept. The shared estimator applies common weights to the
+sample-wise waveform difference, without an intercept:
 \begin{equation}
 h(s_1,s_2)=\mathbf{w}^{T}(s_1-s_2)
 =\mathbf{w}^{T}s_1-\mathbf{w}^{T}s_2.
 \end{equation}
-Ridge regularization limits sensitivity to highly correlated samples. Its
-strength is selected by internal leave-one-out cross-validation minimizing
-mean squared error (MSE), rather than the outer CTR-based selection.
+Ridge regularization limits sensitivity to highly correlated samples and is
+selected by internal leave-one-out cross-validation minimizing mean squared
+error (MSE).
 
-\subsection{Convolutional neural networks}
-Convolutional neural networks (CNNs) are established waveform-timing models,
-including for LED correction~\cite{onishi2022,loignon2025}. Their temporal
-filters exploit local waveform structure with weights shared across sample
-positions. The Onishi-inspired direct CNN combines the detector dimension in
-the first convolution and predicts a joint correction. The independent CNN
-uses separately parameterized detector scorers, whereas the shared CNN uses
-one common scorer for both detector signals.
+\paragraph{Convolutional neural networks.}
+The Onishi-inspired direct CNN combines the detector dimension in the first
+convolution and predicts a joint correction. The independent CNN uses
+separately parameterized detector scorers, whereas the shared CNN uses one
+common scorer for both detector signals. CNNs are included because temporal
+filters exploit local waveform structure and have been successfully applied
+to waveform timing~\cite{onishi2022,loignon2025}.
 
-\subsection{Multilayer perceptrons}
-The direct dense MLP performs nonlinear regression on the concatenated
-waveforms. The shared MLP applies the same nonlinear scorer to both detector
-signals and subtracts the two outputs,
+\paragraph{Multilayer perceptrons.}
+The direct dense MLP performs nonlinear regression on concatenated waveforms.
+The shared MLP applies the same nonlinear scorer to both detector signals and
+subtracts the outputs,
 \begin{equation}
 h_\theta(s_1,s_2)=g_\theta(s_1)-g_\theta(s_2).
 \end{equation}
 The shared locally connected MLP preserves temporal neighborhoods without
-sharing filters across positions. This is useful for LED-aligned waveforms,
-where temporal position itself is informative, and provides an intermediate
-assumption between dense and convolutional processing~\cite{elsayed2020}.
+sharing filters across positions, providing an intermediate assumption
+between dense and convolutional processing~\cite{elsayed2020}.
 
-\subsection{MiniRocket feature regression}
+\paragraph{MiniRocket feature regression.}
 MiniRocket is an efficient, largely deterministic convolutional feature
-transformation developed for time-series classification~\cite{minirocket2021}.
-Here its features are used for timing-error regression with ridge
-regularization. The direct model transforms the waveform pair jointly; the
-shared model applies the same univariate transform to both detector signals
-and regresses on their feature difference.
+transformation for time series~\cite{minirocket2021}. The direct model
+transforms the waveform pair jointly; the shared model applies the same
+univariate transform to both detector signals and regresses on their feature
+difference.
 
-\subsection{Training and configured spaces}
-Dense MLPs, the locally connected MLP and temporal CNNs use at most 300
-epochs, an internal holdout fraction of 0.2 for early stopping, loss-stop 
-patience of 10 epochs, a minimum loss improvement of $0.1\,\mathrm{ps}$, 
-gradient clipping at 10, and a gradient-stop threshold of $10^{-6}$ with patience 4. 
-The Onishi-inspired CNN instead uses a fixed 100-epoch schedule with learning-rate 
-reductions at epochs 30 and 60. 
-Hyperparameters for neural and MiniRocket models are selected
-from the training acquisition using mean held-out CTR in the three common
-outer folds; the two linear ridge estimators use internal leave-one-out
-cross-validation on MSE.
+\paragraph{Training settings.}
+Dense MLPs, the locally connected MLP and temporal CNNs use at most 300 epochs,
+an internal holdout fraction of 0.2 for early stopping, patience of 10 epochs,
+a minimum loss improvement of $0.1\,\mathrm{ps}$, gradient clipping at 10,
+and a gradient-stop threshold of $10^{-6}$ with patience 4. The
+Onishi-inspired CNN uses a fixed 100-epoch schedule with learning-rate
+reductions at epochs 30 and 60. Neural and MiniRocket hyperparameters are
+selected using mean held-out CTR in the three common outer folds; linear ridge
+uses internal leave-one-out cross-validation on MSE.
 
-\subsection{Software libraries}
-Table~\ref{tab:model-libraries} summarizes the principal scientific software
-and declared minimum versions.
-\input{tables/libraries/model_libraries}
+\input{tables/hyperparameters/model_summary}
 
-
-\input{tables/hyperparameters/neural_summary}
-\input{tables/hyperparameters/ridge_minirocket_summary}
-
+\paragraph{Software.}
+Implementation uses PyTorch 2.2, scikit-learn 1.4, sktime 0.35, NumPy 1.26,
+SciPy 1.11, Matplotlib 3.8 and pandas 2.1 as declared minimum versions.
