@@ -5,21 +5,17 @@
 \toprule
 Formulation & Code & Estimator & Correction structure \\
 \midrule
-\multirow[t]{5}{*}{Direct}
- & D-LIN & Linear ridge & Joint linear regression on concatenated waveforms. \\
- & D-MLP & Dense MLP & Joint nonlinear regression on concatenated waveforms. \\
- & D-CNN & Independent CNN & Separate detector-specific CNN scorers; output difference. \\
- & D-ONI & Onishi-inspired CNN & Paired waveforms fused by convolution for joint regression. \\
- & D-MR & MiniRocket + ridge & Multivariate features of the waveform pair; ridge regression. \\
+Direct & D-LIN & Linear ridge & Joint linear regression on concatenated waveforms. \\
+Direct & D-MLP & Dense MLP & Joint nonlinear regression on concatenated waveforms. \\
+Direct & D-CNN & Independent CNN & Separate detector-specific CNN scorers; output difference. \\
+Direct & D-ONI & Onishi-inspired CNN & Paired waveforms fused by convolution for joint regression. \\
+Direct & D-MR & MiniRocket + ridge & Multivariate features of the waveform pair; ridge regression. \\
 \addlinespace[3pt]
-\hdashline
-\addlinespace[3pt]
-\multirow[t]{5}{*}{Shared}
- & S-LIN & Linear ridge & Linear regression on the difference of waveform samples. \\
- & S-MLP & Dense MLP & Common nonlinear detector scorer; output difference. \\
- & S-LCM & Locally connected MLP & Common position-specific local scorer; bounded output difference. \\
- & S-CNN & Temporal CNN & Common convolutional detector scorer; output difference. \\
- & S-MR & MiniRocket + ridge & Common waveform feature transform; feature difference and ridge regression. \\
+Shared & S-LIN & Linear ridge & Linear regression on the difference of waveform samples. \\
+Shared & S-MLP & Dense MLP & Common nonlinear detector scorer; output difference. \\
+Shared & S-LCM & Locally connected MLP & Common position-specific local scorer; bounded output difference. \\
+Shared & S-CNN & Temporal CNN & Common convolutional detector scorer; output difference. \\
+Shared & S-MR & MiniRocket + ridge & Common waveform feature transform; feature difference and ridge regression. \\
 \bottomrule
 \end{tabularx}
 \caption{Waveform-based timing estimators implemented in the benchmark. Model
