@@ -2,7 +2,7 @@
 \centering
 \footnotesize
 \setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}p{0.11\textwidth}Xp{0.19\textwidth}p{0.11\textwidth}p{0.18\textwidth}@{}}
+\begin{tabular}{@{}p{0.10\textwidth}p{0.34\textwidth}p{0.19\textwidth}p{0.10\textwidth}p{0.18\textwidth}@{}}
 \toprule
 Code & Architecture / feature space & Learning rate / regularization & Batch size & Optimizer / selection \\
 \midrule
@@ -49,7 +49,7 @@ S-MR / D-MR
 & --
 & Outer CV; mean CTR \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
 \captionof{table}{Configured model search spaces. Model codes are defined in
 Table~\ref{tab:model-inventory}. Neural models use ReLU activations. Shared
 and direct variants use the same search space where grouped in one row;
