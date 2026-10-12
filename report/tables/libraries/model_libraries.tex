@@ -1,20 +1,20 @@
-\begin{table*}[t]
+\begin{table}[tbp]
 \centering
-\small
-\begin{tabularx}{\textwidth}{@{}llX@{}}
+\scriptsize
+\begin{tabularx}{\columnwidth}{@{}lclX@{}}
 \toprule
-Library & Declared minimum & Role \\
+Library & Min. & Role \\
 \midrule
-PyTorch & 2.2 & Dense, locally connected and convolutional neural networks; tensor differentiation and training. \\
-scikit-learn & 1.4 & Ridge regression, internal ridge CV and feature scaling. \\
-sktime & 0.35 & Univariate and multivariate MiniRocket transforms. \\
-NumPy & 1.26 & Waveform arrays, timing operations and bootstrap sampling. \\
-SciPy & 1.11 & Scientific numerical routines and Gaussian fits for event selection. \\
-Matplotlib & 3.8 & Timing, comparison and temporal-sensitivity figures. \\
-pandas & 2.1 & Tabular data and transformed features. \\
-Optuna & 4.0 & Optional adaptive parameter proposal; supplied benchmark spaces use finite grids. \\
+PyTorch & 2.2 & Neural models \\
+scikit-learn & 1.4 & Ridge CV and scaling \\
+sktime & 0.35 & MiniRocket transforms \\
+NumPy & 1.26 & Waveform and bootstrap operations \\
+SciPy & 1.11 & Numerical routines and Gaussian fits \\
+Matplotlib & 3.8 & Figures \\
+pandas & 2.1 & Tabular data and transformed features \\
+Optuna & 4.0 & Optional adaptive parameter proposal \\
 \bottomrule
 \end{tabularx}
-\caption{Model libraries and supporting scientific software.}
+\caption{Principal scientific software and declared minimum versions.}
 \label{tab:model-libraries}
-\end{table*}
+\end{table}
