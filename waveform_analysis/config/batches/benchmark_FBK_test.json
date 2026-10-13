@@ -47,7 +47,7 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/minirocket"
+    "folder": "FBK/rdst"
   },
   "save_model": true,
   "protocol": {
@@ -74,20 +74,24 @@
       "prediction_chunk_size": 4096
     },
     "xai": {
-      "enabled": true,
+      "enabled": false,
       "group_size_samples": 8,
       "max_events": 1024
     }
   },
   "sweep": {
     "models": [
-      "direct_minirocket"
+      "direct_rdst","shared_rdst"
     ],
     "modes": [
-      "energy_to_energy"
+      "energy_to_energy",
+      "timing_to_timing"
     ],
     "windows": {
-      
+      "onishi": {
+        "start": -1.5,
+        "end": 2.0
+      },
       "wide": {
         "start": -2.0,
         "end": 30.0
