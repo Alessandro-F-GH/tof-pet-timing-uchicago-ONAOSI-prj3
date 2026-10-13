@@ -1,0 +1,42 @@
+{
+  "model": "direct_multirocket",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "n_kernels": {
+      "type": "fixed",
+      "value": 6250
+    },
+    "max_dilations_per_kernel": {
+      "type": "fixed",
+      "value": 32
+    },
+    "n_features_per_kernel": {
+      "type": "fixed",
+      "value": 4
+    },
+    "normalise": {
+      "type": "fixed",
+      "value": false
+    },
+    "ridge_alpha": {
+      "type": "categorical",
+      "choices": [
+        0.01,
+        1.0,
+        100.0,
+        10000.0
+      ]
+    }
+  },
+  "transform": {
+    "n_jobs": 2,
+    "batch_size": 128
+  },
+  "training": {},
+  "diagnostics": {
+    "detector_swap": false
+  },
+  "verbose": false
+}

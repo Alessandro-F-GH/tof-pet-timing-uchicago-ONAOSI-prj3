@@ -30,11 +30,15 @@ from waveform_analysis.models.kernel.direct_rdst import MODEL_SPEC as DIRECT_RDS
 from waveform_analysis.models.kernel.shared_rdst import MODEL_SPEC as SHARED_RDST_SPEC
 from waveform_analysis.models.kernel.direct_hydra import MODEL_SPEC as DIRECT_HYDRA_SPEC
 from waveform_analysis.models.kernel.shared_hydra import MODEL_SPEC as SHARED_HYDRA_SPEC
+from waveform_analysis.models.kernel.direct_multirocket import MODEL_SPEC as DIRECT_MULTIROCKET_SPEC
+from waveform_analysis.models.kernel.shared_multirocket import MODEL_SPEC as SHARED_MULTIROCKET_SPEC
 from waveform_analysis.models.spec import ModelSpec
 
 ONISHI_CNN_SPEC = replace(_ONISHI_CNN_SPEC, estimator_formulation="direct")
 
 _REGISTRY: dict[str, ModelSpec] = {
+    DIRECT_MULTIROCKET_SPEC.name: DIRECT_MULTIROCKET_SPEC,
+    SHARED_MULTIROCKET_SPEC.name: SHARED_MULTIROCKET_SPEC,
     DIRECT_HYDRA_SPEC.name: DIRECT_HYDRA_SPEC,
     SHARED_HYDRA_SPEC.name: SHARED_HYDRA_SPEC,
     DIRECT_RDST_SPEC.name: DIRECT_RDST_SPEC,

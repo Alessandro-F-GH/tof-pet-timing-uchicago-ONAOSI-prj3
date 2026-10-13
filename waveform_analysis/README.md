@@ -509,3 +509,74 @@ python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/
 ```
 
 The example uses the same external FBK acquisitions as `test_ridge.json`.
+
+
+## MultiRocket + Ridge
+
+`direct_multirocket` and `shared_multirocket` use aeon 1.6.0's `MultiRocket`.
+The existing requirements already include aeon and Numba. One aeon class handles
+both univariate and multivariate data; there is no separate multivariate class.
+
+- **Direct:** fit a multivariate transform on paired control waveforms, then
+  apply it jointly to each two-detector event. Ridge includes an intercept.
+- **Shared:** fit one univariate transform on pooled control detector waveforms,
+  apply the same transform and scaler independently to each detector, and use
+  `phi(s1)-phi(s2)` as the Ridge input, without an intercept. Detector swap
+  negates predictions, including the common symmetric output clipping.
+
+MultiRocket extends MiniRocket with raw-waveform and first-difference features,
+using four pooling summaries: proportion of positive values, mean positive value,
+mean positive index and longest positive stretch. Dilations, biases and channel
+selections are fitted on control data without timing targets. The feature scaler
+is `StandardScaler(with_mean=False)`, matching aeon's reference MultiRocket
+classifier. It is fitted incrementally over **all** control features (pooled
+across detectors for shared), then frozen. Scaling happens before detector
+subtraction. Neither CV folds nor development/blind data refit the transform or
+scaler.
+
+Model spaces are `config/model_spaces/direct_multirocket.json` and
+`shared_multirocket.json`. Defaults match aeon: `n_kernels=6250`,
+`max_dilations_per_kernel=32`, `n_features_per_kernel=4`, `normalise=false`.
+`n_kernels` is a feature-budget parameter; aeon rounds it down to a multiple
+of 84 per representation. The default yields **49,728 features per event**
+for either formulation, after combining two representations and four pooling
+operators. Shared features are subtracted rather than concatenated. Smaller
+fixed budgets (at least 84) can be used for memory-limited experiments.
+
+Only `ridge_alpha` is grid-searched. These models require
+`protocol.cross_validation` and retain the common development folds, metric,
+pruning, full-development final fitting, blind metrics and event bootstrap.
+All transform parameters must remain fixed in the model space. The pipeline's
+existing normalization and control mask apply first; `normalise=false` avoids
+adding per-waveform z normalization. Inputs require at least 10 retained samples
+so the first-difference representation also has at least 9 samples. No padding
+or resampling is introduced; differencing follows the retained sample sequence.
+
+`transform.n_jobs` defaults to 2 and `transform.batch_size` to 128. Control
+feature scaling streams batches and does not allocate an unused full control
+feature matrix. Development and blind features use the existing chunked,
+memory-mapped cache. These matrices can still be large: 15,000 events at the
+default budget require about 3 GB per float32 feature matrix, and Ridge fitting
+may require additional memory. Changing batch size cannot shrink that feature
+budget. NumPy's global random state and Numba's thread count are restored after
+transform calls, including failures.
+
+Saved `model/model.pkl` and `model/feature_transform/transform.pkl` support
+prediction reload and resume. `model/feature_transform/multirocket.npz` exports
+raw and differenced transform parameters, scaling statistics, seed, versions,
+control provenance and the retained time/sample grid. Hydra/RDST artifacts and
+existing models retain their existing formats.
+
+XAI uses the existing temporal occlusion with control-mean replacement: direct
+explanations are detector-specific, while shared explanations intervene on both
+detectors together. Saved-model XAI replay requires matching prepared control
+and blind caches; it does not refit transformations or regressors.
+
+From the repository root:
+
+```bash
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_multirocket.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_multirocket.json
+```
+
+The example uses the same external FBK acquisitions as the other test batches.

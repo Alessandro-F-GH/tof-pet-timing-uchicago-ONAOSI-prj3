@@ -17,6 +17,7 @@ from waveform_analysis.signal.sample_mask import (
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
 from waveform_analysis.models.kernel.hydra_common import HYDRA_MODELS
+from waveform_analysis.models.kernel.multirocket_common import MULTIROCKET_MODELS
 from waveform_analysis.data.view import model_target, model_sample_mask, waveform_view
 
 
@@ -248,7 +249,7 @@ def fit_on_indices(
     logger=None,
     frozen_features=None,
 ):
-    if spec.name in RDST_MODELS | HYDRA_MODELS and frozen_features is None:
+    if spec.name in RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS and frozen_features is None:
         raise ValueError("This model requires frozen control-fitted features")
     idx = np.asarray(indices, np.int64)
     if frozen_features is not None:
@@ -484,7 +485,7 @@ def _load_pickle_feature_transform(spec, directory):
     with tpath.open("rb") as stream:
         artifact = pickle.load(stream)
     metadata = getattr(artifact, "metadata", {})
-    identity = metadata.get("transform_identity", "reloaded") if spec.name in RDST_MODELS | HYDRA_MODELS else "reloaded"
+    identity = metadata.get("transform_identity", "reloaded") if spec.name in RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS else "reloaded"
     return FittedFeatureTransform(
         spec.feature_transform, artifact, identity, {}, 0, {}
     )
@@ -510,10 +511,10 @@ def saved_model_complete(spec, directory) -> bool:
         "direct_minirocket",
         "shared_minirocket",
     }
-    if spec.name in pickle_models | RDST_MODELS | HYDRA_MODELS:
+    if spec.name in pickle_models | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
         if not (directory / "model.pkl").is_file():
             return False
-        if spec.name in {"direct_minirocket", "shared_minirocket"} | RDST_MODELS | HYDRA_MODELS:
+        if spec.name in {"direct_minirocket", "shared_minirocket"} | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
             return (directory / "feature_transform" / "transform.pkl").is_file()
         return True
     return (directory / "model.pt").is_file()
@@ -529,7 +530,7 @@ def load_fitted_model(spec, directory, parameters, config):
         "shared_linear_ridge",
         "direct_minirocket",
         "shared_minirocket",
-    } | RDST_MODELS | HYDRA_MODELS:
+    } | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
         with (directory / "model.pkl").open("rb") as stream:
             artifact = pickle.load(stream)
         if spec.name in {"direct_linear_ridge", "shared_linear_ridge"}:
