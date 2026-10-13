@@ -504,8 +504,8 @@ plots are not part of this implementation.
 From the repository root:
 
 ```bash
-python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_hydra.json
-python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_hydra.json
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_hydra_FBK.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_hydra_FBK.json
 ```
 
 The example uses the same external FBK acquisitions as `test_ridge.json`.

@@ -156,11 +156,17 @@ def test_actual_hydra_batch_grid_blind_temporal_xai_reporting_and_resume(tmp_pat
     from waveform_analysis.data.dataset import InputTransform
     from waveform_analysis.data.storage import RunStore
 
-    resolved = load_batch_config(ROOT / "config/batches/test_hydra.json")
+    resolved = load_batch_config(ROOT / "config/batches/test_hydra_FBK.json")
     protocol = deepcopy(resolved.protocol)
     protocol["bootstrap"]["n_resamples"] = 3
     runs = []
+    # The production example sweeps multiple modes/windows. Validate one
+    # timing run per formulation without duplicating test output directories.
+    representatives = {}
     for original in resolved.runs:
+        if original["mode"] == "timing_to_timing":
+            representatives.setdefault(original["model"]["name"], original)
+    for original in representatives.values():
         name = original["model"]["name"]
         c = deepcopy(original)
         c.update(model={"name": name, "space": space(name)}, run_id=name, name=name,
