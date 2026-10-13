@@ -76,7 +76,7 @@
     "xai": {
       "enabled": true,
       "group_size_samples": 8,
-      "max_events": 128
+      "max_events": 512
     },
     "cross_validation": {
       "folds": 3,
@@ -99,8 +99,8 @@
       "shared_multirocket"
     ],
     "modes": [
-      "timing_to_timing",
-      "energy_to_energy"
+      "energy_to_energy",
+      "timing_to_timing"
     ],
     "windows": {
       "onishi": {

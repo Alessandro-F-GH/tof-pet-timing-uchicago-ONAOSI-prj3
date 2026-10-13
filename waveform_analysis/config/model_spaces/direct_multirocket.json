@@ -23,7 +23,6 @@
     "ridge_alpha": {
       "type": "categorical",
       "choices": [
-        1e2,
         1e3,
         1e4,
         1e5,
