@@ -47,7 +47,7 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/new_test"
+    "folder": "FBK/minirocket"
   },
   "save_model": true,
   "protocol": {
@@ -76,23 +76,18 @@
     "xai": {
       "enabled": true,
       "group_size_samples": 8,
-      "max_events": 4096
+      "max_events": 1024
     }
   },
   "sweep": {
     "models": [
-      "direct_linear_ridge",
-      "shared_linear_ridge"
+      "direct_minirocket"
     ],
     "modes": [
-      "energy_to_energy",
-      "timing_to_timing"
+      "energy_to_energy"
     ],
     "windows": {
-      "onishi": {
-        "start": -1.5,
-        "end": 2.0
-      },
+      
       "wide": {
         "start": -2.0,
         "end": 30.0

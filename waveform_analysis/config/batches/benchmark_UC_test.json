@@ -7,7 +7,7 @@
   "blind_dataset": {"root_file": "processed_data/10-03/48V-R2.root", 
                     "true_tof_ps": 0.0, "channels": {"energy": [1, 2], "polarities": [1, 1], "timing": [3, 4], "timing_polarities": [1, 1]}},
 
-  "results": {"root": "results", "folder": "UC/mlp_test"},
+  "results": {"root": "results", "folder": "UC/minirocket"},
   "save_model": true,
 
   "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/default_ctr.json", 
@@ -21,9 +21,8 @@
               "ml_input": {"subsampling": 1}, "ml_output": {"max_abs_ps": 2000.0}, "runtime": {"prediction_chunk_size": 4096}, 
               "xai": {"enabled": true, "group_size_samples": 8, "max_events": 4096}},
               
-  "sweep": {"models": ["direct_mlp", "antisymmetric_mlp", 
-                      "locally_connected_mlp"], 
+  "sweep": {"models": ["direct_minirocket"], 
 
-            "modes": ["energy_to_energy","timing_to_timing"], 
-            "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
+            "modes": ["timing_to_timing"], 
+            "windows": {"wide": {"start": -2.0, "end": 30.0}}}
 }

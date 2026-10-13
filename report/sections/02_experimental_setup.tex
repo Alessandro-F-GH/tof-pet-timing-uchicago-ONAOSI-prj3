@@ -6,7 +6,7 @@ Two opposing detector modules consist of silicon photomultipliers (SiPMs)
 coupled to $2\times2\times3\,\mathrm{mm}^{3}$ lutetium--yttrium
 oxyorthosilicate (LYSO) crystals, with a $^{22}\mathrm{Na}$ source
 positioned centrally between them. The University of Chicago (UC)
-and Fondazione Bruno Kessler (FBK) configurations use the same
+and Fondazione Bruno Kessler (FBK) electronic boards use the same
 crystals and SiPMs but different analog front-end electronics.
 
 The two-stage readout chain is shown in
@@ -32,17 +32,16 @@ signal, the oscilloscope's narrower vertical range emphasizes the
 rising edge while clipping the pulse peak, following a strategy
 also used by Onishi et al.~\cite{onishi2022}. In these acquisitions,
 the energy waveform is cleaner and more stable but exhibits greater
-time walk; the timing waveform is more susceptible to noise and
+time walk, while the timing waveform is more susceptible to noise and
 pulse-shape variations.
 
 \subsection{Acquisitions and scientific roles}
 
 Each coincidence event contains four simultaneous waveforms:
-first-stage outputs from detectors 1 and 2 on channels 1 and 2,
+first-stage outputs on channels 1 and 2,
 and second-stage outputs on channels 3 and 4. The $100\,\mathrm{ns}$
 records are sampled at $80\,\mathrm{GS\,s}^{-1}$ with a SiPM bias
-of $48\,\mathrm{V}$. The centrally located source defines a
-true TOF of zero.
+of $48\,\mathrm{V}$.
 
 For each board, three independent acquisitions are used:
 \emph{calibration} to determine preprocessing and LED selection criteria,
@@ -54,11 +53,10 @@ events each, before event selection. The two boards are
 analyzed independently.
 
 Figures~\ref{fig:uc-raw-waveforms} and~\ref{fig:fbk-raw-waveforms}
-show the energy and timing waveforms of the same illustrative
-coincidence event for UC and FBK, respectively. Both detector
+show an example of the energy and timing waveforms from
+a coincidence event acquisition. Both detector
 signals are shown for each amplification stage. These are raw
-waveforms before event selection or preprocessing, with only the
-acquisition vertical-range clipping applied.
+waveforms before event selection or preprocessing.
 
 \begin{figure}[H]
 \centering
@@ -66,7 +64,7 @@ acquisition vertical-range clipping applied.
   \includegraphics[width=\columnwidth]{figures/UC_raw_waveforms_event_0.png}%
 }{%
   \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
-    \textit{UC raw energy and timing waveforms}}}%
+    \textit{UC raw energy and timing waveforms for an example event}}}%
 }
 \caption{UC raw waveforms: first-stage (energy) and
 second-stage (timing) signals from both detectors in one event.}
@@ -79,7 +77,7 @@ second-stage (timing) signals from both detectors in one event.}
   \includegraphics[width=\columnwidth]{figures/FBK_raw_waveforms_event_0.png}%
 }{%
   \fbox{\parbox[c][3cm][c]{0.9\columnwidth}{\centering
-    \textit{FBK raw energy and timing waveforms}}}%
+    \textit{FBK raw energy and timing waveforms for an example event}}}%
 }
 \caption{FBK raw waveforms: first-stage (energy) and
 second-stage (timing) signals from both detectors in one event.}

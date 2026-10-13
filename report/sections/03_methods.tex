@@ -1,6 +1,7 @@
 \section{Methods}
 
 \subsection{Event selection and LED calibration}
+
 Only photopeak events are retained, based on the maximum amplitudes of both
 first-stage (energy) waveforms. Acceptance intervals are obtained from iterative
 Gaussian fits to the photopeaks in the calibration acquisition and applied to
@@ -10,12 +11,19 @@ noise and signal oscillations. Events with excessive pre-pulse baseline
 fluctuations or baseline samples near the acquisition limits are excluded.
 All selection criteria are established from calibration data only.
 
-For each mode, a leading-edge discriminator (LED) threshold is chosen on the
-calibration acquisition to minimize coincidence timing resolution (CTR),
-subject to a minimum fraction of valid coincidences within the prescribed
-time range. A fixed channel-pair timing offset is subsequently estimated
-from the calibration LED residuals. Both the threshold and offset remain
-unchanged in training and testing.
+For each waveform, the baseline is estimated from the pre-pulse region and
+subtracted before timing extraction. The leading-edge discriminator (LED)
+time is defined as the crossing of a fixed voltage threshold by the
+baseline-corrected waveform. Because the crossing generally occurs between
+digitized samples, its time is estimated by linear interpolation between the
+two samples bracketing the threshold.
+
+For each waveform mode, the LED threshold is chosen on the calibration
+acquisition to minimize coincidence timing resolution (CTR), subject to a
+minimum fraction of valid coincidences within the prescribed time range.
+A fixed channel-pair timing offset is subsequently estimated from the
+calibration LED residuals. Both the threshold and offset remain unchanged
+during training and testing.
 
 \subsection{Timing-error model and learning target}
 The goal is to correct waveform-dependent errors in a conventional LED
@@ -67,22 +75,40 @@ giving $\tau=0$.
 Any positioning error would introduce a constant offset, 
 which can be absorbed into the calibration term without affecting CTR.
 
-Energy and timing waveforms are analyzed separately. Each input waveform
-is expressed relative to its own LED crossing and normalized using
-fixed channel-specific amplitude limits. This alignment removes
-absolute acquisition time from the input.
-Two LED-relative windows are considered. The short Onishi-inspired
-window extends from $-1.5$ to $+2\,\mathrm{ns}$ and follows the
-short rising-edge interval used in previous waveform-based timing
-work~\cite{onishi2022}. The wide window extends from $-2$ to
-$+30\,\mathrm{ns}$, covering a substantially larger portion of the
-available acquisition record. Before constant-sample removal, the two
-windows contain 279 and 2559 samples per detector, respectively.
-For the clipped timing signals, constant sample positions are removed
-using the training population; the resulting input sizes are reported
-in Table~\ref{tab:input-windows}. No samples are removed from the
-energy waveforms. Events lacking a valid coincidence or the full
-requested window are excluded.
+\subsection{ML window}
+
+For each detector waveform, the LED crossing is first identified and
+used as a local time reference, with the crossing assigned to
+$t=0$. The waveform segment provided to the ML model is then extracted
+relative to this detector-specific reference time, rather than at a
+fixed position in the acquisition record. In other words, each input
+window is centered on the same local signal feature even if the
+absolute acquisition times of the two detector pulses differ. The
+waveforms are also normalized using fixed channel-specific amplitude
+limits. This preprocessing removes the absolute acquisition time from
+the model input while preserving the waveform shape around the timing
+feature.
+
+Two LED-relative input windows are considered. The short,
+Onishi-inspired window extends from $-1.5$ to $+2\,\mathrm{ns}$ with
+respect to the LED crossing and is designed to retain only the local
+rising-edge region used for timing estimation in previous
+waveform-based work~\cite{onishi2022}. The wide window instead extends
+from $-2$ to $+30\,\mathrm{ns}$ and therefore includes a substantially 
+larger portion of the subsequent waveform. 
+This second configuration is used to test whether timing
+correction benefits from information occurring beyond the immediate
+LED-crossing region.
+
+Before constant-sample removal, the short and wide windows contain
+279 and 2559 samples per detector, respectively. For clipped timing
+signals, sample positions that are constant across the training
+population are removed, since they do not carry discriminative
+information. The resulting input sizes are reported in
+Table~\ref{tab:input-windows}. No samples are removed from the energy
+waveforms. Events are excluded when a valid coincidence is not
+available or when the requested LED-relative window cannot be fully
+extracted.
 
 \input{tables/datasets/input_windows}
 
@@ -146,9 +172,7 @@ on the training acquisition, using mean validation CTR as the
 primary performance criterion. The selected model is then
 refitted on the full training dataset. The independent test
 acquisition is subsequently used to compare the observed performance
-of the tested estimators. References in the Results section to the
-lowest test CTR therefore identify the best observed result within
-that specific comparison, rather than a general model ranking.
+of the tested estimators. 
 Model-specific training procedures and exceptions are detailed in
 Appendix~\ref{app:spaces}.
 
@@ -179,26 +203,75 @@ Within-board comparisons use matched test events and joint
 resampling to assess paired model differences.
 
 \subsection{Temporal sensitivity analysis}
-To investigate which parts of each waveform influence the
-correction, temporal occlusion is applied to the fitted models
-on test events. Consecutive groups of samples are replaced by
-the detector-specific mean values at the corresponding sample
-positions, calculated over all selected control events. These
-mean waveforms are computed in the same normalized representation,
-input window, and sampling grid as the model inputs, separately
-for each board and amplification stage. The replacement values
-remain fixed across the test events.
 
-Shared estimators are perturbed synchronously in both detector
-inputs, while direct estimators are perturbed one detector input
-at a time. Predictions use the same sample mask, input
-transformations, and model parameters as the unperturbed
-evaluation. The importance of each
-group is quantified by the average absolute change in predicted
-correction relative to the unperturbed prediction over the
-analysed test events. The resulting profiles characterize
-sensitivity to the rising edge and later waveform intervals
-across input windows and amplification stages within each board.
+To investigate which parts of each waveform influence the
+predicted correction, temporal occlusion is applied to the fitted
+models on test events. Consecutive groups of samples are replaced by
+the detector-specific mean waveform evaluated at the same sample
+positions. For detector $c$, the reference waveform is computed over
+the selected control events as
+\begin{equation}
+\mu_{c,j}
+=
+\frac{1}{N_{\mathrm{ctrl}}}
+\sum_{i=1}^{N_{\mathrm{ctrl}}}
+s_{c,i,j},
+\label{eq:xai-mean-waveform}
+\end{equation}
+where $s_{c,i,j}$ is sample $j$ of detector $c$ for control event $i$.
+The mean waveforms are computed in the same normalized representation,
+input window, and sampling grid used by the model, separately for each
+board and amplification stage. Once computed, the replacement values
+remain fixed for all test events.
+
+Let $G_k$ denote a consecutive group of sample positions and
+$h_\theta(s_1,s_2)$ the predicted timing correction. Occluding
+$G_k$ replaces
+\begin{equation}
+s_{c,i,j} \leftarrow \mu_{c,j},
+\qquad j\in G_k .
+\label{eq:xai-occlusion}
+\end{equation}
+
+For direct estimators, one detector input is perturbed at a time.
+The importance of group $G_k$ for detector $c\in\{1,2\}$ is
+\begin{equation}
+I_{k,c}
+=
+\frac{1}{N}
+\sum_{i=1}^{N}
+\left|
+h_\theta\!\left(s_{1,i}^{(k,c)},s_{2,i}^{(k,c)}\right)
+-
+h_\theta(s_{1,i},s_{2,i})
+\right|,
+\label{eq:xai-direct}
+\end{equation}
+where only detector $c$ is modified within $G_k$.
+
+For shared estimators, the same group is replaced simultaneously in
+both detector inputs, yielding a single joint importance score,
+\begin{equation}
+I_k
+=
+\frac{1}{N}
+\sum_{i=1}^{N}
+\left|
+h_\theta\!\left(s_{1,i}^{(k)},s_{2,i}^{(k)}\right)
+-
+h_\theta(s_{1,i},s_{2,i})
+\right|.
+\label{eq:xai-shared}
+\end{equation}
+
+The importance therefore measures the average absolute change in the
+predicted correction when the event-specific waveform structure in a
+given temporal interval is replaced by its control-population mean.
+The resulting profiles characterize model sensitivity to the rising
+edge and to later waveform intervals across input windows and
+amplification stages within each board. They should be interpreted as
+perturbation sensitivity rather than as a direct measure of causal or
+independent timing information.
 
 \input{tables/models/estimator_inventory.tex}
 \input{figures/ml_pipeline.tex}
