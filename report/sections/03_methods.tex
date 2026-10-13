@@ -203,6 +203,8 @@ Within-board comparisons use matched test events and joint
 resampling to assess paired model differences.
 
 \subsection{Temporal sensitivity analysis}
+\textit{Preliminary XAI approach. The temporal-sensitivity analysis is
+still under validation and should be interpreted as exploratory.}
 
 To investigate which parts of each waveform influence the
 predicted correction, temporal occlusion is applied to the fitted
@@ -267,9 +269,7 @@ h_\theta(s_{1,i},s_{2,i})
 The importance therefore measures the average absolute change in the
 predicted correction when the event-specific waveform structure in a
 given temporal interval is replaced by its control-population mean.
-The resulting profiles characterize model sensitivity to the rising
-edge and to later waveform intervals across input windows and
-amplification stages within each board. They should be interpreted as
+The resulting profiles should be interpreted as
 perturbation sensitivity rather than as a direct measure of causal or
 independent timing information.
 
