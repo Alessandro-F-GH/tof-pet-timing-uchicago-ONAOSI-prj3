@@ -1,8 +1,8 @@
 {
   "name": "test_multirocket_48V_R1_R2",
-  "control_dataset": "../datasets/control_FBK.json",
+  "control_dataset": "../datasets/control.json",
   "development_dataset": {
-    "root_file": "processed_data/10-05/48V-R1.root",
+    "root_file": "processed_data/10-03/48V-R1.root",
     "true_tof_ps": 0.0,
     "channels": {
       "energy": [
@@ -24,7 +24,7 @@
     }
   },
   "blind_dataset": {
-    "root_file": "processed_data/10-05/48V-R2.root",
+    "root_file": "processed_data/10-03/48V-R2.root",
     "true_tof_ps": 0.0,
     "channels": {
       "energy": [
@@ -47,14 +47,14 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/test_multirocket_48V_R1_R2"
+    "folder": "UC/test_multirocket_48V_R1_R2"
   },
   "save_model": true,
   "protocol": {
     "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
     "bootstrap": {
-      "n_resamples": 200
+      "n_resamples": 100
     },
     "fit": {
       "energy_to_energy": {
@@ -99,12 +99,17 @@
       "shared_multirocket"
     ],
     "modes": [
-      "timing_to_timing"
+      "timing_to_timing",
+      "energy_to_energy"
     ],
     "windows": {
       "onishi": {
         "start": -1.5,
         "end": 2.0
+      },
+      "wide": {
+        "start": -2.0,
+        "end": 30.0
       }
     }
   }
