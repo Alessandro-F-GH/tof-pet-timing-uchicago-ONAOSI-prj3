@@ -74,9 +74,9 @@
       "prediction_chunk_size": 4096
     },
     "xai": {
-      "enabled": true,
+      "enabled": false,
       "group_size_samples": 8,
-      "max_events": 128
+      "max_events": 1024
     },
     "cross_validation": {
       "folds": 3,
@@ -99,12 +99,17 @@
       "shared_hydra"
     ],
     "modes": [
+      "energy_to_energy",
       "timing_to_timing"
     ],
     "windows": {
       "onishi": {
         "start": -1.5,
         "end": 2.0
+      },
+      "wide": {
+        "start": -2.0,
+        "end": 30.0
       }
     }
   }
