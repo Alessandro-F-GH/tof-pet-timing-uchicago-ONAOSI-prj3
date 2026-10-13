@@ -363,3 +363,72 @@ works even when the original batch disabled XAI. New `artifacts/xai.npz`,
 cohort and settings. Model weights, CV tables, predictions and blind/bootstrap
 metrics remain intact. Existing manuscript XAI figures must be refreshed separately
 from these regenerated plots.
+
+
+## Random dilated shapelets + Ridge
+
+`direct_rdst` and `shared_rdst` use aeon 1.6.0's
+`RandomDilatedShapeletTransform`. Install `requirements.txt` before selecting
+these models. The aeon import is lazy; other models do not require it at import time.
+
+- **Direct:** fit multivariate shapelets on paired control waveforms, transform
+  both detector channels jointly, then fit Ridge with an intercept.
+- **Shared:** fit one univariate transform on pooled control detector waveforms;
+  predict from `phi(s1)-phi(s2)` with Ridge without an intercept. Detector swap
+  negates the prediction, including the common symmetric output clipping.
+
+The shapelet transform and `StandardScaler(with_mean=False)` are fitted on
+control data without timing targets or class labels. Shapelets, thresholds and
+scales remain frozen across development folds, final fitting and blind evaluation.
+The existing control-fitted sample mask is applied before RDST. Lengths and
+dilations refer to retained sample indices, which need not be uniformly spaced
+in physical time. Lengths exceeding the retained input size raise an error.
+
+Model spaces are `config/model_spaces/direct_rdst.json` and `shared_rdst.json`.
+All RDST transform parameters are fixed; only `ridge_alpha` is grid-searched.
+These models retain the normal outer development CV, common folds, metric,
+pruning, final full-development fitting and blind event bootstrap. They do not
+use the special `RidgeCV` selection of the two linear waveform models. Do not
+make transform parameters categorical: the frozen cache rejects that configuration.
+
+From the repository root:
+
+```bash
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_rdst.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_rdst.json
+```
+
+The batch requires the same external acquisitions as `test_ridge.json`.
+
+With `protocol.xai.enabled=true`, RDST produces coefficient XAI instead of
+waveform occlusion. Each shapelet's feature columns are ordered as minimum
+absolute distance, match location and occurrence count. All three feature types
+are divided by their **per-feature control standard deviation** before Ridge
+fitting (a constant feature uses scale 1). Ranking is the sum of the absolute
+coefficients on these standardized features, in ps. This avoids comparing raw
+coefficients on different distance/location/count scales. Shared coefficients
+act on the difference of the two standardized detector feature vectors, using
+scales fitted on pooled control waveforms. They are linear-model weights rather
+than a measure of realized prediction contribution, accuracy gain or causality;
+correlated features can share coefficient weight. Output clipping is a later
+nonlinear operation and is not included in the coefficient score.
+
+Saved artifacts under each run include:
+
+- `model/model.pkl` and `model/feature_transform/transform.pkl`: prediction reload.
+- `model/feature_transform/shapelets.npz`: pickle-free values, length, dilation,
+  startpoint, threshold, normalization, means/stds, feature mapping, scaling,
+  aeon version, control provenance and retained time/sample grids.
+- `artifacts/xai.npz`: signed scaled and raw coefficients, scores and stable ranks.
+- `tables/shapelet_importance.csv`: all shapelets in descending score order.
+- `plots/shapelets/ranked_*.png` (or the configured output format): ranked pages
+  of 12 templates, including both channels for direct shapelets. Normalized
+  templates are shown as z scores; others use the pipeline's normalized amplitude.
+  Time coordinates follow the retained grid at the original sampled source start.
+
+`plots` regenerates the figures and CSV from numeric XAI artifacts. `xai --results
+... --models direct_rdst shared_rdst` regenerates coefficient XAI from saved
+models without prepared datasets or raw acquisitions. It does not refit, rerun
+selection, or alter blind metrics. Temporal group-size/max-event options have
+no effect on coefficient ranking. aeon is pinned because the portable export
+adapter validates the library's stored shapelet layout.

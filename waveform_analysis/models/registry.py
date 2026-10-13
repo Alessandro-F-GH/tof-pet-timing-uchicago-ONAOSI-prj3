@@ -26,11 +26,15 @@ from waveform_analysis.models.linear.shared_linear_ridge import (
 from waveform_analysis.models.kernel.shared_minirocket import (
     MODEL_SPEC as SHARED_MINIROCKET_SPEC,
 )
+from waveform_analysis.models.kernel.direct_rdst import MODEL_SPEC as DIRECT_RDST_SPEC
+from waveform_analysis.models.kernel.shared_rdst import MODEL_SPEC as SHARED_RDST_SPEC
 from waveform_analysis.models.spec import ModelSpec
 
 ONISHI_CNN_SPEC = replace(_ONISHI_CNN_SPEC, estimator_formulation="direct")
 
 _REGISTRY: dict[str, ModelSpec] = {
+    DIRECT_RDST_SPEC.name: DIRECT_RDST_SPEC,
+    SHARED_RDST_SPEC.name: SHARED_RDST_SPEC,
     ANTISYMMETRIC_MLP_SPEC.name: ANTISYMMETRIC_MLP_SPEC,
     LOCALLY_CONNECTED_MLP_SPEC.name: LOCALLY_CONNECTED_MLP_SPEC,
     SHARED_CNN1D_SPEC.name: SHARED_CNN1D_SPEC,

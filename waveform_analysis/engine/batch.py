@@ -12,7 +12,7 @@ from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERS
 from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
 from waveform_analysis.data.sample_mask import SAMPLE_MASK_VERSION
 from waveform_analysis.engine.study import run_study
-from waveform_analysis.engine.xai import XAI_METHOD_VERSION
+from waveform_analysis.engine.xai import model_xai_version
 from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
 
 BATCH_SCHEMA_VERSION = 11
@@ -105,7 +105,7 @@ def _planner_fingerprints(config):
             "blind": blind,
             "xai": config["xai"],
             "seed": config["seed"],
-            "method_version": XAI_METHOD_VERSION,
+            "method_version": model_xai_version(config["model"]["name"]),
         }
     )
     plots = canonical_hash({"plot_config": config["plot_config"]})

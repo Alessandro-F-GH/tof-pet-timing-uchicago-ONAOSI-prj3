@@ -13,6 +13,7 @@ from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
+from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
 
 _CACHE_VERSION = 4
 _FROZEN_INPUT_MODELS = {
@@ -49,7 +50,7 @@ class FrozenFeatureSet:
 
 
 def uses_frozen_model_input(spec) -> bool:
-    return spec.name in _FROZEN_INPUT_MODELS and spec.feature_transform is not None
+    return spec.name in (_FROZEN_INPUT_MODELS | RDST_MODELS) and spec.feature_transform is not None
 
 
 def _fixed_candidate(model_space: dict) -> dict:
@@ -121,7 +122,7 @@ def prepare_frozen_transform(
     mode = str(config["mode"])
     window = str(config.get("window_name") or "window")
     transform_parameters = _transform_parameters(spec, model_space)
-    fit_role = "control" if spec.name in _MINIROCKET_MODELS else "deterministic"
+    fit_role = "control" if spec.name in (_MINIROCKET_MODELS | RDST_MODELS) else "deterministic"
     fit_identity = (
         str(control_dataset.manifest["analysis_protocol_identity"])
         if fit_role == "control"
@@ -203,10 +204,17 @@ def prepare_frozen_transform(
         config=model_space,
     )
     del fit_pair
+    if spec.name in RDST_MODELS:
+        view = waveform_view(control_dataset, mode, np.asarray([0], dtype=np.int64))
+        artifact.time_ps = np.asarray(view.time_ps, dtype=np.float64)[sample_mask]
+        artifact.sample_indices = np.flatnonzero(sample_mask)
     metadata = getattr(artifact, "metadata", None)
     if isinstance(metadata, dict):
         metadata["transform_fit_role"] = fit_role
         metadata["input_samples"] = input_samples
+        if spec.name in RDST_MODELS:
+            metadata["transform_identity"] = identity
+            metadata["control_analysis_protocol_identity"] = fit_identity
 
     _atomic_pickle(artifact_path, artifact)
     atomic_json(

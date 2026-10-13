@@ -175,3 +175,20 @@ from waveform_analysis.core.compat import (
 )
 
 _preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.xai")
+
+
+def model_xai_method(spec):
+    from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
+    return "shapelet_coefficients" if getattr(spec, "name", spec) in RDST_MODELS else "grouped_temporal_occlusion"
+
+
+def model_xai_version(spec):
+    from waveform_analysis.engine.shapelet_xai import SHAPELET_XAI_VERSION
+    return SHAPELET_XAI_VERSION if model_xai_method(spec) == "shapelet_coefficients" else XAI_METHOD_VERSION
+
+
+def model_importance(spec, fitted, dataset, mode, **kwargs):
+    if model_xai_method(spec) == "shapelet_coefficients":
+        from waveform_analysis.engine.shapelet_xai import coefficient_importance
+        return coefficient_importance(fitted)
+    return temporal_occlusion_importance(spec, fitted, dataset, mode, **kwargs)

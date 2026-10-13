@@ -13,7 +13,7 @@ from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.engine.train import load_fitted_model, release_training_memory, saved_model_complete
-from waveform_analysis.engine.xai import XAI_METHOD_VERSION, temporal_occlusion_importance
+from waveform_analysis.engine.xai import model_importance, model_xai_method, model_xai_version
 from waveform_analysis.models import get_model
 from waveform_analysis.reporting.plotting import plot_run_xai
 
@@ -152,13 +152,18 @@ def rerun_xai(
             if not saved_model_complete(spec, store.model_dir):
                 raise FileNotFoundError("Saved final model or frozen transform is missing/incomplete")
             root = _cache_root(config, store.root, cache_root)
-            control = lookup.find(root, "control", config, manifest)
-            blind = lookup.find(root, "blind", config, manifest)
+            coefficient_xai = model_xai_method(spec) == "shapelet_coefficients"
+            control = None if coefficient_xai else lookup.find(root, "control", config, manifest)
+            blind = None if coefficient_xai else lookup.find(root, "blind", config, manifest)
+            control_identity = (manifest["dataset_populations"]["control"]["analysis_protocol_identity"]
+                                if coefficient_xai else control.manifest["analysis_protocol_identity"])
+            blind_identity = (manifest["dataset_populations"]["blind"]["analysis_protocol_identity"]
+                              if coefficient_xai else blind.manifest["analysis_protocol_identity"])
             final_fit = manifest["stage_fingerprints"]["final_fit"]
             payload = {
-                "final_fit": final_fit, "blind": blind.manifest["analysis_protocol_identity"],
-                "xai": settings, "seed": config["seed"], "method_version": XAI_METHOD_VERSION,
-                "control": control.manifest["analysis_protocol_identity"],
+                "final_fit": final_fit, "blind": blind_identity,
+                "xai": settings, "seed": config["seed"], "method_version": model_xai_version(spec),
+                "control": control_identity,
                 "formulation": spec.estimator_formulation,
             }
             fingerprint = canonical_hash({"schema_version": manifest["schema_version"],
@@ -168,7 +173,7 @@ def rerun_xai(
             with diagnostic_random_state():
                 fitted = load_fitted_model(spec, store.model_dir, best["parameters"], config)
                 try:
-                    scores = temporal_occlusion_importance(
+                    scores = model_importance(
                         spec, fitted, blind, config["mode"], control_dataset=control,
                         cache_root=root, group_size_samples=settings["group_size_samples"],
                         max_events=settings["max_events"],
@@ -178,10 +183,10 @@ def rerun_xai(
                     del fitted
                     release_training_memory()
             store.save_xai(**scores)
-            metadata = {"method": "grouped_temporal_occlusion", "replacement_method": "control_sample_mean",
-                        "method_version": XAI_METHOD_VERSION, "formulation": spec.estimator_formulation,
-                        "control_analysis_protocol_identity": control.manifest["analysis_protocol_identity"],
-                        "control_n_events": control.n_events, "settings": settings}
+            metadata = {"method": model_xai_method(spec), "replacement_method": "none" if coefficient_xai else "control_sample_mean",
+                        "method_version": model_xai_version(spec), "formulation": spec.estimator_formulation,
+                        "control_analysis_protocol_identity": control_identity,
+                        "control_n_events": manifest["dataset_populations"]["control"]["n_selected"] if coefficient_xai else control.n_events, "settings": settings}
             # Preserve other stages, including older saved-model input policies.
             state = store.read_json(store.state_path, {"schema_version": manifest["schema_version"], "stages": {}})
             state.setdefault("stages", {})["xai"] = {"status": "complete", "fingerprint": fingerprint,

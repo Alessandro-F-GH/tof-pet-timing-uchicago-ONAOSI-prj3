@@ -41,7 +41,15 @@ def main() -> None:
         }
 
     result = {}
-    for name in model_names():
+    names = model_names()
+    if len(sys.argv) > 3:
+        # Compare every historical model. Newly registered models have no
+        # historical counterpart and are exercised by dedicated model tests.
+        reference = json.loads((Path(sys.argv[3]) / "result.json").read_text())
+        reference_names = set(reference) - {"protocol"}
+        assert reference_names <= set(names), "A historical model disappeared from the registry"
+        names = sorted(reference_names)
+    for name in names:
         spec = get_model(name)
         params = {
             "architecture": [8, 4],

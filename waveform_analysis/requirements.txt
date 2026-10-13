@@ -8,3 +8,6 @@ sktime>=0.35
 optuna>=4.0
 uproot>=5.2
 awkward>=2.6
+
+# Pin the shapelet representation used for portable XAI exports.
+aeon==1.6.0

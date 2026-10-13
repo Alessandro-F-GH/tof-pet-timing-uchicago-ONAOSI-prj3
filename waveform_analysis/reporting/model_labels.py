@@ -1,6 +1,8 @@
 """Stable manuscript codes, independent of performance rank or exclusions."""
 
 MODEL_LABELS: dict[str, tuple[str, str]] = {
+    "direct_rdst": ("D-RDST", "Direct dilated shapelets + ridge"),
+    "shared_rdst": ("S-RDST", "Shared dilated shapelets + ridge"),
     "direct_mlp": ("D-MLP", "Direct dense MLP"),
     "independent_cnn1d": ("D-CNN", "Independent temporal CNN"),
     "onishi_cnn": ("D-ONI", "Onishi-inspired paired CNN"),

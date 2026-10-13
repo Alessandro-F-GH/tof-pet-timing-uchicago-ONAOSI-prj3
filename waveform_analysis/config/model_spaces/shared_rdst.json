@@ -1,0 +1,57 @@
+{
+  "model": "shared_rdst",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "max_shapelets": {
+      "type": "fixed",
+      "value": 1024
+    },
+    "shapelet_lengths": {
+      "type": "fixed",
+      "value": [
+        3,
+        5,
+        7,
+        11
+      ]
+    },
+    "proba_normalization": {
+      "type": "fixed",
+      "value": 0.8
+    },
+    "threshold_percentiles": {
+      "type": "fixed",
+      "value": [
+        5,
+        10
+      ]
+    },
+    "alpha_similarity": {
+      "type": "fixed",
+      "value": 0.5
+    },
+    "use_prime_dilations": {
+      "type": "fixed",
+      "value": false
+    },
+    "ridge_alpha": {
+      "type": "categorical",
+      "choices": [
+        0.01,
+        1.0,
+        100.0,
+        10000.0
+      ]
+    }
+  },
+  "transform": {
+    "n_jobs": 2
+  },
+  "training": {},
+  "diagnostics": {
+    "detector_swap": true
+  },
+  "verbose": false
+}

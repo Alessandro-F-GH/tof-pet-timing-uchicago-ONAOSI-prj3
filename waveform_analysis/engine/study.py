@@ -47,8 +47,9 @@ from waveform_analysis.engine.validation import (
 )
 from waveform_analysis.data.view import model_target
 from waveform_analysis.engine.xai import (
-    XAI_METHOD_VERSION,
-    temporal_occlusion_importance,
+    model_importance,
+    model_xai_method,
+    model_xai_version,
 )
 from waveform_analysis.engine.diagnostics import (
     development_predictions_current,
@@ -938,7 +939,7 @@ def run_study(config, *, logger=None):
             "blind": blind.manifest["analysis_protocol_identity"],
             "xai": config["xai"],
             "seed": config["seed"],
-            "method_version": XAI_METHOD_VERSION,
+            "method_version": model_xai_version(spec),
             "control": (control_prepared.manifest["analysis_protocol_identity"]
                         if config["xai"]["enabled"] else None),
             "formulation": spec.estimator_formulation,
@@ -948,16 +949,17 @@ def run_study(config, *, logger=None):
         _sync(store, "xai", xai_fp) != "complete" or not store.xai_path.is_file()
     ):
         logger.info(
-            "XAI | grouped temporal occlusion | max_events=%d | group=%d samples",
+            "XAI | %s | max_events=%d | group=%d samples",
+            model_xai_method(spec),
             int(config["xai"]["max_events"]),
             int(config["xai"]["group_size_samples"]),
         )
         if fitted is None:
             fitted = _model(
-                store, spec, space, config, development, best, final_fp, logger
+                store, spec, space, config, development, best, final_fp, logger, frozen_development
             )
         store.save_xai(
-            **temporal_occlusion_importance(
+            **model_importance(
                 spec,
                 fitted,
                 blind,
@@ -973,10 +975,10 @@ def run_study(config, *, logger=None):
             "xai",
             xai_fp,
             metadata={
-                "method": "grouped_temporal_occlusion",
-                "replacement_method": "control_sample_mean",
+                "method": model_xai_method(spec),
+                "replacement_method": ("none" if model_xai_method(spec) == "shapelet_coefficients" else "control_sample_mean"),
                 "formulation": spec.estimator_formulation,
-                "method_version": XAI_METHOD_VERSION,
+                "method_version": model_xai_version(spec),
             },
         )
         logger.info("XAI complete")

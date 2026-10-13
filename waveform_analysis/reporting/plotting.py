@@ -387,6 +387,9 @@ def plot_run_xai(run, cfg):
     if not path.is_file():
         return None
     with np.load(path) as d:
+        if "method" in d and str(d["method"].item()) == "shapelet_coefficients":
+            from waveform_analysis.reporting.shapelets import plot_shapelets
+            return plot_shapelets(run, {k: d[k] for k in d.files}, cfg)
         time = np.asarray(d["time_ps"], float).reshape(-1) / 1000.0
         importance = np.asarray(d["importance_ps"], float)
         example = np.asarray(d["example_waveforms_mV"], float)
