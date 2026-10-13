@@ -1,0 +1,13 @@
+"""Shared Hydra + Ridge model entry point."""
+from waveform_analysis.models.kernel import hydra_common as common
+
+
+def fit_transform(parameters, train_x, *, seed, config):
+    return common.fit_transform(parameters, train_x, seed=seed, config=config, shared=True)
+
+
+def fit(params, train_x, train_target, *, seed, config):
+    return common.fit(params, train_x, train_target, seed=seed, config=config, shared=True)
+
+
+MODEL_SPEC = common.make_spec("shared_hydra", fit_transform, fit)

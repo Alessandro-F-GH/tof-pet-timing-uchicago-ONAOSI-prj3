@@ -1,0 +1,38 @@
+{
+  "model": "direct_hydra",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "n_kernels": {
+      "type": "fixed",
+      "value": 8
+    },
+    "n_groups": {
+      "type": "fixed",
+      "value": 64
+    },
+    "max_num_channels": {
+      "type": "fixed",
+      "value": 8
+    },
+    "ridge_alpha": {
+      "type": "categorical",
+      "choices": [
+        0.01,
+        1.0,
+        100.0,
+        10000.0
+      ]
+    }
+  },
+  "transform": {
+    "n_jobs": 2,
+    "batch_size": 128
+  },
+  "training": {},
+  "diagnostics": {
+    "detector_swap": false
+  },
+  "verbose": false
+}

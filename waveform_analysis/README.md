@@ -432,3 +432,80 @@ models without prepared datasets or raw acquisitions. It does not refit, rerun
 selection, or alter blind metrics. Temporal group-size/max-event options have
 no effect on coefficient ranking. aeon is pinned because the portable export
 adapter validates the library's stored shapelet layout.
+
+
+## Hydra + Ridge
+
+`direct_hydra` and `shared_hydra` use aeon 1.6.0's `HydraTransformer` followed
+by Ridge regression. The existing requirements already include aeon and PyTorch.
+Hydra imports aeon/PyTorch lazily when selected. Execution uses CPU tensors.
+
+- **Direct:** initialize multivariate Hydra on paired control waveforms and fit
+  sparse scaling on their features; transform each detector pair jointly and
+  fit Ridge with an intercept.
+- **Shared:** initialize one univariate Hydra on pooled control detector
+  waveforms and fit one sparse scaler on their features. Transform and scale
+  each detector separately, then fit Ridge without an intercept on
+  `phi(s1)-phi(s2)`. Swapping detectors negates the prediction, including the
+  common symmetric output clipping.
+
+Hydra's random competing kernels use length 9 and several dilations, extracting
+weighted maximum responses and minimum-winning counts from the input and its
+first differences. Kernel initialization depends on input dimensions and the
+semantic seed, not on targets. Both initialization and sparse-scaler fitting
+use control data only. Neither development nor blind events update kernels or
+scaling statistics. The shared model subtracts **after** nonlinear scaling;
+scaling a detector-feature difference would be a different model.
+
+Scaling matches aeon's reference Hydra scaler: clamp features to nonnegative
+values, take their square root, compute the control mean and sample standard
+deviation, and add `(fraction_of_zeros ** 4) + 1e-8` to that standard deviation.
+Subtract the frozen mean only at nonzero entries, divide by the frozen scale,
+and preserve zeros. This is not ordinary `StandardScaler`. At least two control
+waveforms are required to estimate the sample standard deviation.
+
+The existing control-fitted sample mask applies before Hydra; inputs require
+at least 9 retained samples. Dilations and first differences operate on the
+retained sample sequence, which may have nonuniform physical spacing. No
+resampling or new scientific preprocessing is introduced.
+
+Model spaces are `config/model_spaces/direct_hydra.json` and
+`shared_hydra.json`. Defaults are 8 kernels per group, 64 groups and a maximum
+channel-sampling count of 8. `n_groups` must be 1 or even, avoiding aeon's silent
+truncation of odd group counts. These transform settings stay fixed. Only
+`ridge_alpha` is grid-searched through the existing outer development CV, common
+folds, metric, pruning and resume logic; `protocol.cross_validation` is required.
+Final fitting uses all development events, followed by the existing blind
+metrics, output clipping and event bootstrap.
+
+`transform.n_jobs` defaults to 2. `transform.batch_size` defaults to 128 and
+bounds the number of waveforms entering each convolution call, including control
+feature generation. The scaler is still fitted on the complete control feature
+matrix. Existing prediction chunking and memory-mapped feature caches remain
+in use. PyTorch's random state and thread count are restored after Hydra calls,
+including failures, so mixed batches retain the other models' runtime state.
+
+Saved artifacts include `model/model.pkl`,
+`model/feature_transform/transform.pkl`, and
+`model/feature_transform/hydra.npz`. The pickle files support prediction reload;
+the NumPy export records kernels, sampled channel indices, dilation and padding,
+feature-to-kernel ordering, sparse-scaler statistics, seed, aeon/transform version,
+control provenance and retained time/sample grids. Kernels are stored explicitly:
+aeon's internal kernel tensors are not registered in a PyTorch `state_dict`.
+
+Hydra retains the existing temporal-occlusion XAI: replace waveform groups with
+the detector-specific control mean, apply the frozen mask/transform/scaler and
+measure prediction changes. Direct explanations are detector-specific; shared
+explanations intervene on both detectors together. `plots` and `xai` replay
+use the existing saved-results workflow. XAI replay requires matching prepared
+control/blind caches and never refits kernels, scaling or Ridge. Ranked kernel
+plots are not part of this implementation.
+
+From the repository root:
+
+```bash
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_hydra.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_hydra.json
+```
+
+The example uses the same external FBK acquisitions as `test_ridge.json`.

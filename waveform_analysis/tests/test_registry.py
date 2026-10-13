@@ -18,6 +18,8 @@ class RegistryTests(unittest.TestCase):
                 "independent_cnn1d",
                 "onishi_cnn",
                 "direct_minirocket",
+                "direct_hydra",
+                "shared_hydra",
                 "direct_rdst",
                 "shared_rdst",
             },
