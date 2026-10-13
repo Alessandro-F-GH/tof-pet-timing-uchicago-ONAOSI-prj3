@@ -189,14 +189,20 @@ def save_transform(artifact, path):
 
 
 def fit(params, train_x, train_target, *, seed, config, shared):
-    del seed, config
+    del seed
     x, y = np.asarray(train_x, dtype=np.float32), np.asarray(train_target, dtype=np.float64)
     alpha = float(params["ridge_alpha"])
     if not np.isfinite(alpha) or alpha <= 0:
         raise ValueError("MultiRocket ridge_alpha must be finite and positive")
     if x.ndim != 2 or y.ndim != 1 or len(x) != len(y) or x.shape[1] < 1:
         raise ValueError("MultiRocket Ridge requires [event, feature] input and one target per event")
-    regressor = Ridge(alpha=alpha, fit_intercept=not shared, solver="lsqr", tol=1e-4).fit(x, y)
+    # The engine supplies an owned training-row copy. Center that buffer in
+    # place instead of allocating another full feature matrix inside Ridge.
+    # Standalone callers retain the default non-mutating sklearn behavior.
+    regressor = Ridge(
+        alpha=alpha, fit_intercept=not shared, solver="lsqr", tol=1e-4,
+        copy_X=not config.get("_fit_input_owned", False),
+    ).fit(x, y)
     return MultiRocketArtifact(regressor, {
         "ridge_alpha": alpha, "training_events": len(y), "feature_count": x.shape[1],
         "fit_intercept": not shared, "detector_swap_antisymmetry_enforced": shared,

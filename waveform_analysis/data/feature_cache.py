@@ -304,6 +304,10 @@ def prepare_frozen_features(
 
     directory.mkdir(parents=True, exist_ok=True)
     chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
+    if spec.name in MULTIROCKET_MODELS:
+        # Bound the returned feature matrix, not only MultiRocket's internal
+        # convolution batches: 4096 default-budget rows occupy about 0.8 GB.
+        chunk_size = min(chunk_size, int(frozen_transform.transform.artifact.metadata["batch_size"]))
     first = frozen_transform.transform.apply(
         _pair(dataset, mode, np.asarray([0], dtype=np.int64))
     )

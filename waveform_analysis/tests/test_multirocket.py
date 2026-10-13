@@ -150,7 +150,13 @@ def test_actual_multirocket_batch_grid_blind_temporal_xai_reporting_and_resume(t
     protocol = deepcopy(resolved.protocol)
     protocol["bootstrap"]["n_resamples"] = 3
     runs = []
+    # The example may sweep multiple modes/windows. Keep one timing run per
+    # formulation so test output directories and mask assertions stay distinct.
+    representatives = {}
     for original in resolved.runs:
+        if original["mode"] == "timing_to_timing":
+            representatives.setdefault(original["model"]["name"], original)
+    for original in representatives.values():
         name = original["model"]["name"]
         c = deepcopy(original)
         c.update(model={"name": name, "space": space(name)}, run_id=name, name=name,
@@ -227,3 +233,56 @@ def test_default_feature_budget(name):
     assert features.shape == (4, 49728)
     assert np.all(np.isfinite(features))
     np.testing.assert_array_equal(spec.feature_transform.transform(artifact, control), features)
+
+
+@pytest.mark.parametrize("name", ["direct_multirocket", "shared_multirocket"])
+@pytest.mark.parametrize("memory_mapped", [False, True])
+def test_engine_avoids_ridge_copy_without_mutating_cache(name, memory_mapped, tmp_path):
+    from sklearn.linear_model import Ridge
+    from waveform_analysis.data.feature_cache import FrozenFeatureSet
+    from types import SimpleNamespace
+
+    spec, model_space = get_model(name), space(name)
+    dataset = DummyDataset(tmp_path, "memory", n_events=32, n_samples=16)
+    matrix = np.random.default_rng(94).normal(size=(32, 20)).astype(np.float32)
+    if memory_mapped:
+        np.save(tmp_path / "features.npy", matrix)
+        matrix = np.load(tmp_path / "features.npy", mmap_mode="r")
+    before = matrix.copy()
+    features = FrozenFeatureSet(matrix, np.ones(16, bool), SimpleNamespace(
+        spec=spec.feature_transform, identity="test", parameters={}, seed=1), "test", "development")
+    config = {**_config(tmp_path), "ml_output": {"max_abs_ps": 2000.0}}
+    candidate = spec.candidates(model_space)[0]
+    fitted = fit_on_indices(spec, model_space, config, dataset, np.arange(24), candidate,
+                             seed=1, frozen_features=features)
+    assert fitted.artifact.regressor.copy_X is False
+    np.testing.assert_array_equal(matrix, before)
+    reference = Ridge(alpha=candidate["ridge_alpha"], fit_intercept=name.startswith("direct"),
+                      solver="lsqr", tol=1e-4).fit(before[:24], dataset.energy_target_ps[:24])
+    np.testing.assert_array_equal(fitted.artifact.regressor.coef_, reference.coef_)
+    np.testing.assert_array_equal(spec.predict(fitted.artifact, matrix[24:]), reference.predict(before[24:]))
+    # The public fit callback must still protect a caller's reusable matrix.
+    spec.fit(candidate, matrix, dataset.energy_target_ps, seed=1, config=model_space)
+    np.testing.assert_array_equal(matrix, before)
+
+
+def test_prediction_batches_are_bounded_by_transform_batch_size():
+    from types import SimpleNamespace
+    from sklearn.linear_model import Ridge
+
+    spec = get_model('direct_multirocket')
+    matrix = np.random.default_rng(82).normal(size=(50, 20)).astype(np.float32)
+    regressor = Ridge(alpha=10).fit(matrix, np.arange(50, dtype=np.float32))
+    calls = []
+    def rows(indices):
+        calls.append(len(indices))
+        return matrix[indices]
+    fitted = SimpleNamespace(
+        metadata={'prediction_chunk_size': 4096}, output_max_abs_ps=None,
+        feature_transform=SimpleNamespace(artifact=SimpleNamespace(metadata={'batch_size': 3})),
+        artifact=SimpleNamespace(regressor=regressor),
+    )
+    actual = predict_indices(spec, fitted, None, 'energy_to_energy', np.arange(50),
+                             chunk_size=4096, frozen_features=SimpleNamespace(rows=rows))
+    assert max(calls) <= 3 and sum(calls) == 50
+    np.testing.assert_allclose(actual, regressor.predict(matrix), atol=1e-5)

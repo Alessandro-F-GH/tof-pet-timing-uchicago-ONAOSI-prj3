@@ -272,6 +272,12 @@ def fit_on_indices(
         mask = prepared.sample_mask
 
     cfg = copy.deepcopy(model_config)
+    if spec.name in MULTIROCKET_MODELS:
+        # FrozenFeatureSet.rows uses advanced indexing and owns its result.
+        # Only this disposable copy may be centered in place by Ridge.
+        cfg["_fit_input_owned"] = bool(
+            x.flags.writeable and not np.shares_memory(x, frozen_features.features)
+        )
     cfg["_early_stopping_seed"] = int(seed)
     cfg["_input_time_ps"] = np.asarray(time, np.float64)
     if logger is not None:
@@ -388,6 +394,8 @@ def _predict_indices(
         return np.empty(0, dtype=np.float64)
 
     chunk = _resolve_prediction_chunk_size(fitted, chunk_size)
+    if getattr(spec, "name", None) in MULTIROCKET_MODELS and fitted.feature_transform is not None:
+        chunk = min(chunk, int(fitted.feature_transform.artifact.metadata["batch_size"]))
     output = np.empty(idx.size, dtype=np.float64)
     for start in range(0, idx.size, chunk):
         stop = min(start + chunk, idx.size)

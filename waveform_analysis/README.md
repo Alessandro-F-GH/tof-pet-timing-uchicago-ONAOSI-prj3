@@ -555,10 +555,14 @@ or resampling is introduced; differencing follows the retained sample sequence.
 `transform.n_jobs` defaults to 2 and `transform.batch_size` to 128. Control
 feature scaling streams batches and does not allocate an unused full control
 feature matrix. Development and blind features use the existing chunked,
-memory-mapped cache. These matrices can still be large: 15,000 events at the
+memory-mapped cache. Their generation and prediction batches are automatically
+capped at `transform.batch_size`, even when `runtime.prediction_chunk_size` is
+larger. During engine fitting, Ridge reuses the owned training-row buffer rather
+than making another full matrix copy; cached features remain unchanged. These
+matrices can still be large: 15,000 events at the
 default budget require about 3 GB per float32 feature matrix, and Ridge fitting
-may require additional memory. Changing batch size cannot shrink that feature
-budget. NumPy's global random state and Numba's thread count are restored after
+still materializes one dense matrix of selected training rows. Changing batch
+size cannot shrink that training matrix or feature budget. NumPy's global random state and Numba's thread count are restored after
 transform calls, including failures.
 
 Saved `model/model.pkl` and `model/feature_transform/transform.pkl` support
@@ -579,4 +583,4 @@ python -m waveform_analysis.cli check-batch --config waveform_analysis/config/ba
 python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_multirocket.json
 ```
 
-The example uses the same external FBK acquisitions as the other test batches.
+The example references external UC acquisitions configured in `test_multirocket.json`.
