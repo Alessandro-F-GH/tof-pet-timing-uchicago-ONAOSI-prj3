@@ -577,6 +577,16 @@ def _print_plan(plan):
         print("Unique models are included automatically. No output has been written.")
     elif "output" in plan:
         print(f"Saved to: {plan['output']}")
+        for info in plan.get("groups", []):
+            label = f"{info['group']}/{info['leaf']}"
+            if not info.get("summary_plots_requested", True):
+                print(f"  Summary plots disabled: {label} (--no-summary-plots)")
+            elif info.get("comparison_plot_skip_reasons"):
+                print(f"  Comparison plots skipped or incomplete: {label}")
+                for reason in info["comparison_plot_skip_reasons"]:
+                    print(f"    - {reason}")
+            else:
+                print(f"  Comparison plots: {label}/blind_ctr.*, blind_rmse.*")
     elif plan.get("output_conflicts"):
         print("Add --overwrite to replace the listed entries; unrelated results will be preserved.")
     elif runs:

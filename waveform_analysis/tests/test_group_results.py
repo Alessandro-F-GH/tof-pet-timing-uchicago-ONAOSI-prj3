@@ -422,3 +422,20 @@ def test_failed_append_leaves_previous_output_unchanged(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='plot failure'):
         group_results([second], output)
     assert snapshot(output) == before
+
+
+def test_cli_reports_why_comparison_plots_are_missing(tmp_path, capsys):
+    from waveform_analysis.scripts.group_results import main
+    run(tmp_path, 'a', 'direct_rdst')
+    old = run(tmp_path, 'b', 'shared_rdst')
+    path = old / 'metadata/manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest.pop('led_centering_fit_role')
+    write_json(path, manifest)
+    output = tmp_path / 'grouped'
+    assert main(['--sources', str(tmp_path / 'results'), '--output', str(output)]) == 0
+    text = capsys.readouterr().out
+    assert 'Comparison plots skipped or incomplete: UC_48V_sub1/timing_to_timing/window_-1.5_2ns' in text
+    assert 'control LED calibration missing or different' in text
+    assert 'Comparison plots: ' not in text
+    assert len(list(output.rglob('plots/blind.png'))) == 2
