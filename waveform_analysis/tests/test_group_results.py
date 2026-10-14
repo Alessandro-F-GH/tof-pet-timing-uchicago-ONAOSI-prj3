@@ -168,9 +168,9 @@ def test_cli_check_is_standalone_and_does_not_import_models(tmp_path):
     completed = subprocess.run([sys.executable, '-c', code, str(tmp_path / 'results'),
                                 str(tmp_path / 'grouped')], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
-    # Also exercise actual documented direct invocation, including clean stdout JSON.
+    # Machine-readable output remains available explicitly.
     completed = subprocess.run([sys.executable, str(script), '--sources', str(tmp_path / 'results'),
-                                '--output', str(tmp_path / 'grouped'), '--check'], capture_output=True, text=True)
+                                '--output', str(tmp_path / 'grouped'), '--check', '--json'], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)['runs'][0]['group'] == 'UC_48V_sub1'
     assert not (tmp_path / 'grouped').exists()
@@ -213,4 +213,28 @@ def test_null_legacy_population_and_unresolved_fit_still_copy_results(tmp_path):
     assert len(result['groups']) == 1
     assert len(result['selected']) == 2
     assert result['groups'][0]['comparison_plot_skip_reasons']
+    assert len(list(output.rglob('plots/blind.png'))) == 2
+
+
+def test_cli_lists_compact_duplicate_choices_without_requiring_check(tmp_path, capsys):
+    from waveform_analysis.scripts.group_results import main
+    run(tmp_path, 'batch_a', 'direct_rdst')
+    run(tmp_path, 'batch_b', 'direct_rdst')
+    run(tmp_path, 'batch_c', 'shared_rdst')
+    output = tmp_path / 'grouped'
+    args = ['--sources', str(tmp_path / 'results'), '--output', str(output)]
+    assert main(args) == 2
+    text = capsys.readouterr().out
+    assert '3 runs | 1 groups | 1 choices needed' in text
+    assert 'Choice 1: UC_48V_sub1 | timing_to_timing | -1.5 to 2 ns | direct_rdst' in text
+    assert 'batch_a/timing/onishi/direct_rdst' in text
+    assert 'batch_b/timing/onishi/direct_rdst' in text
+    assert text.count('--select ') == 3  # Two candidate options and one instruction.
+    assert '"candidates"' not in text
+    assert not output.exists()
+    plan = group_results([tmp_path / 'results'], output, check=True)
+    chosen = plan['conflicts'][0]['candidates'][0]['id']
+    assert main(args + ['--select', chosen, '--no-summary-plots']) == 0
+    text = capsys.readouterr().out
+    assert '0 choices needed' in text and 'Saved to:' in text
     assert len(list(output.rglob('plots/blind.png'))) == 2

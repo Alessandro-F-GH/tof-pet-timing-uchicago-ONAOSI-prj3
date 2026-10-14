@@ -616,7 +616,19 @@ channels/polarities and true TOF are part of the dataset grouping identity.
 Missing or inconsistent subsampling is reported and skipped, never guessed as 1.
 
 If the same model appears twice in one group/mode/window, `--check` lists a
-conflict with stable source-run IDs. Choose exactly one explicitly:
+compact conflict block with stable source-run IDs, for example:
+
+```text
+Choice 1: UC_48V_sub1 | timing_to_timing | -1.5 to 2 ns | direct_rdst
+  Select                     Batch / run
+  --select a12bc345de67  batch_a/timing/onishi/direct_rdst
+  --select f98ed765cb43  batch_b/timing/onishi/direct_rdst
+```
+
+Copy one `--select ID` option per block into your command. These same choices
+appear automatically if a normal grouping command encounters duplicates, so
+rerunning with `--check` is optional. Full machine-readable output remains
+available with `--json`. Choose exactly one explicitly:
 
 ```powershell
 python -m waveform_analysis.scripts.group_results --sources waveform_analysis/results/UC --output waveform_analysis/grouped_results --select RUN_ID

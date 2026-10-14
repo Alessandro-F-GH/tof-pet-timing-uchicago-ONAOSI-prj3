@@ -432,6 +432,46 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
     return {**plan, "output": str(output), "groups": leaves}
 
 
+
+def _print_plan(plan):
+    runs, conflicts = plan["runs"], plan["conflicts"]
+    groups = defaultdict(list)
+    for run in runs:
+        groups[run["group"]].append(run)
+    print(f"{len(runs)} runs | {len(groups)} groups | {len(conflicts)} choices needed | {len(plan['skipped'])} skipped")
+    for group, members in sorted(groups.items()):
+        windows = {(r["mode"], tuple(r["window_ns"])) for r in members}
+        print(f"  {group}: {len(members)} runs, {len(windows)} mode/window combinations")
+    for index, conflict in enumerate(conflicts, 1):
+        first = conflict["candidates"][0]
+        start, end = first["window_ns"]
+        print(f"\nChoice {index}: {first['group']} | {first['mode']} | {_number(start)} to {_number(end)} ns | {first['model']}")
+        print("  Select                     Batch / run")
+        for run in conflict["candidates"]:
+            batch, source = Path(run["batch"]), Path(run["source"])
+            try:
+                label = f"{batch.name}/{source.relative_to(batch).as_posix()}"
+            except ValueError:
+                label = str(source)
+            print(f"  --select {run['id']}  {label}")
+        # Keep long shared prefixes out of each candidate row.
+        parents = sorted({str(Path(r["batch"]).parent) for r in conflict["candidates"]})
+        print("  Batch location: " + "; ".join(parents))
+    if conflicts:
+        print("\nChoose ONE --select ID per block above and append those options to your command.")
+        print("Unique models are included automatically. No output has been written.")
+    elif "output" in plan:
+        print(f"Saved to: {plan['output']}")
+    elif runs:
+        print("Ready. Remove --check to write the grouped results.")
+    else:
+        print("No groupable runs found.")
+    if plan["skipped"]:
+        print("\nSkipped:")
+        for item in plan["skipped"]:
+            print(f"  {item['source']}: {item['reason']}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sources", nargs="+", type=Path, required=True, help="Batch folders or parents to scan recursively")
@@ -439,7 +479,8 @@ def main(argv=None):
     parser.add_argument("--select", action="append", default=[], metavar="RUN_ID", help="Choose a run from a duplicate-model conflict; repeat as needed")
     parser.add_argument("--selection", type=Path, help='JSON file containing {"select": ["RUN_ID", ...]}')
     parser.add_argument("--dataset-aliases", type=Path, help="JSON mapping old/new acquisition paths to explicit dataset labels")
-    parser.add_argument("--check", action="store_true", help="Print inventory and conflicts without writing output")
+    parser.add_argument("--check", action="store_true", help="Show a compact inventory and duplicate choices without writing output")
+    parser.add_argument("--json", action="store_true", help="Print full machine-readable JSON instead of the compact summary")
     parser.add_argument("--overwrite", action="store_true", help="Replace only a prior output created by this script")
     parser.add_argument("--no-summary-plots", action="store_true")
     parser.add_argument("--copy-predictions", action="store_true", help="Copy saved prediction arrays without loading or recomputing them")
@@ -454,12 +495,19 @@ def main(argv=None):
         selected = args.select + configured
         if not all(isinstance(value, str) for value in selected):
             raise ValueError("Selections must be run-ID strings")
+        aliases = _json(args.dataset_aliases) if args.dataset_aliases else None
         result = group_results(args.sources, args.output, selected=selected,
-                               aliases=_json(args.dataset_aliases) if args.dataset_aliases else None,
-                               check=args.check, overwrite=args.overwrite,
-                               summary_plots=not args.no_summary_plots, copy_predictions=args.copy_predictions)
-        print(json.dumps(result, indent=2, allow_nan=False))
-        return 2 if args.check and (result["conflicts"] or not result["runs"]) else 0
+                               aliases=aliases, check=True)
+        blocked = bool(result["conflicts"] or not result["runs"])
+        if not args.check and not blocked:
+            result = group_results(args.sources, args.output, selected=selected,
+                                   aliases=aliases, overwrite=args.overwrite,
+                                   summary_plots=not args.no_summary_plots, copy_predictions=args.copy_predictions)
+        if args.json:
+            print(json.dumps(result, indent=2, allow_nan=False))
+        else:
+            _print_plan(result)
+        return 2 if blocked else 0
     except (ValueError, OSError) as exc:
         parser.exit(2, f"Error: {exc}\n")
 
