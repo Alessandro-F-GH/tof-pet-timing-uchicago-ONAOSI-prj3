@@ -679,9 +679,12 @@ direct/shared formulation colours, bootstrap error bars, and the saved LED
 reference line. Matching ranked `blind_ctr.csv/.tex` and `blind_rmse.csv/.tex`
 tables accompany the plots. No models or prediction arrays are loaded.
 
-Summary bars use saved metrics and require matching
-control/development/blind event-population identities, metric definitions and
-control LED calibration across the compared runs. Optional model-specific input
+Summary bars use saved metrics and require matching metric definitions and
+control LED calibration across the compared runs. Missing or differing
+control/development/blind population IDs produce a terminal warning and are saved
+in `group.json` as `comparison_plot_warnings`; they do not block plots, since
+these IDs can differ across machines. Identical event cohorts are not verified
+in that case. Optional model-specific input
 masks and older schema versions do not themselves prevent grouping. When
 comparison metadata is missing or incompatible, the CSV and existing figures
 are still copied; `group.json` explains why combined bars were skipped. Missing
@@ -709,7 +712,7 @@ with explicit equivalent paths mapped to the same label, for example:
 ```
 
 Aliases are user declarations, not file-content verification. They do not bypass
-saved-population or calibration checks for comparison plots. Unknown board or
+population warnings or calibration checks for comparison plots. Unknown board or
 voltage labels appear as `UNKNOWN` or `unknownV` rather than being guessed.
 
 You can run the command repeatedly with the same output directory. New datasets,

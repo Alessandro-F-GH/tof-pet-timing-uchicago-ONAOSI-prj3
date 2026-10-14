@@ -439,3 +439,29 @@ def test_cli_reports_why_comparison_plots_are_missing(tmp_path, capsys):
     assert 'control LED calibration missing or different' in text
     assert 'Comparison plots: ' not in text
     assert len(list(output.rglob('plots/blind.png'))) == 2
+
+
+@pytest.mark.parametrize('missing', [False, True])
+def test_population_ids_warn_without_blocking_plots(tmp_path, capsys, missing):
+    from waveform_analysis.scripts.group_results import main
+    run(tmp_path, 'a', 'direct_rdst')
+    second = run(tmp_path, 'b', 'shared_rdst')
+    path = second / 'metadata/manifest.json'
+    manifest = json.loads(path.read_text())
+    if missing:
+        manifest['dataset_populations'] = None
+    else:
+        manifest['dataset_populations']['control']['population_identity'] = 'from-another-machine'
+    write_json(path, manifest)
+    output = tmp_path / 'grouped'
+    assert main(['--sources', str(tmp_path / 'results'), '--output', str(output)]) == 0
+    text = capsys.readouterr().out
+    assert 'WARNING:' in text and 'Population IDs missing or different' in text
+    assert 'Comparison plots skipped' not in text
+    leaf = output / 'UC_48V_sub1/timing_to_timing/window_-1.5_2ns'
+    assert (leaf / 'blind_ctr.png').is_file()
+    assert (leaf / 'blind_rmse.png').is_file()
+    info = json.loads((leaf / 'group.json').read_text())
+    assert info['comparison_plot_skip_reasons'] == []
+    assert len(info['comparison_plot_warnings']) == 1
+    assert 'control' in info['comparison_plot_warnings'][0]

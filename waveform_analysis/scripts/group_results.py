@@ -325,14 +325,24 @@ def _summary(run):
     return row
 
 
+def _population_warnings(runs):
+    if len(runs) < 2:
+        return []
+    affected = []
+    for role in ROLES:
+        identities = [((r.metadata["manifest"].get("dataset_populations") or {}).get(role) or {}).get("population_identity") for r in runs]
+        if not all(identities) or len(set(identities)) != 1:
+            affected.append(role)
+    if not affected:
+        return []
+    return [f"Population IDs missing or different ({', '.join(affected)}); this can happen across machines. "
+            "Plots use saved metrics; identical event cohorts have not been verified."]
+
+
 def _compatibility(runs):
     if len(runs) == 1:
         return []
     reasons = []
-    for role in ROLES:
-        identities = [((r.metadata["manifest"].get("dataset_populations") or {}).get(role) or {}).get("population_identity") for r in runs]
-        if not all(identities) or len(set(identities)) != 1:
-            reasons.append(f"{role} event population missing or different")
     fits = [r.metric_fit for r in runs]
     if not all(fits) or len({_digest(fit) for fit in fits}) != 1:
         reasons.append("metric definitions missing or different")
@@ -493,6 +503,7 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
             info = {"group": group, "leaf": leaf, "subsampling": members[0].subsampling,
                     "datasets": members[0].datasets, "runs": [r.describe() for r in members],
                     "missing": missing, "comparison_plot_skip_reasons": reasons,
+                    "comparison_plot_warnings": _population_warnings(members),
                     "summary_plots_requested": summary_plots}
             if cfg is not None:
                 _write_json(directory / "plots.json", cfg)
@@ -579,6 +590,8 @@ def _print_plan(plan):
         print(f"Saved to: {plan['output']}")
         for info in plan.get("groups", []):
             label = f"{info['group']}/{info['leaf']}"
+            for warning in info.get("comparison_plot_warnings", []):
+                print(f"  WARNING: {label}: {warning}")
             if not info.get("summary_plots_requested", True):
                 print(f"  Summary plots disabled: {label} (--no-summary-plots)")
             elif info.get("comparison_plot_skip_reasons"):
