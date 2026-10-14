@@ -584,3 +584,108 @@ python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/
 ```
 
 The example references external UC acquisitions configured in `test_multirocket.json`.
+
+
+## Group existing results across batches
+
+Use the standalone script to organize completed results from multiple batch
+folders. It never loads models, runs inference, refits preprocessing, regenerates
+XAI, migrates legacy source layouts, or changes source files. It accepts current
+and legacy run metadata and copies existing figures, CSV/LaTeX tables and JSON
+metadata into a separate output directory. Model files and feature caches are
+not copied. Original saved XAI figures may be copied like any other saved plot.
+
+From the repository root, inspect the proposed groups first:
+
+```powershell
+python -m waveform_analysis.scripts.group_results --sources waveform_analysis/results/UC waveform_analysis/results/FBK --output waveform_analysis/grouped_results --check
+```
+
+You can provide batch folders instead of board folders, or a single parent
+containing all batches. Overlapping input directories are deduplicated. Each
+source directory must exist. The file can also be executed directly with
+`python waveform_analysis/scripts/group_results.py ...`.
+
+**Each top-level group contains exactly one subsampling factor.** Groups are
+named, for example, `UC_48V_sub1`, `UC_48V_sub4`, or `FBK_48V_sub1`. Different
+control/development/blind acquisition triples with the same board/voltage/factor
+receive distinct dataset-hash suffixes; they are never merged by filename alone.
+Within a group, waveform modes and numeric window bounds have separate folders.
+Window labels may differ between batches if the numeric bounds match. Dataset
+channels/polarities and true TOF are part of the dataset grouping identity.
+Missing or inconsistent subsampling is reported and skipped, never guessed as 1.
+
+If the same model appears twice in one group/mode/window, `--check` lists a
+conflict with stable source-run IDs. Choose exactly one explicitly:
+
+```powershell
+python -m waveform_analysis.scripts.group_results --sources waveform_analysis/results/UC --output waveform_analysis/grouped_results --select RUN_ID
+```
+
+Repeat `--select` for each conflict, or pass `--selection choices.json` with:
+
+```json
+{"select": ["run_id_from_check", "another_run_id"]}
+```
+
+Unique models are included automatically; the script never chooses by blind
+performance or modification time. IDs depend on source paths, so repeat the
+check if source folders move. Without conflicts, simply omit `--check` to write
+output. `--check` writes nothing and exits with code 2 when conflicts remain or no
+groupable runs were found.
+
+Example output:
+
+```text
+grouped_results/
+├── grouping_manifest.json
+├── sources.csv
+├── UC_48V_sub1/
+│   └── timing_to_timing/window_-1.5_2ns/
+│       ├── group.json
+│       ├── sources.csv
+│       ├── summary.csv
+│       ├── blind_ctr.png
+│       ├── blind_rmse.png
+│       └── runs/<model>/
+│           ├── metadata/
+│           ├── tables/
+│           └── plots/
+└── UC_48V_sub4/
+    └── ...
+```
+
+Summary tables contain the saved blind metrics/uncertainties, available
+validation scores and historical mask provenance. No predictions or bootstrap
+statistics are recomputed. Summary bars use saved metrics and require matching
+control/development/blind event-population identities, metric definitions and
+control LED calibration across the compared runs. Optional model-specific input
+masks and older schema versions do not themselves prevent grouping. When
+comparison metadata is missing or incompatible, the CSV and existing figures
+are still copied; `group.json` explains why combined bars were skipped. Missing
+files and ungroupable runs are recorded in the output manifest.
+
+Use `--no-summary-plots` for a pure file/CSV grouping operation requiring only
+the Python standard library. Otherwise matplotlib is used for new summary bars.
+`--copy-predictions` additionally copies existing prediction/bootstrap/development
+arrays as opaque files; even then, no arrays are loaded or inference performed.
+
+Saved acquisition paths are matched lexically, including Windows drive paths.
+For acquisitions moved between checkouts, provide `--dataset-aliases aliases.json`
+with explicit equivalent paths mapped to the same label, for example:
+
+```json
+{
+  "C:/old_repo/processed_data/48V-R1.root": "UC/development_R1",
+  "D:/new_repo/processed_data/48V-R1.root": "UC/development_R1"
+}
+```
+
+Aliases are user declarations, not file-content verification. They do not bypass
+saved-population or calibration checks for comparison plots. Unknown board or
+voltage labels appear as `UNKNOWN` or `unknownV` rather than being guessed.
+
+An existing output is preserved unless `--overwrite` is supplied. That option
+only replaces a directory marked as a previous output of this script; unrelated
+folders and all source runs are protected. Output directories are excluded from
+subsequent discovery. `waveform_analysis/grouped_results/` is Git-ignored.

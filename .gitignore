@@ -55,3 +55,6 @@ update_report/main.synctex.gz
 update_report/main.toc
 update_report/main.vrb
 !update_report/main.tex
+
+# Standalone grouped reports (sources remain in results/)
+waveform_analysis/grouped_results/
