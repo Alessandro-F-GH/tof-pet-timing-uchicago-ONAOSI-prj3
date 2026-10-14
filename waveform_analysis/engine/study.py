@@ -245,20 +245,21 @@ def _evaluate_candidate(
     *,
     log_label,
     frozen_development=None,
+    force_complete=False,
 ):
     summary = store.candidate_row(identifier)
     folds = store.read_fold_rows(identifier)
-    if summary is not None and (
+    if not force_complete and summary is not None and (
         _bool(summary.get("pruned", False))
         or int(summary.get("completed_folds", 0)) == int(summary.get("total_folds", -1))
     ):
         return summary
     rows = store.read_candidate_rows()
     startup = int(config["cross_validation"]["pruning"]["startup_complete_candidates"])
-    force = _n_complete(rows) < startup
+    startup_active = _n_complete(rows) < startup
     inc = (
         None
-        if force
+        if startup_active or force_complete
         else best_complete_candidate(rows, config["cross_validation"]["metric"])
     )
     inc_id = None if inc is None else str(inc["candidate_id"])
@@ -283,7 +284,7 @@ def _evaluate_candidate(
         persisted_candidate=summary,
         incumbent_candidate_id=inc_id,
         incumbent_rows=inc_folds,
-        force_complete=force,
+        force_complete=force_complete,
         persist_fold=store.upsert_fold,
     )
     store.upsert_candidate(_candidate_row(summary))
@@ -441,7 +442,7 @@ def _search(
         search,
         int(config["cross_validation"]["folds"]),
     )
-    return (
+    candidates = (
         _fixed_grid(
             store, spec, space, config, development, shared, logger, frozen_development
         )
@@ -450,6 +451,26 @@ def _search(
             store, spec, space, config, development, shared, logger, frozen_development
         )
     )
+
+    metric = config["cross_validation"]["metric"]
+    rows = store.read_candidate_rows()
+    if best_complete_candidate(rows, metric) is None:
+        # LED pruning also applies during startup. If every candidate was
+        # rejected, finish only the one with the best recorded partial score.
+        eligible = [r for r in rows if _bool(r.get("pruned", False))
+                    and np.isfinite(float(r.get(f"{metric}_mean_ps", float("nan"))))]
+        if not eligible:
+            raise RuntimeError("No finite pruned CV candidate is available to complete")
+        best = min(eligible, key=lambda r: (float(r[f"{metric}_mean_ps"]), str(r["candidate_id"])))
+        identifier = str(best["candidate_id"])
+        logger.info("All CV candidates pruned | completing best partial candidate %s | %s=%.1f ps",
+                    identifier, metric.upper(), float(best[f"{metric}_mean_ps"]))
+        _evaluate_candidate(
+            store, spec, space, config, development, shared, identifier,
+            candidates[identifier], logger, log_label="Fallback candidate",
+            frozen_development=frozen_development, force_complete=True,
+        )
+    return candidates
 
 
 def _select(store, candidates, config):

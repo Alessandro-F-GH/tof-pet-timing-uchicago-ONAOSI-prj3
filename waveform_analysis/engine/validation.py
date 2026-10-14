@@ -175,7 +175,7 @@ def evaluate_candidate(
     persist_fold: Callable[[dict], None] | None = None,
 ) -> tuple[dict, list[dict]]:
     total_folds = len(folds)
-    if persisted_candidate is not None and _as_bool(
+    if not force_complete and persisted_candidate is not None and _as_bool(
         persisted_candidate.get("pruned", False)
     ):
         rows = sorted(existing_fold_rows or [], key=lambda row: int(row["fold_id"]))
