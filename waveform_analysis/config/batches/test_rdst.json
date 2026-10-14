@@ -47,14 +47,14 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/test_rdst_48V_R1_R2"
+    "folder": "FBK/rdst"
   },
   "save_model": true,
   "protocol": {
     "seed": 1001,
     "preprocessing_config": "../preprocessing/default_ctr.json",
     "bootstrap": {
-      "n_resamples": 200
+      "n_resamples": 100
     },
     "fit": {
       "energy_to_energy": {
@@ -76,7 +76,7 @@
     "xai": {
       "enabled": true,
       "group_size_samples": 8,
-      "max_events": 128
+      "max_events": 512
     },
     "cross_validation": {
       "folds": 3,
@@ -99,12 +99,17 @@
       "shared_rdst"
     ],
     "modes": [
-      "timing_to_timing"
+      "timing_to_timing",
+      "energy_to_energy"
     ],
     "windows": {
       "onishi": {
         "start": -1.5,
         "end": 2.0
+      },
+      "wide": {
+        "start": -2.0,
+        "end": 30.0
       }
     }
   }
