@@ -230,7 +230,7 @@ def discover(sources, output, aliases=None):
 
 
 
-def _dataset_splits(runs):
+def _dataset_splits(runs=(), grouped=()):
     """Explain dataset differences within a board/voltage/subsampling family."""
     def flatten(value, prefix=""):
         result = {}
@@ -243,6 +243,9 @@ def _dataset_splits(runs):
         return result
 
     families = defaultdict(dict)
+    for info in grouped:
+        family = re.sub(r"_[0-9a-f]{12}$", "", info["group"])
+        families[family][info["group"]] = flatten(info["datasets"])
     for run in runs:
         family = f"{run.board}_{run.voltage}_sub{run.subsampling}"
         families[family][run.group] = flatten(run.datasets)
@@ -396,8 +399,28 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
         isinstance(k, str) and isinstance(v, str) and v for k, v in aliases.items()
     )):
         raise ValueError("Dataset aliases must map paths to nonempty string labels")
+    previous = _json(output / "grouping_manifest.json") if output.is_dir() else {}
+    if output.exists() and previous.get("tool") != TOOL:
+        raise ValueError("Output exists and is not a previous output created by this script")
     runs, skipped = discover(sources, output, aliases)
+    # Preserve names assigned by earlier invocations, including dataset suffixes.
+    # A new dataset must never collide with an existing unsuffixed group.
+    old_groups = {info["group"]: info for info in previous.get("groups", [])}
+    for run in runs:
+        family = f"{run.board}_{run.voltage}_sub{run.subsampling}"
+        identity = _digest(run.datasets)
+        matching = [name for name, info in old_groups.items()
+                    if (name == family or name.startswith(family + "_"))
+                    and _digest(info["datasets"]) == identity]
+        if matching:
+            run.group = sorted(matching)[0]
+        elif run.group in old_groups and _digest(old_groups[run.group]["datasets"]) != identity:
+            run.group = f"{family}_{identity}"
     plan, choices = inventory(runs, skipped, selected)
+    targets = {(r.group, r.leaf) for r in choices}
+    output_conflicts = sorted(f"{group}/{leaf}" for group, leaf in targets
+                              if (output / group / leaf).exists())
+    plan["output_conflicts"] = output_conflicts
     if check:
         return plan
     if not runs:
@@ -406,8 +429,9 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
         raise ValueError("Duplicate models require explicit --select RUN_ID choices. Run --check to list candidates.")
     if any(_inside(output, run.root) or _inside(run.root, output) for run in runs):
         raise ValueError("Output must not overlap a source run")
-    if output.exists() and (not overwrite or _json(output / "grouping_manifest.json").get("tool") != TOOL):
-        raise ValueError("Output exists. --overwrite only replaces a previous output created by this script.")
+    if output_conflicts and not overwrite:
+        raise ValueError("Output exists for these group/mode/windows; use --overwrite to replace only these entries: "
+                         + ", ".join(output_conflicts))
     output.parent.mkdir(parents=True, exist_ok=True)
     cfg = _json(Path(plot_config).expanduser().resolve() if plot_config else
                 Path(__file__).resolve().parents[1] / "config/plots/default.json") if summary_plots else None
@@ -415,12 +439,16 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
         raise ValueError("Plot configuration is missing or empty")
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
     try:
+        if previous:
+            shutil.copytree(output, stage, dirs_exist_ok=True)
         groups = defaultdict(list)
         for run in choices:
             groups[(run.group, run.leaf)].append(run)
         leaves = []
         for (group, leaf), members in sorted(groups.items()):
             directory = stage / group / leaf
+            if directory.exists():
+                shutil.rmtree(directory)
             directory.mkdir(parents=True)
             rows, missing = [], []
             for run in members:
@@ -466,23 +494,33 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
                     "datasets": members[0].datasets, "runs": [r.describe() for r in members],
                     "missing": missing, "comparison_plot_skip_reasons": reasons,
                     "summary_plots_requested": summary_plots}
+            if cfg is not None:
+                _write_json(directory / "plots.json", cfg)
             _write_json(directory / "group.json", info)
             leaves.append(info)
         if cfg is not None:
             _write_json(stage / "plots.json", cfg)
-        _csv(stage / "sources.csv", [r.describe() for r in choices])
+        leaves = [info for info in previous.get("groups", [])
+                  if (info["group"], info["leaf"]) not in targets] + leaves
+        leaves.sort(key=lambda info: (info["group"], info["leaf"]))
+        _csv(stage / "sources.csv", [row for info in leaves for row in info["runs"]])
+        all_skipped = list({(item["source"], item["reason"]): item
+                            for item in previous.get("skipped", []) + skipped}.values())
         _write_json(stage / "grouping_manifest.json", {"tool": TOOL, "version": 1, "groups": leaves,
-                                                      "skipped": skipped, "dataset_aliases": aliases or {},
-                                                      "dataset_splits": plan["dataset_splits"]})
+                                                      "skipped": all_skipped,
+                                                      "dataset_aliases": {**previous.get("dataset_aliases", {}), **(aliases or {})},
+                                                      "dataset_splits": _dataset_splits(grouped=leaves)})
         # Build fully before replacing a previous generated report. Roll back if
         # publishing the staged directory fails; never mutate source runs.
         backup = None
         if output.exists():
-            if not overwrite or _json(output / "grouping_manifest.json").get("tool") != TOOL:
-                raise ValueError("Output appeared during grouping; refusing to replace it")
+            if not previous or _json(output / "grouping_manifest.json") != previous:
+                raise ValueError("Output changed during grouping; refusing to replace it")
             backup = Path(tempfile.mkdtemp(prefix=f".{output.name}-backup-", dir=output.parent))
             backup.rmdir()
             output.rename(backup)
+        elif previous:
+            raise ValueError("Output disappeared during grouping; refusing to publish a stale copy")
         try:
             stage.rename(output)
         except Exception:
@@ -515,6 +553,10 @@ def _print_plan(plan):
                 print(f"    {group}: {json.dumps(value, ensure_ascii=False)}")
         if any(d["field"].endswith(".source") for d in split["differences"]):
             print("  If only paths moved for the same acquisitions, declare equivalent paths with --dataset-aliases.")
+    if plan.get("output_conflicts") and "output" not in plan:
+        print("\nAlready grouped (use --overwrite to replace these entries only):")
+        for target in plan["output_conflicts"]:
+            print(f"  {target}")
     for index, conflict in enumerate(conflicts, 1):
         first = conflict["candidates"][0]
         start, end = first["window_ns"]
@@ -535,6 +577,8 @@ def _print_plan(plan):
         print("Unique models are included automatically. No output has been written.")
     elif "output" in plan:
         print(f"Saved to: {plan['output']}")
+    elif plan.get("output_conflicts"):
+        print("Add --overwrite to replace the listed entries; unrelated results will be preserved.")
     elif runs:
         print("Ready. Remove --check to write the grouped results.")
     else:
@@ -554,7 +598,7 @@ def main(argv=None):
     parser.add_argument("--dataset-aliases", type=Path, help="JSON mapping old/new acquisition paths to explicit dataset labels")
     parser.add_argument("--check", action="store_true", help="Show a compact inventory and duplicate choices without writing output")
     parser.add_argument("--json", action="store_true", help="Print full machine-readable JSON instead of the compact summary")
-    parser.add_argument("--overwrite", action="store_true", help="Replace only a prior output created by this script")
+    parser.add_argument("--overwrite", action="store_true", help="Replace conflicting group/mode/windows while preserving unrelated grouped results")
     parser.add_argument("--no-summary-plots", action="store_true")
     parser.add_argument("--plot-config", type=Path, help="Reporting plot configuration JSON; defaults to config/plots/default.json")
     parser.add_argument("--copy-predictions", action="store_true", help="Copy saved prediction arrays without loading or recomputing them")
@@ -572,7 +616,8 @@ def main(argv=None):
         aliases = _json(args.dataset_aliases) if args.dataset_aliases else None
         result = group_results(args.sources, args.output, selected=selected,
                                aliases=aliases, check=True)
-        blocked = bool(result["conflicts"] or not result["runs"])
+        blocked = bool(result["conflicts"] or not result["runs"]
+                       or (result["output_conflicts"] and not args.overwrite))
         if not args.check and not blocked:
             result = group_results(args.sources, args.output, selected=selected,
                                    aliases=aliases, overwrite=args.overwrite,

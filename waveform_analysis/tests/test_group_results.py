@@ -347,3 +347,78 @@ def test_equivalent_dataset_aliases_remove_split_explanation(tmp_path):
     combined = group_results([sources], tmp_path / 'grouped', check=True, aliases=aliases)
     assert combined['dataset_splits'] == []
     assert {r['group'] for r in combined['runs']} == {'UC_48V_sub1'}
+
+
+def test_append_new_subsampling_and_windows_preserves_existing_results(tmp_path):
+    first = run(tmp_path, 'a', 'direct_rdst')
+    output = tmp_path / 'grouped'
+    initial = group_results([first], output, summary_plots=False)
+    leaf = output / initial['groups'][0]['group'] / initial['groups'][0]['leaf']
+    before = snapshot(leaf)
+    second = run(tmp_path, 'b', 'direct_rdst', subsampling=4)
+    appended = group_results([second], output, summary_plots=False)
+    assert {g['group'] for g in appended['groups']} == {'UC_48V_sub1', 'UC_48V_sub4'}
+    assert snapshot(leaf) == before
+    wide = run(tmp_path, 'c', 'shared_rdst', window=(-2., 30.))
+    result = group_results([wide], output, summary_plots=False)
+    assert len(result['groups']) == 3
+    assert snapshot(leaf) == before
+    assert len(list(output.rglob('plots/blind.png'))) == 3
+    assert len(json.loads((output / 'grouping_manifest.json').read_text())['groups']) == 3
+    import csv
+    with (output / 'sources.csv').open() as stream:
+        assert len(list(csv.DictReader(stream))) == 3
+
+
+def test_append_distinct_datasets_and_reuse_assigned_group_names(tmp_path):
+    first = run(tmp_path, 'a', 'direct_rdst')
+    second = run(tmp_path, 'b', 'shared_rdst', acquisition='48V-other.root')
+    output = tmp_path / 'grouped'
+    group_results([first], output, summary_plots=False)
+    before = snapshot(output / 'UC_48V_sub1')
+    result = group_results([second], output, summary_plots=False)
+    names = {g['group'] for g in result['groups']}
+    assert len(names) == 2
+    assert 'UC_48V_sub1' in names
+    second_name = (names - {'UC_48V_sub1'}).pop()
+    assert second_name.startswith('UC_48V_sub1_')
+    assert snapshot(output / 'UC_48V_sub1') == before
+    # Even a later scan containing both datasets preserves the original names.
+    plan = group_results([first, second], output, check=True)
+    assert {r['group'] for r in plan['runs']} == names
+    assert len(plan['output_conflicts']) == 2
+    before_all = snapshot(output)
+    with pytest.raises(ValueError, match='use --overwrite'):
+        group_results([second], output, summary_plots=False)
+    assert snapshot(output) == before_all
+    result = group_results([second], output, summary_plots=False, overwrite=True)
+    assert {g['group'] for g in result['groups']} == names
+    assert snapshot(output / 'UC_48V_sub1') == before
+
+
+def test_targeted_overwrite_preserves_other_groups_and_removes_stale_models(tmp_path):
+    first = run(tmp_path, 'a', 'direct_rdst')
+    other = run(tmp_path, 'b', 'shared_rdst', subsampling=4)
+    replacement = run(tmp_path, 'c', 'shared_hydra')
+    output = tmp_path / 'grouped'
+    group_results([first, other], output, summary_plots=False)
+    before = snapshot(output / 'UC_48V_sub4')
+    group_results([replacement], output, summary_plots=False, overwrite=True)
+    assert snapshot(output / 'UC_48V_sub4') == before
+    assert not list((output / 'UC_48V_sub1').rglob('runs/direct_rdst'))
+    assert list((output / 'UC_48V_sub1').rglob('runs/shared_hydra'))
+
+
+def test_failed_append_leaves_previous_output_unchanged(tmp_path, monkeypatch):
+    from waveform_analysis.scripts import group_results as module
+    first = run(tmp_path, 'a', 'direct_rdst')
+    output = tmp_path / 'grouped'
+    group_results([first], output, summary_plots=False)
+    before = snapshot(output)
+    second = run(tmp_path, 'b', 'shared_rdst', subsampling=4)
+    def fail(*args, **kwargs):
+        raise RuntimeError('plot failure')
+    monkeypatch.setattr(module, '_summary_plots', fail)
+    with pytest.raises(RuntimeError, match='plot failure'):
+        group_results([second], output)
+    assert snapshot(output) == before

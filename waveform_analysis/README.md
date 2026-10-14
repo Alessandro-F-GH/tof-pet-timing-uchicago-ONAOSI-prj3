@@ -712,7 +712,21 @@ Aliases are user declarations, not file-content verification. They do not bypass
 saved-population or calibration checks for comparison plots. Unknown board or
 voltage labels appear as `UNKNOWN` or `unknownV` rather than being guessed.
 
-An existing output is preserved unless `--overwrite` is supplied. That option
-only replaces a directory marked as a previous output of this script; unrelated
-folders and all source runs are protected. Output directories are excluded from
-subsequent discovery. `waveform_analysis/grouped_results/` is Git-ignored.
+You can run the command repeatedly with the same output directory. New datasets,
+subsampling factors, and mode/window entries are added without `--overwrite`;
+existing unrelated results are preserved. Group names remain stable across runs.
+If a different dataset would reuse an existing group name, it gets a dataset-hash
+suffix automatically.
+
+A conflict occurs only when the target group/mode/window already exists.
+`--check` lists these paths. Use `--overwrite` to replace those entries only;
+include all models you want in each replaced entry, since it is regenerated as a
+whole. Other groups/windows are preserved. The combined manifest and `sources.csv`
+include both retained and newly generated results. Each generated entry also saves
+its own `plots.json` when summary plots are enabled.
+
+Only outputs marked as created by this script can be extended or overwritten;
+unrelated folders and all source runs are protected. Publication is staged, so a
+failed grouping operation leaves existing output unchanged. Output directories
+are excluded from subsequent discovery. `waveform_analysis/grouped_results/`
+is Git-ignored.
