@@ -669,7 +669,13 @@ grouped_results/
 
 Summary tables contain the saved blind metrics/uncertainties, available
 validation scores and historical mask provenance. No predictions or bootstrap
-statistics are recomputed. Summary bars use saved metrics and require matching
+statistics are recomputed. Summary bars reuse the original reporting `blind_metric_bar` renderer and ranked
+metric-row builder: ascending CTR/RMSE order, stable model codes and legend names,
+direct/shared formulation colours, bootstrap error bars, and the saved LED
+reference line. Matching ranked `blind_ctr.csv/.tex` and `blind_rmse.csv/.tex`
+tables accompany the plots. No models or prediction arrays are loaded.
+
+Summary bars use saved metrics and require matching
 control/development/blind event-population identities, metric definitions and
 control LED calibration across the compared runs. Optional model-specific input
 masks and older schema versions do not themselves prevent grouping. When
@@ -678,7 +684,12 @@ are still copied; `group.json` explains why combined bars were skipped. Missing
 files and ungroupable runs are recorded in the output manifest.
 
 Use `--no-summary-plots` for a pure file/CSV grouping operation requiring only
-the Python standard library. Otherwise matplotlib is used for new summary bars.
+the Python standard library. Otherwise the repository reporting dependencies are used for summary bars.
+The style defaults to `waveform_analysis/config/plots/default.json`; use
+`--plot-config path/to/plots.json` to reuse a batch’s saved style. The resolved
+style is saved as `plots.json` in the grouped output, including its output format.
+Missing or different saved LED references skip the affected metric plot and are
+recorded in `group.json`; missing bootstrap uncertainties remain unknown.
 `--copy-predictions` additionally copies existing prediction/bootstrap/development
 arrays as opaque files; even then, no arrays are loaded or inference performed.
 

@@ -37,7 +37,7 @@ def run(root, batch, model, *, subsampling=1, legacy=False, window=(-1.5, 2),
               'results': {'folder': f'UC/{batch}'}, **datasets}
     write_json(metadata / 'manifest.json', manifest)
     write_json(metadata / 'config.json', config)
-    write_json(metadata / 'blind.json', {'ctr_ps': 100., 'rmse_ps': 50., 'n_events': 1000})
+    write_json(metadata / 'blind.json', {'ctr_ps': 100., 'rmse_ps': 50., 'led_ctr_ps': 140., 'led_rmse_ps': 80., 'n_events': 1000})
     write_json(metadata / 'bootstrap.json', {'ctr_bootstrap_std_ps': 2., 'rmse_bootstrap_std_ps': 1.})
     write_json(metadata / 'best.json', {'candidate_id': 'best', 'validation_ctr_mean_ps': 110.})
     (directory / 'plots').mkdir(parents=True)
@@ -237,4 +237,72 @@ def test_cli_lists_compact_duplicate_choices_without_requiring_check(tmp_path, c
     assert main(args + ['--select', chosen, '--no-summary-plots']) == 0
     text = capsys.readouterr().out
     assert '0 choices needed' in text and 'Saved to:' in text
+    assert len(list(output.rglob('plots/blind.png'))) == 2
+
+
+def test_grouped_bars_reuse_ranked_reporting_style_and_saved_led(tmp_path, monkeypatch):
+    import csv
+    import matplotlib.colors as colors
+    import numpy as np
+    from waveform_analysis.reporting import plotting
+    first = run(tmp_path, 'a', 'direct_rdst')
+    second = run(tmp_path, 'b', 'shared_rdst')
+    write_json(first / 'metadata/blind.json', {'ctr_ps': 120., 'rmse_ps': 40.,
+               'led_ctr_ps': 140., 'led_rmse_ps': 80.})
+    write_json(second / 'metadata/blind.json', {'ctr_ps': 90., 'rmse_ps': 60.,
+               'led_ctr_ps': 140., 'led_rmse_ps': 80.})
+    # Missing historical uncertainties remain unknown, rather than invented zeros.
+    (second / 'metadata/bootstrap.json').unlink()
+    cfg = json.loads((Path(__file__).parents[1] / 'config/plots/default.json').read_text())
+    cfg['output']['format'] = 'svg'
+    cfg['formulations']['shared']['color'] = '#123456'
+    config_path = tmp_path / 'style.json'
+    write_json(config_path, cfg)
+    captured = []
+    original_save = plotting._save
+    def inspect(fig, path):
+        ax = fig.axes[0]
+        captured.append({
+            'codes': [t.get_text() for t in ax.get_xticklabels()],
+            'heights': [p.get_height() for p in ax.patches],
+            'colors': [p.get_facecolor() for p in ax.patches],
+            'led': next(line.get_ydata()[0] for line in ax.lines if line.get_label() == 'LED reference'),
+            'legend': [t.get_text() for t in ax.get_legend().get_texts()],
+        })
+        return original_save(fig, path)
+    monkeypatch.setattr(plotting, '_save', inspect)
+    monkeypatch.setattr(np, 'load', lambda *a, **kw: pytest.fail('Must not load prediction arrays'))
+    output = tmp_path / 'grouped'
+    result = group_results([tmp_path / 'results'], output, plot_config=config_path)
+    assert not result['groups'][0]['comparison_plot_skip_reasons']
+    ctr, rmse = captured
+    assert ctr['codes'] == ['S-RDST', 'D-RDST']
+    assert rmse['codes'] == ['D-RDST', 'S-RDST']
+    assert ctr['heights'] == [90., 120.] and rmse['heights'] == [40., 60.]
+    assert ctr['colors'] == [colors.to_rgba(cfg['formulations'][f]['color']) for f in ('shared', 'direct')]
+    assert ctr['led'] == 140. and rmse['led'] == 80.
+    assert ctr['legend'][0] == 'S-RDST: Shared dilated shapelets + ridge'
+    leaf = output / result['groups'][0]['group'] / result['groups'][0]['leaf']
+    assert (leaf / 'blind_ctr.svg').is_file()
+    with (leaf / 'blind_rmse.csv').open() as stream:
+        assert [r['code'] for r in csv.DictReader(stream)] == ['D-RDST', 'S-RDST']
+    assert 'LED & Reference & & 140.00' in (leaf / 'blind_ctr.tex').read_text()
+    assert json.loads((output / 'plots.json').read_text()) == cfg
+
+
+def test_missing_or_different_led_reference_skips_only_affected_metric(tmp_path):
+    run(tmp_path, 'a', 'direct_rdst')
+    second = run(tmp_path, 'b', 'shared_rdst')
+    path = second / 'metadata/blind.json'
+    blind = json.loads(path.read_text())
+    blind['led_ctr_ps'] = 150.
+    blind.pop('led_rmse_ps')
+    write_json(path, blind)
+    output = tmp_path / 'grouped'
+    result = group_results([tmp_path / 'results'], output)
+    reasons = result['groups'][0]['comparison_plot_skip_reasons']
+    assert 'ctr: saved LED reference differs between runs' in reasons
+    assert any('rmse:' in reason and 'missing' in reason for reason in reasons)
+    assert not list(output.rglob('blind_ctr.png'))
+    assert not list(output.rglob('blind_rmse.png'))
     assert len(list(output.rglob('plots/blind.png'))) == 2

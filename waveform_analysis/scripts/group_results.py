@@ -1,7 +1,7 @@
 """Group saved results without importing models, migrating sources or inference.
 
 Run with ``python -m waveform_analysis.scripts.group_results --help`` or invoke
-this file directly. Only optional summary plotting needs matplotlib.
+this file directly. Optional summary plots use the repository reporting stack.
 """
 from __future__ import annotations
 
@@ -309,30 +309,56 @@ def _compatibility(runs):
     return reasons
 
 
-def _summary_plots(directory, rows):
+def _summary_plots(directory, members, cfg):
     import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    # Direct file invocation must also locate the repository's reporting package.
+    import sys
+    repository = str(Path(__file__).resolve().parents[2])
+    if repository not in sys.path:
+        sys.path.insert(0, repository)
+    from waveform_analysis.reporting.metric_rows import blind_metric_rows
+    from waveform_analysis.reporting.model_labels import model_label
+    from waveform_analysis.reporting.plotting import blind_metric_bar, output_path
+    from waveform_analysis.reporting.latex_tables import export_blind_metric_table
 
+    skipped = []
     for metric in ("ctr", "rmse"):
-        valid = [r for r in rows if isinstance(r.get(f"{metric}_ps"), (int, float)) and math.isfinite(r[f"{metric}_ps"])]
-        if not valid:
-            continue
-        fig, ax = plt.subplots(figsize=(max(6, len(valid) * .8), 4.5))
-        for i, row in enumerate(valid):
-            error = row.get(f"{metric}_std_ps")
-            error = error if isinstance(error, (int, float)) and math.isfinite(error) and error >= 0 else None
-            ax.bar(i, row[f"{metric}_ps"], yerr=error, capsize=3, color="#0072B2")
-        ax.set_xticks(range(len(valid)), [r["model"] for r in valid], rotation=35, ha="right")
-        ax.set_ylabel(f"Saved blind {metric.upper()} [ps]")
-        ax.set_title("Saved results; error bars where bootstrap uncertainty is available")
-        fig.tight_layout()
-        fig.savefig(directory / f"blind_{metric}.png", dpi=180)
-        plt.close(fig)
+        group, led_values = [], []
+        for run in members:
+            manifest = dict(run.metadata["manifest"])
+            formulation = manifest.get("estimator_formulation")
+            if formulation not in ("direct", "shared"):
+                code = model_label(run.model)[0]
+                formulation = "direct" if code.startswith("D-") else "shared" if code.startswith("S-") else None
+            value = run.metadata["blind"].get(f"{metric}_ps")
+            led = run.metadata["blind"].get(f"led_{metric}_ps")
+            if formulation is None or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (value, led)):
+                skipped.append(f"{metric}: {run.model} missing metric, LED reference or formulation")
+                break
+            manifest["estimator_formulation"] = formulation
+            bootstrap = dict(run.metadata["bootstrap"])
+            error = bootstrap.get(f"{metric}_bootstrap_std_ps")
+            bootstrap[f"{metric}_bootstrap_std_ps"] = error if isinstance(error, (int, float)) and error >= 0 else float("nan")
+            group.append({"manifest": manifest, "blind": run.metadata["blind"], "bootstrap": bootstrap})
+            led_values.append(float(led))
+        else:
+            if not all(math.isclose(v, led_values[0], rel_tol=1e-9, abs_tol=1e-9) for v in led_values):
+                skipped.append(f"{metric}: saved LED reference differs between runs")
+                continue
+            rows = blind_metric_rows(group, metric)
+            _csv(directory / f"blind_{metric}.csv", rows)
+            export_blind_metric_table(
+                directory / f"blind_{metric}.tex", rows, led_values[0], metric=metric,
+                mode=members[0].mode, window=members[0].leaf.split("/")[-1], report_id=members[0].group,
+            )
+            blind_metric_bar(rows, output_path(directory, f"blind_{metric}", cfg), cfg,
+                             metric=metric, led_value=led_values[0])
+    return skipped
 
 
 def group_results(sources, output, *, selected=(), aliases=None, check=False,
-                  overwrite=False, summary_plots=True, copy_predictions=False):
+                  overwrite=False, summary_plots=True, copy_predictions=False, plot_config=None):
     output = Path(output).expanduser().resolve()
     if aliases is not None and (not isinstance(aliases, dict) or not all(
         isinstance(k, str) and isinstance(v, str) and v for k, v in aliases.items()
@@ -351,6 +377,10 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
     if output.exists() and (not overwrite or _json(output / "grouping_manifest.json").get("tool") != TOOL):
         raise ValueError("Output exists. --overwrite only replaces a previous output created by this script.")
     output.parent.mkdir(parents=True, exist_ok=True)
+    cfg = _json(Path(plot_config).expanduser().resolve() if plot_config else
+                Path(__file__).resolve().parents[1] / "config/plots/default.json") if summary_plots else None
+    if summary_plots and not cfg:
+        raise ValueError("Plot configuration is missing or empty")
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
     try:
         groups = defaultdict(list)
@@ -399,13 +429,15 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
             _csv(directory / "sources.csv", [r.describe() for r in members])
             reasons = _compatibility(members)
             if summary_plots and not reasons:
-                _summary_plots(directory, rows)
+                reasons.extend(_summary_plots(directory, members, cfg))
             info = {"group": group, "leaf": leaf, "subsampling": members[0].subsampling,
                     "datasets": members[0].datasets, "runs": [r.describe() for r in members],
                     "missing": missing, "comparison_plot_skip_reasons": reasons,
                     "summary_plots_requested": summary_plots}
             _write_json(directory / "group.json", info)
             leaves.append(info)
+        if cfg is not None:
+            _write_json(stage / "plots.json", cfg)
         _csv(stage / "sources.csv", [r.describe() for r in choices])
         _write_json(stage / "grouping_manifest.json", {"tool": TOOL, "version": 1, "groups": leaves,
                                                       "skipped": skipped, "dataset_aliases": aliases or {}})
@@ -483,6 +515,7 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="Print full machine-readable JSON instead of the compact summary")
     parser.add_argument("--overwrite", action="store_true", help="Replace only a prior output created by this script")
     parser.add_argument("--no-summary-plots", action="store_true")
+    parser.add_argument("--plot-config", type=Path, help="Reporting plot configuration JSON; defaults to config/plots/default.json")
     parser.add_argument("--copy-predictions", action="store_true", help="Copy saved prediction arrays without loading or recomputing them")
     args = parser.parse_args(argv)
     try:
@@ -502,7 +535,8 @@ def main(argv=None):
         if not args.check and not blocked:
             result = group_results(args.sources, args.output, selected=selected,
                                    aliases=aliases, overwrite=args.overwrite,
-                                   summary_plots=not args.no_summary_plots, copy_predictions=args.copy_predictions)
+                                   summary_plots=not args.no_summary_plots, copy_predictions=args.copy_predictions,
+                                   plot_config=args.plot_config)
         if args.json:
             print(json.dumps(result, indent=2, allow_nan=False))
         else:

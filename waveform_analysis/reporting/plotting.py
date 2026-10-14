@@ -658,7 +658,7 @@ def blind_metric_bar(
         for index, row in enumerate(rows):
             value = float(row[f"{metric}_ps"])
             error = float(row[f"{metric}_std_ps"])
-            handles.append(ax.bar(index, value, yerr=error,
+            handles.append(ax.bar(index, value, yerr=error if np.isfinite(error) and error >= 0 else None,
                    width=float(style["group_width"]),
                    capsize=float(style["error_capsize"]),
                    color=cfg["formulations"][row["formulation"]]["color"],

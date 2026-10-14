@@ -27,6 +27,7 @@ from waveform_analysis.reporting.latex_tables import (
     export_blind_metric_table,
 )
 from waveform_analysis.reporting.model_labels import model_label
+from waveform_analysis.reporting.metric_rows import blind_metric_rows as _blind_metric_rows
 from waveform_analysis.reporting.development import ensure_development_predictions
 from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
 
@@ -411,27 +412,6 @@ def _reorder_matrix(
     indices = [labels.index(name) for name in ordered]
     return np.asarray(matrix)[np.ix_(indices, indices)]
 
-
-def _blind_metric_rows(group: list[dict[str, Any]], metric: str) -> list[dict[str, Any]]:
-    """Rank stored blind metrics for display only; codes remain stable."""
-    rows = []
-    for run in group:
-        name = run["manifest"]["model"]
-        code, display_name = model_label(name)
-        rows.append({
-            "model": name, "code": code, "display_name": display_name,
-            "formulation": run["manifest"]["estimator_formulation"],
-            f"{metric}_ps": run["blind"][f"{metric}_ps"],
-            f"{metric}_std_ps": run["bootstrap"][f"{metric}_bootstrap_std_ps"],
-        })
-    return sorted(
-        rows,
-        key=lambda r: (
-            not np.isfinite(r[f"{metric}_ps"]),
-            r[f"{metric}_ps"] if np.isfinite(r[f"{metric}_ps"]) else np.inf,
-            r["model"],
-        ),
-    )
 
 
 def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_models=()):
