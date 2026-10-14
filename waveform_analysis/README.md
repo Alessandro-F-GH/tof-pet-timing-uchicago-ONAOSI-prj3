@@ -614,6 +614,10 @@ Within a group, waveform modes and numeric window bounds have separate folders.
 Window labels may differ between batches if the numeric bounds match. Dataset
 channels/polarities and true TOF are part of the dataset grouping identity.
 Missing or inconsistent subsampling is reported and skipped, never guessed as 1.
+When one board/voltage/subsampling family splits, the console lists only the
+differing dataset fields (including nested channels/polarities) and their values
+for each group. This explanation is also included as `dataset_splits` in
+`--json` output and `grouping_manifest.json`.
 
 If the same model appears twice in one group/mode/window, `--check` lists a
 compact conflict block with stable source-run IDs, for example:

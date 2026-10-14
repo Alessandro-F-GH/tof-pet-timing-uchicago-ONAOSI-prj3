@@ -306,3 +306,44 @@ def test_missing_or_different_led_reference_skips_only_affected_metric(tmp_path)
     assert not list(output.rglob('blind_ctr.png'))
     assert not list(output.rglob('blind_rmse.png'))
     assert len(list(output.rglob('plots/blind.png'))) == 2
+
+
+def test_split_explanation_shows_only_differing_fields(tmp_path, capsys):
+    from waveform_analysis.scripts.group_results import main
+    run(tmp_path, 'a', 'direct_rdst')
+    changed = run(tmp_path, 'b', 'shared_rdst', acquisition='48V-different.root')
+    path = changed / 'metadata/manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest['control_dataset']['channels']['timing'] = [5, 6]
+    manifest['blind_dataset']['true_tof_ps'] = 10.
+    write_json(path, manifest)
+    run(tmp_path, 'c', 'direct_rdst', subsampling=4)
+    output = tmp_path / 'grouped'
+    assert main(['--sources', str(tmp_path / 'results'), '--output', str(output), '--check']) == 0
+    printed = capsys.readouterr().out
+    assert 'Dataset split: UC_48V_sub1 (same subsampling; dataset metadata differs)' in printed
+    assert 'control.channels.timing:' in printed
+    assert '[3, 4]' in printed and '[5, 6]' in printed
+    assert 'development.source:' in printed and '48v-different.root' in printed.lower()
+    assert 'blind.true_tof_ps:' in printed
+    assert 'control.source:' not in printed
+    assert 'Dataset split: UC_48V_sub4' not in printed
+    assert '--dataset-aliases' in printed
+    result = group_results([tmp_path / 'results'], output, summary_plots=False)
+    splits = result['dataset_splits']
+    assert len(splits) == 1
+    assert {d['field'] for d in splits[0]['differences']} == {
+        'control.channels.timing', 'development.source', 'blind.true_tof_ps'}
+    assert json.loads((output / 'grouping_manifest.json').read_text())['dataset_splits'] == splits
+
+
+def test_equivalent_dataset_aliases_remove_split_explanation(tmp_path):
+    run(tmp_path, 'a', 'direct_rdst')
+    run(tmp_path, 'b', 'shared_rdst', acquisition='48V-different.root')
+    sources = tmp_path / 'results'
+    plan = group_results([sources], tmp_path / 'grouped', check=True)
+    paths = next(d['values'] for d in plan['dataset_splits'][0]['differences'] if d['field'] == 'development.source')
+    aliases = {p: 'same-development-acquisition' for p in paths.values()}
+    combined = group_results([sources], tmp_path / 'grouped', check=True, aliases=aliases)
+    assert combined['dataset_splits'] == []
+    assert {r['group'] for r in combined['runs']} == {'UC_48V_sub1'}

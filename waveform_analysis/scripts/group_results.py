@@ -229,6 +229,37 @@ def discover(sources, output, aliases=None):
     return sorted(runs, key=lambda r: (r.group, r.leaf, r.model, str(r.root))), skipped
 
 
+
+def _dataset_splits(runs):
+    """Explain dataset differences within a board/voltage/subsampling family."""
+    def flatten(value, prefix=""):
+        result = {}
+        for key, item in value.items():
+            field = f"{prefix}.{key}" if prefix else key
+            if isinstance(item, dict) and item:
+                result.update(flatten(item, field))
+            else:
+                result[field] = item
+        return result
+
+    families = defaultdict(dict)
+    for run in runs:
+        family = f"{run.board}_{run.voltage}_sub{run.subsampling}"
+        families[family][run.group] = flatten(run.datasets)
+    splits = []
+    for family, groups in sorted(families.items()):
+        if len(groups) < 2:
+            continue
+        differences = []
+        fields = sorted({field for values in groups.values() for field in values})
+        for field in fields:
+            values = {group: data.get(field, "<missing>") for group, data in sorted(groups.items())}
+            if len({_digest(value) for value in values.values()}) > 1:
+                differences.append({"field": field, "values": values})
+        splits.append({"family": family, "differences": differences})
+    return splits
+
+
 def inventory(runs, skipped, selected=()):
     selected = set(selected)
     unknown = selected - {run.id for run in runs}
@@ -247,7 +278,8 @@ def inventory(runs, skipped, selected=()):
         else:
             conflicts.append({"selection_key": key, "candidates": [r.describe() for r in candidates]})
     return {"runs": [r.describe() for r in runs], "skipped": skipped,
-            "conflicts": conflicts, "selected": [r.describe() for r in choices]}, choices
+            "conflicts": conflicts, "selected": [r.describe() for r in choices],
+            "dataset_splits": _dataset_splits(runs)}, choices
 
 
 def _write_json(path, value):
@@ -440,7 +472,8 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
             _write_json(stage / "plots.json", cfg)
         _csv(stage / "sources.csv", [r.describe() for r in choices])
         _write_json(stage / "grouping_manifest.json", {"tool": TOOL, "version": 1, "groups": leaves,
-                                                      "skipped": skipped, "dataset_aliases": aliases or {}})
+                                                      "skipped": skipped, "dataset_aliases": aliases or {},
+                                                      "dataset_splits": plan["dataset_splits"]})
         # Build fully before replacing a previous generated report. Roll back if
         # publishing the staged directory fails; never mutate source runs.
         backup = None
@@ -474,6 +507,14 @@ def _print_plan(plan):
     for group, members in sorted(groups.items()):
         windows = {(r["mode"], tuple(r["window_ns"])) for r in members}
         print(f"  {group}: {len(members)} runs, {len(windows)} mode/window combinations")
+    for split in plan.get("dataset_splits", []):
+        print(f"\nDataset split: {split['family']} (same subsampling; dataset metadata differs)")
+        for difference in split["differences"]:
+            print(f"  {difference['field']}:")
+            for group, value in difference["values"].items():
+                print(f"    {group}: {json.dumps(value, ensure_ascii=False)}")
+        if any(d["field"].endswith(".source") for d in split["differences"]):
+            print("  If only paths moved for the same acquisitions, declare equivalent paths with --dataset-aliases.")
     for index, conflict in enumerate(conflicts, 1):
         first = conflict["candidates"][0]
         start, end = first["window_ns"]
