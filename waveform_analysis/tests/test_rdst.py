@@ -1,6 +1,8 @@
 """RDST numerical, scientific-role, persistence and XAI contracts."""
 from copy import deepcopy
 from dataclasses import replace
+from waveform_analysis.data.results import read_run_manifest
+
 import json
 from pathlib import Path
 
@@ -171,7 +173,7 @@ def test_actual_shapelet_batch_grid_blind_xai_reporting_resume_and_replay(tmp_pa
         assert (output / "tables/cv.csv").is_file()
         assert (output / "tables/shapelet_importance.csv").is_file()
         assert list((output / "plots/shapelets").glob("*.png"))
-        assert json.loads(store.manifest_path.read_text())["blind_used_in_selection"] is False
+        assert read_run_manifest(store.root)["blind_used_in_selection"] is False
         with np.load(store.xai_path) as scores:
             assert scores["method"].item() == "shapelet_coefficients"
     assert batch_engine.run_batch(resolved) == outputs

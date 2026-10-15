@@ -10,6 +10,7 @@ from typing import Any
 from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.data.dataset import load_prepared_dataset
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.data.results import resolve_run_config
 from waveform_analysis.engine.diagnostics import (
     development_predictions_current,
     diagnostic_random_state,
@@ -56,20 +57,6 @@ def _matches_training_identity(
     prefix = PureWindowsPath(manifest.get("control_artifact", "")).name
     if re.fullmatch(r"[0-9a-f]{16}", prefix):
         return str(cached.get("control_fingerprint", "")).startswith(prefix)
-    # Older neural runs already bind the exact development protocol into final_fit.
-    if spec.feature_transform is None and spec.selection_method != "ridge_cv":
-        if not cached.get("analysis_protocol_identity"):
-            return False
-        best = run["best"]
-        payload = {
-            "development": cached["analysis_protocol_identity"],
-            "model": config["model"], "candidate_id": best["candidate_id"],
-            "parameters": best["parameters"], "seed": config["seed"],
-            "frozen_transform": None,
-        }
-        expected = canonical_hash({"schema_version": manifest["schema_version"],
-                                   "stage": "final_fit", "payload": payload})
-        return expected == manifest["stage_fingerprints"]["final_fit"]
     return False
 
 
@@ -94,7 +81,7 @@ def ensure_development_predictions(run: dict[str, Any], *, logger=None) -> Path 
     config_path = store.metadata_dir / "config.json"
     if not fingerprint or not config_path.is_file():
         return unavailable("missing final-fit identity or saved configuration")
-    config = json.loads(config_path.read_text())
+    config = resolve_run_config(store.root)
     spec = get_model(manifest["model"])
     if not saved_model_complete(spec, store.model_dir):
         return unavailable("saved final model is missing or incomplete")

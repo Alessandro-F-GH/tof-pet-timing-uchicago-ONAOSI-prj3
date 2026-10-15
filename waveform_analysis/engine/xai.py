@@ -168,15 +168,6 @@ def temporal_occlusion_importance(
         "group_size_samples": np.asarray(group_size_samples, dtype=np.int64),
     }
 
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.xai")
-
-
 def model_xai_method(spec):
     from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
     return "shapelet_coefficients" if getattr(spec, "name", spec) in RDST_MODELS else "grouped_temporal_occlusion"

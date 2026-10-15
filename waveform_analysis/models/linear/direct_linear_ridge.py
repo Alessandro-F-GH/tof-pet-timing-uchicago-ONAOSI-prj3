@@ -63,6 +63,7 @@ FEATURE_TRANSFORM = FeatureTransformSpec(
     fit_transform=fit_transform,
     transform=transform,
     log_fit=False,
+    fit_role="deterministic",
 )
 
 
@@ -76,14 +77,5 @@ MODEL_SPEC = ModelSpec(
     estimator_formulation="direct",
     feature_transform=FEATURE_TRANSFORM,
     selection_method="ridge_cv",
-)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(
-    __name__, "waveform_analysis.ml_pipeline.models.direct_linear_ridge"
+    artifact_format="pickle",
 )

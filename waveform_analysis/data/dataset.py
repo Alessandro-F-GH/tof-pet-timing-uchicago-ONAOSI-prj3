@@ -73,18 +73,10 @@ def _sample_mask(directory: Path) -> np.ndarray | None:
         return np.asarray(data["mask"], dtype=bool)
 
 
-def load_prepared_dataset(
-    directory: str | Path, *, diagnostic_legacy: bool = False,
-) -> PreparedDataset:
-    """Read current inputs, or compatible old full-grid arrays for saved-model XAI.
-
-    Diagnostic reads do not upgrade input policies or refit masks. Training retains
-    strict format validation. Formats 33/34 share the same normalized array layout.
-    """
+def load_prepared_dataset(directory: str | Path) -> PreparedDataset:
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    formats = {DATASET_FORMAT_VERSION} | ({33, 34} if diagnostic_legacy else set())
-    if int(manifest.get("format_version", -1)) not in formats:
+    if int(manifest.get("format_version", -1)) != DATASET_FORMAT_VERSION:
         raise ValueError(f"Prepared dataset format mismatch in {directory}")
     return PreparedDataset(
         directory,
@@ -103,11 +95,3 @@ def load_prepared_dataset(
         _optional(directory, "timing_led_time_ps"),
         _sample_mask(directory),
     )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.dataset")

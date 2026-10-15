@@ -70,6 +70,7 @@ def test_cv_plot_uses_sorted_candidate_numbers(
     )
     if registry is not None:
         (tmp_path / "metadata/candidates.json").write_text(json.dumps(registry))
+    monkeypatch.setattr(plotting, 'read_run_manifest', lambda _: {'cv': {'metric': 'ctr'}})
     config = json.loads(
         (Path(__file__).parents[1] / "config/plots/default.json").read_text()
     )

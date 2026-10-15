@@ -7,6 +7,8 @@ import pytest
 
 from waveform_analysis.data.dataset import InputTransform, load_prepared_dataset
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.data.results import read_run_manifest
+from waveform_analysis.tests.result_factory import persist_result
 from waveform_analysis.engine import xai, xai_replay
 from waveform_analysis.tests.test_control_sample_mask import dataset as prepared_fixture
 
@@ -74,9 +76,7 @@ def test_legacy_prepared_arrays_read_only_for_diagnostics(tmp_path,version):
     before=path.read_bytes()
     with pytest.raises(ValueError,match='format mismatch'):
         load_prepared_dataset(original.directory)
-    loaded=load_prepared_dataset(original.directory,diagnostic_legacy=True)
-    np.testing.assert_array_equal(loaded.energy_windows,original.energy_windows)
-    assert loaded.sample_mask is None and path.read_bytes()==before
+    assert path.read_bytes()==before  # Only the explicit converter can upgrade cache formats.
 
 
 def test_cache_lookup_requires_original_cohort_and_unique_match(tmp_path,monkeypatch):
@@ -106,17 +106,17 @@ def test_replay_updates_only_xai_and_keeps_other_stages(tmp_path,monkeypatch):
     store=RunStore(tmp_path/'run')
     manifest={'schema_version':52,'status':'complete','model':'direct_linear_ridge',
               'stage_fingerprints':{'final_fit':'weights','blind':'evaluation','xai':'old'}}
-    store.write_manifest(manifest)
+    persist_result(store.root, manifest=manifest)
     config={'mode':'energy_to_energy','window_name':'short','seed':1,
             'preprocessing':{'cache_dir':str(tmp_path)},'xai':{'enabled':False,'group_size_samples':2,'max_events':3},
             'plot_config':{}}
-    store.write_resolved_config(config)
+    persist_result(store.root, config=config)
     store.write_best({'parameters':{}})
     store.write_blind({'ctr_ps':100.,'rmse_ps':60.})
     store.save_predictions(event_id=[0],prediction_ps=[1],corrected_ps=[2],led_residual_ps=[3])
     store.model_dir.mkdir()
     (store.model_dir/'model.pkl').write_bytes(b'unchanged weights')
-    initial={'schema_version':52,'stages':{'final_fit':{'status':'complete','fingerprint':'weights'},
+    initial={'stages':{'final_fit':{'status':'complete','fingerprint':'weights'},
                                          'blind':{'status':'complete','fingerprint':'evaluation'}}}
     store.state_path.write_text(json.dumps(initial))
     snapshots={p:p.read_bytes() for p in [store.predictions_path,store.blind_path,store.metadata_dir/'config.json',
@@ -136,9 +136,9 @@ def test_replay_updates_only_xai_and_keeps_other_stages(tmp_path,monkeypatch):
     assert xai_replay.rerun_xai(tmp_path,max_events=2)==[store.xai_path]
     for p,before in snapshots.items():assert p.read_bytes()==before
     state=json.loads(store.state_path.read_text())
-    assert state['schema_version']==52
+    assert 'schema_version' not in state
     assert state['stages']['final_fit']==initial['stages']['final_fit']
     assert state['stages']['blind']==initial['stages']['blind']
     assert state['stages']['xai']['metadata']['replacement_method']=='control_sample_mean'
-    assert json.loads(store.manifest_path.read_text())['stage_fingerprints']['final_fit']=='weights'
+    assert read_run_manifest(store.root)['stage_fingerprints']['final_fit']=='weights'
     with np.load(store.xai_path) as scores:assert int(scores['control_n_events'])==3

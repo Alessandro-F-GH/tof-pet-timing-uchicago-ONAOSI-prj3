@@ -179,6 +179,7 @@ def save(artifact, path):
 def make_spec(name, fit_transform_callback, fit_callback):
     return ModelSpec(
         name=name, candidates=candidates, fit=fit_callback, predict=predict, save=save,
+        artifact_format="pickle", requires_frozen_features=True,
         estimator_formulation="shared" if name == "shared_rdst" else "direct",
         feature_transform=FeatureTransformSpec(
             name=f"{name}_aeon_{AEON_VERSION}", parameters=transform_parameters,

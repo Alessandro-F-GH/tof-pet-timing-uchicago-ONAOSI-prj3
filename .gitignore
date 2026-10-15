@@ -58,3 +58,6 @@ update_report/main.vrb
 
 # Standalone grouped reports (sources remain in results/)
 waveform_analysis/grouped_results/
+
+# One-time historical result recovery
+waveform_analysis/recovered_results/

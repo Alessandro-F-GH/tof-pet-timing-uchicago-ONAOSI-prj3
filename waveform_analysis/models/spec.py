@@ -32,6 +32,7 @@ class FeatureTransformSpec:
     transform: TransformApply
     save: TransformSave | None = None
     log_fit: bool = True
+    fit_role: str = "control"
 
     def __post_init__(self) -> None:
         name = str(self.name).strip()
@@ -51,6 +52,10 @@ class ModelSpec:
     estimator_formulation: str = "shared"
     feature_transform: FeatureTransformSpec | None = None
     selection_method: str = "development_cv"
+    artifact_format: str = "torch"
+    requires_frozen_features: bool = False
+    bounded_transform_batches: bool = False
+    inplace_fit_input: bool = False
 
     def __post_init__(self) -> None:
         if self.selection_method not in {"development_cv", "ridge_cv"}:
@@ -61,11 +66,3 @@ class ModelSpec:
                 "estimator_formulation must be either 'shared' or 'direct'"
             )
         object.__setattr__(self, "estimator_formulation", formulation)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.models.spec")

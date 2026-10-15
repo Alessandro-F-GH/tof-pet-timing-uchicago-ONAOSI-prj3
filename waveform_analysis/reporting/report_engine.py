@@ -20,7 +20,7 @@ from waveform_analysis.reporting.stats import (
     paired_model_bootstrap,
     pearson_r,
 )
-from waveform_analysis.data.storage import RUN_SCHEMA_VERSION, RunStore
+from waveform_analysis.data.results import discover_runs, resolve_run_config
 from waveform_analysis.reporting.latex_tables import (
     DATASET_TABLE_VERSION,
     export_dataset_tables,
@@ -28,7 +28,6 @@ from waveform_analysis.reporting.latex_tables import (
 )
 from waveform_analysis.reporting.model_labels import model_label
 from waveform_analysis.reporting.metric_rows import blind_metric_rows as _blind_metric_rows
-from waveform_analysis.reporting.development import ensure_development_predictions
 from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
 
 
@@ -52,43 +51,9 @@ def _matrix(path, labels, matrix):
 
 
 def collect_runs(root):
-    root = Path(root).resolve()
-    index = root / "tables" / "runs.csv"
-    legacy = root / "runs.csv"
-    if legacy.is_file() and not index.exists():
-        index.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(index))
-    if not index.is_file():
-        raise FileNotFoundError(f"Result root has no tables/runs.csv: {root}")
-    runs = []
-    for row in _csv(index):
-        d = (root / row["path"]).resolve()
-        RunStore(d)
-        m = d / "metadata" / "manifest.json"
-        if not m.is_file():
-            continue
-        manifest = _json(m)
-        if manifest.get("status") != "complete":
-            continue
-        if (manifest.get("schema_version") != RUN_SCHEMA_VERSION
-                or manifest.get("led_centering_fit_role") != "control"
-                or not np.isfinite(float(manifest.get("led_control_mean_ps", float("nan"))))):
-            raise ValueError(
-                f"Run {d} uses an obsolete scientific input policy; rerun the batch "
-                "before generating comparisons. Saved models and predictions cannot "
-                "be relabelled as control-centered."
-            )
-        runs.append(
-            {
-                "directory": d,
-                "manifest": manifest,
-                "best": _json(d / "metadata" / "best.json"),
-                "blind": _json(d / "metadata" / "blind.json"),
-                "bootstrap": _json(d / "metadata" / "bootstrap.json"),
-            }
-        )
+    runs = discover_runs(root)
     if not runs:
-        raise RuntimeError("No complete model results found")
+        raise RuntimeError("No complete canonical results found; convert historical results first")
     return runs
 
 
@@ -177,10 +142,9 @@ def _paired(group, payloads, metric, root_config, seed):
     central = np.zeros((len(group), len(group)))
     std = np.zeros_like(central)
     counts = np.zeros_like(central, dtype=int)
-    fit = root_config["protocol"]["fit"]
+    fit = resolve_run_config(group[0]["directory"])["fit"]
     mode = group[0]["manifest"]["mode"]
-    fit = fit[mode] if isinstance(fit, dict) and mode in fit else fit
-    n = int(root_config["protocol"]["bootstrap"]["n_resamples"])
+    n = int(root_config["settings"]["bootstrap"]["n_resamples"])
     for i in range(len(group)):
         counts[i, i] = len(payloads[i]["event_id"])
         for j in range(i + 1, len(group)):
@@ -439,12 +403,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
         for directory in (tables / mode_name / str(window), plots / mode_name / str(window)):
             if directory.is_dir():
                 shutil.rmtree(directory)
-    for legacy_name in ("energy", "timing"):
-        legacy_dir = report / legacy_name
-        if legacy_dir.is_dir():
-            shutil.rmtree(legacy_dir)
     for run in runs:
-        ensure_development_predictions(run, logger=logger)
         render_run_plots(run["directory"], cfg)
     dataset_tables = export_dataset_tables(root, runs, root_config)
     validation, blind = _summaries(runs)
@@ -470,7 +429,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
     else:
         (tables / "ridge_cv.csv").unlink(missing_ok=True)
     write_csv(tables / "blind.csv", blind)
-    seed = int(root_config["protocol"]["seed"])
+    seed = int(root_config["settings"]["seed"])
     for (mode, window), group in _groups(runs).items():
         mode_name = "energy" if mode == "energy_to_energy" else "timing"
         table_dir = tables / mode_name / str(window)
@@ -567,11 +526,3 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
     if logger:
         logger.info("Report generated from persisted results only | %s", report)
     return report
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.report_engine")

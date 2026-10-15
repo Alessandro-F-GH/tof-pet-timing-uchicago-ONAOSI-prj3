@@ -46,7 +46,7 @@ def test_board_table_deduplicates_models_and_keeps_modes_windows(board, tmp_path
     runs.append(wide)
     saved = deepcopy(runs)
     paths = export_dataset_tables(
-        tmp_path, runs, {"results": {"folder": f"{board}/benchmark"}}
+        tmp_path, runs, {"board": board}
     )
     assert runs == saved
     assert len(paths) == 1
@@ -82,7 +82,7 @@ def test_conflicting_populations_cannot_be_silently_collapsed(tmp_path):
 def test_missing_metadata_is_a_dash_not_zero_and_unknown_board_stays_csv(tmp_path):
     item = run(tmp_path)
     item["manifest"].pop("dataset_populations")
-    path = export_dataset_tables(tmp_path, [item], {"results": {"folder": "UC/study"}})[
+    path = export_dataset_tables(tmp_path, [item], {"board": "UC"})[
         0
     ]
     assert (
@@ -94,7 +94,7 @@ def test_missing_metadata_is_a_dash_not_zero_and_unknown_board_stays_csv(tmp_pat
     assert not list(other.rglob("*.tex"))
 
 
-def test_old_run_backfills_only_matching_prepared_cache_without_mutation(tmp_path):
+def test_missing_population_is_not_backfilled_from_prepared_cache(tmp_path):
     item = run(tmp_path)
     item["manifest"].pop("dataset_populations")
     config = {
@@ -137,7 +137,7 @@ def test_old_run_backfills_only_matching_prepared_cache_without_mutation(tmp_pat
         path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     }
     rows = dataset_rows([item], "UC")
-    assert [row["n_selected"] for row in rows] == [7, 7, 7]
+    assert [row["n_selected"] for row in rows] == [None, None, None]
     assert all(path.read_bytes() == content for path, content in original.items())
     config["window_ns"]["end"] = 30
     (directory / "config.json").write_text(json.dumps(config))

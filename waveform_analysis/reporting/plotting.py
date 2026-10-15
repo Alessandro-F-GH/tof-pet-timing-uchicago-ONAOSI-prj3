@@ -7,7 +7,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from waveform_analysis.reporting.stats import residual_summary
-from waveform_analysis.data.storage import RUN_SCHEMA_VERSION
+from waveform_analysis.data.results import read_run_manifest
 
 
 def load_plot_config(root):
@@ -142,7 +142,7 @@ def plot_run_cv(run, cfg):
     if not path.is_file():
         return None
     rows = _csv(path)
-    manifest = json.loads((run / "metadata" / "manifest.json").read_text())
+    manifest = read_run_manifest(run)
     if manifest.get("selection_method") == "ridge_cv":
         return None
     metric = manifest["cv"]["metric"]
@@ -199,11 +199,12 @@ def _plot_run_residual_distribution(run, cfg, *, dataset_role):
     if not path.is_file():
         output_path(run / "plots", stem, cfg).unlink(missing_ok=True)
         return None
+    manifest_path = run / "metadata" / "manifest.json"
+    manifest = read_run_manifest(run) if manifest_path.is_file() else {}
+    led_label = "LED (control-centered)" if manifest.get('led_centering_fit_role') == 'control' else "LED (saved calibration)"
     with np.load(path) as d:
         if dataset_role == "development":
-            manifest_path = run / "metadata" / "manifest.json"
             if manifest_path.is_file():
-                manifest = json.loads(manifest_path.read_text())
                 fingerprint = manifest.get("stage_fingerprints", {}).get("final_fit")
                 if ("final_fit_fingerprint" not in d
                         or str(d["final_fit_fingerprint"].item()) != fingerprint):
@@ -231,7 +232,7 @@ def _plot_run_residual_distribution(run, cfg, *, dataset_role):
     with plot_context(cfg):
         fig, ax = plt.subplots(figsize=tuple(cfg["histogram"]["figsize"]))
         for values, label, color in (
-            (led, "LED (control-centered)", cfg["reference"]["color"]),
+            (led, led_label, cfg["reference"]["color"]),
             (
                 corrected,
                 "ML corrected",
@@ -524,12 +525,6 @@ def plot_run_xai(run, cfg):
 
 
 def render_run_plots(run, cfg):
-    manifest_path = Path(run) / "metadata" / "manifest.json"
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text())
-        if (manifest.get("schema_version") != RUN_SCHEMA_VERSION
-                or manifest.get("led_centering_fit_role") != "control"):
-            raise ValueError("Run uses an obsolete scientific input policy; rerun the batch before plotting")
     return {
         "cv": plot_run_cv(run, cfg),
         "blind": plot_run_blind(run, cfg),
@@ -758,11 +753,3 @@ def grouped_bar(labels, series, path, cfg, *, ylabel, title):
         ax.legend(ncols=int(cfg.get("legend", {}).get("columns", 1)))
         _finish(ax, cfg)
         return _save(fig, path)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.plotting")

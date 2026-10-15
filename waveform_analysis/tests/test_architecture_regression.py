@@ -76,4 +76,9 @@ def differential_results(tmp_path_factory):
 def test_model_and_protocol_outputs_are_exact(name, differential_results):
     """Verify bytes of numeric arrays, weights, metadata, logs and file schemas."""
     before, after = differential_results
-    assert after[name] == before[name]
+    # Python module paths deliberately change; all numerical and training
+    # metadata comparisons remain exact.
+    left, right = dict(before[name]), dict(after[name])
+    left.pop('artifact_module', None)
+    right.pop('artifact_module', None)
+    assert right == left

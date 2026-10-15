@@ -73,6 +73,14 @@ def apply_frozen_preprocessing(
 def prepare_role_dataset(
     config, role, control_artifact, *, rebuild=False, logger=None, allow_empty=False
 ):
+    cache = config.get('_prepared_datasets')
+    key = canonical_hash({
+        'role': role, 'allow_empty': allow_empty, 'dataset': config[role], 'mode': config['mode'],
+        'window': config['window_ns'], 'ml_input': config['ml_input'],
+        'preprocessing': config['preprocessing'], 'control': control_artifact,
+    }) if cache is not None else None
+    if cache is not None and not rebuild and key in cache:
+        return cache[key]
     selection, native = apply_frozen_preprocessing(
         config, role, control_artifact, rebuild=rebuild, logger=logger
     )
@@ -103,7 +111,10 @@ def prepare_role_dataset(
     prepared = attach_control_sample_mask(
         prepared, control_prepared, cache_root=Path(config["preprocessing"]["cache_dir"]), logger=logger
     )
-    return selection, native, prepared
+    result = selection, native, prepared
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def publish_preprocessing_diagnostics(
@@ -174,11 +185,3 @@ def publish_preprocessing_diagnostics(
         },
     )
     return out
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.preprocessing")

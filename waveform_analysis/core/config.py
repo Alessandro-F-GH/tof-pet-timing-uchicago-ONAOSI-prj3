@@ -522,10 +522,10 @@ def load_batch_config(
                     "study_name": str(raw["name"]),
                     "run_id": f"{_mode_tag(mode)}__{window_name}__{model_name}",
                     "window_name": str(window_name),
-                    "control": copy.deepcopy(datasets["control"]),
-                    "development": copy.deepcopy(datasets["development"]),
-                    "blind": copy.deepcopy(datasets["blind"]),
-                    "preprocessing": copy.deepcopy(preprocessing),
+                    "control": datasets["control"],
+                    "development": datasets["development"],
+                    "blind": datasets["blind"],
+                    "preprocessing": preprocessing,
                     "model": model,
                     "mode": mode,
                     "window_ns": window,
@@ -598,13 +598,7 @@ def public_batch_config(batch: BatchConfig) -> dict[str, Any]:
         "protocol": batch.protocol,
         "axes": batch.axes,
         "save_model": batch.runs[0]["save_model"] if batch.runs else True,
-        "runs": [public_config(config) for config in batch.runs],
+        "models": {config["model"]["name"]: config["model"]["space"] for config in batch.runs},
+        "runs": [{key: config[key] for key in ("run_id", "mode", "window_name", "output_dir")} |
+                 {"model": config["model"]["name"]} for config in batch.runs],
     }
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.config")

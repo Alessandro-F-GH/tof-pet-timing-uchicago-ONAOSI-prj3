@@ -238,10 +238,3 @@ def fit_histogram_peak(
         fit_low=fit_low,
         fit_high=fit_high,
     )
-
-
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.utils.peak")

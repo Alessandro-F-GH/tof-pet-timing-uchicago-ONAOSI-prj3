@@ -7,10 +7,12 @@ from pathlib import Path, PureWindowsPath
 import re
 from typing import Any
 
-from waveform_analysis.core.io import atomic_json, canonical_hash
+from waveform_analysis.core.io import atomic_json
+from waveform_analysis.core.dependencies import stage_fingerprint
 from waveform_analysis.data.dataset import PreparedDataset, load_prepared_dataset
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.data.results import discover_runs, read_run_manifest, resolve_run_config
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.engine.train import load_fitted_model, release_training_memory, saved_model_complete
 from waveform_analysis.engine.xai import model_importance, model_xai_method, model_xai_version
@@ -90,30 +92,15 @@ class PreparedCacheLookup:
         if path not in self.datasets:
             # Read legacy full-grid arrays without changing their input policy;
             # saved models supply their original masks and fitted transforms.
-            self.datasets[path] = load_prepared_dataset(path, diagnostic_legacy=True)
+            self.datasets[path] = load_prepared_dataset(path)
         return self.datasets[path]
 
 
 def _runs(root: Path) -> list[RunStore]:
-    index = root / "tables" / "runs.csv"
-    indices = [index] if index.is_file() else sorted(root.glob("**/tables/runs.csv"))
-    legacy = root / "runs.csv"
-    if not indices and legacy.is_file():
-        indices = [legacy]
-    if not indices:
-        raise FileNotFoundError(f"No batch tables/runs.csv found in {root}")
-    stores = {}
-    for path in indices:
-        batch_root = path.parent.parent if path.parent.name == "tables" else path.parent
-        with path.open(encoding="utf-8", newline="") as stream:
-            for row in csv.DictReader(stream):
-                directory = (batch_root / row["path"]).resolve()
-                store = RunStore(directory)
-                if store.manifest_path.is_file() and _read(store.manifest_path).get("status") == "complete":
-                    stores[directory] = store
-    if not stores:
-        raise ValueError(f"No complete saved-model runs found in {root}")
-    return list(stores.values())
+    runs = discover_runs(root)
+    if not runs:
+        raise ValueError(f"No complete canonical saved-model runs found in {root}")
+    return [RunStore(r["directory"]) for r in runs]
 
 
 def rerun_xai(
@@ -131,17 +118,17 @@ def rerun_xai(
     if any(v is not None and v < 1 for v in (group_size_samples, max_events)):
         raise ValueError("XAI group size and max events must be positive")
     stores = _runs(Path(results).expanduser().resolve())
-    available = {_read(store.manifest_path)["model"] for store in stores}
+    available = {read_run_manifest(store.root)["model"] for store in stores}
     if models is not None and set(models) - available:
         raise ValueError(f"Requested models not found: {sorted(set(models) - available)}")
     lookup = PreparedCacheLookup()
     outputs, failures = [], []
     for store in stores:
-        manifest = _read(store.manifest_path)
+        manifest = read_run_manifest(store.root)
         if models is not None and manifest["model"] not in models:
             continue
         try:
-            config = _read(store.metadata_dir / "config.json")
+            config = resolve_run_config(store.root)
             settings = {**config["xai"], "enabled": True}
             if group_size_samples is not None:
                 settings["group_size_samples"] = int(group_size_samples)
@@ -166,8 +153,7 @@ def rerun_xai(
                 "control": control_identity,
                 "formulation": spec.estimator_formulation,
             }
-            fingerprint = canonical_hash({"schema_version": manifest["schema_version"],
-                                          "stage": "xai", "payload": payload})
+            fingerprint = stage_fingerprint("xai", payload)
             if logger:
                 logger.info("XAI rerun | saved model | %s | %s | %s", spec.name, config["mode"], config.get("window_name"))
             with diagnostic_random_state():
@@ -188,10 +174,7 @@ def rerun_xai(
                         "control_analysis_protocol_identity": control_identity,
                         "control_n_events": manifest["dataset_populations"]["control"]["n_selected"] if coefficient_xai else control.n_events, "settings": settings}
             # Preserve other stages, including older saved-model input policies.
-            state = store.read_json(store.state_path, {"schema_version": manifest["schema_version"], "stages": {}})
-            state.setdefault("stages", {})["xai"] = {"status": "complete", "fingerprint": fingerprint,
-                                                     "metadata": metadata}
-            atomic_json(store.state_path, state)
+            store.mark_stage("xai", fingerprint, metadata=metadata)
             manifest["stage_fingerprints"]["xai"] = fingerprint
             store.write_manifest(manifest)
             atomic_json(store.metadata_dir / "xai.json", {**metadata, "fingerprint": fingerprint})

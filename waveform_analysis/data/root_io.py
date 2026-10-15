@@ -195,11 +195,3 @@ def iterate_energy_chunks(
                 timing_horizontal_offset_s=timing_horizontal_offset,
                 timing_samples=timing_samples,
             )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.energy_io")

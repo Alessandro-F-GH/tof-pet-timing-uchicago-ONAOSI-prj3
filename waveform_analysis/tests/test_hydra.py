@@ -1,6 +1,8 @@
 """Hydra reference scaling, frozen scientific roles, persistence and XAI."""
 from copy import deepcopy
 from dataclasses import replace
+from waveform_analysis.data.results import read_run_manifest
+
 import json
 from pathlib import Path
 
@@ -215,7 +217,7 @@ def test_actual_hydra_batch_grid_blind_temporal_xai_reporting_and_resume(tmp_pat
         assert len(store.read_candidate_rows()) == 2
         assert (output / "tables/cv.csv").is_file()
         assert (output / "plots/xai.png").is_file()
-        assert json.loads(store.manifest_path.read_text())["blind_used_in_selection"] is False
+        assert read_run_manifest(store.root)["blind_used_in_selection"] is False
         with np.load(store.xai_path) as scores:
             assert scores["replacement_method"].item() == "control_sample_mean"
             assert scores["importance_ps"].shape == ((2, 20) if output.name == "direct_hydra" else (20,))

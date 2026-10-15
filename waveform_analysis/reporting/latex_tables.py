@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from itertools import groupby
 from pathlib import Path
@@ -72,51 +71,8 @@ def population_metadata(dataset: Any, source: str) -> dict[str, Any]:
 
 
 def _board(config: dict[str, Any]) -> str | None:
-    # All shipped batches explicitly identify their board in results.folder.
-    folder = str(config.get("results", {}).get("folder", ""))
-    boards = set(re.findall(r"(?:^|[/\\])(?P<board>UC|FBK)(?=$|[/\\])", folder.upper()))
-    return next(iter(boards)) if len(boards) == 1 else None
+    return config.get('board') if config.get('board') in {'UC', 'FBK'} else None
 
-
-def _cached_population(run: dict[str, Any], role: str) -> dict[str, Any] | None:
-    """Read matching prepared caches for results predating population snapshots.
-
-    Ambiguous or unavailable caches yield an unknown count, never a guessed one.
-    Reporting does not load acquisition files or execute preprocessing.
-    """
-    config_path = run["directory"] / "metadata" / "config.json"
-    control_path = Path(run["manifest"]["control_artifact"]) / "manifest.json"
-    if not config_path.is_file() or not control_path.is_file():
-        return None
-    config = json.loads(config_path.read_text())
-    control = json.loads(control_path.read_text())
-    cache = Path(config["preprocessing"]["cache_dir"]) / f"{role}_ml" / "prepared"
-    matches = []
-    for path in cache.glob("*/manifest.json"):
-        manifest = json.loads(path.read_text())
-        if (
-            manifest.get("dataset_role") == role
-            and manifest.get("mode") == config["mode"]
-            and manifest.get("window_ns") == config["window_ns"]
-            and manifest.get("subsampling") == config["ml_input"]["subsampling"]
-            and manifest.get("dataset_source") == config[role]["root_file"]
-            and manifest.get("control_fingerprint") == control["fingerprint"]
-        ):
-            bias_path = path.parent / "bias_voltage_V.npy"
-            bias = (
-                np.load(bias_path, mmap_mode="r")
-                if bias_path.is_file()
-                else np.array([])
-            )
-            matches.append(
-                {
-                    "source": manifest["dataset_source"],
-                    "n_selected": manifest["n_final"],
-                    "bias_voltage_V": np.unique(bias[np.isfinite(bias)]).tolist(),
-                    "population_identity": manifest["event_population_identity"],
-                }
-            )
-    return matches[0] if len(matches) == 1 else None
 
 
 def dataset_rows(runs: list[dict[str, Any]], board: str | None) -> list[dict[str, Any]]:
@@ -127,7 +83,7 @@ def dataset_rows(runs: list[dict[str, Any]], board: str | None) -> list[dict[str
         window = manifest["window_ns"]
         saved = manifest.get("dataset_populations", {})
         for role in ROLES:
-            summary = saved.get(role) or _cached_population(run, role)
+            summary = saved.get(role) or None
             source = str(
                 (summary or {}).get("source", manifest[f"{role}_dataset"]["root_file"])
             )

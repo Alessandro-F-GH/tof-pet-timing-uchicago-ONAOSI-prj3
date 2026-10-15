@@ -19,24 +19,19 @@ import shutil
 import tempfile
 from typing import Any
 
+# Permit direct-file invocation as well as python -m.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from waveform_analysis.data.results import batch_root, read_run, resolve_run_config, read_json
+
 TOOL = "waveform_analysis.group_results"
+GROUP_FORMAT = "grouped-waveform-results"
 ROLES = ("control", "development", "blind")
 PLOT_TYPES = {".png", ".pdf", ".svg", ".jpg", ".jpeg", ".eps", ".webp"}
-METADATA = ("manifest", "config", "best", "blind", "bootstrap", "final_fit")
 
 
 def _json(path):
-    if not path.is_file():
-        return {}
-    value = json.loads(path.read_text(encoding="utf-8-sig"))
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object: {path}")
-    return value
-
-
-def _saved(root, name):
-    modern = root / "metadata" / f"{name}.json"
-    return modern if modern.is_file() else root / f"{name}.json"
+    return read_json(path, {})
 
 
 def _canonical(value):
@@ -80,45 +75,10 @@ def _inside(path, parent):
     return path == parent or parent in path.parents
 
 
-def _batch(root):
-    for parent in root.parents:
-        indexed = (parent / "tables/runs.csv").is_file() or (parent / "runs.csv").is_file()
-        config = _json(parent / "config.json")
-        if indexed or ("protocol" in config and ("sweep" in config or "axes" in config)):
-            return parent, config, _json(parent / "manifest.json")
-    return root.parent, {}, {}
-
-
-def _subsampling(manifest, config, batch_config, batch_manifest):
-    candidates = [manifest.get("subsampling")]
-    for value in (manifest, config, batch_config.get("protocol", {}), batch_manifest.get("protocol", {})):
-        candidates.append(value.get("ml_input", {}).get("subsampling"))
-    found = set()
-    for value in candidates:
-        if value is not None:
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"Invalid subsampling: {value!r}")
-            found.add(value)
-    if len(found) != 1:
-        raise ValueError(f"Missing or conflicting subsampling: {sorted(found)}")
-    return found.pop()
-
-
-def _datasets(manifest, config, batch_config, aliases):
-    datasets = {}
-    for role in ROLES:
-        value = manifest.get(f"{role}_dataset") or config.get(role) or batch_config.get("datasets", {}).get(role) or {}
-        if isinstance(value, str):
-            value = {"root_file": value}
-        source = value.get("root_file") or ((manifest.get("dataset_populations") or {}).get(role) or {}).get("source")
-        if not source:
-            raise ValueError(f"Missing {role} dataset source")
-        key = _path_key(source)
-        datasets[role] = {
-            "source": aliases.get(key, key), "channels": value.get("channels"),
-            "true_tof_ps": value.get("true_tof_ps"),
-        }
-    return datasets
+def _datasets(config, aliases):
+    return {role: {"source": aliases.get(_path_key(config[role]["root_file"]), _path_key(config[role]["root_file"])),
+                   "channels": config[role].get("channels"), "true_tof_ps": config[role].get("true_tof_ps")}
+            for role in ("control", "development", "blind")}
 
 
 def _board_voltage(root, manifest, config, batch_config, batch_manifest, datasets):
@@ -181,43 +141,33 @@ def discover(sources, output, aliases=None):
         source = Path(source).expanduser().resolve()
         if not source.is_dir():
             raise ValueError(f"Source directory does not exist: {source}")
-        for path in sorted(source.rglob("manifest.json")):
+        for path in sorted(source.rglob("metadata/manifest.json")):
             if _inside(path, output):
                 continue
-            root = path.parent.parent if path.parent.name == "metadata" else path.parent
-            root = root.resolve()
+            root = path.parent.parent.resolve()
             if root in seen or any((p / "grouping_manifest.json").is_file() for p in (root, *root.parents)):
                 continue
-            manifest = _json(_saved(root, "manifest"))
-            model = manifest.get("model")
-            if not model:
-                continue  # Batch, preprocessing and report manifests are not runs.
             seen.add(root)
-            if manifest.get("status") != "complete":
-                skipped.append({"source": str(root), "reason": "run is not complete"})
-                continue
             try:
-                if not isinstance(model, str):
-                    raise ValueError("Model name must be a string")
-                metadata = {name: _json(_saved(root, name)) for name in METADATA}
-                config = metadata["config"]
-                batch, batch_config, batch_manifest = _batch(root)
-                subsampling = _subsampling(manifest, config, batch_config, batch_manifest)
-                datasets = _datasets(manifest, config, batch_config, aliases)
-                window = manifest.get("window_ns") or config.get("window_ns")
-                if not isinstance(window, dict):
-                    raise ValueError("Missing numeric window_ns")
-                window = tuple(float(window[key]) for key in ("start", "end"))
+                result = read_run(root)
+                metadata = {key: result[key] for key in ("manifest", "best", "blind", "bootstrap")}
+                manifest = metadata["manifest"]
+                if manifest.get("status") != "complete":
+                    raise ValueError("run is not complete")
+                config = resolve_run_config(root)
+                metadata["config"] = config
+                model, mode = manifest["model"], config["mode"]
+                subsampling = config["ml_input"]["subsampling"]
+                if isinstance(subsampling, bool) or not isinstance(subsampling, int) or subsampling < 1:
+                    raise ValueError("Missing or invalid subsampling")
+                datasets = _datasets(config, aliases)
+                window = tuple(float(config["window_ns"][key]) for key in ("start", "end"))
                 if not all(math.isfinite(v) for v in window) or window[1] <= window[0]:
                     raise ValueError("Invalid numeric window_ns")
-                mode = manifest.get("mode") or config.get("mode")
-                if mode not in {"energy_to_energy", "timing_to_timing"}:
-                    raise ValueError("Missing or unsupported waveform mode")
-                board, voltage = _board_voltage(root, manifest, config, batch_config, batch_manifest, datasets)
-                fit = config.get("fit") or batch_config.get("protocol", {}).get("fit", {})
-                fit = fit.get(mode, fit) if isinstance(fit, dict) else {}
+                batch = batch_root(root)
+                board, voltage = _board_voltage(root, manifest, config, {}, {}, datasets)
                 runs.append(SavedRun(root, batch, _digest(str(root)), model, mode, window,
-                                     subsampling, datasets, board, voltage, metadata, fit))
+                                     subsampling, datasets, board, voltage, metadata, config.get("fit", {})))
             except (ValueError, KeyError, TypeError) as exc:
                 skipped.append({"source": str(root), "reason": str(exc)})
     families = defaultdict(set)
@@ -461,7 +411,17 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
         isinstance(k, str) and isinstance(v, str) and v for k, v in aliases.items()
     )):
         raise ValueError("Dataset aliases must map paths to nonempty string labels")
-    previous = _json(output / "grouping_manifest.json") if output.is_dir() else {}
+    previous_raw = _json(output / "grouping_manifest.json") if output.is_dir() else {}
+    previous = dict(previous_raw)
+    if previous:
+        if previous.get('format') != GROUP_FORMAT:
+            raise ValueError('Existing grouped output uses the old layout; regenerate it in a new output folder')
+        previous['groups'] = []
+        for entry in previous_raw.get('groups', []):
+            leaf_dir = output / entry['path']
+            info = _json(leaf_dir / 'group.json')
+            common = _json(output / info['group'] / 'config.json')
+            previous['groups'].append({**info, **common})
     if output.exists() and previous.get("tool") != TOOL:
         raise ValueError("Output exists and is not a previous output created by this script")
     runs, skipped = discover(sources, output, aliases)
@@ -518,30 +478,13 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
                 if sum(_safe(r.model).casefold() == name.casefold() for r in members) > 1 or name.upper() in {"CON", "PRN", "AUX", "NUL"}:
                     name += f"__{run.id}"
                 target = directory / "runs" / name
-                for name in METADATA:
-                    source = _saved(run.root, name)
-                    if source.is_file():
-                        destination = target / "metadata" / f"{name}.json"
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(source, destination)
-                    else:
-                        missing.append({"run": run.id, "missing": f"{name}.json"})
                 count = _copy_tree(run.root / "plots", target / "plots", PLOT_TYPES)
-                # Legacy runs may store figures directly in the run directory.
-                for path in run.root.iterdir():
-                    if path.is_file() and not path.is_symlink() and path.suffix.lower() in PLOT_TYPES:
-                        destination = target / "plots" / path.name
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(path, destination)
-                        count += 1
                 if not count:
                     missing.append({"run": run.id, "missing": "saved plots"})
                 _copy_tree(run.root / "tables", target / "tables", {".csv", ".tex", ".json"})
                 if copy_predictions:
                     for name in ("pred.npz", "bootstrap.npz", "development_pred.npz"):
                         source = run.root / "artifacts" / name
-                        if not source.is_file():
-                            source = run.root / name
                         if source.is_file():
                             destination = target / "artifacts" / name
                             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -561,7 +504,8 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
                     "summary_plots_requested": summary_plots}
             if cfg is not None:
                 _write_json(directory / "plots.json", cfg)
-            _write_json(directory / "group.json", info)
+            _write_json(stage / group / 'config.json', {'datasets': info['datasets'], 'subsampling': info['subsampling']})
+            _write_json(directory / "group.json", {k: v for k, v in info.items() if k not in {'datasets', 'subsampling'}})
             leaves.append(info)
         if cfg is not None:
             _write_json(stage / "plots.json", cfg)
@@ -571,7 +515,7 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
         _csv(stage / "sources.csv", [row for info in leaves for row in info["runs"]])
         all_skipped = list({(item["source"], item["reason"]): item
                             for item in previous.get("skipped", []) + skipped}.values())
-        _write_json(stage / "grouping_manifest.json", {"tool": TOOL, "version": 1, "groups": leaves,
+        _write_json(stage / "grouping_manifest.json", {"tool": TOOL, "format": GROUP_FORMAT, "groups": [{"path": f"{g['group']}/{g['leaf']}"} for g in leaves],
                                                       "skipped": all_skipped,
                                                       "dataset_aliases": {**previous.get("dataset_aliases", {}), **(aliases or {})},
                                                       "dataset_splits": _dataset_splits(grouped=leaves)})
@@ -579,7 +523,7 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
         # publishing the staged directory fails; never mutate source runs.
         backup = None
         if output.exists():
-            if not previous or _json(output / "grouping_manifest.json") != previous:
+            if not previous or _json(output / "grouping_manifest.json") != previous_raw:
                 raise ValueError("Output changed during grouping; refusing to replace it")
             backup = Path(tempfile.mkdtemp(prefix=f".{output.name}-backup-", dir=output.parent))
             backup.rmdir()

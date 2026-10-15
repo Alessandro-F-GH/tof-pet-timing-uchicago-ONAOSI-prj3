@@ -4,8 +4,6 @@ from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
 
-RUN_SCHEMA_VERSION = 53
-STAGE_ORDER = ("cv", "selection", "final_fit", "blind", "bootstrap", "xai", "plots")
 
 
 def _read_csv(path):
@@ -34,35 +32,6 @@ class RunStore:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self._organize_existing_layout()
-
-    def _organize_existing_layout(self):
-        moves = {
-            **{
-                f"{name}.json": self.root / "metadata" / f"{name}.json"
-                for name in [
-                    "manifest",
-                    "state",
-                    "config",
-                    "candidates",
-                    "best",
-                    "final_fit",
-                    "blind",
-                    "bootstrap",
-                ]
-            },
-            "folds.csv": self.root / "tables" / "folds.csv",
-            "cv.csv": self.root / "tables" / "cv.csv",
-            "pred.npz": self.root / "artifacts" / "pred.npz",
-            "bootstrap.npz": self.root / "artifacts" / "bootstrap.npz",
-            "xai.npz": self.root / "artifacts" / "xai.npz",
-        }
-        for name, destination in moves.items():
-            source = self.root / name
-            if source.is_file() and not destination.exists():
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(destination))
-
     @property
     def metadata_dir(self):
         return self.root / "metadata"
@@ -136,10 +105,12 @@ class RunStore:
         return self.root / "plots"
 
     def write_manifest(self, v):
-        atomic_json(self.manifest_path, v)
+        from waveform_analysis.data.results import write_run_manifest
+        write_run_manifest(self.root, v)
 
     def write_resolved_config(self, v):
-        atomic_json(self.metadata_dir / "config.json", v)
+        from waveform_analysis.data.results import write_run_config
+        write_run_config(v, managed_runs=v.get("_managed_runs"))
 
     def write_candidates(self, v):
         atomic_json(self.candidates_path, v)
@@ -164,11 +135,8 @@ class RunStore:
 
     def read_state(self):
         v = self.read_json(self.state_path, {})
-        if (
-            not isinstance(v, dict)
-            or int(v.get("schema_version", -1)) != RUN_SCHEMA_VERSION
-        ):
-            return {"schema_version": RUN_SCHEMA_VERSION, "stages": {}}
+        if not isinstance(v, dict):
+            return {'stages': {}}
         v.setdefault("stages", {})
         return v
 
@@ -190,30 +158,7 @@ class RunStore:
         atomic_json(self.state_path, state)
 
     def invalidate_from(self, stage):
-        graph = {
-            "cv": (
-                "cv",
-                "selection",
-                "final_fit",
-                "blind",
-                "bootstrap",
-                "xai",
-                "plots",
-            ),
-            "selection": (
-                "selection",
-                "final_fit",
-                "blind",
-                "bootstrap",
-                "xai",
-                "plots",
-            ),
-            "final_fit": ("final_fit", "blind", "bootstrap", "xai", "plots"),
-            "blind": ("blind", "bootstrap", "xai", "plots"),
-            "bootstrap": ("bootstrap", "plots"),
-            "xai": ("xai", "plots"),
-            "plots": ("plots",),
-        }
+        from waveform_analysis.core.dependencies import INVALIDATES
         files = {
             "cv": [
                 self.folds_path,
@@ -229,14 +174,14 @@ class RunStore:
             "xai": [self.xai_path],
             "plots": [self.plots_dir],
         }
-        for current in graph[stage]:
+        for current in INVALIDATES[stage]:
             for path in files[current]:
                 if path.is_dir():
                     shutil.rmtree(path, ignore_errors=True)
                 elif path.exists():
                     path.unlink()
         state = self.read_state()
-        for current in graph[stage]:
+        for current in INVALIDATES[stage]:
             state["stages"].pop(current, None)
         atomic_json(self.state_path, state)
 
@@ -315,19 +260,3 @@ class RunStore:
     def save_xai(self, **arrays):
         _atomic_npz(self.xai_path, **arrays)
         return self.xai_path
-
-    def compatible_schema(self):
-        return (
-            int(
-                (self.read_json(self.manifest_path, {}) or {}).get("schema_version", -1)
-            )
-            == RUN_SCHEMA_VERSION
-        )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.storage")

@@ -20,9 +20,14 @@ def main() -> None:
     sys.path.insert(0, str(repository))
     import numpy as np
     import torch
-    from waveform_analysis.ml_pipeline.models import get_model, model_names
-    from waveform_analysis.ml_pipeline.splits import make_cv_split, fold_assignment
-    from waveform_analysis.ml_pipeline.stats import blind_event_bootstrap
+    if (repository / 'waveform_analysis/models').is_dir():
+        from waveform_analysis.models import get_model, model_names
+        from waveform_analysis.data.splits import make_cv_split, fold_assignment
+        from waveform_analysis.reporting.stats import blind_event_bootstrap
+    else:
+        from waveform_analysis.ml_pipeline.models import get_model, model_names
+        from waveform_analysis.ml_pipeline.splits import make_cv_split, fold_assignment
+        from waveform_analysis.ml_pipeline.stats import blind_event_bootstrap
 
     output.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(2)
@@ -123,22 +128,6 @@ def main() -> None:
             with (directory / "model.pkl").open("rb") as stream:
                 loaded = pickle.load(stream)
             np.testing.assert_array_equal(spec.predict(loaded, predict_x), prediction)
-        # Load baseline pickles using migrated import paths and frozen transforms.
-        if (
-            len(sys.argv) > 3
-            and not hasattr(artifact, "model")
-            and name not in {"direct_linear_ridge", "shared_linear_ridge"}
-        ):
-            source = Path(sys.argv[3]) / name
-            with (source / "model.pkl").open("rb") as stream:
-                loaded = pickle.load(stream)
-            loaded_x = predict_x
-            if (source / "transform.pkl").is_file():
-                with (source / "transform.pkl").open("rb") as stream:
-                    loaded_transform = pickle.load(stream)
-                loaded_x = spec.feature_transform.transform(loaded_transform, blind)
-                np.testing.assert_array_equal(loaded_x, predict_x)
-            np.testing.assert_array_equal(spec.predict(loaded, loaded_x), prediction)
         result[name] = {
             "prediction": digest(prediction),
             "parameters": arrays,

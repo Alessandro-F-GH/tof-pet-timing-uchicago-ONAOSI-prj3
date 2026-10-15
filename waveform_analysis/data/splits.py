@@ -120,11 +120,3 @@ def bootstrap_draw_indices(n_events: int, rng: np.random.Generator) -> np.ndarra
     if n_events < 1:
         raise ValueError("bootstrap requires at least one event")
     return rng.integers(0, n_events, size=n_events, dtype=np.int64)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.splits")

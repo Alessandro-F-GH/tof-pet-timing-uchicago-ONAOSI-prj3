@@ -1,6 +1,8 @@
 """Sklearn equivalence and batch/stage contracts for linear RidgeCV."""
 
 from copy import deepcopy
+from waveform_analysis.data.results import read_run_manifest
+
 import json
 import logging
 from pathlib import Path
@@ -209,6 +211,9 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
             },
         }
         runs.append(c)
+        protocol['cross_validation'] = c['cross_validation']
+        for run_config in runs:
+            run_config['cross_validation'] = c['cross_validation']
     resolved = replace(
         resolved, output_dir=str(tmp_path), protocol=protocol, runs=tuple(runs)
     )
@@ -271,7 +276,7 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         + (["direct_mlp"] if mixed else [])
     )
     for output in outputs:
-        manifest = json.loads((output / "metadata/manifest.json").read_text())
+        manifest = read_run_manifest(output)
         best = json.loads((output / "metadata/best.json").read_text())
         assert manifest["blind_used_in_selection"] is False
         assert set(manifest["dataset_populations"]) == {

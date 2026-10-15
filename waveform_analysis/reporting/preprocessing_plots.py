@@ -308,11 +308,3 @@ def plot_led_selection(scan, selected, path, title):
     ax.set_title(title)
     _finish(ax)
     _save(fig, path)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.preprocessing_plots")

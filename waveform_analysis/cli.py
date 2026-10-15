@@ -37,6 +37,8 @@ def _parser() -> argparse.ArgumentParser:
         "report", help="Regenerate plots and report without retraining"
     )
     report.add_argument("results", type=Path)
+    diagnostic = sub.add_parser("diagnostics", help="Explicitly generate missing development predictions from saved models")
+    diagnostic.add_argument("--results", type=Path, required=True)
     xai = sub.add_parser("xai", help="Repeat control-mean XAI from saved batch models without retraining")
     xai.add_argument("--results", type=Path, required=True)
     xai.add_argument("--models", nargs="+", metavar="MODEL")
@@ -62,6 +64,12 @@ def main() -> None:
         print(remake_plots(
             Path(args.results), logger=logger, exclude_models=args.exclude_models,
         ))
+        return
+    if args.command == "diagnostics":
+        from .data.results import discover_runs
+        from .engine.development_diagnostic import ensure_development_predictions
+        for run in discover_runs(args.results):
+            print(ensure_development_predictions(run, logger=logger))
         return
     if args.command == "xai":
         from .engine.xai_replay import rerun_xai

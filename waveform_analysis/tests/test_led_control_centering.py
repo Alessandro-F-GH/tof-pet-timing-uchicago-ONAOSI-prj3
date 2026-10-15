@@ -106,14 +106,17 @@ def test_bootstrap_keeps_control_centering_and_transfer_bias(monkeypatch):
 def test_reporting_rejects_uncentered_legacy_results(tmp_path):
     root = tmp_path / 'batch'
     store = RunStore(root / 'run')
-    store.write_manifest({'schema_version': 51, 'status': 'complete'})
+    store.metadata_dir.mkdir(parents=True,exist_ok=True)
+    store.manifest_path.write_text(json.dumps({'schema_version': 51, 'status': 'complete'}))
+    (store.metadata_dir / 'config.json').write_text('{}')
     tables = root / 'tables'
     tables.mkdir()
     (tables / 'runs.csv').write_text('path\nrun\n')
-    with pytest.raises(ValueError, match='rerun the batch'):
+    with pytest.raises(ValueError, match='convert'):
         report_engine.collect_runs(root)
-    with pytest.raises(ValueError, match='rerun the batch'):
-        plotting.render_run_plots(store.root, {})
+    with pytest.raises(ValueError, match='convert'):
+        from waveform_analysis.data.results import read_run_manifest
+        read_run_manifest(store.root)
 
 
 def test_control_artifact_persists_separate_mode_calibrations(tmp_path, monkeypatch):
@@ -144,7 +147,8 @@ def test_batch_planner_rebuilds_old_uncentered_runs(tmp_path):
     from waveform_analysis.tests.test_batch_planner import config
     cfg = config(tmp_path)
     store = RunStore(cfg['output_dir'])
-    store.write_manifest({'schema_version': 51, 'status': 'complete'})
-    assert _run_state(cfg, {cfg['run_id']: _planner_fingerprints(cfg)})[:2] == (
-        'rebuild', 'incompatible_schema',
-    )
+    store.metadata_dir.mkdir(parents=True,exist_ok=True)
+    store.manifest_path.write_text(json.dumps({'schema_version': 51, 'status': 'complete'}))
+    (store.metadata_dir / 'config.json').write_text('{}')
+    with pytest.raises(ValueError, match='convert'):
+        _run_state(cfg, {cfg['run_id']: _planner_fingerprints(cfg)})

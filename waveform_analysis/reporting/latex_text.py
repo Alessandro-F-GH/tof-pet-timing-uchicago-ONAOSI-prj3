@@ -17,4 +17,3 @@ def escape_latex(value: Any) -> str:
         "^": r"\textasciicircum{}",
     }
     return "".join(replacements.get(character, character) for character in str(value))
-

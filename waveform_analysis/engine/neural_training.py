@@ -319,11 +319,3 @@ def explain(artifact: MLPArtifact, normalized_pair: np.ndarray) -> np.ndarray:
         normalized_pair,
         missing_gradient_message="MLP XAI gradient is unavailable",
     )
-
-
-# Preserve serialized identities and legacy import behavior.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.models._mlp_common")

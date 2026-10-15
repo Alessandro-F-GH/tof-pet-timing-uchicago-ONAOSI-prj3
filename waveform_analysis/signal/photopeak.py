@@ -106,10 +106,3 @@ def photopeak_mask(values_mV: np.ndarray, result: PhotopeakResult) -> np.ndarray
         & (values >= result.selection_low_mV)
         & (values <= result.selection_high_mV)
     )
-
-
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.utils.photopeak")

@@ -597,11 +597,3 @@ def apply_selection_rules(
             "Frozen selection | %s | %s | selected=%d/%d", root.name, mode, rows.size, n
         )
     return load_selection(base, root, dataset, preprocessing, rules, mode)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.event_selection")

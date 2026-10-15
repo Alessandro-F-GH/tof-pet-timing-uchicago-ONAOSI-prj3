@@ -2,7 +2,7 @@ from __future__ import annotations
 import json, logging, pickle, shutil
 from pathlib import Path
 import numpy as np
-from waveform_analysis.core.io import canonical_hash
+from waveform_analysis.core.dependencies import stage_fingerprint as _stage
 from waveform_analysis.core.ridge import RIDGE_CV_VERSION
 from waveform_analysis.data.feature_cache import (
     prepare_frozen_features,
@@ -30,7 +30,7 @@ from waveform_analysis.reporting.stats import (
     metric_values,
     paired_central_metrics,
 )
-from waveform_analysis.data.storage import RUN_SCHEMA_VERSION, RunStore
+from waveform_analysis.data.storage import RunStore
 from waveform_analysis.engine.train import (
     FeatureTransformCache,
     FitInputCache,
@@ -76,11 +76,6 @@ def _logger(run_dir):
 def _bool(v):
     return str(v).lower() in {"true", "1", "yes"} if isinstance(v, str) else bool(v)
 
-
-def _stage(stage, payload):
-    return canonical_hash(
-        {"schema_version": RUN_SCHEMA_VERSION, "stage": stage, "payload": payload}
-    )
 
 
 def _sync(store, stage, fp):
@@ -665,159 +660,107 @@ def _ridge_cv_selection_and_fit(
     return cv_fp, selection_fp, final_fp, best, fitted
 
 
-def run_study(config, *, logger=None):
-    run_dir = Path(config["output_dir"]).resolve()
-    store = RunStore(run_dir)
-    logger = logger or _logger(run_dir)
-    spec = get_model(config["model"]["name"])
-    space = config["model"]["space"]
-    store.write_resolved_config(
-        {k: v for k, v in config.items() if not str(k).startswith("_")}
+def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
+                                frozen_transform, frozen_development):
+    shared = ExperimentArtifactStore(
+        Path(config["batch_output_dir"]) / "artifacts"
+    ).prepare_cv(development, config)
+    cv_fp = _stage(
+        "cv",
+        {
+            "development": development.manifest["analysis_protocol_identity"],
+            "shared_cv": shared.fingerprint,
+            "model": config["model"],
+            "cross_validation": config["cross_validation"],
+            "fit": config["fit"],
+            "seed": config["seed"],
+            "frozen_transform": None
+            if frozen_transform is None
+            else frozen_transform.identity,
+        },
     )
-    if store.manifest_path.is_file() and not store.compatible_schema():
-        raise RuntimeError(
-            "Incompatible result schema must be rebuilt by batch planner"
-        )
-    control, control_dir = fit_control(config, rebuild=False, logger=logger)
-    _, _, development = prepare_role_dataset(
-        config, "development", control, rebuild=False, logger=logger
-    )
-    publish_preprocessing_diagnostics(
-        config, "control", control, config["batch_output_dir"], logger=logger
-    )
-    publish_preprocessing_diagnostics(
-        config, "development", control, config["batch_output_dir"], logger=logger
-    )
-    frozen_transform = None
-    frozen_development = None
-    control_prepared = None
-    if uses_frozen_model_input(spec):
-        _, _, control_prepared = prepare_role_dataset(
-            config, "control", control, rebuild=False, logger=None
-        )
-        frozen_transform = prepare_frozen_transform(
-            spec,
-            space,
-            config,
-            control_dataset=control_prepared,
-            development_dataset=development,
-            cache_root=config["preprocessing"]["cache_dir"],
-            logger=logger,
-        )
-        frozen_development = prepare_frozen_features(
-            spec,
-            frozen_transform,
-            config,
-            development,
-            role="development",
-            cache_root=config["preprocessing"]["cache_dir"],
-            logger=logger,
-        )
-    if spec.selection_method == "ridge_cv":
-        cv_fp, selection_fp, final_fp, best, fitted = _ridge_cv_selection_and_fit(
+    if _sync(store, "cv", cv_fp) != "complete":
+        candidates = _search(
             store,
             spec,
             space,
             config,
             development,
+            shared,
             logger,
             frozen_development,
         )
+        store.mark_stage(
+            "cv", cv_fp, metadata={"candidates": len(store.read_candidate_rows())}
+        )
     else:
-        shared = ExperimentArtifactStore(
-            Path(config["batch_output_dir"]) / "artifacts"
-        ).prepare_cv(development, config)
-        cv_fp = _stage(
-            "cv",
-            {
-                "development": development.manifest["analysis_protocol_identity"],
-                "shared_cv": shared.fingerprint,
-                "model": config["model"],
-                "cross_validation": config["cross_validation"],
-                "fit": config["fit"],
-                "seed": config["seed"],
-                "frozen_transform": None
-                if frozen_transform is None
-                else frozen_transform.identity,
-            },
+        candidates = {
+            i: dict(v.get("parameters", v))
+            for i, v in (store.read_json(store.candidates_path, {}) or {}).items()
+        }
+    selection_fp = _stage(
+        "selection", {"cv": cv_fp, "metric": config["cross_validation"]["metric"]}
+    )
+    best = (
+        store.read_json(store.best_path)
+        if _sync(store, "selection", selection_fp) == "complete"
+        else None
+    )
+    if not isinstance(best, dict):
+        best = _select(store, candidates, config)
+        store.mark_stage(
+            "selection",
+            selection_fp,
+            metadata={"candidate_id": best["candidate_id"]},
         )
-        if _sync(store, "cv", cv_fp) != "complete":
-            candidates = _search(
-                store,
-                spec,
-                space,
-                config,
-                development,
-                shared,
-                logger,
-                frozen_development,
-            )
-            store.mark_stage(
-                "cv", cv_fp, metadata={"candidates": len(store.read_candidate_rows())}
-            )
-        else:
-            candidates = {
-                i: dict(v.get("parameters", v))
-                for i, v in (store.read_json(store.candidates_path, {}) or {}).items()
-            }
-        selection_fp = _stage(
-            "selection", {"cv": cv_fp, "metric": config["cross_validation"]["metric"]}
+        logger.info(
+            "CV selected | %s | %s | CTR=%.1f ± %.1f ps | RMSE=%.1f ± %.1f ps",
+            _model_label(spec.name),
+            _format_optimized_params(space, best["parameters"]),
+            float(best["validation_ctr_mean_ps"]),
+            float(best["validation_ctr_std_ps"]),
+            float(best["validation_rmse_mean_ps"]),
+            float(best["validation_rmse_std_ps"]),
         )
-        best = (
-            store.read_json(store.best_path)
-            if _sync(store, "selection", selection_fp) == "complete"
-            else None
+    final_fp = _stage(
+        "final_fit",
+        {
+            "development": development.manifest["analysis_protocol_identity"],
+            "model": config["model"],
+            "candidate_id": best["candidate_id"],
+            "parameters": best["parameters"],
+            "seed": config["seed"],
+            "frozen_transform": None
+            if frozen_transform is None
+            else frozen_transform.identity,
+        },
+    )
+    fitted = None
+    if _sync(store, "final_fit", final_fp) != "complete":
+        logger.info(
+            "Final fit | %s | training on full development set | n=%d",
+            _model_label(spec.name),
+            int(development.n_events),
         )
-        if not isinstance(best, dict):
-            best = _select(store, candidates, config)
-            store.mark_stage(
-                "selection",
-                selection_fp,
-                metadata={"candidate_id": best["candidate_id"]},
-            )
-            logger.info(
-                "CV selected | %s | %s | CTR=%.1f ± %.1f ps | RMSE=%.1f ± %.1f ps",
-                _model_label(spec.name),
-                _format_optimized_params(space, best["parameters"]),
-                float(best["validation_ctr_mean_ps"]),
-                float(best["validation_ctr_std_ps"]),
-                float(best["validation_rmse_mean_ps"]),
-                float(best["validation_rmse_std_ps"]),
-            )
-        final_fp = _stage(
-            "final_fit",
-            {
-                "development": development.manifest["analysis_protocol_identity"],
-                "model": config["model"],
-                "candidate_id": best["candidate_id"],
-                "parameters": best["parameters"],
-                "seed": config["seed"],
-                "frozen_transform": None
-                if frozen_transform is None
-                else frozen_transform.identity,
-            },
+        fitted = _model(
+            store,
+            spec,
+            space,
+            config,
+            development,
+            best,
+            final_fp,
+            logger,
+            frozen_development,
         )
-        fitted = None
-        if _sync(store, "final_fit", final_fp) != "complete":
-            logger.info(
-                "Final fit | %s | training on full development set | n=%d",
-                _model_label(spec.name),
-                int(development.n_events),
-            )
-            fitted = _model(
-                store,
-                spec,
-                space,
-                config,
-                development,
-                best,
-                final_fp,
-                logger,
-                frozen_development,
-            )
-            logger.info("Final fit complete | %s", _model_label(spec.name))
-        else:
-            logger.info("Final fit | reusing saved model")
+        logger.info("Final fit complete | %s", _model_label(spec.name))
+    else:
+        logger.info("Final fit | reusing saved model")
+    return cv_fp, selection_fp, final_fp, best, fitted
+
+
+def _evaluate_blind(store, spec, space, config, control, development, best, final_fp,
+                    fitted, logger, frozen_transform, frozen_development):
     logger.info("Blind preparation | applying frozen preprocessing")
     _, _, blind = prepare_role_dataset(
         config, "blind", control, rebuild=False, logger=logger
@@ -919,6 +862,10 @@ def run_study(config, *, logger=None):
         )
     else:
         logger.info("Blind evaluation | reusing saved predictions")
+    return blind, blind_fp, fitted
+
+
+def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
     pred = store.load_predictions()
     bootstrap_fp = _stage(
         "bootstrap",
@@ -949,6 +896,11 @@ def run_study(config, *, logger=None):
         )
     else:
         logger.info("Blind bootstrap | reusing saved uncertainty")
+    return bootstrap_fp
+
+
+def _explain_model(store, spec, space, config, control, development, best, final_fp,
+                   fitted, blind, control_prepared, logger, frozen_development):
     if config["xai"]["enabled"] and control_prepared is None:
         _, _, control_prepared = prepare_role_dataset(
             config, "control", control, rebuild=False, logger=None
@@ -1007,6 +959,12 @@ def run_study(config, *, logger=None):
         store.mark_stage("xai", xai_fp, metadata={"enabled": False})
     else:
         logger.info("XAI | reusing saved importance")
+    return xai_fp, fitted, control_prepared
+
+
+def _publish_run_metadata(store, spec, config, control, control_dir, development, blind,
+                          fitted, best, control_prepared, cv_fp, selection_fp, final_fp,
+                          blind_fp, bootstrap_fp, xai_fp):
     # Reporting-only control population: never passed to neural estimator fitting.
     # Allow zero rows so bookkeeping cannot reject an otherwise valid study.
     if control_prepared is None:
@@ -1024,7 +982,6 @@ def run_study(config, *, logger=None):
         )
     }
     manifest = {
-        "schema_version": RUN_SCHEMA_VERSION,
         "status": "complete",
         "name": config["name"],
         "study_name": config.get("study_name"),
@@ -1083,6 +1040,77 @@ def run_study(config, *, logger=None):
         },
     }
     store.write_manifest(manifest)
+
+
+def run_study(config, *, logger=None):
+    run_dir = Path(config["output_dir"]).resolve()
+    store = RunStore(run_dir)
+    logger = logger or _logger(run_dir)
+    spec = get_model(config["model"]["name"])
+    space = config["model"]["space"]
+    store.write_resolved_config(config)
+    control, control_dir = fit_control(config, rebuild=False, logger=logger)
+    _, _, development = prepare_role_dataset(
+        config, "development", control, rebuild=False, logger=logger
+    )
+    publish_preprocessing_diagnostics(
+        config, "control", control, config["batch_output_dir"], logger=logger
+    )
+    publish_preprocessing_diagnostics(
+        config, "development", control, config["batch_output_dir"], logger=logger
+    )
+    frozen_transform = None
+    frozen_development = None
+    control_prepared = None
+    if uses_frozen_model_input(spec):
+        _, _, control_prepared = prepare_role_dataset(
+            config, "control", control, rebuild=False, logger=None
+        )
+        frozen_transform = prepare_frozen_transform(
+            spec,
+            space,
+            config,
+            control_dataset=control_prepared,
+            development_dataset=development,
+            cache_root=config["preprocessing"]["cache_dir"],
+            logger=logger,
+        )
+        frozen_development = prepare_frozen_features(
+            spec,
+            frozen_transform,
+            config,
+            development,
+            role="development",
+            cache_root=config["preprocessing"]["cache_dir"],
+            logger=logger,
+        )
+    if spec.selection_method == "ridge_cv":
+        cv_fp, selection_fp, final_fp, best, fitted = _ridge_cv_selection_and_fit(
+            store,
+            spec,
+            space,
+            config,
+            development,
+            logger,
+            frozen_development,
+        )
+    else:
+        cv_fp, selection_fp, final_fp, best, fitted = _outer_cv_selection_and_fit(
+            store, spec, space, config, development, logger, frozen_transform, frozen_development
+        )
+    blind, blind_fp, fitted = _evaluate_blind(
+        store, spec, space, config, control, development, best, final_fp, fitted,
+        logger, frozen_transform, frozen_development,
+    )
+    bootstrap_fp = _estimate_blind_uncertainty(store, spec, config, blind_fp, logger)
+    xai_fp, fitted, control_prepared = _explain_model(
+        store, spec, space, config, control, development, best, final_fp,
+        fitted, blind, control_prepared, logger, frozen_development,
+    )
+    _publish_run_metadata(
+        store, spec, config, control, control_dir, development, blind, fitted, best,
+        control_prepared, cv_fp, selection_fp, final_fp, blind_fp, bootstrap_fp, xai_fp,
+    )
     # Run after all scientific evaluation; diagnostic inference never selects a model.
     if not development_predictions_current(store, final_fp):
         if fitted is None and saved_model_complete(spec, store.model_dir):
@@ -1103,11 +1131,3 @@ def run_study(config, *, logger=None):
         config.get("window_name"),
     )
     return run_dir
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.study")

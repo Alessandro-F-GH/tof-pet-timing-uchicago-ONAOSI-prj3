@@ -24,4 +24,3 @@ def blind_metric_rows(group: list[dict[str, Any]], metric: str) -> list[dict[str
             r["model"],
         ),
     )
-

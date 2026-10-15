@@ -88,11 +88,3 @@ def corrected_timing_residual(
     if a.shape != b.shape:
         raise ValueError("target/prediction shape mismatch")
     return a - b
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.view")

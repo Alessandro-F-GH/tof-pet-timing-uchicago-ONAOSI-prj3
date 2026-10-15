@@ -8,10 +8,12 @@ from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import numpy as np
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.tests.result_factory import persist_result
 from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.engine.diagnostics import diagnostic_random_state, save_development_diagnostic
 from waveform_analysis.engine.train import FittedModel
-from waveform_analysis.reporting import development, plotting
+from waveform_analysis.engine import development_diagnostic as development
+from waveform_analysis.reporting import plotting
 
 
 def test_development_predictions_use_all_events_and_output_limit(tmp_path):
@@ -80,7 +82,7 @@ def test_development_and_blind_use_identical_histogram_style(tmp_path, monkeypat
     with np.load(store.development_predictions_path) as data:
         np.testing.assert_array_equal(data["led_residual_ps"], led)  # persisted residuals are already control-centered
     # A diagnostic from a different final fit must never be presented as current.
-    store.write_manifest({"stage_fingerprints": {"final_fit": "new-fit"}})
+    persist_result(store.root, manifest={"stage_fingerprints": {"final_fit": "new-fit"}})
     stale_plot = plotting.output_path(store.plots_dir, "development", cfg)
     stale_plot.parent.mkdir(parents=True, exist_ok=True)
     stale_plot.write_text("obsolete")
@@ -96,7 +98,7 @@ def test_reporting_backfills_only_unique_matching_cache(tmp_path, monkeypatch):
     config = {"mode": "timing_to_timing", "window_ns": [-1.5, 2.],
               "ml_input": {"subsampling": 1}, "preprocessing": {"cache_dir": str(tmp_path)},
               "development": {"root_file": "development.root", "true_tof_ps": 0.}}
-    store.write_resolved_config(config)
+    persist_result(store.root, config=config)
     cache = tmp_path / "development_ml/prepared/one"
     cache.mkdir(parents=True)
     cache_metadata = {"dataset_role": "development", "dataset_source": "development.root",
@@ -135,7 +137,7 @@ def test_missing_control_json_uses_saved_protocol_identity(tmp_path, monkeypatch
     config = {"mode": "timing_to_timing", "window_ns": {"start": -1.5, "end": 2.},
               "ml_input": {"subsampling": 1}, "preprocessing": {"cache_dir": str(tmp_path)},
               "development": {"root_file": "train.root", "true_tof_ps": 0.}}
-    store.write_resolved_config(config)
+    persist_result(store.root, config=config)
     cache = tmp_path / "development_ml/prepared/one"
     cache.mkdir(parents=True)
     metadata = {"dataset_role": "development", "dataset_source": "train.root",
@@ -163,7 +165,7 @@ def test_missing_control_json_uses_saved_protocol_identity(tmp_path, monkeypatch
     assert not calls
 
 
-def test_old_neural_run_matches_exact_final_fit_without_control_json():
+def test_diagnostics_reject_unknown_population_without_control_metadata():
     from waveform_analysis.models import get_model
     spec = get_model("independent_cnn1d")
     config = {"model": {"name": spec.name}, "seed": 1001}
@@ -174,7 +176,7 @@ def test_old_neural_run_matches_exact_final_fit_without_control_json():
     fingerprint = canonical_hash({"schema_version": 51, "stage": "final_fit", "payload": payload})
     run = {"best": best, "manifest": {"schema_version": 51,
            "stage_fingerprints": {"final_fit": fingerprint}, "control_artifact": "missing/control"}}
-    assert development._matches_training_identity(
+    assert not development._matches_training_identity(
         {"analysis_protocol_identity": "protocol"}, run, config, spec, None)
     assert not development._matches_training_identity(
         {"analysis_protocol_identity": "other"}, run, config, spec, None)

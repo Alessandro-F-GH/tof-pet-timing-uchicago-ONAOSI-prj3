@@ -8,11 +8,35 @@ import sys
 import pytest
 
 from waveform_analysis.scripts.group_results import group_results
+from waveform_analysis.data.results import read_run_manifest, resolve_run_config, write_run_config, write_run_manifest, batch_root
+from waveform_analysis.tests.result_factory import persist_result
 
 
 def write_json(path, data):
+    if path.parent.name == 'metadata' and path.name == 'manifest.json' and (path.parent / 'config.json').is_file():
+        cfg = resolve_run_config(path.parent.parent)
+        for role in ('control', 'development', 'blind'):
+            if f'{role}_dataset' in data:
+                cfg[role] = data[f'{role}_dataset']
+        write_run_config(cfg)
+        population = path.parent.parent.parent / 'population.json'
+        if population.exists():
+            population.unlink()
+        write_run_manifest(path.parent.parent, data)
+        return
+    if path.parent.name == 'metadata' and path.name == 'config.json' and 'output_dir' in data:
+        write_run_config(data)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding='utf-8')
+
+
+def read_value(path):
+    if path.parent.name == 'metadata' and path.name == 'manifest.json':
+        return read_run_manifest(path.parent.parent)
+    if path.parent.name == 'metadata' and path.name == 'config.json':
+        return resolve_run_config(path.parent.parent)
+    return json.loads(path.read_text())
 
 
 def run(root, batch, model, *, subsampling=1, legacy=False, window=(-1.5, 2),
@@ -21,7 +45,7 @@ def run(root, batch, model, *, subsampling=1, legacy=False, window=(-1.5, 2),
     directory = base / 'timing' / window_name / model
     (base / 'tables').mkdir(parents=True, exist_ok=True)
     (base / 'tables/runs.csv').write_text('path\n', encoding='utf-8')
-    metadata = directory if legacy else directory / 'metadata'
+    metadata = directory / 'metadata'
     datasets = {role: {'root_file': f'C:\\repo\\processed_data\\{source}',
                       'channels': {'timing': [3, 4]}, 'true_tof_ps': 0.0}
                 for role, source in [('control', '48V-R0.root'), ('development', acquisition), ('blind', '48V-R2.root')]}
@@ -35,8 +59,9 @@ def run(root, batch, model, *, subsampling=1, legacy=False, window=(-1.5, 2),
                 **{f'{role}_dataset': value for role, value in datasets.items()}}
     config = {'ml_input': {'subsampling': subsampling}, 'fit': {'histogram_bin_width_ps': 5.0},
               'results': {'folder': f'UC/{batch}'}, **datasets}
-    write_json(metadata / 'manifest.json', manifest)
-    write_json(metadata / 'config.json', config)
+    config.update(mode=manifest['mode'], window_name=window_name, window_ns=manifest['window_ns'],
+                  model={'name': model, 'space': {}}, batch_output_dir=str(base), study_name=batch)
+    persist_result(directory, config, manifest)
     write_json(metadata / 'blind.json', {'ctr_ps': 100., 'rmse_ps': 50., 'led_ctr_ps': 140., 'led_rmse_ps': 80., 'n_events': 1000})
     write_json(metadata / 'bootstrap.json', {'ctr_bootstrap_std_ps': 2., 'rmse_bootstrap_std_ps': 1.})
     write_json(metadata / 'best.json', {'candidate_id': 'best', 'validation_ctr_mean_ps': 110.})
@@ -68,14 +93,14 @@ def test_grouping_separates_subsampling_and_preserves_historical_sources(tmp_pat
     for info in result['groups']:
         assert {row['subsampling'] for row in info['runs']} == {info['subsampling']}
     leaf = output / 'UC_48V_sub1/timing_to_timing/window_-1.5_2ns'
-    assert (leaf / 'runs/shared_rdst/metadata/manifest.json').is_file()
+    assert not list(output.rglob('metadata/config.json'))  # Grouped reports reference sources.
     assert (leaf / 'runs/shared_rdst/plots/blind.png').read_bytes() == b'existing-figure'
     assert (leaf / 'runs/shared_rdst/artifacts/pred.npz').read_bytes().startswith(b'COPY ONLY')
     assert (leaf / 'blind_ctr.png').is_file()
     assert (leaf / 'blind_rmse.png').is_file()
     assert not list(output.rglob('*.pkl'))
     assert snapshot(sources) == before
-    assert not (second / 'metadata').exists()  # No RunStore legacy migration.
+    assert (second / 'metadata').is_dir()
     assert 'model_specific' in (leaf / 'summary.csv').read_text()
 
 
@@ -112,21 +137,21 @@ def test_numeric_windows_and_datasets_define_groups_not_names(tmp_path):
 def test_missing_subsampling_is_not_guessed_and_missing_plots_are_reported(tmp_path):
     invalid = run(tmp_path, 'missing_sub', 'direct_rdst')
     config = invalid / 'metadata/config.json'
-    value = json.loads(config.read_text())
+    value = read_value(config)
     value.pop('ml_input')
     write_json(config, value)
     valid = run(tmp_path, 'valid', 'shared_rdst')
     (valid / 'plots/blind.png').unlink()
     result = group_results([tmp_path / 'results'], tmp_path / 'grouped', summary_plots=False)
-    assert len(result['skipped']) == 1 and 'subsampling' in result['skipped'][0]['reason']
+    assert len(result['skipped']) == 1 and 'ml_input' in result['skipped'][0]['reason']
     assert any(item['missing'] == 'saved plots' for item in result['groups'][0]['missing'])
 
 
 def test_incompatible_legacy_calibration_does_not_block_copying(tmp_path):
     run(tmp_path, 'a', 'direct_rdst')
     old = run(tmp_path, 'b', 'shared_rdst', legacy=True)
-    path = old / 'manifest.json'
-    data = json.loads(path.read_text())
+    path = old / 'metadata/manifest.json'
+    data = read_value(path)
     data.pop('led_centering_fit_role')
     write_json(path, data)
     output = tmp_path / 'grouped'
@@ -181,7 +206,7 @@ def test_explicit_dataset_aliases_support_moved_acquisitions(tmp_path):
     run(tmp_path, 'old', 'direct_rdst')
     moved = run(tmp_path, 'new', 'shared_rdst')
     path = moved / 'metadata/manifest.json'
-    manifest = json.loads(path.read_text())
+    manifest = read_value(path)
     aliases = {}
     for role in ('control', 'development', 'blind'):
         old = manifest[f'{role}_dataset']['root_file']
@@ -200,12 +225,12 @@ def test_explicit_dataset_aliases_support_moved_acquisitions(tmp_path):
 def test_null_legacy_population_and_unresolved_fit_still_copy_results(tmp_path):
     run(tmp_path, 'a', 'direct_rdst')
     old = run(tmp_path, 'b', 'shared_rdst', legacy=True)
-    path = old / 'manifest.json'
-    manifest = json.loads(path.read_text())
+    path = old / 'metadata/manifest.json'
+    manifest = read_value(path)
     manifest['dataset_populations'] = None
     write_json(path, manifest)
-    path = old / 'config.json'
-    config = json.loads(path.read_text())
+    path = old / 'metadata/config.json'
+    config = read_value(path)
     config['fit'] = 'legacy-fit-reference.json'
     write_json(path, config)
     output = tmp_path / 'grouped'
@@ -296,7 +321,7 @@ def test_missing_or_different_led_reference_skips_only_affected_metric(tmp_path)
     run(tmp_path, 'a', 'direct_rdst')
     second = run(tmp_path, 'b', 'shared_rdst')
     path = second / 'metadata/blind.json'
-    blind = json.loads(path.read_text())
+    blind = read_value(path)
     blind['led_ctr_ps'] = 150.
     blind.pop('led_rmse_ps')
     write_json(path, blind)
@@ -315,8 +340,9 @@ def test_split_explanation_shows_only_differing_fields(tmp_path, capsys):
     run(tmp_path, 'a', 'direct_rdst')
     changed = run(tmp_path, 'b', 'shared_rdst', acquisition='48V-different.root')
     path = changed / 'metadata/manifest.json'
-    manifest = json.loads(path.read_text())
-    manifest['control_dataset']['channels']['timing'] = [5, 6]
+    manifest = read_value(path)
+    for role in ('control', 'development', 'blind'):
+        manifest[f'{role}_dataset']['channels']['timing'] = [5, 6]
     manifest['blind_dataset']['true_tof_ps'] = 10.
     write_json(path, manifest)
     run(tmp_path, 'c', 'direct_rdst', subsampling=4)
@@ -335,7 +361,7 @@ def test_split_explanation_shows_only_differing_fields(tmp_path, capsys):
     splits = result['dataset_splits']
     assert len(splits) == 1
     assert {d['field'] for d in splits[0]['differences']} == {
-        'control.channels.timing', 'development.source', 'blind.true_tof_ps'}
+        'control.channels.timing', 'development.channels.timing', 'blind.channels.timing', 'development.source', 'blind.true_tof_ps'}
     assert json.loads((output / 'grouping_manifest.json').read_text())['dataset_splits'] == splits
 
 
@@ -431,7 +457,7 @@ def test_cli_reports_why_comparison_plots_are_missing(tmp_path, capsys):
     run(tmp_path, 'a', 'direct_rdst')
     old = run(tmp_path, 'b', 'shared_rdst')
     path = old / 'metadata/manifest.json'
-    manifest = json.loads(path.read_text())
+    manifest = read_value(path)
     manifest.pop('led_centering_fit_role')
     write_json(path, manifest)
     output = tmp_path / 'grouped'
@@ -449,7 +475,7 @@ def test_population_ids_warn_without_blocking_plots(tmp_path, capsys, missing):
     run(tmp_path, 'a', 'direct_rdst')
     second = run(tmp_path, 'b', 'shared_rdst')
     path = second / 'metadata/manifest.json'
-    manifest = json.loads(path.read_text())
+    manifest = read_value(path)
     if missing:
         manifest['dataset_populations'] = None
     else:

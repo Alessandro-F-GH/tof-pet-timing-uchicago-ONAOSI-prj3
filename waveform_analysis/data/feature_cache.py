@@ -13,18 +13,7 @@ from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
-from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
-from waveform_analysis.models.kernel.hydra_common import HYDRA_MODELS
-from waveform_analysis.models.kernel.multirocket_common import MULTIROCKET_MODELS
-
 _CACHE_VERSION = 4
-_FROZEN_INPUT_MODELS = {
-    "direct_linear_ridge",
-    "shared_linear_ridge",
-    "direct_minirocket",
-    "shared_minirocket",
-}
-_MINIROCKET_MODELS = {"direct_minirocket", "shared_minirocket"}
 
 
 @dataclass(frozen=True)
@@ -52,7 +41,7 @@ class FrozenFeatureSet:
 
 
 def uses_frozen_model_input(spec) -> bool:
-    return spec.name in (_FROZEN_INPUT_MODELS | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS) and spec.feature_transform is not None
+    return spec.feature_transform is not None
 
 
 def _fixed_candidate(model_space: dict) -> dict:
@@ -124,7 +113,7 @@ def prepare_frozen_transform(
     mode = str(config["mode"])
     window = str(config.get("window_name") or "window")
     transform_parameters = _transform_parameters(spec, model_space)
-    fit_role = "control" if spec.name in (_MINIROCKET_MODELS | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS) else "deterministic"
+    fit_role = spec.feature_transform.fit_role
     fit_identity = (
         str(control_dataset.manifest["analysis_protocol_identity"])
         if fit_role == "control"
@@ -204,10 +193,10 @@ def prepare_frozen_transform(
         fit_pair,
         seed=int(seed),
         config=({**model_space, "_frozen_transform_only": True}
-                if spec.name in MULTIROCKET_MODELS else model_space),
+                if spec.bounded_transform_batches else model_space),
     )
     del fit_pair
-    if spec.name in RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
+    if spec.requires_frozen_features:
         view = waveform_view(control_dataset, mode, np.asarray([0], dtype=np.int64))
         artifact.time_ps = np.asarray(view.time_ps, dtype=np.float64)[sample_mask]
         artifact.sample_indices = np.flatnonzero(sample_mask)
@@ -215,7 +204,7 @@ def prepare_frozen_transform(
     if isinstance(metadata, dict):
         metadata["transform_fit_role"] = fit_role
         metadata["input_samples"] = input_samples
-        if spec.name in RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
+        if spec.requires_frozen_features:
             metadata["transform_identity"] = identity
             metadata["control_analysis_protocol_identity"] = fit_identity
 
@@ -304,7 +293,7 @@ def prepare_frozen_features(
 
     directory.mkdir(parents=True, exist_ok=True)
     chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
-    if spec.name in MULTIROCKET_MODELS:
+    if spec.bounded_transform_batches:
         # Bound the returned feature matrix, not only MultiRocket's internal
         # convolution batches: 4096 default-budget rows occupy about 0.8 GB.
         chunk_size = min(chunk_size, int(frozen_transform.transform.artifact.metadata["batch_size"]))
@@ -374,11 +363,3 @@ def prepare_frozen_features(
         identity,
         str(role),
     )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.feature_cache")

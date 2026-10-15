@@ -121,13 +121,3 @@ def save(artifact: LinearRidgeArtifact, path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     with (path / "model.pkl").open("wb") as stream:
         pickle.dump(artifact, stream, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(
-    __name__, "waveform_analysis.ml_pipeline.models._linear_ridge_common"
-)

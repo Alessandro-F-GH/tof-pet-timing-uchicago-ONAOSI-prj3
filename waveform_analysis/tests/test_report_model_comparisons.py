@@ -43,7 +43,7 @@ def report_inputs(tmp_path, monkeypatch):
                           "ctr_improvement_bootstrap_std_ps": 3.,
                           "rmse_improvement_bootstrap_std_ps": 1.},
         })
-    (tmp_path / "config.json").write_text(json.dumps({"protocol": {"seed": 1001}}))
+    (tmp_path / "config.json").write_text(json.dumps({"settings": {"seed": 1001}}))
     monkeypatch.setattr(engine, "load_plot_config", lambda _: plot_config())
     monkeypatch.setattr(engine, "collect_runs", lambda _: runs)
     monkeypatch.setattr(engine, "render_run_plots", lambda *args: None)

@@ -141,11 +141,3 @@ class ProgressTracker:
             self.logger.info(
                 "Done | %s | %s%s", label, self.stage_text(category), suffix
             )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.progress")

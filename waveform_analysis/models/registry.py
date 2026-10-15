@@ -1,81 +1,32 @@
-from __future__ import annotations
-
-from dataclasses import replace
-
-from waveform_analysis.models.neural.antisymmetric_mlp import (
-    MODEL_SPEC as ANTISYMMETRIC_MLP_SPEC,
-)
-from waveform_analysis.models.linear.direct_linear_ridge import (
-    MODEL_SPEC as DIRECT_LINEAR_RIDGE_SPEC,
-)
-from waveform_analysis.models.kernel.direct_minirocket import (
-    MODEL_SPEC as DIRECT_MINIROCKET_SPEC,
-)
-from waveform_analysis.models.neural.direct_mlp import MODEL_SPEC as DIRECT_MLP_SPEC
-from waveform_analysis.models.neural.independent_cnn1d import (
-    MODEL_SPEC as INDEPENDENT_CNN1D_SPEC,
-)
-from waveform_analysis.models.neural.locally_connected_mlp import (
-    MODEL_SPEC as LOCALLY_CONNECTED_MLP_SPEC,
-)
-from waveform_analysis.models.neural.onishi_cnn import MODEL_SPEC as _ONISHI_CNN_SPEC
-from waveform_analysis.models.neural.shared_cnn1d import MODEL_SPEC as SHARED_CNN1D_SPEC
-from waveform_analysis.models.linear.shared_linear_ridge import (
-    MODEL_SPEC as SHARED_LINEAR_RIDGE_SPEC,
-)
-from waveform_analysis.models.kernel.shared_minirocket import (
-    MODEL_SPEC as SHARED_MINIROCKET_SPEC,
-)
-from waveform_analysis.models.kernel.direct_rdst import MODEL_SPEC as DIRECT_RDST_SPEC
-from waveform_analysis.models.kernel.shared_rdst import MODEL_SPEC as SHARED_RDST_SPEC
-from waveform_analysis.models.kernel.direct_hydra import MODEL_SPEC as DIRECT_HYDRA_SPEC
-from waveform_analysis.models.kernel.shared_hydra import MODEL_SPEC as SHARED_HYDRA_SPEC
-from waveform_analysis.models.kernel.direct_multirocket import MODEL_SPEC as DIRECT_MULTIROCKET_SPEC
-from waveform_analysis.models.kernel.shared_multirocket import MODEL_SPEC as SHARED_MULTIROCKET_SPEC
+"""Lazy registry: metadata and reporting do not import training frameworks."""
+from importlib import import_module
 from waveform_analysis.models.spec import ModelSpec
 
-ONISHI_CNN_SPEC = replace(_ONISHI_CNN_SPEC, estimator_formulation="direct")
-
-_REGISTRY: dict[str, ModelSpec] = {
-    DIRECT_MULTIROCKET_SPEC.name: DIRECT_MULTIROCKET_SPEC,
-    SHARED_MULTIROCKET_SPEC.name: SHARED_MULTIROCKET_SPEC,
-    DIRECT_HYDRA_SPEC.name: DIRECT_HYDRA_SPEC,
-    SHARED_HYDRA_SPEC.name: SHARED_HYDRA_SPEC,
-    DIRECT_RDST_SPEC.name: DIRECT_RDST_SPEC,
-    SHARED_RDST_SPEC.name: SHARED_RDST_SPEC,
-    ANTISYMMETRIC_MLP_SPEC.name: ANTISYMMETRIC_MLP_SPEC,
-    LOCALLY_CONNECTED_MLP_SPEC.name: LOCALLY_CONNECTED_MLP_SPEC,
-    SHARED_CNN1D_SPEC.name: SHARED_CNN1D_SPEC,
-    SHARED_LINEAR_RIDGE_SPEC.name: SHARED_LINEAR_RIDGE_SPEC,
-    SHARED_MINIROCKET_SPEC.name: SHARED_MINIROCKET_SPEC,
-    DIRECT_LINEAR_RIDGE_SPEC.name: DIRECT_LINEAR_RIDGE_SPEC,
-    DIRECT_MLP_SPEC.name: DIRECT_MLP_SPEC,
-    INDEPENDENT_CNN1D_SPEC.name: INDEPENDENT_CNN1D_SPEC,
-    ONISHI_CNN_SPEC.name: ONISHI_CNN_SPEC,
-    DIRECT_MINIROCKET_SPEC.name: DIRECT_MINIROCKET_SPEC,
+_MODULES = {
+    'antisymmetric_mlp': 'neural.antisymmetric_mlp',
+    'direct_mlp': 'neural.direct_mlp',
+    'locally_connected_mlp': 'neural.locally_connected_mlp',
+    'independent_cnn1d': 'neural.independent_cnn1d',
+    'shared_cnn1d': 'neural.shared_cnn1d',
+    'onishi_cnn': 'neural.onishi_cnn',
+    **{f'{form}_{family}': f'{kind}.{form}_{family}'
+       for family, kind in [('linear_ridge', 'linear'), ('minirocket', 'kernel'),
+                            ('rdst', 'kernel'), ('hydra', 'kernel'), ('multirocket', 'kernel')]
+       for form in ('direct', 'shared')},
 }
 
 
-def model_registry() -> dict[str, ModelSpec]:
-    return dict(_REGISTRY)
-
-
 def model_names() -> tuple[str, ...]:
-    return tuple(sorted(_REGISTRY))
+    return tuple(sorted(_MODULES))
 
 
 def get_model(name: str) -> ModelSpec:
     try:
-        return _REGISTRY[str(name)]
+        module = _MODULES[str(name)]
     except KeyError as exc:
-        raise ValueError(
-            f"Unknown model {name!r}; available: {list(model_names())}"
-        ) from exc
+        raise ValueError(f'Unknown model {name!r}; available: {list(model_names())}') from exc
+    return import_module(f'waveform_analysis.models.{module}').MODEL_SPEC
 
 
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.models.registry")
+def model_registry() -> dict[str, ModelSpec]:
+    return {name: get_model(name) for name in model_names()}

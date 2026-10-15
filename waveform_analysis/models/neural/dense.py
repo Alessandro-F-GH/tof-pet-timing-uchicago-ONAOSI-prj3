@@ -84,14 +84,3 @@ def candidates(config: dict[str, Any]) -> list[dict[str, Any]]:
             batch_sizes,
         )
     ]
-
-
-# Keep old checkpoint/feature-artifact class and function import identities.
-for _definition in (
-    DenseStack,
-    MLPArtifact,
-    candidates,
-    _activation,
-    _validate_architecture,
-):
-    _definition.__module__ = "waveform_analysis.ml_pipeline.models._mlp_common"

@@ -150,13 +150,3 @@ def input_gradient_importance(
     if pair.grad is None:
         raise RuntimeError(missing_gradient_message)
     return pair.grad.detach().abs().mean(dim=(0, 1)).cpu().numpy().astype(np.float64)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(
-    __name__, "waveform_analysis.ml_pipeline.models._torch_common"
-)

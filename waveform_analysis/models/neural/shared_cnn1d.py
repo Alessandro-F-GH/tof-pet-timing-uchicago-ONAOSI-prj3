@@ -35,11 +35,3 @@ MODEL_SPEC = ModelSpec(
     save=save,
     estimator_formulation="shared",
 )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.models.shared_cnn1d")

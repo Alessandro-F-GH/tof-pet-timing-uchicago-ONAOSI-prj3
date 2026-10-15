@@ -15,9 +15,6 @@ from waveform_analysis.signal.sample_mask import (
     apply_sample_mask_to_time,
 )
 from waveform_analysis.data.splits import semantic_seed
-from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
-from waveform_analysis.models.kernel.hydra_common import HYDRA_MODELS
-from waveform_analysis.models.kernel.multirocket_common import MULTIROCKET_MODELS
 from waveform_analysis.data.view import model_target, model_sample_mask, waveform_view
 
 
@@ -249,7 +246,7 @@ def fit_on_indices(
     logger=None,
     frozen_features=None,
 ):
-    if spec.name in RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS and frozen_features is None:
+    if spec.requires_frozen_features and frozen_features is None:
         raise ValueError("This model requires frozen control-fitted features")
     idx = np.asarray(indices, np.int64)
     if frozen_features is not None:
@@ -272,7 +269,7 @@ def fit_on_indices(
         mask = prepared.sample_mask
 
     cfg = copy.deepcopy(model_config)
-    if spec.name in MULTIROCKET_MODELS:
+    if spec.inplace_fit_input:
         # FrozenFeatureSet.rows uses advanced indexing and owns its result.
         # Only this disposable copy may be centered in place by Ridge.
         cfg["_fit_input_owned"] = bool(
@@ -394,7 +391,7 @@ def _predict_indices(
         return np.empty(0, dtype=np.float64)
 
     chunk = _resolve_prediction_chunk_size(fitted, chunk_size)
-    if getattr(spec, "name", None) in MULTIROCKET_MODELS and fitted.feature_transform is not None:
+    if getattr(spec, "bounded_transform_batches", False) and fitted.feature_transform is not None:
         chunk = min(chunk, int(fitted.feature_transform.artifact.metadata["batch_size"]))
     output = np.empty(idx.size, dtype=np.float64)
     for start in range(0, idx.size, chunk):
@@ -493,7 +490,7 @@ def _load_pickle_feature_transform(spec, directory):
     with tpath.open("rb") as stream:
         artifact = pickle.load(stream)
     metadata = getattr(artifact, "metadata", {})
-    identity = metadata.get("transform_identity", "reloaded") if spec.name in RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS else "reloaded"
+    identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
     return FittedFeatureTransform(
         spec.feature_transform, artifact, identity, {}, 0, {}
     )
@@ -513,18 +510,10 @@ def saved_model_complete(spec, directory) -> bool:
     directory = Path(directory)
     if not directory.is_dir() or not (directory / "sample_mask.npy").is_file():
         return False
-    pickle_models = {
-        "direct_linear_ridge",
-        "shared_linear_ridge",
-        "direct_minirocket",
-        "shared_minirocket",
-    }
-    if spec.name in pickle_models | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
-        if not (directory / "model.pkl").is_file():
-            return False
-        if spec.name in {"direct_minirocket", "shared_minirocket"} | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
-            return (directory / "feature_transform" / "transform.pkl").is_file()
-        return True
+    if spec.artifact_format == "pickle":
+        return (directory / "model.pkl").is_file() and (
+            spec.feature_transform.save is None or
+            (directory / "feature_transform/transform.pkl").is_file())
     return (directory / "model.pt").is_file()
 
 
@@ -533,15 +522,10 @@ def load_fitted_model(spec, directory, parameters, config):
     mask = np.load(directory / "sample_mask.npy").astype(bool)
     output_limit = float(config["ml_output"]["max_abs_ps"])
 
-    if spec.name in {
-        "direct_linear_ridge",
-        "shared_linear_ridge",
-        "direct_minirocket",
-        "shared_minirocket",
-    } | RDST_MODELS | HYDRA_MODELS | MULTIROCKET_MODELS:
+    if spec.artifact_format == "pickle":
         with (directory / "model.pkl").open("rb") as stream:
             artifact = pickle.load(stream)
-        if spec.name in {"direct_linear_ridge", "shared_linear_ridge"}:
+        if spec.feature_transform.fit_role == "deterministic":
             from waveform_analysis.models.linear.linear_ridge_common import (
                 LinearTransformArtifact,
             )
@@ -644,11 +628,3 @@ def load_fitted_model(spec, directory, parameters, config):
     model.eval()
     artifact = artifact_type(model, str(device), metadata)
     return FittedModel(artifact, metadata, output_limit, mask, None)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.train")

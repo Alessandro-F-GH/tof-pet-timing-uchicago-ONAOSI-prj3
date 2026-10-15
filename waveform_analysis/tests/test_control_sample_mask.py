@@ -108,7 +108,7 @@ def test_frozen_transform_and_feature_cache_receive_masked_control_or_developmen
         return x.reshape(len(x),-1)
     def fit(params,x,**kw):
         return SimpleNamespace(metadata={}),apply(None,x)
-    transform = FeatureTransformSpec('test_transform',lambda *a: {},fit,apply)
+    transform = FeatureTransformSpec('test_transform',lambda *a: {},fit,apply, fit_role=get_model(name).feature_transform.fit_role)
     spec = replace(get_model(name),feature_transform=transform)
     cfg = {'mode':'timing_to_timing','window_name':'wide','seed':1,
            'runtime':{'prediction_chunk_size':25}}

@@ -250,11 +250,3 @@ def format_residual_summary(summary: dict[str, float | int]) -> str:
         f"n={summary['n_finite']}/{summary['n_total']} | RMSE={summary['rmse_ps']:.3f} ps | mean={summary['mean_ps']:.3f} ps | "
         f"std={summary['std_ps']:.3f} ps | q01={summary['q01_ps']:.3f} ps | q99={summary['q99_ps']:.3f} ps | min={summary['min_ps']:.3f} ps | max={summary['max_ps']:.3f} ps"
     )
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.stats")

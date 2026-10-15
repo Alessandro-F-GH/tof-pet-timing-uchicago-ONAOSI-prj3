@@ -57,6 +57,7 @@ def fit(params, train_x, train_target, *, seed, config):
 
 
 FEATURE_TRANSFORM = FeatureTransformSpec(
+    fit_role="deterministic",
     name="paired_waveform_difference",
     parameters=transform_parameters,
     fit_transform=fit_transform,
@@ -74,14 +75,5 @@ MODEL_SPEC = ModelSpec(
     estimator_formulation="shared",
     feature_transform=FEATURE_TRANSFORM,
     selection_method="ridge_cv",
-)
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(
-    __name__, "waveform_analysis.ml_pipeline.models.shared_linear_ridge"
+    artifact_format="pickle",
 )

@@ -2,20 +2,14 @@ from __future__ import annotations
 import json, shutil
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash, write_csv
-from waveform_analysis.core.config import BatchConfig, public_batch_config
+from waveform_analysis.core.dependencies import planner_fingerprints as _planner_fingerprints
+from waveform_analysis.core.config import BatchConfig
+from waveform_analysis.data.results import write_run_config
 from waveform_analysis.engine.preprocessing import (
     fit_control,
     publish_preprocessing_diagnostics,
 )
-from waveform_analysis.data.storage import RUN_SCHEMA_VERSION, RunStore
-from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
-from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
-from waveform_analysis.data.sample_mask import SAMPLE_MASK_VERSION
 from waveform_analysis.engine.study import run_study
-from waveform_analysis.engine.xai import model_xai_version
-from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
-
-BATCH_SCHEMA_VERSION = 11
 
 
 def _read_json(path):
@@ -41,9 +35,12 @@ def _mode_fit_map(batch):
 def _runtime_configs(batch):
     fit_by_mode = _mode_fit_map(batch)
     out = []
+    prepared = {}
     all_modes = tuple(sorted(fit_by_mode))
     for config in batch.runs:
         item = dict(config)
+        item['_board'] = next((p for p in Path(batch.results['folder']).parts if p in {'UC', 'FBK'}), None)
+        item["_prepared_datasets"] = prepared
         item["_control_modes"] = all_modes
         item["_control_fit_by_mode"] = {
             mode: dict(fit_by_mode[mode]) for mode in all_modes
@@ -52,84 +49,16 @@ def _runtime_configs(batch):
     return out
 
 
-def _planner_fingerprints(config):
-    pre = canonical_hash(
-        {
-            "control": config["control"],
-            "control_artifact_version": CONTROL_ARTIFACT_VERSION,
-            "preprocessing": config["preprocessing"],
-            "mode": config["mode"],
-            "fit": config["fit"],
-        }
-    )
-    dev = canonical_hash(
-        {
-            "preprocessing": pre,
-            "development": config["development"],
-            "dataset_format_version": DATASET_FORMAT_VERSION,
-            "sample_mask_version": SAMPLE_MASK_VERSION,
-            "window": config["window_ns"],
-            "ml_input": config["ml_input"],
-        }
-    )
-    cv_dependencies = {
-        "development": dev,
-        "cross_validation": config["cross_validation"],
-        "model": config["model"],
-        "seed": config["seed"],
-    }
-    if config["model"]["name"] in LINEAR_RIDGE_MODELS:
-        cv_dependencies.pop("cross_validation")
-        cv_dependencies["selection_method"] = "ridge_cv"
-        cv_dependencies["ridge_cv_version"] = RIDGE_CV_VERSION
-    cv = canonical_hash(cv_dependencies)
-    final = canonical_hash(
-        {"cv": cv, "development": dev, "model": config["model"], "seed": config["seed"]}
-    )
-    blind = canonical_hash(
-        {
-            "final_fit": final,
-            "preprocessing": pre,
-            "blind": config["blind"],
-            "window": config["window_ns"],
-            "ml_input": config["ml_input"],
-            "fit": config["fit"],
-        }
-    )
-    bootstrap = canonical_hash(
-        {"blind": blind, "bootstrap": config["bootstrap"], "seed": config["seed"]}
-    )
-    xai = canonical_hash(
-        {
-            "final_fit": final,
-            "blind": blind,
-            "xai": config["xai"],
-            "seed": config["seed"],
-            "method_version": model_xai_version(config["model"]["name"]),
-        }
-    )
-    plots = canonical_hash({"plot_config": config["plot_config"]})
-    return {
-        "preprocessing": pre,
-        "development": dev,
-        "cv": cv,
-        "final_fit": final,
-        "blind": blind,
-        "bootstrap": bootstrap,
-        "xai": xai,
-        "plots": plots,
-    }
-
 
 def _run_state(config, previous):
     path = Path(config["output_dir"])
     current = _planner_fingerprints(config)
     if not path.exists() or not any(path.iterdir()):
         return "run", "all", current
-    RunStore(path)
     manifest = _read_json(path / "metadata" / "manifest.json")
-    if manifest is not None and int(manifest.get("schema_version", -1)) != RUN_SCHEMA_VERSION:
-        return "rebuild", "incompatible_schema", current
+    if manifest is not None:
+        from waveform_analysis.data.results import batch_root
+        batch_root(path)  # Old layouts must be explicitly converted, never rebuilt implicitly.
     old = (previous or {}).get(config["run_id"])
     if not isinstance(old, dict):
         return "rebuild", "unknown_dependencies", current
@@ -150,11 +79,7 @@ def _run_state(config, previous):
 def _plan_batch(batch):
     root = Path(batch.output_dir).resolve()
     previous_manifest = _read_json(root / "manifest.json") or {}
-    previous = (
-        previous_manifest.get("planner_fingerprints", {})
-        if int(previous_manifest.get("schema_version", -1)) == BATCH_SCHEMA_VERSION
-        else {}
-    )
+    previous = previous_manifest.get("planner_fingerprints", {})
     studies = []
     current = {}
     for config in batch.runs:
@@ -207,6 +132,11 @@ def _confirm(plan):
 
 
 def _apply(plan):
+    rebuilding = {i['path'] for i in plan['studies'] if i['action'] == 'rebuild'}
+    for scope in {path.parent for path in rebuilding}:
+        owners = {p.parent.parent.resolve() for p in scope.glob('*/metadata/config.json')}
+        if owners <= rebuilding:
+            (scope / 'population.json').unlink(missing_ok=True)
     for item in plan["studies"]:
         if item["action"] == "rebuild" and item["path"].exists():
             shutil.rmtree(item["path"])
@@ -236,28 +166,10 @@ def _write(batch, plan, status, statuses=None):
     atomic_json(
         root / "manifest.json",
         {
-            "schema_version": BATCH_SCHEMA_VERSION,
-            "name": batch.name,
             "status": status,
-            "source_config": batch.source_path,
-            "results": batch.results,
-            "datasets": batch.datasets,
-            "protocol": batch.protocol,
-            "axes": batch.axes,
-            "statistical_units": {
-                "validation": "development_cv_fold",
-                "blind_uncertainty": "blind_event_bootstrap",
-            },
-            "preprocessing_fit_role": "control",
-            "model_selection_role": "development",
-            "blind_role": "one_time_final_evaluation",
-            "single_configured_seed": int(batch.protocol["seed"]),
             "planner_fingerprints": plan["planner_fingerprints"],
-            "runs": rows,
         },
     )
-    atomic_json(root / "config.json", public_batch_config(batch))
-    atomic_json(root / "plots.json", batch.plot_config)
     write_csv(root / "tables" / "runs.csv", rows)
 
 
@@ -265,16 +177,17 @@ def run_batch(batch, *, logger=None):
     if not isinstance(batch, BatchConfig):
         raise TypeError("run_batch requires a resolved BatchConfig")
     root = Path(batch.output_dir).resolve()
-    legacy_runs = root / "runs.csv"
-    organized_runs = root / "tables" / "runs.csv"
-    if legacy_runs.is_file() and not organized_runs.exists():
-        organized_runs.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy_runs), str(organized_runs))
     plan = _plan_batch(batch)
+    configs = {c["run_id"]: c for c in _runtime_configs(batch)}
+    managed = [c["output_dir"] for c in configs.values()]
+    for config in configs.values():
+        write_run_config(config, managed_runs=managed, validate_only=True)
     _print_batch_plan(batch, plan)
     _confirm(plan)
     _apply(plan)
-    configs = {c["run_id"]: c for c in _runtime_configs(batch)}
+    for config in configs.values():
+        config["_managed_runs"] = managed
+        write_run_config(config, managed_runs=managed)
     statuses = {}
     outputs = []
     _write(batch, plan, "running", statuses)
@@ -331,11 +244,3 @@ def run_batch(batch, *, logger=None):
     except Exception:
         _write(batch, plan, "failed", statuses)
         raise
-
-
-# Retain serialized identities while legacy imports resolve to this module.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.batch")

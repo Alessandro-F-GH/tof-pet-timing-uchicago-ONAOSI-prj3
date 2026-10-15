@@ -84,7 +84,3 @@ def photopeak_mask(amps: ArrayLike, rules: dict[str, Any]) -> NDArray[np.bool_]:
     for d, (lo, hi) in enumerate(rules["photopeak_intervals_mV"]):
         m &= (amps[:, d] >= float(lo)) & (amps[:, d] <= float(hi))
     return m
-
-
-# Existing pickles resolve Hit through the selection module, which re-exports it.
-Hit.__module__ = "waveform_analysis.ml_pipeline.event_selection"

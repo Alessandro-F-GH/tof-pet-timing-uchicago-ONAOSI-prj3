@@ -1,4 +1,4 @@
-"""Migration contracts: module identity, serialization, config and tensor policy."""
+"""Canonical module identity, configuration and tensor policy contracts."""
 
 from __future__ import annotations
 
@@ -19,30 +19,18 @@ from waveform_analysis.core.config import (
     OnishiTrainingConfig,
 )
 from waveform_analysis.data.torch_dataset import WaveformDataset
-from waveform_analysis.models.base import BaseTorchModel, RegisteredWaveformModel
+from waveform_analysis.models.base import BaseTorchModel
 from waveform_analysis.models import get_model
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_legacy_modules_and_serialized_dataclasses_keep_identity():
-    mapping = json.loads(
-        (ROOT / "waveform_analysis" / "module_migration.json").read_text()
-    )
-    for old, new in mapping.items():
-        legacy = importlib.import_module(old)
-        modern = importlib.import_module(new)
-        if old.endswith(".models"):
-            assert legacy.get_model is modern.get_model
-        else:
-            assert legacy is modern
+def test_canonical_modules_and_serialized_dataclasses():
     from waveform_analysis.data.splits import make_cv_split
-
-    split = make_cv_split(
-        20, population_identity="pickle", batch_seed=1, n_folds=4, shuffle=True
-    )
-    assert type(split).__module__ == "waveform_analysis.ml_pipeline.splits"
+    split = make_cv_split(20, population_identity="pickle", batch_seed=1, n_folds=4, shuffle=True)
+    assert type(split).__module__ == "waveform_analysis.data.splits"
     assert type(pickle.loads(pickle.dumps(split))) is type(split)
+    assert importlib.util.find_spec('waveform_analysis.ml_pipeline') is None
 
 
 def test_typed_settings_preserve_existing_json_values_and_defaults():
@@ -79,12 +67,9 @@ def test_tensor_dataset_and_model_adapter_use_original_operations(tmp_path):
     )
     spec = get_model("direct_linear_ridge")
     _, features = spec.feature_transform.fit_transform({}, x, seed=1, config={})
-    adapter = RegisteredWaveformModel(spec)
-    artifact = adapter.fit({"ridge_alpha": 0.1}, features, y, seed=1, config={})
-    np.testing.assert_array_equal(
-        adapter.predict(artifact, features), spec.predict(artifact, features)
-    )
-    adapter.save(artifact, tmp_path)
+    artifact = spec.fit({"ridge_alpha": 0.1}, features, y, seed=1, config={})
+    assert spec.predict(artifact, features).shape == y.shape
+    spec.save(artifact, tmp_path)
     assert (tmp_path / "model.pkl").is_file()
     from waveform_analysis.models.neural.direct_mlp import DirectPairMLP
 
@@ -129,8 +114,8 @@ def test_normalized_configuration_and_fingerprints_are_unchanged(tmp_path):
         text=True,
     ).stdout
     path = tmp_path / "original_config.py"
-    path.write_text(source)
-    name = "waveform_analysis.ml_pipeline._original_config"
+    path.write_text(source.replace("from .common import canonical_hash", "from waveform_analysis.core.io import canonical_hash").replace("from .models import model_names", "from waveform_analysis.models import model_names"))
+    name = "original_config"
     spec = importlib.util.spec_from_file_location(name, path)
     reference = importlib.util.module_from_spec(spec)
     sys.modules[name] = reference
@@ -148,9 +133,11 @@ def test_normalized_configuration_and_fingerprints_are_unchanged(tmp_path):
             model = run["model"]
             if model["name"] in {"direct_linear_ridge", "shared_linear_ridge"}:
                 model["space"] = normalize_ridge_space(model["space"], model["name"])
-        actual = public_batch_config(load_batch_config(config_path, project))
-        assert actual == expected
-        assert canonical_hash(actual) == canonical_hash(expected)
-        assert public_batch_config(load_batch_config(config_path)) == actual
+        resolved = load_batch_config(config_path, project)
+        # Persisted hierarchy changes; effective scientific settings do not.
+        actual_runs = [{k: v for k, v in r.items() if not k.startswith('_')} for r in resolved.runs]
+        assert actual_runs == expected['runs']
+        assert canonical_hash(actual_runs) == canonical_hash(expected['runs'])
+        assert public_batch_config(load_batch_config(config_path)) == public_batch_config(resolved)
     finally:
         sys.modules.pop(name, None)

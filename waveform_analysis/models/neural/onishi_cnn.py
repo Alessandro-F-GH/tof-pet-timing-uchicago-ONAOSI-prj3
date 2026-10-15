@@ -169,6 +169,7 @@ def explain(artifact: OnishiCNNArtifact, normalized_pair: np.ndarray) -> np.ndar
 
 MODEL_SPEC = ModelSpec(
     name="onishi_cnn",
+    estimator_formulation="direct",
     candidates=candidates,
     fit=fit,
     predict=predict,
@@ -178,8 +179,3 @@ MODEL_SPEC = ModelSpec(
 
 
 # Preserve serialized identities and legacy import behavior.
-from waveform_analysis.core.compat import (
-    preserve_legacy_identity as _preserve_legacy_identity,
-)
-
-_preserve_legacy_identity(__name__, "waveform_analysis.ml_pipeline.models.onishi_cnn")
