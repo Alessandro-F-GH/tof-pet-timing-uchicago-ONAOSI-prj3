@@ -286,7 +286,9 @@ def test_grouped_bars_reuse_ranked_reporting_style_and_saved_led(tmp_path, monke
     assert (leaf / 'blind_ctr.svg').is_file()
     with (leaf / 'blind_rmse.csv').open() as stream:
         assert [r['code'] for r in csv.DictReader(stream)] == ['D-RDST', 'S-RDST']
-    assert 'LED & Reference & & 140.00' in (leaf / 'blind_ctr.tex').read_text()
+    assert 'LED & n/a & $140.0$ & $80.0$' in (leaf / 'metrics.tex').read_text()
+    assert not (leaf / 'blind_ctr.tex').exists()
+    assert not (leaf / 'blind_rmse.tex').exists()
     assert json.loads((output / 'plots.json').read_text()) == cfg
 
 
@@ -465,3 +467,46 @@ def test_population_ids_warn_without_blocking_plots(tmp_path, capsys, missing):
     assert info['comparison_plot_skip_reasons'] == []
     assert len(info['comparison_plot_warnings']) == 1
     assert 'control' in info['comparison_plot_warnings'][0]
+
+
+def test_combined_table_cv_led_uncertainties_order_and_no_caption(tmp_path):
+    first = run(tmp_path, 'a', 'direct_rdst')
+    second = run(tmp_path, 'b', 'shared_rdst')
+    ridge = run(tmp_path, 'c', 'direct_linear_ridge')
+    for directory, ctr in ((first, 120.44), (second, 120.43), (ridge, 130.)):
+        write_json(directory / 'metadata/best.json', {
+            'candidate_id': 'selected', 'folds': 2,
+            'validation_ctr_mean_ps': 118.6, 'validation_ctr_std_ps': 1.7,
+            'selection_method': 'ridge_cv' if directory == ridge else 'development_cv'})
+        write_json(directory / 'metadata/blind.json', {
+            'ctr_ps': ctr, 'rmse_ps': 61.5, 'led_ctr_ps': 147.3, 'led_rmse_ps': 70.9})
+        write_json(directory / 'metadata/bootstrap.json', {
+            'ctr_bootstrap_std_ps': 1.2, 'rmse_bootstrap_std_ps': 1.1,
+            'led_ctr_bootstrap_std_ps': 1.8 if directory == first else 1.9,
+            'led_rmse_bootstrap_std_ps': 1.0})
+    # Different candidate rows must not be averaged into the LED CV reference.
+    (first / 'tables/folds.csv').write_text(
+        'candidate_id,fold_id,led_ctr_ps\nselected,1,142\nselected,2,148\npruned,1,999\n')
+    output = tmp_path / 'grouped'
+    result = group_results([tmp_path / 'results'], output, summary_plots=False)
+    leaf = output / result['groups'][0]['group'] / result['groups'][0]['leaf']
+    table = (leaf / 'metrics.tex').read_text()
+    assert r'\begin{table}[tbp]' in table
+    assert r'\resizebox{\columnwidth}{!}' in table
+    assert 'Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps]' in table
+    assert r'LED & $145.0 \pm 4.2$ & $147.3 \pm 1.9$ & $70.9 \pm 1.0$' in table
+    assert r'D-RDST & $118.6 \pm 1.7$ & $120.4 \pm 1.2$ & $61.5 \pm 1.1$' in table
+    assert r'D-LIN & n/a & $130.0 \pm 1.2$' in table
+    assert table.index('S-RDST &') < table.index('D-RDST &') < table.index('D-LIN &')
+    assert r'\caption' not in table and r'\label' not in table
+    assert not (leaf / 'blind_ctr.tex').exists()
+    assert not (leaf / 'blind_rmse.tex').exists()
+    info = json.loads((leaf / 'group.json').read_text())
+    reference = info['metrics_table_reference']
+    assert reference['led_cv_reference_run'] == next(r['id'] for r in result['runs'] if r['model'] == 'direct_rdst')
+    assert reference['led_test_reference_run'] == next(r['id'] for r in result['runs'] if r['model'] == 'direct_linear_ridge')
+    # Old separate tables disappear when an entry is explicitly rebuilt.
+    (leaf / 'blind_ctr.tex').write_text('old table')
+    group_results([tmp_path / 'results'], output, summary_plots=False, overwrite=True)
+    assert not (leaf / 'blind_ctr.tex').exists()
+    assert (leaf / 'metrics.tex').read_text() == table

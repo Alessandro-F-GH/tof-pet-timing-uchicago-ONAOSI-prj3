@@ -676,8 +676,22 @@ validation scores and historical mask provenance. No predictions or bootstrap
 statistics are recomputed. Summary bars reuse the original reporting `blind_metric_bar` renderer and ranked
 metric-row builder: ascending CTR/RMSE order, stable model codes and legend names,
 direct/shared formulation colours, bootstrap error bars, and the saved LED
-reference line. Matching ranked `blind_ctr.csv/.tex` and `blind_rmse.csv/.tex`
-tables accompany the plots. No models or prediction arrays are loaded.
+reference line. Matching ranked `blind_ctr.csv` and `blind_rmse.csv` accompany
+the plots. Each mode/window also gets one caption-free `metrics.tex` table with
+Model, CV CTR, Test CTR and Test RMSE columns, ranked by unrounded test CTR.
+It uses stable model codes, a leading LED row, fold SD for outer CV, and
+bootstrap SD for test metrics. Models with internal RidgeCV but no outer CV
+show `n/a` for CV CTR. Missing metrics show `n/a`; missing uncertainties show
+only the saved estimate. The table is also exported with `--no-summary-plots`.
+
+LED CV mean/fold SD come from the first model (alphabetically) with saved complete
+selected-candidate folds; otherwise CV CTR is `n/a`. Test LED bootstrap SDs
+come from one saved reference run with the most available LED uncertainties,
+ties broken by model name. Run IDs for these references are recorded under
+`metrics_table_reference` in `group.json`. Differing saved LED test estimates
+are shown as `n/a` instead of selecting an arbitrary baseline. Neither old
+`blind_ctr.tex` nor `blind_rmse.tex` is generated in rebuilt grouped entries.
+No models or prediction arrays are loaded.
 
 Summary bars use saved metrics and require matching metric definitions and
 control LED calibration across the compared runs. Missing or differing

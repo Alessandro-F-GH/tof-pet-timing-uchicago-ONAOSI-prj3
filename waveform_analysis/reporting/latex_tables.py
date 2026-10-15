@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from waveform_analysis.core.io import write_csv
+from waveform_analysis.reporting.latex_text import escape_latex
 
 DATASET_TABLE_VERSION = 2
 ROLES = {
@@ -20,22 +21,6 @@ ROLES = {
 }
 MODES = {"energy_to_energy": "Energy", "timing_to_timing": "Timing"}
 
-
-def escape_latex(value: Any) -> str:
-    """Escape plain text, including file names, without interpreting TeX commands."""
-    replacements = {
-        "\\": r"\textbackslash{}",
-        "&": r"\&",
-        "%": r"\%",
-        "$": r"\$",
-        "#": r"\#",
-        "_": r"\_",
-        "{": r"\{",
-        "}": r"\}",
-        "~": r"\textasciitilde{}",
-        "^": r"\textasciicircum{}",
-    }
-    return "".join(replacements.get(character, character) for character in str(value))
 
 
 def export_blind_metric_table(

@@ -365,7 +365,6 @@ def _summary_plots(directory, members, cfg):
     from waveform_analysis.reporting.metric_rows import blind_metric_rows
     from waveform_analysis.reporting.model_labels import model_label
     from waveform_analysis.reporting.plotting import blind_metric_bar, output_path
-    from waveform_analysis.reporting.latex_tables import export_blind_metric_table
 
     skipped = []
     for metric in ("ctr", "rmse"):
@@ -393,13 +392,66 @@ def _summary_plots(directory, members, cfg):
                 continue
             rows = blind_metric_rows(group, metric)
             _csv(directory / f"blind_{metric}.csv", rows)
-            export_blind_metric_table(
-                directory / f"blind_{metric}.tex", rows, led_values[0], metric=metric,
-                mode=members[0].mode, window=members[0].leaf.split("/")[-1], report_id=members[0].group,
-            )
             blind_metric_bar(rows, output_path(directory, f"blind_{metric}", cfg), cfg,
                              metric=metric, led_value=led_values[0])
     return skipped
+
+
+def _combined_table(directory, members):
+    import statistics
+    import sys
+    repository = str(Path(__file__).resolve().parents[2])
+    if repository not in sys.path:
+        sys.path.insert(0, repository)
+    from waveform_analysis.reporting.grouped_table import export_grouped_metric_table
+    from waveform_analysis.reporting.model_labels import model_label
+
+    def finite(value):
+        return isinstance(value, (int, float)) and math.isfinite(value)
+
+    def common(values):
+        if values and all(finite(v) and math.isclose(v, values[0], rel_tol=1e-9, abs_tol=1e-9) for v in values):
+            return values[0]
+        return None
+
+    rows, led_cv = [], []
+    for run in members:
+        best, blind, bootstrap = (run.metadata[k] for k in ("best", "blind", "bootstrap"))
+        outer_cv = (run.metadata["manifest"].get("selection_method") != "ridge_cv"
+                    and best.get("selection_method") != "ridge_cv")
+        rows.append({"model": run.model, "code": model_label(run.model)[0],
+                     "cv_ctr": best.get("validation_ctr_mean_ps") if outer_cv else None,
+                     "cv_ctr_std": best.get("validation_ctr_std_ps") if outer_cv else None,
+                     "test_ctr": blind.get("ctr_ps"), "test_ctr_std": bootstrap.get("ctr_bootstrap_std_ps"),
+                     "test_rmse": blind.get("rmse_ps"), "test_rmse_std": bootstrap.get("rmse_bootstrap_std_ps")})
+        # LED fold metrics are already saved alongside candidate fold scores.
+        # Use a complete selected candidate, never partial/pruned fold means.
+        path = run.root / "tables/folds.csv"
+        if not path.is_file():
+            path = run.root / "folds.csv"
+        count = best.get("folds", 0)
+        if outer_cv and path.is_file() and isinstance(count, int) and count >= 2:
+            with path.open(newline="", encoding="utf-8-sig") as stream:
+                folds = [r for r in csv.DictReader(stream) if r.get("candidate_id") == best.get("candidate_id")]
+            try:
+                values = [float(r["led_ctr_ps"]) for r in folds]
+                if len(values) == count and len({r["fold_id"] for r in folds}) == count and all(map(math.isfinite, values)):
+                    led_cv.append((run.id, statistics.mean(values), statistics.stdev(values)))
+            except (KeyError, ValueError):
+                pass
+    led = {"cv_ctr": led_cv[0][1] if led_cv else None,
+           "cv_ctr_std": led_cv[0][2] if led_cv else None}
+    # Bootstrap seeds vary by model. Use one persisted LED reference, rather
+    # than averaging uncertainties or requiring independently drawn SDs to agree.
+    reference = min(members, key=lambda r: (
+        -sum(finite(r.metadata["bootstrap"].get(f"led_{m}_bootstrap_std_ps")) for m in ("ctr", "rmse")),
+        r.model, r.id))
+    for metric in ("ctr", "rmse"):
+        led[f"test_{metric}"] = common([r.metadata["blind"].get(f"led_{metric}_ps") for r in members])
+        led[f"test_{metric}_std"] = reference.metadata["bootstrap"].get(f"led_{metric}_bootstrap_std_ps")
+    export_grouped_metric_table(directory / "metrics.tex", rows, led)
+    return {"led_test_reference_run": reference.id,
+            "led_cv_reference_run": led_cv[0][0] if led_cv else None}
 
 
 def group_results(sources, output, *, selected=(), aliases=None, check=False,
@@ -497,6 +549,7 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
                 rows.append(_summary(run))
             _csv(directory / "summary.csv", rows)
             _csv(directory / "sources.csv", [r.describe() for r in members])
+            table_reference = _combined_table(directory, members)
             reasons = _compatibility(members)
             if summary_plots and not reasons:
                 reasons.extend(_summary_plots(directory, members, cfg))
@@ -504,6 +557,7 @@ def group_results(sources, output, *, selected=(), aliases=None, check=False,
                     "datasets": members[0].datasets, "runs": [r.describe() for r in members],
                     "missing": missing, "comparison_plot_skip_reasons": reasons,
                     "comparison_plot_warnings": _population_warnings(members),
+                    "metrics_table_reference": table_reference,
                     "summary_plots_requested": summary_plots}
             if cfg is not None:
                 _write_json(directory / "plots.json", cfg)
