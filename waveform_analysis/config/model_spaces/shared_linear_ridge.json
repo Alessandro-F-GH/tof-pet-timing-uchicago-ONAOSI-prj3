@@ -2,9 +2,9 @@
   "model": "shared_linear_ridge",
   "ridge_cv": {
     "alphas": {
-      "low": 1e-08,
-      "high": 1e3,
-      "num": 50
+      "low": 1e-06,
+      "high": 1e2,
+      "num": 15
     },
     "cv": null,
     "scoring": "neg_mean_squared_error",

@@ -10,7 +10,7 @@
                     
   "results": {"root": "results", "folder": "FBK/benchmark_48V_final"},
   "save_model": true,
-  "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/default_ctr.json",
+  "protocol": {"seed": 1001, "preprocessing_config": "../preprocessing/FBK.json",
      "cross_validation": {"folds": 3, "shuffle": true, "metric": "ctr", "minimum_events_per_fold": 50, 
      "pruning": {"enabled": true, "startup_complete_candidates": 3, "min_folds_before_prune": 1, 
                 "max_degradation_ps": 3.0, "prune_if_worse_than_led": true, "led_max_degradation_ps": 0.0}}, 
@@ -23,10 +23,10 @@
 
   "sweep": {"models": ["direct_minirocket", "shared_minirocket", "direct_linear_ridge", 
                       "shared_linear_ridge", "direct_mlp", "antisymmetric_mlp", 
-                      "locally_connected_mlp", "onishi_cnn", "shared_cnn1d", "independent_cnn1d", "direct_multirocket", "shared_multirocket",
+                      "locally_connected_mlp", "onishi_cnn", "shared_cnn1d", "direct_multirocket", "shared_multirocket",
                     "direct_rdst","shared_rdst"],
             
             "modes": ["energy_to_energy", "timing_to_timing"], 
 
-  "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 30.0}}}
+  "windows": {"onishi": {"start": -1.5, "end": 2.0}, "wide": {"start": -2.0, "end": 60.0}}}
 }

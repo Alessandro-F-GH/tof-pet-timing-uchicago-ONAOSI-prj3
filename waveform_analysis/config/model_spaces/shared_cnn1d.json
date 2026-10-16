@@ -6,7 +6,7 @@
   "parameters": {
     "architecture": {
       "type": "fixed",
-      "value": [64]
+      "value": [256]
     },
     "activation": {
       "type": "fixed",

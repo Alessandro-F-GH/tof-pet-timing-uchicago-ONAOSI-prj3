@@ -10,7 +10,7 @@
     },
     "ridge_alpha": {
       "type": "categorical",
-      "choices": [  1e4, 3e4, 1e5, 3e5, 1e6]
+      "choices": [  1e2, 3e2, 1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6]
     }
   },
   "transform": {
