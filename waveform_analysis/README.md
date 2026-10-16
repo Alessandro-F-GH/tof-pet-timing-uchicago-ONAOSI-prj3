@@ -44,6 +44,55 @@ reads raw acquisitions. Original saved masks, scalers/transforms and prediction
 limits are retained. RDST coefficient XAI uses persisted shapelets and model
 coefficients; temporal occlusion uses the frozen per-detector control mean.
 
+Global continuous-output explanations can be generated from saved models:
+
+```bash
+python -m waveform_analysis.cli explain-regression --results waveform_analysis/results/UC/BATCH --models direct_rdst shared_rdst
+```
+
+This fits a **global shapelet regression-tree surrogate**, not LASTS. Its target
+is the original model's continuous prediction in ps, not measured timing labels.
+It works with every saved model family, including MiniRocket and CNN. Original
+models, frozen feature transforms, masks, clipping limits, benchmark predictions
+and stage receipts are preserved. Prepared development and blind caches must be
+available; use `--cache-root PATH` if they moved. Raw ROOT files are never read.
+
+The explanation has its own pooled univariate RDST shapelet bank, fitted on 80%
+of development events without regression labels. Each detector gets separate
+minimum-distance features from that bank; matches cannot cross detector
+boundaries. These explanatory shapelets are distinct from an RDST teacher's
+own shapelets. Depth is selected by fidelity RMSE on the remaining 20%, then
+the selected tree is fitted to all development predictions. Blind data never
+selects features or tree settings. Development predictions are from the saved
+final teacher, not out-of-fold predictions. The global tree does not enforce
+detector-swap antisymmetry, even for a shared teacher.
+
+Options: `--max-shapelets 256`, `--shapelet-lengths 7 11` (retained samples),
+`--depths 2 3 4 5`, `--min-samples-leaf 20`, and optional `--max-events N` for a
+reproducible cap per role. Defaults use all events. Short masked grids require
+shorter shapelet lengths. Tree leaves predict correction in ps; splits test
+distance to a shapelet, not necessarily its presence/absence.
+
+Each model receives `explanations/regression_tree/IDENTITY/` with:
+
+- `summary.json`: settings, identities, development selection scores, blind
+  fidelity MAE/RMSE/R², and LED/original/surrogate timing CTR and RMSE.
+- `performance.csv` and `performance.png`: paired blind-cohort comparison using
+  the existing scientific CTR fitter; these are point estimates without
+  bootstrap uncertainty. An event cap means a subset comparison, rather than
+  the full benchmark. Original metrics are not overwritten.
+- `tree.png`, `tree.json`, `rules.txt`, `used_shapelets.png` (unless the tree is
+  constant), and `shapelets.npz`: global rules and explanatory patterns.
+- `surrogate.pkl` and `predictions.npz`: fitted explainer and audited event IDs,
+  predictions, residual targets and leaf assignments. The surrogate's `predict`
+  accepts normalized waveform pairs on the original grid and applies its saved
+  mask. Retain the training dependency versions when loading Python pickles.
+
+Identical settings reuse the existing explanation; different settings write a
+separate folder. Poor blind fidelity means the tree is not a faithful summary;
+similar CTR alone does not establish fidelity. No single-event explanations
+are produced.
+
 For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
 ## Source configuration
