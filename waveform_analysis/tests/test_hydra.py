@@ -158,7 +158,15 @@ def test_actual_hydra_batch_grid_blind_temporal_xai_reporting_and_resume(tmp_pat
     from waveform_analysis.data.dataset import InputTransform
     from waveform_analysis.data.storage import RunStore
 
-    resolved = load_batch_config(ROOT / "config/batches/test_hydra_FBK.json")
+    # Use a tracked common batch fixture rather than a removed Hydra example.
+    source = ROOT / "config/batches/test_rdst.json"
+    raw = json.loads(source.read_text())
+    raw["control_dataset"] = str((source.parent / raw["control_dataset"]).resolve())
+    raw["protocol"]["preprocessing_config"] = str((source.parent / raw["protocol"]["preprocessing_config"]).resolve())
+    raw["sweep"]["models"] = ["direct_hydra", "shared_hydra"]
+    fixture = tmp_path / "hydra.json"
+    fixture.write_text(json.dumps(raw))
+    resolved = load_batch_config(fixture, ROOT)
     protocol = deepcopy(resolved.protocol)
     protocol["bootstrap"]["n_resamples"] = 3
     runs = []
