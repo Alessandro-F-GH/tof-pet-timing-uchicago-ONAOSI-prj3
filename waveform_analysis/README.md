@@ -114,6 +114,12 @@ independent-shapelet explanations are never reused. Poor tree fidelity means
 its rules are not a faithful approximation; similar CTR alone is insufficient.
 No single-event explanations are generated.
 
+Progress logs identify cache reuse or the reason for recomputation, event counts,
+completed-batch percentages and approximate ETAs. Long stages emit an elapsed-time
+heartbeat every 30 seconds, including individual tree fits. Each candidate depth
+reports validation fidelity and duration. The first transform batch can include
+JIT compilation, so early ETAs may be inflated.
+
 For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
 ## Source configuration

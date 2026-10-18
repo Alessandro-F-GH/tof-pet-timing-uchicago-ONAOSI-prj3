@@ -1,7 +1,10 @@
 """Global explanations in the original model's frozen feature space (not LASTS)."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+from threading import Event, Thread
+from time import monotonic
 import csv
 import pickle
 from pathlib import Path
@@ -25,6 +28,49 @@ from waveform_analysis.models.kernel.rdst_common import export_shapelets
 from waveform_analysis.signal.sample_mask import apply_sample_mask, apply_sample_mask_to_time
 
 
+@contextmanager
+def _stage(logger, label):
+    """Report activity even while one native transform/tree call is blocking."""
+    started = monotonic()
+    stop = Event()
+    def heartbeat():
+        while not stop.wait(30):
+            logger.info('Regression explanation | %s | working | elapsed=%.1fs', label, monotonic() - started)
+    worker = None
+    if logger:
+        logger.info('Regression explanation | %s | started', label)
+        worker = Thread(target=heartbeat, daemon=True)
+        worker.start()
+    status = 'complete'
+    try:
+        yield
+    except BaseException:
+        status = 'failed'
+        raise
+    finally:
+        stop.set()
+        if worker is not None:
+            worker.join()
+            logger.info('Regression explanation | %s | %s | elapsed=%.1fs', label, status, monotonic() - started)
+
+
+class _Progress:
+    """Throttle batch updates; percentages refer to completed event rows only."""
+    def __init__(self, logger, label, total):
+        self.logger, self.label, self.total = logger, label, total
+        self.started = self.last = monotonic()
+        self.first = True
+
+    def update(self, completed):
+        now = monotonic()
+        if self.logger and (self.first or completed == self.total or now - self.last >= 10):
+            elapsed = now - self.started
+            eta = elapsed * (self.total - completed) / completed if completed else 0.
+            self.logger.info('Regression explanation | %s | %d/%d events (%.1f%%) | elapsed=%.1fs | ETA~%.1fs',
+                             self.label, completed, self.total, 100 * completed / self.total, elapsed, eta)
+            self.first, self.last = False, now
+
+
 @dataclass
 class FrozenFeatureRegressionSurrogate:
     """Approximate tree; predict accepts ORIGINAL frozen feature matrices only."""
@@ -45,7 +91,7 @@ def fidelity(original, surrogate):
 
 
 def fit_surrogate(features, predictions, *, transform_identity, seed,
-                  depths=(2, 3, 4, 5), min_samples_leaf=20):
+                  depths=(2, 3, 4, 5), min_samples_leaf=20, logger=None):
     """Fit only a tree: no transform construction, fitting, or scaling."""
     features = np.asarray(features, dtype=np.float32)
     predictions = np.asarray(predictions, dtype=float)
@@ -57,11 +103,16 @@ def fit_surrogate(features, predictions, *, transform_identity, seed,
     selection = []
     for depth in sorted(set(depths)):
         tree = DecisionTreeRegressor(max_depth=depth, min_samples_leaf=min_samples_leaf, random_state=seed)
-        tree.fit(features[train], predictions[train])
-        selection.append({"max_depth": depth, **fidelity(predictions[validation], tree.predict(features[validation]))})
+        with _stage(logger, f'tree candidate depth={depth} | train={len(train)} | features={features.shape[1]}'):
+            tree.fit(features[train], predictions[train])
+            selection.append({"max_depth": depth, **fidelity(predictions[validation], tree.predict(features[validation]))})
+        if logger:
+            logger.info('Regression explanation | tree depth=%d | validation RMSE=%.3f ps | MAE=%.3f ps',
+                        depth, selection[-1]['rmse_ps'], selection[-1]['mae_ps'])
     best = min(selection, key=lambda row: (row['rmse_ps'], row['max_depth']))
     tree = DecisionTreeRegressor(max_depth=best['max_depth'], min_samples_leaf=min_samples_leaf, random_state=seed)
-    tree.fit(features, predictions)
+    with _stage(logger, f'final tree selected depth={best["max_depth"]} | events={len(features)}'):
+        tree.fit(features, predictions)
     return FrozenFeatureRegressionSurrogate(tree, transform_identity), {
         "selection": selection, "selected_max_depth": best['max_depth'],
         "train_indices": train, "validation_indices": validation,
@@ -69,7 +120,7 @@ def fit_surrogate(features, predictions, *, transform_identity, seed,
         "transform_fit_role": "original_saved_model; never refitted", "validation_fraction": .2}
 
 
-def frozen_features(spec, fitted, dataset, config, indices, cache_root, role, scratch):
+def frozen_features(spec, fitted, dataset, config, indices, cache_root, role, scratch, logger=None):
     """Read verified existing features, otherwise apply the saved transform once."""
     from waveform_analysis.data.feature_cache import _CACHE_VERSION, _transform_root
     transform = fitted.feature_transform
@@ -78,16 +129,22 @@ def frozen_features(spec, fitted, dataset, config, indices, cache_root, role, sc
     directory = _transform_root(cache_root, config['mode'], config['window_name'], spec.name, transform.identity)
     metadata_path = directory / f'{role}_{identity[:12]}.json'
     path = directory / f'{role}_{identity[:12]}.npy'
+    cache_status = 'missing feature cache' if transform.identity != 'reloaded' else 'saved transform has no persistent cache identity'
     if transform.identity != 'reloaded' and metadata_path.is_file() and path.is_file():
         import json
         matrix = None
         try:
             metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+            cache_status = 'cache metadata mismatch'
             if (metadata.get('identity') == identity and metadata.get('transform_identity') == transform.identity
                     and metadata.get('dataset_identity') == dataset.manifest['analysis_protocol_identity']
                     and metadata.get('role') == role):
                 matrix = np.load(path, mmap_mode='r')
+                cache_status = 'cache feature shape mismatch'
                 if matrix.shape == (dataset.n_events, metadata.get('feature_count')):
+                    if logger:
+                        logger.info('Regression explanation | %s | cache reused | events=%d | features=%d | %s',
+                                    role, len(indices), matrix.shape[1], path)
                     if np.array_equal(indices, np.arange(dataset.n_events)):
                         return matrix, {'source': 'verified_existing_cache', 'path': str(path)}
                     subset = np.asarray(matrix[indices], dtype=np.float32)
@@ -95,11 +152,16 @@ def frozen_features(spec, fitted, dataset, config, indices, cache_root, role, sc
                     return subset, {'source': 'verified_existing_cache', 'path': str(path)}
                 matrix._mmap.close()
         except (OSError, ValueError, TypeError, AttributeError):
+            cache_status = 'unreadable feature cache'
             if isinstance(matrix, np.memmap):
                 matrix._mmap.close()
     chunk = int(config['runtime']['prediction_chunk_size'])
     if spec.bounded_transform_batches:
         chunk = min(chunk, int(transform.artifact.metadata['batch_size']))
+    if logger:
+        logger.info('Regression explanation | %s | %s | applying ORIGINAL saved transform | batch_size=%d | first batch may compile native routines',
+                    role, cache_status, chunk)
+    progress = _Progress(logger, f'{role} feature transform', len(indices))
     matrix = None
     try:
         for start in range(0, len(indices), chunk):
@@ -111,6 +173,7 @@ def frozen_features(spec, fitted, dataset, config, indices, cache_root, role, sc
                 matrix = np.lib.format.open_memmap(scratch / f'{role}.npy', mode='w+', dtype=np.float32,
                                                     shape=(len(indices), block.shape[1]))
             matrix[start:start + len(block)] = block
+            progress.update(start + len(block))
         matrix.flush()
     except BaseException:
         if isinstance(matrix, np.memmap):
@@ -119,12 +182,16 @@ def frozen_features(spec, fitted, dataset, config, indices, cache_root, role, sc
     return matrix, {'source': 'applied_original_frozen_transform', 'transform_identity': transform.identity}
 
 
-def predict_features(spec, fitted, features, chunk):
-    return np.concatenate([_prediction_from_input(spec, fitted, features[start:start + chunk])
-                           for start in range(0, len(features), chunk)])
+def predict_features(spec, fitted, features, chunk, *, logger=None, role=''):
+    progress = _Progress(logger, f'{role} original predictions', len(features))
+    output = []
+    for start in range(0, len(features), chunk):
+        output.append(_prediction_from_input(spec, fitted, features[start:start + chunk]))
+        progress.update(start + len(output[-1]))
+    return np.concatenate(output)
 
 
-def contribution_summary(fitted, features, teacher, *, group_size, chunk):
+def contribution_summary(fitted, features, teacher, *, group_size, chunk, logger=None):
     """Exact uncentered linear contributions; aggregate signed groups BEFORE abs."""
     regressor = getattr(fitted.artifact, 'regressor', None)
     if regressor is None or not hasattr(regressor, 'coef_'):
@@ -139,6 +206,7 @@ def contribution_summary(fitted, features, teacher, *, group_size, chunk):
     feature_sums = np.zeros(len(weights))
     feature_abs = np.zeros(len(weights))
     max_error, clipped_events = 0., 0
+    progress = _Progress(logger, 'blind exact contributions', len(features))
     for start in range(0, len(features), chunk):
         contributions = np.asarray(features[start:start + chunk], dtype=np.float64) * weights
         grouped = contributions.reshape(-1, groups, group_size).sum(axis=2)
@@ -159,6 +227,7 @@ def contribution_summary(fitted, features, teacher, *, group_size, chunk):
         tolerance = 1e-4 + 8 * epsilon * (np.abs(contributions).sum(axis=1) + abs(intercept))
         if np.any(np.abs(reconstructed - expected) > tolerance):
             raise ValueError('Additive reconstruction does not match original predictions; refusing invalid explanation')
+        progress.update(start + len(contributions))
     count = len(features)
     mean = sums / count
     return {'group_id': np.arange(groups), 'mean_contribution_ps': mean,
@@ -224,6 +293,8 @@ def _explain_run(run, lookup, cache_override, depths, leaf, maximum, logger):
 
     directory, manifest = Path(run['directory']), run['manifest']
     config = resolve_run_config(directory)
+    if logger:
+        logger.info('Regression explanation | run=%s | mode=%s | window=%s', directory, config['mode'], config['window_name'])
     spec = get_model(manifest['model'])
     if spec.feature_transform is None:
         raise ValueError('This model has no explicit frozen feature transform; use input-level XAI for CNN/MLP')
@@ -261,7 +332,8 @@ def _explain_run(run, lookup, cache_override, depths, leaf, maximum, logger):
     indices = {role: _sample(data, maximum, semantic_seed(seed, role))
                for role, data in [('development', development), ('blind', blind)]}
     chunk = int(config['runtime']['prediction_chunk_size'])
-    fitted = load_fitted_model(spec, model_dir, run['best']['parameters'], config)
+    with _stage(logger, 'load original saved model and frozen transform'):
+        fitted = load_fitted_model(spec, model_dir, run['best']['parameters'], config)
     if fitted.feature_transform is None:
         raise ValueError('Saved original frozen transform is missing; it will not be fitted again')
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -272,17 +344,22 @@ def _explain_run(run, lookup, cache_override, depths, leaf, maximum, logger):
                 for role, data in [('development', development), ('blind', blind)]:
                     if logger:
                         logger.info('Original frozen features | %s | %s | events=%d', spec.name, role, len(indices[role]))
-                    matrices[role], feature_sources[role] = frozen_features(
-                        spec, fitted, data, config, indices[role], root, role, Path(scratch))
-                teacher = {role: predict_features(spec, fitted, matrix, chunk) for role, matrix in matrices.items()}
+                    with _stage(logger, f'{spec.name} | {role} frozen features'):
+                        matrices[role], feature_sources[role] = frozen_features(
+                            spec, fitted, data, config, indices[role], root, role, Path(scratch), logger=logger)
+                with _stage(logger, 'original model predictions'):
+                    teacher = {role: predict_features(spec, fitted, matrix, chunk, logger=logger, role=role)
+                               for role, matrix in matrices.items()}
                 surrogate, selection = fit_surrogate(matrices['development'], teacher['development'],
-                    transform_identity=fitted.feature_transform.identity, seed=seed, depths=depths, min_samples_leaf=leaf)
-                predicted = surrogate.predict(matrices['blind'])
-                leaf_id = surrogate.tree.apply(matrices['blind'])
+                    transform_identity=fitted.feature_transform.identity, seed=seed, depths=depths, min_samples_leaf=leaf, logger=logger)
+                with _stage(logger, 'blind tree evaluation'):
+                    predicted = surrogate.predict(matrices['blind'])
+                    leaf_id = surrogate.tree.apply(matrices['blind'])
                 is_rdst = spec.name in {'direct_rdst', 'shared_rdst'}
                 shapelets = export_shapelets(fitted.feature_transform.artifact.transformer) if is_rdst else None
-                contributions = contribution_summary(fitted, matrices['blind'], teacher['blind'],
-                                                     group_size=3 if is_rdst else 1, chunk=chunk)
+                with _stage(logger, 'original linear-head contributions'):
+                    contributions = contribution_summary(fitted, matrices['blind'], teacher['blind'],
+                                                         group_size=3 if is_rdst else 1, chunk=chunk, logger=logger)
                 feature_count = matrices['development'].shape[1]
                 mask = fitted.sample_mask
             finally:
@@ -295,11 +372,14 @@ def _explain_run(run, lookup, cache_override, depths, leaf, maximum, logger):
     target = model_target(blind, mode)[indices['blind']]
     metrics = []
     for label, residual in [('LED', target), ('Original', target - teacher['blind']), ('Surrogate', target - predicted)]:
-        metrics.append({'model': label, **metric_values(residual, config['fit'], seed=semantic_seed(seed, 'comparison'))})
+        with _stage(logger, f'{label} CTR/RMSE comparison'):
+            metrics.append({'model': label, **metric_values(residual, config['fit'], seed=semantic_seed(seed, 'comparison'))})
     names = ([f'shapelet_{s}_{feature}' for s in shapelets['shapelet_id']
               for feature in ('minimum_distance', 'match_location', 'occurrence_count')]
              if shapelets is not None else [f'original_feature_{i}' for i in range(feature_count)])
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if logger:
+        logger.info('Regression explanation | saving artifacts | %s', destination)
     temporary = Path(tempfile.mkdtemp(prefix='.regression-', dir=destination.parent))
     try:
         summary = {**identity, 'teacher_model': spec.name, 'surrogate_seed': seed,
@@ -345,7 +425,8 @@ def _explain_run(run, lookup, cache_override, depths, leaf, maximum, logger):
             'development_n_events': surrogate.tree.tree_.n_node_samples,
             'development_prediction_sd_ps': np.sqrt(np.maximum(surrogate.tree.tree_.impurity, 0)),
             'blind_leaf_counts': dict(zip(*np.unique(leaf_id, return_counts=True)))})
-        plot_explanation(temporary, surrogate.tree, names, teacher['blind'], predicted, metrics, shapelets, contributions, spec.estimator_formulation)
+        with _stage(logger, 'render explanation plots'):
+            plot_explanation(temporary, surrogate.tree, names, teacher['blind'], predicted, metrics, shapelets, contributions, spec.estimator_formulation)
         temporary.rename(destination)
     finally:
         if temporary.exists():

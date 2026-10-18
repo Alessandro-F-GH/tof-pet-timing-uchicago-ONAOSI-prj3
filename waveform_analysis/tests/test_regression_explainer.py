@@ -1,5 +1,6 @@
 """Frozen original features, exact contributions and independent tree comparison."""
 import json
+import logging
 import pickle
 from pathlib import Path
 from types import SimpleNamespace
@@ -136,7 +137,8 @@ def test_saved_rdst_end_to_end_never_refits_and_uses_original_shapelets(tmp_path
         metric_calls.append(values.copy())
         return {'ctr_ps': float(2.355 * np.std(values)), 'rmse_ps': float(np.sqrt(np.mean(values ** 2)))}
     monkeypatch.setattr(stats, 'metric_values', metric)
-    paths = explainer.explain_regression(directory, depths=[1, 2], min_samples_leaf=3)
+    paths = explainer.explain_regression(directory, depths=[1, 2], min_samples_leaf=3,
+                                         logger=logging.getLogger(__name__))
     output = paths[0]
     summary = json.loads((output / 'summary.json').read_text())
     assert summary['transform_identity'] == 'original-frozen-bank'
