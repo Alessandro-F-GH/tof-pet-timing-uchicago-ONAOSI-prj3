@@ -901,6 +901,11 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
 
 def _explain_model(store, spec, space, config, control, development, best, final_fp,
                    fitted, blind, control_prepared, logger, frozen_development):
+    if model_xai_method(spec) is None:
+        xai_fp = _stage("xai", {"final_fit": final_fp, "enabled": False, "method": None})
+        store.mark_stage("xai", xai_fp, metadata={"enabled": False, "reason": "unsupported_model"})
+        logger.info("XAI | skipped for %s", spec.name)
+        return xai_fp, fitted, control_prepared
     if config["xai"]["enabled"] and control_prepared is None:
         _, _, control_prepared = prepare_role_dataset(
             config, "control", control, rebuild=False, logger=None

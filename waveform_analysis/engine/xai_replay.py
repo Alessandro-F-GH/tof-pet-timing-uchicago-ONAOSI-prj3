@@ -128,6 +128,11 @@ def rerun_xai(
         if models is not None and manifest["model"] not in models:
             continue
         try:
+            spec = get_model(manifest["model"])
+            if model_xai_method(spec) is None:
+                if logger:
+                    logger.info("XAI | skipped for %s", spec.name)
+                continue
             config = resolve_run_config(store.root)
             settings = {**config["xai"], "enabled": True}
             if group_size_samples is not None:
@@ -135,7 +140,6 @@ def rerun_xai(
             if max_events is not None:
                 settings["max_events"] = int(max_events)
             best = _read(store.best_path)
-            spec = get_model(manifest["model"])
             if not saved_model_complete(spec, store.model_dir):
                 raise FileNotFoundError("Saved final model or frozen transform is missing/incomplete")
             root = _cache_root(config, store.root, cache_root)

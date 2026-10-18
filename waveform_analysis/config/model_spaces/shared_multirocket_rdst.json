@@ -1,0 +1,78 @@
+{
+  "model": "shared_multirocket_rdst",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "n_kernels": {
+      "type": "fixed",
+      "value": 6250
+    },
+    "max_dilations_per_kernel": {
+      "type": "fixed",
+      "value": 32
+    },
+    "n_features_per_kernel": {
+      "type": "fixed",
+      "value": 4
+    },
+    "normalise": {
+      "type": "fixed",
+      "value": false
+    },
+    "max_shapelets": {
+      "type": "fixed",
+      "value": 1024
+    },
+    "shapelet_lengths": {
+      "type": "fixed",
+      "value": [
+        11
+      ]
+    },
+    "proba_normalization": {
+      "type": "fixed",
+      "value": 0.8
+    },
+    "threshold_percentiles": {
+      "type": "fixed",
+      "value": [
+        5,
+        10
+      ]
+    },
+    "alpha_similarity": {
+      "type": "fixed",
+      "value": 0.5
+    },
+    "use_prime_dilations": {
+      "type": "fixed",
+      "value": false
+    },
+    "multirocket_alpha": {
+      "type": "categorical",
+      "choices": [
+        1000.0,
+        300000.0,
+        100000000.0
+      ]
+    },
+    "rdst_alpha": {
+      "type": "categorical",
+      "choices": [
+        100.0,
+        10000.0,
+        1000000.0
+      ]
+    }
+  },
+  "transform": {
+    "n_jobs": -1,
+    "batch_size": 128
+  },
+  "training": {},
+  "diagnostics": {
+    "detector_swap": false
+  },
+  "verbose": false
+}

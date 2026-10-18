@@ -1,6 +1,8 @@
 """Stable manuscript codes, independent of performance rank or exclusions."""
 
 MODEL_LABELS: dict[str, tuple[str, str]] = {
+    "direct_multirocket_rdst": ("D-MuR-RDST", "Direct MultiRocket + dilated shapelets + ridge"),
+    "shared_multirocket_rdst": ("S-MuR-RDST", "Shared MultiRocket + dilated shapelets + ridge"),
     "direct_multirocket": ("D-MuR", "Direct MultiRocket + ridge"),
     "shared_multirocket": ("S-MuR", "Shared MultiRocket + ridge"),
     "direct_hydra": ("D-HYD", "Direct Hydra + ridge"),

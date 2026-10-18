@@ -105,6 +105,6 @@ def test_old_layout_rejected_without_side_effects(tmp_path):
 def test_metadata_imports_do_not_load_training_frameworks():
     completed = subprocess.run([sys.executable, '-c',
         "import sys; import waveform_analysis.data.results; from waveform_analysis.models import model_names; "
-        "assert len(model_names()) == 16; assert not {'torch','aeon','sktime','uproot'} & sys.modules.keys()"],
+        "assert len(model_names()) == 18; assert not {'torch','aeon','sktime','uproot'} & sys.modules.keys()"],
         capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr

@@ -169,16 +169,23 @@ def temporal_occlusion_importance(
     }
 
 def model_xai_method(spec):
+    name = getattr(spec, "name", spec)
+    if name in {"direct_multirocket_rdst", "shared_multirocket_rdst"}:
+        return None
     from waveform_analysis.models.kernel.rdst_common import RDST_MODELS
-    return "shapelet_coefficients" if getattr(spec, "name", spec) in RDST_MODELS else "grouped_temporal_occlusion"
+    return "shapelet_coefficients" if name in RDST_MODELS else "grouped_temporal_occlusion"
 
 
 def model_xai_version(spec):
+    if model_xai_method(spec) is None:
+        return None
     from waveform_analysis.engine.shapelet_xai import SHAPELET_XAI_VERSION
     return SHAPELET_XAI_VERSION if model_xai_method(spec) == "shapelet_coefficients" else XAI_METHOD_VERSION
 
 
 def model_importance(spec, fitted, dataset, mode, **kwargs):
+    if model_xai_method(spec) is None:
+        raise ValueError(f"XAI is unavailable for {spec.name}")
     if model_xai_method(spec) == "shapelet_coefficients":
         from waveform_analysis.engine.shapelet_xai import coefficient_importance
         return coefficient_importance(fitted)

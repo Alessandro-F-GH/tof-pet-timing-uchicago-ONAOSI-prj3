@@ -298,6 +298,11 @@ def fit_on_indices(
             config=cfg,
         )
 
+    if feature_transform is not None:
+        cfg["_feature_transform_metadata"] = copy.deepcopy(
+            getattr(getattr(feature_transform, "artifact", None), "metadata", {})
+        )
+
     fitted = _fit_once(
         spec,
         cfg,

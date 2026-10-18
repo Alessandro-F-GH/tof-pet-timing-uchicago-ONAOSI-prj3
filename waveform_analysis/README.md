@@ -103,6 +103,7 @@ from the other RMSE/internal-holdout neural training procedure.
 | Dilated shapelets | `direct_rdst`, `shared_rdst` | Outer CV, fixed control RDST/scaling, ridge-alpha search |
 | Hydra | `direct_hydra`, `shared_hydra` | Outer CV, fixed control Hydra/reference sparse scaling, ridge-alpha search |
 | MultiRocket | `direct_multirocket`, `shared_multirocket` | Outer CV, fixed control transform/scaling, ridge-alpha search |
+| MultiRocket + dilated shapelets | `direct_multirocket_rdst`, `shared_multirocket_rdst` | Outer CV, fixed control transforms/scaling, joint two-penalty grid |
 | Dense MLP | `direct_mlp`, `antisymmetric_mlp` | Outer CV |
 | Temporal CNN | `independent_cnn1d`, `shared_cnn1d` | Outer CV |
 | Locally connected MLP | `locally_connected_mlp` | Outer CV |
@@ -126,6 +127,30 @@ bounded transformation batches and existing `lsqr` Ridge solver/ownership rules.
 Parallelism and chunk settings are execution controls; this cleanup does not
 change model precision or replace estimators. Aeon remains pinned to 1.6.0 for
 its persisted transform representations.
+
+### Combined MultiRocket/RDST models
+
+`config/batches/test_multirocket_rdst.json` demonstrates both formulations.
+Each constituent transform and its per-feature standard-deviation scaler is
+fitted once on control, then frozen. The cached float32 feature matrix contains
+MultiRocket columns followed by RDST columns; no extra feature-count weighting
+or development-fitted scaling is applied. Shared models concatenate the two
+families' detector-difference features and retain a zero intercept.
+
+The model spaces search `multirocket_alpha` and `rdst_alpha` jointly on the
+existing development folds. Defaults are `[1e3, 3e5, 1e8]` and
+`[1e2, 1e4, 1e6]`, respectively: nine candidate pairs. Both penalties must be
+finite and positive. Transform settings remain fixed throughout the search.
+For each fit, the RDST block is multiplied by
+`sqrt(multirocket_alpha / rdst_alpha)` and the existing LSQR Ridge fitter uses
+`alpha=multirocket_alpha`. This gives independent squared-coefficient penalties
+for the two standardized feature families. The scaling is folded into the saved
+coefficients, so predictions use the original frozen features directly.
+
+Feature extraction uses the existing memory-mapped cache and bounded batches.
+Candidate scaling only modifies disposable training rows. XAI is unavailable
+for these combined models: training and explicit `xai` replay skip them even
+when the batch enables XAI for other models.
 
 ## Result ownership
 

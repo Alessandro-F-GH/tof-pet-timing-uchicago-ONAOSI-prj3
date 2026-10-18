@@ -20,6 +20,8 @@ class RegistryTests(unittest.TestCase):
                 "direct_minirocket",
                 "direct_multirocket",
                 "shared_multirocket",
+                "direct_multirocket_rdst",
+                "shared_multirocket_rdst",
                 "direct_hydra",
                 "shared_hydra",
                 "direct_rdst",
