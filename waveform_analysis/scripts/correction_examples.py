@@ -213,8 +213,8 @@ def summarize_group_waveforms(dataset, mode, prepared_rows, sample_mask, *,
 
 
 def plot_group_statistics(summaries, time_ps, groups, output, *,
-                          zoom_max_ps=None):
-    """Each quantile row contains BOTH channel pair and D1-D2, mean ± 1 SD."""
+                          zoom_max_ps=None, global_difference_mean=None):
+    """Original channel pair and population-centered D1-D2, mean ± 1 SD."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -226,6 +226,12 @@ def plot_group_statistics(summaries, time_ps, groups, output, *,
     if time_ps.ndim != 1 or np.count_nonzero(keep) < 2:
         raise ValueError("Zoom range contains fewer than two time samples")
     t = time_ps[keep]
+    if global_difference_mean is None:
+        baseline = np.zeros(len(time_ps), dtype=np.float64)
+    else:
+        baseline = np.asarray(global_difference_mean, dtype=np.float64)
+        if baseline.shape != time_ps.shape or not np.all(np.isfinite(baseline)):
+            raise ValueError("Population difference reference must match time grid")
     fig, axes = plt.subplots(
         len(groups), 2, figsize=(15, max(4, 2.65 * len(groups))),
         sharex="col", sharey="col", squeeze=False
@@ -239,9 +245,9 @@ def plot_group_statistics(summaries, time_ps, groups, output, *,
                               label=f"Detector {detector + 1}")
             left.fill_between(t, mean - std, mean + std,
                               color=line.get_color(), alpha=.2, linewidth=0)
-        diff_mean = summary["difference_mean"][keep]
+        diff_mean = summary["difference_mean"][keep] - baseline[keep]
         diff_std = summary["difference_std"][keep]
-        line, = right.plot(t, diff_mean, linewidth=1.5, label="D1 - D2")
+        line, = right.plot(t, diff_mean, linewidth=1.5, label="D1 - D2 minus population mean")
         right.fill_between(t, diff_mean - diff_std, diff_mean + diff_std,
                            color=line.get_color(), alpha=.23, linewidth=0)
         right.axhline(0, linewidth=.8, color="0.5", linestyle=":")
@@ -255,7 +261,7 @@ def plot_group_statistics(summaries, time_ps, groups, output, *,
         left.set_title(label, fontsize=10)
         right.set_title(label, fontsize=10)
         left.set_ylabel("Normalized amplitude")
-        right.set_ylabel("Amplitude D1 - D2")
+        right.set_ylabel("Centered amplitude difference")
         left.grid(alpha=.2)
         right.grid(alpha=.2)
     axes[0, 0].legend(loc="best")
@@ -263,7 +269,7 @@ def plot_group_statistics(summaries, time_ps, groups, output, *,
     axes[-1, 0].set_xlabel("Time relative to waveform arrival [ps]")
     axes[-1, 1].set_xlabel("Time relative to waveform arrival [ps]")
     fig.suptitle(
-        "Correction-conditioned mean ± 1 SD | channel pair and channel difference"
+        "Correction-conditioned mean ± 1 SD | channel pair and centered difference"
         + (f" | t ≤ {zoom_max_ps:g} ps" if zoom_max_ps is not None else ""),
         fontsize=13,
     )
@@ -360,6 +366,13 @@ def analyze_run(run, *, role="blind", cache_override=None,
             f"--zoom-max-ps={zoom_max_ps:g} leaves fewer than two time samples"
         )
 
+    # Reference uses the entire saved-prediction population, not only the
+    # selected quantile bands. Streaming aggregation avoids a large allocation.
+    population = summarize_group_waveforms(
+        prepared, config["mode"], prepared_rows, mask
+    )
+    global_difference_mean = population["difference_mean"]
+
     summaries = []
     for group in groups:
         members = prepared_rows[group["prediction_indices"]]
@@ -378,7 +391,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "model": manifest["model"], "role": role,
         "quantiles": q.tolist(), "half_width": float(half_width),
         "zoom_max_ps": float(zoom_max_ps),
-        "analysis_version": 2,
+        "analysis_version": 3,
+        "difference_centering": "full_population_mean",
         "final_fit_fingerprint": fingerprint,
         "protocol_identity": prepared.manifest["analysis_protocol_identity"],
         "prediction_source": predictions_path.name,
@@ -417,17 +431,23 @@ def analyze_run(run, *, role="blind", cache_override=None,
         pair_mean=np.stack([s["pair_mean"] for s in summaries]),
         pair_std=np.stack([s["pair_std"] for s in summaries]),
         difference_mean=np.stack([s["difference_mean"] for s in summaries]),
+        difference_centered_mean=np.stack([
+            s["difference_mean"] - global_difference_mean for s in summaries
+        ]),
+        global_difference_mean=global_difference_mean,
         difference_std=np.stack([s["difference_std"] for s in summaries]),
         time_ps=np.asarray(time_ps),
     )
     plot_prediction_distribution(prediction_values, selections, destination / "correction_distribution.png")
     plot_example_waveforms(waves, time_ps, selections, destination / "waveforms.png")
     plot_group_statistics(
-        summaries, time_ps, groups, destination / "groups_full.png"
+        summaries, time_ps, groups, destination / "groups_full.png",
+        global_difference_mean=global_difference_mean,
     )
     plot_group_statistics(
         summaries, time_ps, groups, destination / "groups_zoom.png",
         zoom_max_ps=zoom_max_ps,
+        global_difference_mean=global_difference_mean,
     )
     atomic_json(destination / "summary.json", {
         **identity, "run": str(directory), "n_events": int(len(prediction_ids)),
@@ -438,6 +458,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "examples": selections, "groups": group_rows,
         "dispersion": "sample standard deviation (ddof=1) at each time sample",
         "channel_difference": "detector1 - detector2, with event-level covariance retained",
+        "difference_centering": "Group mean D1-D2 minus whole-population mean D1-D2; within-group SD unchanged",
+        "population_n_events": population["n_events"],
         "group_definition": "empirical prediction midrank percentile bands; tied predictions resolved by event ID",
     })
     if logger:
