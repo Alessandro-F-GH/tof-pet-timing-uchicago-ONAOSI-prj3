@@ -108,6 +108,8 @@ predicted corrections. The zoom uses the saved time grid up through
 
 The script also saves `temporal_association.png` and `temporal_association_zoom.png`: sample-wise Pearson correlation between the real event-level detector difference (D1−D2) and the original model prediction, using the **entire** selected population, not only the quantile groups. `groups.npz` stores `temporal_difference_correlation`, the corresponding difference mean/std, and prediction mean/std. Constant-difference time samples are marked NaN; association is descriptive and should not be interpreted as model attribution.
 
+Derivative-based association is also exported as `temporal_association_derivative.png` and `temporal_association_derivative_zoom.png`: Pearson r of `np.gradient(D1-D2, time_ps)` with original predictions. Derivatives use the actual saved masked time grid and no smoothing. `groups.npz` contains the derivative correlation, mean and sample SD; constant derivative samples are NaN. Differentiation highlights local slope variations but can amplify noise.
+
 Nothing in the original run is modified.
 
 Global continuous-output explanations can be generated from saved models:
