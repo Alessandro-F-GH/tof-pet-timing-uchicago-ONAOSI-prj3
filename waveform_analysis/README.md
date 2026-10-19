@@ -99,7 +99,7 @@ python -m waveform_analysis.scripts.correction_examples --results PATH_TO_BATCH 
 
 New outputs are `groups_full.png` and `groups_zoom.png`, each with paired
 waveforms on the left and detector-1-minus-detector-2 on the right for **every**
-quantile band. `groups.csv` reports group sizes and correction distributions;
+quantile band. The right-hand curve is centered by subtracting the **mean D1−D2 waveform across the entire selected population** (not just the plotted quantile bands), leaving the within-group ±1 SD unchanged. `groups.npz` retains the original difference means as `difference_mean`, the centered curves as `difference_centered_mean`, and the reference as `global_difference_mean`. `groups.csv` reports group sizes and correction distributions;
 `groups.npz` contains numerical means/SDs, time grid, and member event IDs.
 Existing individual example outputs remain available. Increasing
 `--half-width` gives smoother group averages but mixes a wider range of
