@@ -56,6 +56,24 @@ reads raw acquisitions. Original saved masks, scalers/transforms and prediction
 limits are retained. RDST coefficient XAI uses persisted shapelets and model
 coefficients; temporal occlusion uses the frozen per-detector control mean.
 
+## Global waveform FFT (read-only)
+
+Compute the full-window, population-average **event-wise** power spectral density
+for detector 1, detector 2, and their event-wise difference. Uses the verified
+prepared waveform cache and saved sample mask; no model predictions, model
+inference, new feature transformations, synthetic signals or tail windows.
+Event-wise mean subtraction and a Hann window precede each FFT. Requires a
+uniformly sampled time grid after the model's sample mask.
+
+```powershell
+python -m waveform_analysis.scripts.global_fft --results PATH_TO_BATCH --models direct_rdst --role blind
+```
+
+Outputs under `<run>/explanations/global_fft/<identity>/`:
+`spectra.png` (three overlaid PSDs), `spectra.npz` (frequency bins in Hz,
+three spectra and time grid), and `summary.json` (sampling and provenance).
+The PSDs are averaged over all events, not FFTs of mean waveforms.
+
 ## Correction-quantile waveform examples (read-only)
 
 Select **real paired waveforms** nearest to the 10th, 30th, 50th, 70th and
