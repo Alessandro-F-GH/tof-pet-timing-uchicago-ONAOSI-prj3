@@ -52,17 +52,21 @@
     "multirocket_alpha": {
       "type": "categorical",
       "choices": [
-        1000.0,
-        300000.0,
-        100000000.0
+        1e5,
+        3e5,
+        1e6,
+        3e6,
+        1e7
       ]
     },
     "rdst_alpha": {
       "type": "categorical",
       "choices": [
-        100.0,
-        10000.0,
-        1000000.0
+        1e4,
+        3e4,
+        1e5,
+        3e5,
+        1e6
       ]
     }
   },

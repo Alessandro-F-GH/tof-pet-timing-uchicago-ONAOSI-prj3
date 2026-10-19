@@ -47,7 +47,7 @@
   },
   "results": {
     "root": "results",
-    "folder": "UC/multirocket_rdst_48V_R1_R2"
+    "folder": "UC/multirocket_rdst"
   },
   "save_model": true,
   "protocol": {
@@ -99,13 +99,10 @@
       "shared_multirocket_rdst"
     ],
     "modes": [
-      "timing_to_timing"
+      "energy_to_energy"
     ],
     "windows": {
-      "onishi": {
-        "start": -1.5,
-        "end": 2.0
-      }
+      "wide": {"start": -2.0, "end": 50.0}
     }
   }
 }
