@@ -77,9 +77,9 @@ def plot_power(frequency_hz, power, output):
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(11, 5))
     for name, values in zip(("Detector 1", "Detector 2", "Detector 1 - Detector 2"), power):
-        ax.semilogy(frequency_hz[1:] * 1e-9,
-                    np.maximum(values[1:], np.finfo(float).tiny), label=name)
-    ax.set(xlabel="Frequency [GHz]", ylabel="Mean one-sided PSD [normalized amplitude²/Hz]",
+        ax.loglog(frequency_hz[1:] * 1e-9,
+                  np.maximum(values[1:], np.finfo(float).tiny), label=name)
+    ax.set(xlabel="Frequency [GHz] (log scale)", ylabel="Mean one-sided PSD [normalized amplitude²/Hz]",
            title="Full-window global waveform spectra (event-averaged power)")
     ax.grid(alpha=.25)
     ax.legend()
