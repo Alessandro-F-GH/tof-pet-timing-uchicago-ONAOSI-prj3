@@ -168,3 +168,36 @@ def test_population_centering_changes_mean_not_dispersion(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match="reference"):
         plot_group_statistics([group], np.arange(3), groups, tmp_path / "bad.png",
                               global_difference_mean=np.arange(2))
+
+
+def test_temporal_association_perfect_and_constant_samples(monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.scripts import correction_examples as module
+    y = np.array([-2., -1., 1., 2.])
+    waves = np.zeros((4, 2, 3), dtype=np.float32)
+    waves[:, 0, 0] = y
+    waves[:, 0, 1] = -y
+    waves[:, 0, 2] = 5.
+    ds = SimpleNamespace(waves=waves)
+    monkeypatch.setattr(module, "waveform_view", lambda d, mode, idx:
+                        SimpleNamespace(materialize=lambda: d.waves[np.asarray(idx)]))
+    result = module.compute_temporal_association(
+        ds, "timing_to_timing", np.arange(4), y, np.ones(3, bool),
+        chunk_size=2)
+    np.testing.assert_allclose(result["difference_correlation"][:2], [1., -1.])
+    assert np.isnan(result["difference_correlation"][2])
+    assert result["n_events"] == 4
+    with pytest.raises(ValueError, match="constant"):
+        module.compute_temporal_association(
+            ds, "timing_to_timing", np.arange(4), np.ones(4), np.ones(3, bool))
+
+
+def test_temporal_association_figure(tmp_path):
+    from waveform_analysis.scripts.correction_examples import plot_temporal_association
+    pytest.importorskip("matplotlib")
+    time = np.linspace(-100, 10000, 50)
+    data = {"difference_correlation": np.sin(np.linspace(0, 2*np.pi, 50))}
+    plot_temporal_association(time, data, tmp_path / "full.png")
+    plot_temporal_association(time, data, tmp_path / "zoom.png", zoom_max_ps=5000)
+    assert (tmp_path / "full.png").stat().st_size > 0
+    assert (tmp_path / "zoom.png").stat().st_size > 0
