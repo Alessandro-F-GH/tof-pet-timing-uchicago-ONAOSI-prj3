@@ -116,6 +116,161 @@ def read_predictions(path, *, role, protocol_identity, final_fit_fingerprint=Non
                 np.asarray(data["prediction_ps"], dtype=np.float64))
 
 
+
+def select_quantile_groups(predictions, event_ids, quantiles=DEFAULT_QUANTILES,
+                           half_width=0.05):
+    """Select all real events in equal-rank quantile bands.
+
+    Deterministic ordering by (prediction, event ID) handles tied predictions
+    without placing large tied populations unpredictably into one group.
+    Percentile ranks (rank + .5)/N are independent of row order.
+    """
+    q = validate_quantiles(quantiles)
+    predictions = np.asarray(predictions, dtype=np.float64)
+    event_ids = np.asarray(event_ids, dtype=np.int64)
+    if (predictions.ndim != 1 or predictions.shape != event_ids.shape
+            or not len(predictions) or not np.all(np.isfinite(predictions))):
+        raise ValueError("Predictions and event IDs must be aligned finite 1-D arrays")
+    if len(np.unique(event_ids)) != len(event_ids):
+        raise ValueError("Event IDs must be unique")
+    if not np.isfinite(half_width) or not 0 < half_width < .5:
+        raise ValueError("half_width must be finite and between 0 and 0.5")
+    if np.any(q - half_width < 0) or np.any(q + half_width > 1):
+        raise ValueError("Quantile bands extend beyond [0, 1]; reduce --half-width")
+
+    ordered = np.lexsort((event_ids, predictions))
+    ranks = (np.arange(len(predictions)) + .5) / len(predictions)
+    groups = []
+    for target in q:
+        lower, upper = float(target - half_width), float(target + half_width)
+        # Left inclusive, right exclusive; use the midrank of each observation.
+        start = int(np.searchsorted(ranks, lower, side="left"))
+        stop = int(np.searchsorted(ranks, upper, side="left"))
+        selected = ordered[start:stop]
+        if len(selected) < 2:
+            raise ValueError(
+                f"Q{target * 100:g}: only {len(selected)} events in percentile band "
+                f"[{100*lower:.1f}, {100*upper:.1f}); "
+                "increase --half-width or use a larger population"
+            )
+        values = predictions[selected]
+        groups.append({
+            "quantile": float(target),
+            "quantile_percent": float(target * 100),
+            "lower_percentile": float(lower * 100),
+            "upper_percentile": float(upper * 100),
+            "n_events": int(len(selected)),
+            "prediction_mean_ps": float(np.mean(values)),
+            "prediction_std_ps": float(np.std(values, ddof=1)),
+            "prediction_min_ps": float(np.min(values)),
+            "prediction_max_ps": float(np.max(values)),
+            "prediction_indices": selected,
+        })
+    return groups
+
+
+def summarize_group_waveforms(dataset, mode, prepared_rows, sample_mask, *,
+                              chunk_size=1024):
+    """Stable streaming sample mean and std, including paired difference.
+
+    Std of detector1 - detector2 is computed from event-wise differences,
+    retaining their covariance. The full event population is never materialized.
+    """
+    indices = np.asarray(prepared_rows, dtype=np.int64)
+    if indices.ndim != 1 or indices.size < 2 or chunk_size < 1:
+        raise ValueError("At least two events and positive chunk_size are required")
+    count = 0
+    means = {}
+    m2s = {}
+    for start in range(0, len(indices), int(chunk_size)):
+        view = waveform_view(dataset, mode, indices[start:start + chunk_size])
+        waves = np.asarray(apply_sample_mask(view.materialize(), sample_mask),
+                           dtype=np.float64)
+        if waves.ndim != 3 or waves.shape[1] != 2 or not np.all(np.isfinite(waves)):
+            raise ValueError("Prepared detector waveforms must be finite pairs")
+        difference = waves[:, 0, :] - waves[:, 1, :]
+        batches = {"pair": waves, "difference": difference}
+        size = len(waves)
+        for name, values in batches.items():
+            batch_mean = np.mean(values, axis=0)
+            batch_m2 = np.sum((values - batch_mean) ** 2, axis=0)
+            if count == 0:
+                means[name] = batch_mean
+                m2s[name] = batch_m2
+            else:
+                delta = batch_mean - means[name]
+                combined = count + size
+                means[name] += delta * (size / combined)
+                m2s[name] += batch_m2 + delta**2 * (count * size / combined)
+        count += size
+    return {
+        "pair_mean": means["pair"],
+        "pair_std": np.sqrt(np.maximum(m2s["pair"] / (count - 1), 0)),
+        "difference_mean": means["difference"],
+        "difference_std": np.sqrt(np.maximum(m2s["difference"] / (count - 1), 0)),
+        "n_events": count,
+    }
+
+
+def plot_group_statistics(summaries, time_ps, groups, output, *,
+                          zoom_max_ps=None):
+    """Each quantile row contains BOTH channel pair and D1-D2, mean ± 1 SD."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    time_ps = np.asarray(time_ps, dtype=np.float64)
+    keep = np.ones(len(time_ps), dtype=bool) if zoom_max_ps is None else (
+        time_ps <= float(zoom_max_ps)
+    )
+    if time_ps.ndim != 1 or np.count_nonzero(keep) < 2:
+        raise ValueError("Zoom range contains fewer than two time samples")
+    t = time_ps[keep]
+    fig, axes = plt.subplots(
+        len(groups), 2, figsize=(15, max(4, 2.65 * len(groups))),
+        sharex="col", sharey="col", squeeze=False
+    )
+    for i, (row, summary) in enumerate(zip(groups, summaries)):
+        left, right = axes[i]
+        for detector in range(2):
+            mean = summary["pair_mean"][detector, keep]
+            std = summary["pair_std"][detector, keep]
+            line, = left.plot(t, mean, linewidth=1.5,
+                              label=f"Detector {detector + 1}")
+            left.fill_between(t, mean - std, mean + std,
+                              color=line.get_color(), alpha=.2, linewidth=0)
+        diff_mean = summary["difference_mean"][keep]
+        diff_std = summary["difference_std"][keep]
+        line, = right.plot(t, diff_mean, linewidth=1.5, label="D1 - D2")
+        right.fill_between(t, diff_mean - diff_std, diff_mean + diff_std,
+                           color=line.get_color(), alpha=.23, linewidth=0)
+        right.axhline(0, linewidth=.8, color="0.5", linestyle=":")
+        label = (
+            f"Q{row['quantile_percent']:g} "
+            f"({row['lower_percentile']:g}–{row['upper_percentile']:g}%)"
+            f" | N={summary['n_events']:,}"
+            f" | correction {row['prediction_mean_ps']:+.2f} ± "
+            f"{row['prediction_std_ps']:.2f} ps"
+        )
+        left.set_title(label, fontsize=10)
+        right.set_title(label, fontsize=10)
+        left.set_ylabel("Normalized amplitude")
+        right.set_ylabel("Amplitude D1 - D2")
+        left.grid(alpha=.2)
+        right.grid(alpha=.2)
+    axes[0, 0].legend(loc="best")
+    axes[0, 1].legend(loc="best")
+    axes[-1, 0].set_xlabel("Time relative to waveform arrival [ps]")
+    axes[-1, 1].set_xlabel("Time relative to waveform arrival [ps]")
+    fig.suptitle(
+        "Correction-conditioned mean ± 1 SD | channel pair and channel difference"
+        + (f" | t ≤ {zoom_max_ps:g} ps" if zoom_max_ps is not None else ""),
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, .975))
+    fig.savefig(output, dpi=180)
+    plt.close(fig)
+
 def plot_prediction_distribution(predictions, rows, output):
     import matplotlib
     matplotlib.use("Agg")
@@ -167,7 +322,8 @@ def plot_example_waveforms(waves, time_ps, rows, output):
 
 
 def analyze_run(run, *, role="blind", cache_override=None,
-                quantiles=DEFAULT_QUANTILES, logger=None):
+                quantiles=DEFAULT_QUANTILES, half_width=0.05,
+                zoom_max_ps=10000., logger=None):
     directory, manifest = Path(run["directory"]), run["manifest"]
     config = resolve_run_config(directory)
     if role not in ("blind", "development"):
@@ -187,7 +343,11 @@ def analyze_run(run, *, role="blind", cache_override=None,
     prepared_rows = align_prediction_events(
         prepared.event_index, prediction_ids, prediction_values
     )
+    if not np.isfinite(zoom_max_ps):
+        raise ValueError("zoom_max_ps must be finite")
     selections = select_examples(prediction_values, prediction_ids, q)
+    groups = select_quantile_groups(prediction_values, prediction_ids, q,
+                                    half_width=half_width)
     positions = [int(prepared_rows[row["prediction_row"]]) for row in selections]
     view = waveform_view(prepared, config["mode"], positions)
     mask = model_sample_mask(prepared, config["mode"])
@@ -195,11 +355,30 @@ def analyze_run(run, *, role="blind", cache_override=None,
     time_ps = apply_sample_mask_to_time(view.time_ps, mask)
     for row, prepared_index in zip(selections, positions):
         row["prepared_row"] = int(prepared_index)
+    if np.count_nonzero(time_ps <= zoom_max_ps) < 2:
+        raise ValueError(
+            f"--zoom-max-ps={zoom_max_ps:g} leaves fewer than two time samples"
+        )
+
+    summaries = []
+    for group in groups:
+        members = prepared_rows[group["prediction_indices"]]
+        summaries.append(
+            summarize_group_waveforms(prepared, config["mode"], members, mask)
+        )
+        if logger:
+            logger.info(
+                "Correction examples | %s | Q%g | %d events | correction %.2f ± %.2f ps",
+                manifest["model"], group["quantile_percent"], group["n_events"],
+                group["prediction_mean_ps"], group["prediction_std_ps"],
+            )
 
     identity = {
         "method": "saved_prediction_quantile_examples_v1",
         "model": manifest["model"], "role": role,
-        "quantiles": q.tolist(),
+        "quantiles": q.tolist(), "half_width": float(half_width),
+        "zoom_max_ps": float(zoom_max_ps),
+        "analysis_version": 2,
         "final_fit_fingerprint": fingerprint,
         "protocol_identity": prepared.manifest["analysis_protocol_identity"],
         "prediction_source": predictions_path.name,
@@ -215,15 +394,51 @@ def analyze_run(run, *, role="blind", cache_override=None,
                         prediction_ps=np.asarray([row["prediction_ps"] for row in selections]),
                         quantile_correction_ps=np.asarray([row["quantile_correction_ps"] for row in selections]),
                         waveforms=np.asarray(waves, dtype=np.float32), time_ps=np.asarray(time_ps))
+    group_rows = [
+        {key: value for key, value in group.items() if key != "prediction_indices"}
+        for group in groups
+    ]
+    with (destination / "groups.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(group_rows[0]))
+        writer.writeheader()
+        writer.writerows(group_rows)
+    offsets = np.concatenate([[0], np.cumsum([g["n_events"] for g in groups])])
+    np.savez_compressed(
+        destination / "groups.npz",
+        quantiles=q, lower_percentile=[g["lower_percentile"] for g in groups],
+        upper_percentile=[g["upper_percentile"] for g in groups],
+        n_events=[g["n_events"] for g in groups],
+        prediction_mean_ps=[g["prediction_mean_ps"] for g in groups],
+        prediction_std_ps=[g["prediction_std_ps"] for g in groups],
+        member_offsets=offsets,
+        member_event_ids=np.concatenate(
+            [prediction_ids[g["prediction_indices"]] for g in groups]
+        ),
+        pair_mean=np.stack([s["pair_mean"] for s in summaries]),
+        pair_std=np.stack([s["pair_std"] for s in summaries]),
+        difference_mean=np.stack([s["difference_mean"] for s in summaries]),
+        difference_std=np.stack([s["difference_std"] for s in summaries]),
+        time_ps=np.asarray(time_ps),
+    )
     plot_prediction_distribution(prediction_values, selections, destination / "correction_distribution.png")
     plot_example_waveforms(waves, time_ps, selections, destination / "waveforms.png")
+    plot_group_statistics(
+        summaries, time_ps, groups, destination / "groups_full.png"
+    )
+    plot_group_statistics(
+        summaries, time_ps, groups, destination / "groups_zoom.png",
+        zoom_max_ps=zoom_max_ps,
+    )
     atomic_json(destination / "summary.json", {
         **identity, "run": str(directory), "n_events": int(len(prediction_ids)),
         "cache_root": str(cache_root), "preprocessed_waveforms": True,
         "model_inference": False, "feature_transform_applied": False,
         "selection": "closest observed prediction to each quantile; tie -> smallest event ID",
         "prototypes_represent": "model output quantiles, not guaranteed waveform morphology",
-        "examples": selections,
+        "examples": selections, "groups": group_rows,
+        "dispersion": "sample standard deviation (ddof=1) at each time sample",
+        "channel_difference": "detector1 - detector2, with event-level covariance retained",
+        "group_definition": "empirical prediction midrank percentile bands; tied predictions resolved by event ID",
     })
     if logger:
         logger.info("Correction examples | %s | %s | %s", manifest["model"], role, destination)
@@ -231,8 +446,11 @@ def analyze_run(run, *, role="blind", cache_override=None,
 
 
 def run(results, *, models=None, role="blind", cache_root=None,
-        quantiles=DEFAULT_QUANTILES, logger=None):
+        quantiles=DEFAULT_QUANTILES, half_width=0.05,
+        zoom_max_ps=10000., logger=None):
     validate_quantiles(quantiles)
+    if not np.isfinite(zoom_max_ps):
+        raise ValueError("zoom_max_ps must be finite")
     runs = discover_runs(Path(results).expanduser().resolve())
     if not runs:
         raise ValueError(f"No completed model runs found in {results}")
@@ -246,7 +464,8 @@ def run(results, *, models=None, role="blind", cache_root=None,
         try:
             outputs.append(analyze_run(
                 item, role=role, cache_override=cache_root,
-                quantiles=quantiles, logger=logger
+                quantiles=quantiles, half_width=half_width,
+                zoom_max_ps=zoom_max_ps, logger=logger
             ))
         except Exception as exc:
             failures.append(f"{item['directory']}: {exc}")
@@ -268,11 +487,16 @@ def main(argv=None):
                         help="Original prepared cache root if it moved")
     parser.add_argument("--quantiles", nargs="+", type=float, default=DEFAULT_QUANTILES,
                         help="Strictly increasing fractions within (0,1); default .1 .3 .5 .7 .9")
+    parser.add_argument("--half-width", type=float, default=0.05,
+                        help="Half-width of correction quantile bands, default .05")
+    parser.add_argument("--zoom-max-ps", type=float, default=10000.,
+                        help="Show samples up to this time in grouped zoom plot (default 10000 ps)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s | %(levelname)s | %(message)s")
     for output in run(args.results, models=args.models, role=args.role,
                       cache_root=args.cache_root, quantiles=args.quantiles,
+                      half_width=args.half_width, zoom_max_ps=args.zoom_max_ps,
                       logger=logging.getLogger(__name__)):
         print(output)
 
