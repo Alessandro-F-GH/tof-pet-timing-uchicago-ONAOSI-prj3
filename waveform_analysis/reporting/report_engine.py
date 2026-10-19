@@ -17,6 +17,7 @@ from waveform_analysis.reporting.plotting import (
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.reporting.stats import (
     align_by_event_id,
+    metric_values,
     paired_model_bootstrap,
     pearson_r,
 )
@@ -171,6 +172,48 @@ def _paired(group, payloads, metric, root_config, seed):
             std[i, j] = std[j, i] = r["bootstrap_std_ps"]
             counts[i, j] = counts[j, i] = r["n_matched"]
     return labels, central, std, counts
+
+
+def _ensemble_ctr(group, payloads, seed):
+    """Equal-weight saved predictions only; no model loading or calibration."""
+    labels = [run["manifest"]["model"] for run in group]
+    matrix = np.full((len(group), len(group)), np.nan)
+    counts = np.zeros(matrix.shape, dtype=int)
+    unavailable = []
+    fit = resolve_run_config(group[0]["directory"])["fit"]
+    for i, run in enumerate(group):
+        # Preserve the published single-model value and its full population.
+        matrix[i, i] = float(run["blind"]["ctr_ps"])
+        counts[i, i] = int(run["blind"]["n_events"])
+        for j in range(i + 1, len(group)):
+            first, second = payloads[i], payloads[j]
+            try:
+                ids, a, b = align_by_event_id(
+                    first["event_id"], first["prediction_ps"],
+                    second["event_id"], second["prediction_ps"],
+                )
+                led_ids, led_a, led_b = align_by_event_id(
+                    first["event_id"], first["led_residual_ps"],
+                    second["event_id"], second["led_residual_ps"],
+                )
+                matched, prediction_idx, led_idx = np.intersect1d(
+                    ids, led_ids, return_indices=True,
+                )
+                counts[i, j] = counts[j, i] = len(matched)
+                if len(matched) < 5:
+                    raise ValueError("fewer than five finite matched blind events")
+                if not np.allclose(led_a[led_idx], led_b[led_idx], rtol=1e-10, atol=1e-8):
+                    raise ValueError("saved LED residuals differ on matched events")
+                # Average already-saved predictions; do not clip or recenter.
+                residual = led_a[led_idx] - (0.5 * a[prediction_idx] + 0.5 * b[prediction_idx])
+                value = metric_values(residual, fit, seed=semantic_seed(
+                    seed, run["manifest"]["mode"], run["manifest"].get("window_name"),
+                    *sorted((labels[i], labels[j])), "ensemble_ctr",
+                ))["ctr_ps"]
+                matrix[i, j] = matrix[j, i] = value
+            except (ValueError, KeyError) as exc:
+                unavailable.append({"row": labels[i], "column": labels[j], "reason": str(exc)})
+    return labels, matrix, counts, unavailable
 
 
 def _scatters(group, directory, cfg):
@@ -451,6 +494,22 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             correlation=True,
             value_format=".2f",
         )
+        ensemble_labels, ensemble, ensemble_n, unavailable = _ensemble_ctr(group, payloads, seed)
+        ensemble = _reorder_matrix(ensemble_labels, ensemble, ordered)
+        ensemble_n = _reorder_matrix(ensemble_labels, ensemble_n, ordered)
+        _matrix(table_dir / "ensemble_ctr.csv", ordered, ensemble)
+        _matrix(table_dir / "ensemble_ctr_n.csv", ordered, ensemble_n)
+        atomic_json(table_dir / "ensemble_ctr.json", {
+            "prediction": "arithmetic_mean_of_two_saved_predictions",
+            "diagonal": "saved_single_model_ctr",
+            "population": "pairwise_finite_matched_blind_event_ids",
+            "unavailable_pairs": unavailable,
+        })
+        heatmap(
+            ensemble, ordered, output_path(plot_dir, "ensemble_ctr", cfg), cfg,
+            title="Blind ensemble CTR [ps] — equal-weight mean\nDiagonal: single model; pairs: matched events",
+            absolute=True, colorbar_label="CTR [ps] (lower is better)",
+        )
         for metric in ("ctr", "rmse"):
             central_path = table_dir / f"paired_{metric}.csv"
             std_path = table_dir / f"paired_{metric}_std.csv"
@@ -515,6 +574,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "dataset_table_version": DATASET_TABLE_VERSION,
             "development_distribution_version": DEVELOPMENT_DISTRIBUTION_VERSION,
             "blind_boxplot_version": 1,
+            "ensemble_ctr_version": 1,
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables
             ],

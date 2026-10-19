@@ -46,6 +46,7 @@ def report_inputs(tmp_path, monkeypatch):
     (tmp_path / "config.json").write_text(json.dumps({"settings": {"seed": 1001}}))
     monkeypatch.setattr(engine, "load_plot_config", lambda _: plot_config())
     monkeypatch.setattr(engine, "collect_runs", lambda _: runs)
+    monkeypatch.setattr(engine, "resolve_run_config", lambda _: {"fit": {"histogram_bin_width_ps": 5.}})
     monkeypatch.setattr(engine, "render_run_plots", lambda *args: None)
     monkeypatch.setattr(engine, "export_dataset_tables", lambda *args: [])
     monkeypatch.setattr(engine, "heatmap", lambda *args, **kwargs: None)

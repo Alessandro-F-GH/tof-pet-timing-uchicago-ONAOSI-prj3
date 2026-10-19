@@ -106,6 +106,7 @@
     ],
     "correlation_cmap": "RdBu_r",
     "difference_cmap": "RdBu_r",
+    "ensemble_cmap": "viridis_r",
     "correlation_limits": [
       -1.0,
       1.0

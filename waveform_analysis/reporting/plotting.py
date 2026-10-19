@@ -534,18 +534,20 @@ def render_run_plots(run, cfg):
     }
 
 
-def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format=".1f"):
+def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format=".1f",
+            absolute=False, colorbar_label=None):
     matrix = np.asarray(matrix, float)
     style = cfg["heatmap"]
     kwargs = {
-        "cmap": style["correlation_cmap"] if correlation else style["difference_cmap"]
+        "cmap": (style.get("ensemble_cmap", "viridis_r") if absolute else
+                 style["correlation_cmap"] if correlation else style["difference_cmap"])
     }
     if correlation:
         kwargs.update(
             vmin=float(style["correlation_limits"][0]),
             vmax=float(style["correlation_limits"][1]),
         )
-    elif np.any(np.isfinite(matrix)):
+    elif not absolute and np.any(np.isfinite(matrix)):
         limit = float(np.nanmax(np.abs(matrix)))
         if limit > 0:
             kwargs.update(vmin=-limit, vmax=limit)
@@ -564,6 +566,12 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
         for i in range(matrix.shape[0]):
             for j in range(matrix.shape[1]):
                 if np.isfinite(matrix[i, j]):
+                    normalized = float(im.norm(matrix[i, j]))
+                    if absolute:
+                        rgb = np.asarray(im.cmap(normalized)[:3])
+                        light_text = float(rgb @ np.array([0.299, 0.587, 0.114])) < 0.5
+                    else:
+                        light_text = abs(normalized - 0.5) * 2 > style.get("contrast_threshold", 0.7)
                     ax.text(
                         j,
                         i,
@@ -572,11 +580,12 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
                         va="center",
                         fontsize=float(style["cell_text_size"]),
                         color=style.get("contrast_text_color", "white")
-                        if abs(float(im.norm(matrix[i, j])) - 0.5) * 2
-                        > style.get("contrast_threshold", 0.7)
+                        if light_text
                         else style.get("text_color", "#222222"),
                     )
-        fig.colorbar(im, ax=ax)
+        colorbar = fig.colorbar(im, ax=ax)
+        if colorbar_label is not None:
+            colorbar.set_label(colorbar_label)
         return _save(fig, path)
 
 

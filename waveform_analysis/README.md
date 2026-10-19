@@ -30,6 +30,18 @@ settings cannot silently overwrite retained models omitted from a new sweep.
 migrate files, refit a model or backfill predictions by inference. They support
 `--exclude-models MODEL ...`. Missing diagnostics remain unavailable.
 
+Each mode/window report also exports an `ensemble_ctr` heatmap and CSV matrix.
+Off-diagonal cells give the CTR of the equal-weight arithmetic mean of two saved
+blind predictions, aligned by event ID and evaluated with the original CTR
+settings and saved LED residuals. No weights, calibration or models are fitted;
+the averaged prediction is neither recentered nor clipped again. Diagonal cells
+retain the saved single-model CTR on its original population. Colours use an
+absolute CTR scale (`heatmap.ensemble_cmap`, default `viridis_r`), with values in
+ps. `ensemble_ctr_n.csv` records each cell's event count; off-diagonal populations
+can differ. Unavailable pairs are blank and explained in `ensemble_ctr.json`.
+These matrices are regenerated from saved arrays even with `plots`, so older
+runs can gain this report without training or access to acquisition files.
+
 Explicit saved-model operations:
 
 ```bash
