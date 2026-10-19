@@ -227,3 +227,34 @@ def test_derivative_temporal_association_exact_and_constant(monkeypatch):
         module.compute_temporal_association_derivative(
             ds, "timing_to_timing", np.arange(4), np.ones(4),
             np.ones(4, bool), t)
+
+
+def test_grouped_samples_average_and_derivative_association(monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.scripts import correction_examples as module
+    np.testing.assert_allclose(module.group_temporal_samples(
+        np.arange(11, dtype=float), 3), [1., 4., 7.])
+    np.testing.assert_array_equal(module.group_temporal_samples(np.arange(5), 1),
+                                  np.arange(5))
+    with pytest.raises(ValueError, match="positive"):
+        module.group_temporal_samples(np.arange(10), 0)
+    with pytest.raises(ValueError, match="fewer"):
+        module.group_temporal_samples(np.arange(4), 3)
+    y = np.array([-2., -1., 1., 2.])
+    t = np.arange(12, dtype=float) * 12.5
+    waves = np.zeros((4, 2, len(t)), dtype=np.float32)
+    waves[:, 0, :] = y[:, None] * t[None, :]
+    ds = SimpleNamespace(waves=waves)
+    monkeypatch.setattr(module, "waveform_view",
+                        lambda d, mode, idx: SimpleNamespace(
+                            materialize=lambda: d.waves[np.asarray(idx)]))
+    raw = module.compute_temporal_association(
+        ds, "timing_to_timing", np.arange(4), y, np.ones(12, bool),
+        group_samples=3, chunk_size=2)
+    derivative = module.compute_temporal_association_derivative(
+        ds, "timing_to_timing", np.arange(4), y, np.ones(12, bool), t,
+        group_samples=3, chunk_size=2)
+    assert len(raw["difference_correlation"]) == 4
+    np.testing.assert_allclose(raw["difference_correlation"], np.ones(4))
+    np.testing.assert_allclose(derivative["difference_derivative_correlation"],
+                               np.ones(4), atol=1e-12)
