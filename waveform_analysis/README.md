@@ -56,6 +56,49 @@ reads raw acquisitions. Original saved masks, scalers/transforms and prediction
 limits are retained. RDST coefficient XAI uses persisted shapelets and model
 coefficients; temporal occlusion uses the frozen per-detector control mean.
 
+## Sparse Lasso distillation (standalone experiment)
+
+Fit Lasso regressors on original frozen transformed **development** features,
+with original saved Ridge predictions as the sole fitting target (no synthetic
+samples or group penalties). Original model, transforms and benchmark files are
+never overwritten. Blind is used strictly for evaluation, never to fit scalers,
+coefficients or select an alpha.
+
+From the repository root:
+
+```bash
+python -m waveform_analysis.scripts.lasso_surrogate --results waveform_analysis/results/UC/BATCH --models direct_rdst --max-development-events 2000 --max-blind-events 2000
+```
+
+By default seven Lasso penalties are fractions of the development-only
+`alpha_max` (1, .3, .1, .03, .01, .003, .001), where `alpha_max` produces
+an intercept-only fit. Use `--alpha-ratios` to change those fractions or
+`--alphas` to supply absolute sklearn Lasso penalties. `--cache-root` locates
+prepared caches and frozen `model_inputs` matrices; if a matching feature
+cache is missing the **saved** transformation is applied without refitting.
+Development-only feature standardization makes L1 penalties comparable across
+features; saved coefficients are converted back into original feature units.
+
+Each saved-model run gets an isolated
+`explanations/lasso_surrogate/<identity>/` containing:
+
+- `metrics.csv`: alpha, nonzero/zero coefficient counts, converged status,
+  development/blind prediction fidelity (MAE, RMSE, R²), and timing CTR/RMSE.
+- `fidelity_vs_nonzero.png`: development vs blind teacher-prediction errors
+  and R² as functions of nonzero coefficients.
+- `timing_vs_nonzero.png`: development vs blind timing performance with
+  original-model reference lines; target timing data are used only in reporting.
+- `development_vs_blind.png`: per-alpha fidelity and CTR generalization checks.
+- `coefficient_path.npz`: per-alpha original-unit coefficients, intercepts,
+  development-fit scales and aligned event IDs.
+- `summary.json`: original-model/protocol identity, settings, cache sources,
+  original timing metrics and alpha scale.
+
+Development is an **in-sample** fit score; blind measures generalization.
+The tool reports every alpha independently and does not select a best alpha
+based on blind results. Large dense feature matrices (especially MultiRocket)
+may require RAM and substantial time; use event caps for an initial smoke test.
+
 Global continuous-output explanations can be generated from saved models:
 
 ```bash
