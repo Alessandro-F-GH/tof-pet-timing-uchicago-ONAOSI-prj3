@@ -213,8 +213,28 @@ def summarize_group_waveforms(dataset, mode, prepared_rows, sample_mask, *,
 
 
 
+
+def group_temporal_samples(values, group_samples):
+    """Nonoverlapping consecutive-bin average on the last axis.
+
+    Drop an incomplete final bin to keep every grouped sample equally weighted.
+    group_samples=1 preserves the original values.
+    """
+    if not isinstance(group_samples, (int, np.integer)) or group_samples < 1:
+        raise ValueError("group_samples must be a positive integer")
+    array = np.asarray(values)
+    length = array.shape[-1]
+    count = length // group_samples
+    if count < 2:
+        raise ValueError("group_samples leaves fewer than two temporal samples")
+    if group_samples == 1:
+        return array
+    trimmed = array[..., :count * group_samples]
+    return trimmed.reshape(*trimmed.shape[:-1], count, group_samples).mean(axis=-1)
+
+
 def compute_temporal_association(dataset, mode, prepared_rows, predictions_ps,
-                                 sample_mask, *, chunk_size=1024):
+                                 sample_mask, *, chunk_size=1024, group_samples=1):
     """Population Pearson r of event-wise D1-D2 and saved output at each time.
 
     Two-pass centering avoids cancellation in covariance/variance on small
@@ -232,15 +252,17 @@ def compute_temporal_association(dataset, mode, prepared_rows, predictions_ps,
     y_ss = float(np.dot(y_centered, y_centered))
     if y_ss <= 0:
         raise ValueError("Cannot correlate a constant model output")
-    reference = summarize_group_waveforms(
+    reference = group_temporal_samples(summarize_group_waveforms(
         dataset, mode, indices, sample_mask, chunk_size=chunk_size
-    )["difference_mean"]
+    )["difference_mean"], group_samples)
     x_ss = np.zeros_like(reference)
     xy = np.zeros_like(reference)
     for start in range(0, len(indices), chunk_size):
         batch = waveform_view(dataset, mode, indices[start:start + chunk_size])
         waves = np.asarray(apply_sample_mask(batch.materialize(), sample_mask), np.float64)
-        difference = waves[:, 0] - waves[:, 1] - reference
+        difference = group_temporal_samples(
+            waves[:, 0] - waves[:, 1], group_samples
+        ) - reference
         x_ss += np.sum(difference * difference, axis=0)
         xy += difference.T @ y_centered[start:start + len(waves)]
     correlation = np.full(reference.shape, np.nan, dtype=np.float64)
@@ -257,7 +279,7 @@ def compute_temporal_association(dataset, mode, prepared_rows, predictions_ps,
 
 def compute_temporal_association_derivative(dataset, mode, prepared_rows,
                                             predictions_ps, sample_mask, time_ps,
-                                            *, chunk_size=1024):
+                                            *, chunk_size=1024, group_samples=1):
     """Pearson r between d/dt(D1-D2) and saved model predictions at each sample.
 
     Differentiate each real event on the ORIGINAL, possibly masked, time grid.
@@ -266,7 +288,8 @@ def compute_temporal_association_derivative(dataset, mode, prepared_rows,
     """
     indices = np.asarray(prepared_rows, dtype=np.int64)
     y = np.asarray(predictions_ps, dtype=np.float64)
-    t = np.asarray(time_ps, dtype=np.float64)
+    t = group_temporal_samples(np.asarray(time_ps, dtype=np.float64),
+                               group_samples)
     if indices.ndim != 1 or y.shape != indices.shape or len(y) < 2:
         raise ValueError("Expected at least two aligned events and predictions")
     if not np.all(np.isfinite(y)) or int(chunk_size) != chunk_size or chunk_size < 1:
@@ -284,10 +307,15 @@ def compute_temporal_association_derivative(dataset, mode, prepared_rows,
             view = waveform_view(dataset, mode, indices[start:start + int(chunk_size)])
             waves = np.asarray(apply_sample_mask(view.materialize(), sample_mask),
                                dtype=np.float64)
-            if (waves.ndim != 3 or waves.shape[1:] != (2, len(t))
+            if (waves.ndim != 3 or waves.shape[1] != 2
                     or not np.all(np.isfinite(waves))):
                 raise ValueError("Nonfinite or incompatible prepared waveforms")
-            derivative = np.gradient(waves[:, 0] - waves[:, 1], t, axis=1)
+            grouped = group_temporal_samples(
+                waves[:, 0] - waves[:, 1], group_samples
+            )
+            if grouped.shape[-1] != len(t):
+                raise ValueError("Nonfinite or incompatible prepared waveforms")
+            derivative = np.gradient(grouped, t, axis=1)
             yield start, derivative
 
     x_sum = np.zeros(len(t))
@@ -455,7 +483,7 @@ def plot_example_waveforms(waves, time_ps, rows, output):
 
 def analyze_run(run, *, role="blind", cache_override=None,
                 quantiles=DEFAULT_QUANTILES, half_width=0.05,
-                zoom_max_ps=10000., logger=None):
+                zoom_max_ps=10000., group_samples=1, logger=None):
     directory, manifest = Path(run["directory"]), run["manifest"]
     config = resolve_run_config(directory)
     if role not in ("blind", "development"):
@@ -477,6 +505,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
     )
     if not np.isfinite(zoom_max_ps):
         raise ValueError("zoom_max_ps must be finite")
+    if not isinstance(group_samples, int) or group_samples < 1:
+        raise ValueError("group_samples must be a positive integer")
     selections = select_examples(prediction_values, prediction_ids, q)
     groups = select_quantile_groups(prediction_values, prediction_ids, q,
                                     half_width=half_width)
@@ -499,11 +529,16 @@ def analyze_run(run, *, role="blind", cache_override=None,
     )
     global_difference_mean = population["difference_mean"]
 
+    association_time_ps = group_temporal_samples(time_ps, group_samples)
+    if np.count_nonzero(association_time_ps <= zoom_max_ps) < 2:
+        raise ValueError("--zoom-max-ps leaves fewer than two grouped time samples")
     association = compute_temporal_association(
-        prepared, config["mode"], prepared_rows, prediction_values, mask
+        prepared, config["mode"], prepared_rows, prediction_values, mask,
+        group_samples=group_samples,
     )
     derivative_association = compute_temporal_association_derivative(
-        prepared, config["mode"], prepared_rows, prediction_values, mask, time_ps
+        prepared, config["mode"], prepared_rows, prediction_values, mask, time_ps,
+        group_samples=group_samples,
     )
 
     summaries = []
@@ -524,7 +559,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "model": manifest["model"], "role": role,
         "quantiles": q.tolist(), "half_width": float(half_width),
         "zoom_max_ps": float(zoom_max_ps),
-        "analysis_version": 5,
+        "analysis_version": 6,
+        "group_samples": group_samples,
         "difference_centering": "full_population_mean",
         "final_fit_fingerprint": fingerprint,
         "protocol_identity": prepared.manifest["analysis_protocol_identity"],
@@ -569,6 +605,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
         ]),
         global_difference_mean=global_difference_mean,
         difference_std=np.stack([s["difference_std"] for s in summaries]),
+        association_time_ps=association_time_ps,
+        group_samples=group_samples,
         temporal_difference_correlation=association["difference_correlation"],
         temporal_difference_derivative_correlation=derivative_association["difference_derivative_correlation"],
         temporal_difference_derivative_mean=derivative_association["difference_derivative_mean"],
@@ -590,18 +628,18 @@ def analyze_run(run, *, role="blind", cache_override=None,
         zoom_max_ps=zoom_max_ps,
         global_difference_mean=global_difference_mean,
     )
-    plot_temporal_association(time_ps, association,
+    plot_temporal_association(association_time_ps, association,
                               destination / "temporal_association.png")
-    plot_temporal_association(time_ps, association,
+    plot_temporal_association(association_time_ps, association,
                               destination / "temporal_association_zoom.png",
                               zoom_max_ps=zoom_max_ps)
     plot_temporal_association(
-        time_ps,
+        association_time_ps,
         {"difference_correlation": derivative_association["difference_derivative_correlation"]},
         destination / "temporal_association_derivative.png",
     )
     plot_temporal_association(
-        time_ps,
+        association_time_ps,
         {"difference_correlation": derivative_association["difference_derivative_correlation"]},
         destination / "temporal_association_derivative_zoom.png",
         zoom_max_ps=zoom_max_ps,
@@ -621,6 +659,7 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "temporal_association_n_events": association["n_events"],
         "derivative_association": "Pearson r of per-event gradient(D1-D2, time_ps) and original model predictions; unsmoothed",
         "derivative_association_n_events": derivative_association["n_events"],
+        "correlation_sample_grouping": "nonoverlapping adjacent-bin means; incomplete final bin discarded; applied before both correlations and differentiation",
         "group_definition": "empirical prediction midrank percentile bands; tied predictions resolved by event ID",
     })
     if logger:
@@ -630,7 +669,7 @@ def analyze_run(run, *, role="blind", cache_override=None,
 
 def run(results, *, models=None, role="blind", cache_root=None,
         quantiles=DEFAULT_QUANTILES, half_width=0.05,
-        zoom_max_ps=10000., logger=None):
+        zoom_max_ps=10000., group_samples=1, logger=None):
     validate_quantiles(quantiles)
     if not np.isfinite(zoom_max_ps):
         raise ValueError("zoom_max_ps must be finite")
@@ -648,7 +687,7 @@ def run(results, *, models=None, role="blind", cache_root=None,
             outputs.append(analyze_run(
                 item, role=role, cache_override=cache_root,
                 quantiles=quantiles, half_width=half_width,
-                zoom_max_ps=zoom_max_ps, logger=logger
+                zoom_max_ps=zoom_max_ps, group_samples=group_samples, logger=logger
             ))
         except Exception as exc:
             failures.append(f"{item['directory']}: {exc}")
@@ -674,12 +713,15 @@ def main(argv=None):
                         help="Half-width of correction quantile bands, default .05")
     parser.add_argument("--zoom-max-ps", type=float, default=10000.,
                         help="Show samples up to this time in grouped zoom plot (default 10000 ps)")
+    parser.add_argument("--group-samples", type=int, default=1,
+                        help="Average consecutive samples before raw/derivative correlation (default 1)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s | %(levelname)s | %(message)s")
     for output in run(args.results, models=args.models, role=args.role,
                       cache_root=args.cache_root, quantiles=args.quantiles,
                       half_width=args.half_width, zoom_max_ps=args.zoom_max_ps,
+                      group_samples=args.group_samples,
                       logger=logging.getLogger(__name__)):
         print(output)
 
