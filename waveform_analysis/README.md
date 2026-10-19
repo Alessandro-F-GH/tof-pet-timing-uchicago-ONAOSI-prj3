@@ -83,6 +83,29 @@ Outputs live under `<model_run>/explanations/correction_examples/<identity>/`:
 axes; `examples.csv`, `examples.npz` and `summary.json` preserve event IDs,
 quantiles, timing corrections and provenance. These examples represent different
 **predicted correction levels**, not necessarily different pulse-morphology groups.
+In addition to individual real-event examples, `--half-width 0.05` groups
+all events in 5th–15th, 25th–35th, 45th–55th, 65th–75th and 85th–95th
+**empirical prediction-percentile bands**. The band boundaries are based on
+prediction rank (ties broken by event ID), so groups have comparable sizes even
+if predictions repeat. Per-sample means and sample standard deviations (±1 SD)
+are computed on the original prepared normalized signals, without synthetic
+waveforms. Channel difference is computed **event by event**, retaining the
+covariance of the two channels in its SD. Computation streams waveform batches
+instead of loading all event waveforms into RAM.
+
+```powershell
+python -m waveform_analysis.scripts.correction_examples --results PATH_TO_BATCH --models direct_rdst --half-width 0.05 --zoom-max-ps 10000
+```
+
+New outputs are `groups_full.png` and `groups_zoom.png`, each with paired
+waveforms on the left and detector-1-minus-detector-2 on the right for **every**
+quantile band. `groups.csv` reports group sizes and correction distributions;
+`groups.npz` contains numerical means/SDs, time grid, and member event IDs.
+Existing individual example outputs remain available. Increasing
+`--half-width` gives smoother group averages but mixes a wider range of
+predicted corrections. The zoom uses the saved time grid up through
+`--zoom-max-ps` (default 10000 ps).
+
 Nothing in the original run is modified.
 
 Global continuous-output explanations can be generated from saved models:
