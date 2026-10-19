@@ -136,3 +136,35 @@ def test_grouped_figures_full_and_zoom(tmp_path):
     assert (tmp_path / "zoom.png").stat().st_size > 0
     with pytest.raises(ValueError, match="fewer than two"):
         plot_group_statistics(summaries, time, groups, tmp_path / "bad.png", zoom_max_ps=-2000)
+
+
+def test_population_centering_changes_mean_not_dispersion(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from waveform_analysis.scripts import correction_examples as module
+    pytest.importorskip("matplotlib")
+    waves = np.asarray([
+        [[2., 4., 6.], [1., 1., 1.]],
+        [[3., 5., 7.], [1., 1., 1.]],
+        [[8., 8., 8.], [2., 2., 2.]],
+        [[9., 9., 9.], [2., 2., 2.]],
+    ], dtype=np.float32)
+    dataset = SimpleNamespace(waves=waves)
+    monkeypatch.setattr(module, "waveform_view", lambda ds, mode, indices:
+                        SimpleNamespace(materialize=lambda: ds.waves[np.asarray(indices)]))
+    mask = np.ones(3, bool)
+    reference = summarize_group_waveforms(
+        dataset, "timing_to_timing", np.arange(4), mask, chunk_size=2
+    )["difference_mean"]
+    np.testing.assert_allclose(reference, (waves[:, 0] - waves[:, 1]).mean(axis=0))
+    group = summarize_group_waveforms(dataset, "timing_to_timing", [0, 1], mask)
+    expected = (waves[:2, 0] - waves[:2, 1]).mean(axis=0) - reference
+    np.testing.assert_allclose(group["difference_mean"] - reference, expected)
+    np.testing.assert_allclose(group["difference_std"],
+                               (waves[:2, 0] - waves[:2, 1]).std(axis=0, ddof=1))
+    groups = select_quantile_groups(np.arange(100), np.arange(100), [.5], .05)
+    plot_group_statistics([group], np.arange(3), groups, tmp_path / "centered.png",
+                          global_difference_mean=reference)
+    assert (tmp_path / "centered.png").stat().st_size > 0
+    with pytest.raises(ValueError, match="reference"):
+        plot_group_statistics([group], np.arange(3), groups, tmp_path / "bad.png",
+                              global_difference_mean=np.arange(2))
