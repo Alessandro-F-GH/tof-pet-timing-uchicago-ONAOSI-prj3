@@ -56,6 +56,35 @@ reads raw acquisitions. Original saved masks, scalers/transforms and prediction
 limits are retained. RDST coefficient XAI uses persisted shapelets and model
 coefficients; temporal occlusion uses the frozen per-detector control mean.
 
+## Correction-quantile waveform examples (read-only)
+
+Select **real paired waveforms** nearest to the 10th, 30th, 50th, 70th and
+90th percentiles of the **original model's saved timing corrections**. This is
+output-space selection only: no clustering, feature weighting, Ridge reload,
+new RDST/MultiRocket transforms, surrogate, or synthetic waveforms.
+
+```powershell
+python -m waveform_analysis.scripts.correction_examples --results PATH_TO_BATCH --models direct_rdst shared_rdst
+```
+
+The default population is `blind` and reads `artifacts/pred.npz`. For
+already-saved full-development diagnostic predictions, add
+`--role development` to use `artifacts/development_pred.npz`. Generate that
+optional artifact first using the existing `diagnostics` CLI command if absent.
+Use `--quantiles 0.1 0.3 0.5 0.7 0.9` to customize fractions and
+`--cache-root PATH` to locate the original prepared data if moved. Predictions
+are aligned to prepared waveforms by exact event ID; mismatches fail rather
+than silently pairing unrelated events. The original universal timing sample
+mask is honored in the plotted signal/time grid.
+
+Outputs live under `<model_run>/explanations/correction_examples/<identity>/`:
+`correction_distribution.png` shows saved predictions and selected examples;
+`waveforms.png` shows the five normalized two-detector waveform pairs on common
+axes; `examples.csv`, `examples.npz` and `summary.json` preserve event IDs,
+quantiles, timing corrections and provenance. These examples represent different
+**predicted correction levels**, not necessarily different pulse-morphology groups.
+Nothing in the original run is modified.
+
 Global continuous-output explanations can be generated from saved models:
 
 ```bash
