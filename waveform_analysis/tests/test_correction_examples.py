@@ -201,3 +201,29 @@ def test_temporal_association_figure(tmp_path):
     plot_temporal_association(time, data, tmp_path / "zoom.png", zoom_max_ps=5000)
     assert (tmp_path / "full.png").stat().st_size > 0
     assert (tmp_path / "zoom.png").stat().st_size > 0
+
+
+def test_derivative_temporal_association_exact_and_constant(monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.scripts import correction_examples as module
+    y = np.array([-2., -1., 1., 2.])
+    t = np.array([-10., 0., 10., 20.])
+    waves = np.zeros((4, 2, 4), dtype=np.float32)
+    waves[:, 0, :] = y[:, None] * t[None, :]
+    ds = SimpleNamespace(waves=waves)
+    monkeypatch.setattr(module, "waveform_view", lambda ds, mode, idx:
+                        SimpleNamespace(materialize=lambda: ds.waves[np.asarray(idx)]))
+    result = module.compute_temporal_association_derivative(
+        ds, "timing_to_timing", np.arange(4), y, np.ones(4, bool), t,
+        chunk_size=2)
+    np.testing.assert_allclose(result["difference_derivative_correlation"],
+                               np.ones(4), atol=1e-12)
+    assert result["n_events"] == 4
+    with pytest.raises(ValueError, match="strictly increasing"):
+        module.compute_temporal_association_derivative(
+            ds, "timing_to_timing", np.arange(4), y, np.ones(4, bool),
+            [0, 1, 1, 2])
+    with pytest.raises(ValueError, match="constant"):
+        module.compute_temporal_association_derivative(
+            ds, "timing_to_timing", np.arange(4), np.ones(4),
+            np.ones(4, bool), t)
