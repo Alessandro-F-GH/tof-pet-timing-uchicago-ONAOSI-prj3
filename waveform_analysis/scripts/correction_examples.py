@@ -254,6 +254,63 @@ def compute_temporal_association(dataset, mode, prepared_rows, predictions_ps,
             "n_events": len(y)}
 
 
+
+def compute_temporal_association_derivative(dataset, mode, prepared_rows,
+                                            predictions_ps, sample_mask, time_ps,
+                                            *, chunk_size=1024):
+    """Pearson r between d/dt(D1-D2) and saved model predictions at each sample.
+
+    Differentiate each real event on the ORIGINAL, possibly masked, time grid.
+    Use two-pass centered moments to reduce numerical cancellation. This
+    operates solely on original prepared signals and saved predictions.
+    """
+    indices = np.asarray(prepared_rows, dtype=np.int64)
+    y = np.asarray(predictions_ps, dtype=np.float64)
+    t = np.asarray(time_ps, dtype=np.float64)
+    if indices.ndim != 1 or y.shape != indices.shape or len(y) < 2:
+        raise ValueError("Expected at least two aligned events and predictions")
+    if not np.all(np.isfinite(y)) or int(chunk_size) != chunk_size or chunk_size < 1:
+        raise ValueError("Predictions must be finite and chunk_size a positive integer")
+    if (t.ndim != 1 or len(t) < 2 or not np.all(np.isfinite(t))
+            or not np.all(np.diff(t) > 0)):
+        raise ValueError("Time grid must be finite and strictly increasing")
+    centered_y = y - np.mean(y)
+    y_ss = float(centered_y @ centered_y)
+    if y_ss <= 0:
+        raise ValueError("Cannot correlate constant model predictions")
+
+    def derivative_batches():
+        for start in range(0, len(indices), int(chunk_size)):
+            view = waveform_view(dataset, mode, indices[start:start + int(chunk_size)])
+            waves = np.asarray(apply_sample_mask(view.materialize(), sample_mask),
+                               dtype=np.float64)
+            if (waves.ndim != 3 or waves.shape[1:] != (2, len(t))
+                    or not np.all(np.isfinite(waves))):
+                raise ValueError("Nonfinite or incompatible prepared waveforms")
+            derivative = np.gradient(waves[:, 0] - waves[:, 1], t, axis=1)
+            yield start, derivative
+
+    x_sum = np.zeros(len(t))
+    for _, derivative in derivative_batches():
+        x_sum += np.sum(derivative, axis=0)
+    x_mean = x_sum / len(indices)
+    x_ss = np.zeros(len(t))
+    xy = np.zeros(len(t))
+    for start, derivative in derivative_batches():
+        centered_x = derivative - x_mean
+        x_ss += np.sum(centered_x * centered_x, axis=0)
+        xy += centered_x.T @ centered_y[start:start + len(derivative)]
+    corr = np.full(len(t), np.nan)
+    valid = x_ss > 0
+    corr[valid] = np.clip(xy[valid] / np.sqrt(x_ss[valid] * y_ss), -1, 1)
+    return {
+        "difference_derivative_correlation": corr,
+        "difference_derivative_mean": x_mean,
+        "difference_derivative_std": np.sqrt(x_ss / (len(y) - 1)),
+        "n_events": len(y),
+    }
+
+
 def plot_temporal_association(time_ps, association, output, *, zoom_max_ps=None):
     """Global Pearson correlation of channel difference with saved model output."""
     import matplotlib
@@ -445,6 +502,9 @@ def analyze_run(run, *, role="blind", cache_override=None,
     association = compute_temporal_association(
         prepared, config["mode"], prepared_rows, prediction_values, mask
     )
+    derivative_association = compute_temporal_association_derivative(
+        prepared, config["mode"], prepared_rows, prediction_values, mask, time_ps
+    )
 
     summaries = []
     for group in groups:
@@ -464,7 +524,7 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "model": manifest["model"], "role": role,
         "quantiles": q.tolist(), "half_width": float(half_width),
         "zoom_max_ps": float(zoom_max_ps),
-        "analysis_version": 4,
+        "analysis_version": 5,
         "difference_centering": "full_population_mean",
         "final_fit_fingerprint": fingerprint,
         "protocol_identity": prepared.manifest["analysis_protocol_identity"],
@@ -510,6 +570,9 @@ def analyze_run(run, *, role="blind", cache_override=None,
         global_difference_mean=global_difference_mean,
         difference_std=np.stack([s["difference_std"] for s in summaries]),
         temporal_difference_correlation=association["difference_correlation"],
+        temporal_difference_derivative_correlation=derivative_association["difference_derivative_correlation"],
+        temporal_difference_derivative_mean=derivative_association["difference_derivative_mean"],
+        temporal_difference_derivative_std=derivative_association["difference_derivative_std"],
         temporal_difference_mean=association["difference_mean"],
         temporal_difference_std=association["difference_std"],
         temporal_prediction_mean_ps=association["prediction_mean_ps"],
@@ -532,6 +595,17 @@ def analyze_run(run, *, role="blind", cache_override=None,
     plot_temporal_association(time_ps, association,
                               destination / "temporal_association_zoom.png",
                               zoom_max_ps=zoom_max_ps)
+    plot_temporal_association(
+        time_ps,
+        {"difference_correlation": derivative_association["difference_derivative_correlation"]},
+        destination / "temporal_association_derivative.png",
+    )
+    plot_temporal_association(
+        time_ps,
+        {"difference_correlation": derivative_association["difference_derivative_correlation"]},
+        destination / "temporal_association_derivative_zoom.png",
+        zoom_max_ps=zoom_max_ps,
+    )
     atomic_json(destination / "summary.json", {
         **identity, "run": str(directory), "n_events": int(len(prediction_ids)),
         "cache_root": str(cache_root), "preprocessed_waveforms": True,
@@ -545,6 +619,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "population_n_events": population["n_events"],
         "temporal_association": "Pearson r of event-wise D1-D2 with original model prediction, computed over entire selected role",
         "temporal_association_n_events": association["n_events"],
+        "derivative_association": "Pearson r of per-event gradient(D1-D2, time_ps) and original model predictions; unsmoothed",
+        "derivative_association_n_events": derivative_association["n_events"],
         "group_definition": "empirical prediction midrank percentile bands; tied predictions resolved by event ID",
     })
     if logger:
