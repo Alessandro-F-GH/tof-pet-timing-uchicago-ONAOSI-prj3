@@ -212,6 +212,75 @@ def summarize_group_waveforms(dataset, mode, prepared_rows, sample_mask, *,
     }
 
 
+
+def compute_temporal_association(dataset, mode, prepared_rows, predictions_ps,
+                                 sample_mask, *, chunk_size=1024):
+    """Population Pearson r of event-wise D1-D2 and saved output at each time.
+
+    Two-pass centering avoids cancellation in covariance/variance on small
+    waveform differences. No new prediction or transformation is performed.
+    Constant channels/time samples get NaN rather than misleading zero r.
+    """
+    indices = np.asarray(prepared_rows, dtype=np.int64)
+    y = np.asarray(predictions_ps, dtype=np.float64)
+    if indices.ndim != 1 or y.shape != indices.shape or len(y) < 2:
+        raise ValueError("At least two aligned predictions and event indices required")
+    if not np.all(np.isfinite(y)) or int(chunk_size) < 1:
+        raise ValueError("Predictions must be finite and chunk_size positive")
+    y_mean = float(np.mean(y))
+    y_centered = y - y_mean
+    y_ss = float(np.dot(y_centered, y_centered))
+    if y_ss <= 0:
+        raise ValueError("Cannot correlate a constant model output")
+    reference = summarize_group_waveforms(
+        dataset, mode, indices, sample_mask, chunk_size=chunk_size
+    )["difference_mean"]
+    x_ss = np.zeros_like(reference)
+    xy = np.zeros_like(reference)
+    for start in range(0, len(indices), chunk_size):
+        batch = waveform_view(dataset, mode, indices[start:start + chunk_size])
+        waves = np.asarray(apply_sample_mask(batch.materialize(), sample_mask), np.float64)
+        difference = waves[:, 0] - waves[:, 1] - reference
+        x_ss += np.sum(difference * difference, axis=0)
+        xy += difference.T @ y_centered[start:start + len(waves)]
+    correlation = np.full(reference.shape, np.nan, dtype=np.float64)
+    valid = x_ss > 0
+    correlation[valid] = np.clip(xy[valid] / np.sqrt(x_ss[valid] * y_ss), -1, 1)
+    return {"difference_correlation": correlation,
+            "difference_mean": reference,
+            "difference_std": np.sqrt(x_ss / (len(y) - 1)),
+            "prediction_mean_ps": y_mean,
+            "prediction_std_ps": np.sqrt(y_ss / (len(y) - 1)),
+            "n_events": len(y)}
+
+
+def plot_temporal_association(time_ps, association, output, *, zoom_max_ps=None):
+    """Global Pearson correlation of channel difference with saved model output."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    t = np.asarray(time_ps, np.float64)
+    values = np.asarray(association["difference_correlation"], np.float64)
+    if t.ndim != 1 or values.shape != t.shape:
+        raise ValueError("Time grid and association must be aligned")
+    keep = np.ones(t.shape, bool) if zoom_max_ps is None else t <= zoom_max_ps
+    if np.count_nonzero(keep) < 2:
+        raise ValueError("Zoom range contains fewer than two time samples")
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(t[keep], values[keep], label="Pearson r(D1 - D2, prediction)", linewidth=1.7)
+    ax.axhline(0, color="0.5", linestyle=":", linewidth=1)
+    ax.set(xlabel="Time relative to waveform arrival [ps]",
+           ylabel="Pearson correlation r",
+           ylim=(-1, 1),
+           title="Temporal association with original model correction")
+    ax.grid(alpha=.2)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(output, dpi=180)
+    plt.close(fig)
+
+
 def plot_group_statistics(summaries, time_ps, groups, output, *,
                           zoom_max_ps=None, global_difference_mean=None):
     """Original channel pair and population-centered D1-D2, mean ± 1 SD."""
@@ -373,6 +442,10 @@ def analyze_run(run, *, role="blind", cache_override=None,
     )
     global_difference_mean = population["difference_mean"]
 
+    association = compute_temporal_association(
+        prepared, config["mode"], prepared_rows, prediction_values, mask
+    )
+
     summaries = []
     for group in groups:
         members = prepared_rows[group["prediction_indices"]]
@@ -391,7 +464,7 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "model": manifest["model"], "role": role,
         "quantiles": q.tolist(), "half_width": float(half_width),
         "zoom_max_ps": float(zoom_max_ps),
-        "analysis_version": 3,
+        "analysis_version": 4,
         "difference_centering": "full_population_mean",
         "final_fit_fingerprint": fingerprint,
         "protocol_identity": prepared.manifest["analysis_protocol_identity"],
@@ -436,6 +509,11 @@ def analyze_run(run, *, role="blind", cache_override=None,
         ]),
         global_difference_mean=global_difference_mean,
         difference_std=np.stack([s["difference_std"] for s in summaries]),
+        temporal_difference_correlation=association["difference_correlation"],
+        temporal_difference_mean=association["difference_mean"],
+        temporal_difference_std=association["difference_std"],
+        temporal_prediction_mean_ps=association["prediction_mean_ps"],
+        temporal_prediction_std_ps=association["prediction_std_ps"],
         time_ps=np.asarray(time_ps),
     )
     plot_prediction_distribution(prediction_values, selections, destination / "correction_distribution.png")
@@ -449,6 +527,11 @@ def analyze_run(run, *, role="blind", cache_override=None,
         zoom_max_ps=zoom_max_ps,
         global_difference_mean=global_difference_mean,
     )
+    plot_temporal_association(time_ps, association,
+                              destination / "temporal_association.png")
+    plot_temporal_association(time_ps, association,
+                              destination / "temporal_association_zoom.png",
+                              zoom_max_ps=zoom_max_ps)
     atomic_json(destination / "summary.json", {
         **identity, "run": str(directory), "n_events": int(len(prediction_ids)),
         "cache_root": str(cache_root), "preprocessed_waveforms": True,
@@ -460,6 +543,8 @@ def analyze_run(run, *, role="blind", cache_override=None,
         "channel_difference": "detector1 - detector2, with event-level covariance retained",
         "difference_centering": "Group mean D1-D2 minus whole-population mean D1-D2; within-group SD unchanged",
         "population_n_events": population["n_events"],
+        "temporal_association": "Pearson r of event-wise D1-D2 with original model prediction, computed over entire selected role",
+        "temporal_association_n_events": association["n_events"],
         "group_definition": "empirical prediction midrank percentile bands; tied predictions resolved by event ID",
     })
     if logger:
