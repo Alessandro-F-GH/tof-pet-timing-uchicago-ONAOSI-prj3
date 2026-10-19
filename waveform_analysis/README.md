@@ -106,6 +106,8 @@ Existing individual example outputs remain available. Increasing
 predicted corrections. The zoom uses the saved time grid up through
 `--zoom-max-ps` (default 10000 ps).
 
+The script also saves `temporal_association.png` and `temporal_association_zoom.png`: sample-wise Pearson correlation between the real event-level detector difference (D1−D2) and the original model prediction, using the **entire** selected population, not only the quantile groups. `groups.npz` stores `temporal_difference_correlation`, the corresponding difference mean/std, and prediction mean/std. Constant-difference time samples are marked NaN; association is descriptive and should not be interpreted as model attribution.
+
 Nothing in the original run is modified.
 
 Global continuous-output explanations can be generated from saved models:
