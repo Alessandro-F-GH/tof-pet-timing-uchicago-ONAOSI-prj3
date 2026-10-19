@@ -24,7 +24,7 @@ def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _cache_root(config: dict[str, Any], run: Path, override: Path | None) -> Path:
+def _cache_root(config: dict[str, Any], run: Path, override: Path | None, *, roles=("control", "blind")) -> Path:
     if override is not None:
         return override.expanduser().resolve()
     configured = Path(config["preprocessing"]["cache_dir"]).expanduser()
@@ -37,7 +37,7 @@ def _cache_root(config: dict[str, Any], run: Path, override: Path | None) -> Pat
         roots.append(Path(__file__).resolve().parents[1])
         candidates.extend(root / suffix for root in roots)
     for candidate in candidates:
-        if all((candidate / f"{role}_ml" / "prepared").is_dir() for role in ("control", "blind")):
+        if all((candidate / f"{role}_ml" / "prepared").is_dir() for role in roles):
             return candidate.resolve()
     return configured.resolve()
 
@@ -86,7 +86,7 @@ class PreparedCacheLookup:
             raise ValueError(
                 f"Expected one verified {role} cache, found {len(matches)} in "
                 f"{root / f'{role}_ml' / 'prepared'}. Retain the original prepared "
-                "control/blind arrays or supply their location with --cache-root."
+                f"{role} arrays or supply their location with --cache-root."
             )
         path = matches[0]
         if path not in self.datasets:

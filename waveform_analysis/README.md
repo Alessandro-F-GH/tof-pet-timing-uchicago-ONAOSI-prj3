@@ -56,6 +56,82 @@ reads raw acquisitions. Original saved masks, scalers/transforms and prediction
 limits are retained. RDST coefficient XAI uses persisted shapelets and model
 coefficients; temporal occlusion uses the frozen per-detector control mean.
 
+Global continuous-output explanations can be generated from saved models:
+
+```bash
+python -m waveform_analysis.cli explain-regression --results waveform_analysis/results/UC/BATCH --models direct_rdst shared_rdst
+```
+
+This explains the **original frozen feature space**. No new shapelets, kernels,
+scalers or transformations are constructed or fitted. It supports models with
+an explicit saved feature transform (RDST, MiniRocket, MultiRocket, Hydra and
+linear models). CNN/MLP models without one are rejected; use input-level `xai`
+for those models. Original models, masks, clipping limits, benchmark predictions
+and stage receipts are preserved.
+
+Prepared development and blind caches must be available; use `--cache-root PATH`
+if they moved. For maximum speed, also retain `model_inputs/` from that cache
+root: matching transformed features are reused read-only after checking the
+original transform and dataset identities. Otherwise the **saved** transform is
+applied once per role in bounded batches. The same features feed the original
+predictor, the tree and the contribution calculation. No raw ROOT files are read.
+
+The primary linear-head explanation is an exact additive decomposition using
+`original_feature * original_coefficient`, plus the original intercept. RDST
+retains its original distance/location/occurrence columns and original direct
+or shared formulation, scaling and shapelet IDs. Its three contributions are
+summed per shapelet before taking absolute values; shapelets are ranked by mean
+absolute net contribution over the explained blind cohort. Signed means,
+population SDs, positive fractions and separate feature-type contribution means
+are exported. Contributions describe the pre-clipping output; reconstruction
+is checked against original predictions **after the original clipping** and
+its numerical error and clipped-event count are recorded. These are additive
+model explanations, not causal effects or independent credit for correlated
+features.
+
+A compact regression tree on those **same original features** remains a
+secondary approximation, with depth selected on a 20% development holdout by
+prediction fidelity. Only the tree is fitted; the final tree uses all sampled
+development rows. Blind data never selects settings. Development predictions
+come from the original final model, not out-of-fold predictions. Tree thresholds
+are in the original transformed/scaled feature units; a shared RDST column is a
+feature difference, not a detector-specific match. The tree need not preserve
+the shared teacher's antisymmetry and does not replace its exact contributions.
+
+Options: `--depths 2 3 4 5`, `--min-samples-leaf 20`, and optional `--max-events N`
+for a reproducible cap per role (default: all). `--max-shapelets` and
+`--shapelet-lengths` were removed: the original transformation is immutable.
+
+Each model receives `explanations/regression_tree/IDENTITY/` with:
+
+- `summary.json`: provenance, frozen transform identity, cache usage, selection,
+  blind tree fidelity MAE/RMSE/R² and LED/original/tree timing CTR and RMSE.
+- `contributions.npz`, `contributions.csv`, `contributions.png`: original
+  linear-head population explanations in ps. RDST groups refer to original
+  shapelets; other models use original feature indices.
+- `performance.csv` and `performance.png`: paired blind comparison using the
+  existing CTR fitter, with point estimates and no bootstrap uncertainty.
+  An event cap means a subset comparison; benchmark metrics are never changed.
+- `tree.png`, `tree.json`, `rules.txt`: approximate global rules using original
+  feature names. For RDST, `shapelets.npz` and `used_shapelets.png` contain
+  original shapelets used by the tree or ranked highest by contributions.
+- `surrogate.pkl`: **tree only**, with the original transform identity. Its
+  `predict` accepts original frozen feature matrices, not raw waveforms. It
+  does not duplicate or replace the original saved transformation.
+- `predictions.npz`: audited development/blind event IDs, original/tree blind
+  predictions, residual targets and leaf assignments.
+
+Identical settings reuse the explanation. The method identity changed, so old
+independent-shapelet explanations are never reused. Poor tree fidelity means
+its rules are not a faithful approximation; similar CTR alone is insufficient.
+No single-event explanations are generated.
+
+Progress logs identify cache reuse or the reason for recomputation, event counts,
+completed-batch percentages and approximate ETAs. Long stages emit an elapsed-time
+heartbeat every 30 seconds, including individual tree fits. Each candidate depth
+reports validation fidelity and duration. The first transform batch can include
+JIT compilation, so early ETAs may be inflated.
+
 For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
 ## Source configuration

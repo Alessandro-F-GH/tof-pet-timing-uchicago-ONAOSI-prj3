@@ -45,6 +45,13 @@ def _parser() -> argparse.ArgumentParser:
     xai.add_argument("--cache-root", type=Path, help="Location of original prepared control/blind caches")
     xai.add_argument("--group-size-samples", type=int)
     xai.add_argument("--max-events", type=int)
+    explain = sub.add_parser("explain-regression", help="Original frozen-feature explanations and tree performance comparison")
+    explain.add_argument("--results", type=Path, required=True)
+    explain.add_argument("--models", nargs="+", metavar="MODEL")
+    explain.add_argument("--cache-root", type=Path, help="Original prepared development/blind caches")
+    explain.add_argument("--depths", nargs="+", type=int, default=[2, 3, 4, 5])
+    explain.add_argument("--min-samples-leaf", type=int, default=20)
+    explain.add_argument("--max-events", type=int, help="Optional reproducible event cap per role; default: all events")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -60,6 +67,12 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
+    if args.command == "explain-regression":
+        from .engine.regression_explainer import explain_regression
+        for output in explain_regression(args.results, models=args.models, cache_root=args.cache_root,
+                depths=args.depths, min_samples_leaf=args.min_samples_leaf, max_events=args.max_events, logger=logger):
+            print(output)
+        return
     if args.command in {"plots", "report"}:
         print(remake_plots(
             Path(args.results), logger=logger, exclude_models=args.exclude_models,
