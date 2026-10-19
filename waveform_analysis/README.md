@@ -128,6 +128,8 @@ The script also saves `temporal_association.png` and `temporal_association_zoom.
 
 Derivative-based association is also exported as `temporal_association_derivative.png` and `temporal_association_derivative_zoom.png`: Pearson r of `np.gradient(D1-D2, time_ps)` with original predictions. Derivatives use the actual saved masked time grid and no smoothing. `groups.npz` contains the derivative correlation, mean and sample SD; constant derivative samples are NaN. Differentiation highlights local slope variations but can amplify noise.
 
+Temporal association plots accept `--group-samples 1` (default), `2`, `3`, etc. For values above one, consecutive **nonoverlapping** samples of the real detector difference are averaged, with the incomplete final group discarded; the effective time coordinates are the means of the original time coordinates. Both raw-difference and derivative correlation are recalculated on these grouped event-level signals. Grouping does not alter the original model predictions, the group waveform plots, or saved spectra. The effective time grid and grouping factor are stored in `groups.npz` as `association_time_ps` and `group_samples`.
+
 Nothing in the original run is modified.
 
 Global continuous-output explanations can be generated from saved models:
