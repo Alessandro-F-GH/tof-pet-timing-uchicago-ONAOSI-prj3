@@ -535,14 +535,16 @@ def render_run_plots(run, cfg):
 
 
 def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format=".1f",
-            absolute=False, colorbar_label=None):
+            absolute=False, colorbar_label=None, limits=None):
     matrix = np.asarray(matrix, float)
     style = cfg["heatmap"]
     kwargs = {
         "cmap": (style.get("ensemble_cmap", "viridis_r") if absolute else
                  style["correlation_cmap"] if correlation else style["difference_cmap"])
     }
-    if correlation:
+    if limits is not None:
+        kwargs.update(vmin=float(limits[0]), vmax=float(limits[1]))
+    elif correlation:
         kwargs.update(
             vmin=float(style["correlation_limits"][0]),
             vmax=float(style["correlation_limits"][1]),

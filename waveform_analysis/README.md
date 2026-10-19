@@ -42,6 +42,36 @@ can differ. Unavailable pairs are blank and explained in `ensemble_ctr.json`.
 These matrices are regenerated from saved arrays even with `plots`, so older
 runs can gain this report without training or access to acquisition files.
 
+Reporting also scans development-selected pair weights using saved
+`artifacts/development_pred.npz` files. For each pair, it evaluates 21 values
+`w = 0, 0.05, ..., 1` for `w * prediction_A + (1-w) * prediction_B`, using the
+same finite matched development events and original CTR settings at every
+weight. Exact ties prefer the weight nearest 0.5, then the smaller weight for
+the alphabetically first model. The selected weight is frozen before blind
+evaluation; blind metrics never select weights. No additional clipping,
+centering, inference, training or weight optimization beyond this grid occurs.
+
+The development arrays are **in-sample final-model predictions**, not
+out-of-fold validation: their selection CTR can be optimistic. Reporting
+verifies final-fit fingerprints, dataset roles and saved protocol identities;
+missing/stale predictions leave the pair unavailable without automatic
+backfilling. Each mode/window exports:
+
+- `ensemble_weights.csv` and heatmap: row-model weight; the column weight is
+  its complement. Diagonal weights are 1 by convention.
+- `ensemble_development_ctr.csv` and heatmap: selected in-sample development CTR.
+- `ensemble_weighted_ctr.csv` and heatmap: blind CTR at the frozen weight;
+  diagonal entries retain saved single-model blind results.
+- `ensemble_development_ctr_n.csv` and `ensemble_weighted_ctr_n.csv`: event counts.
+- `ensemble_weight_scan.csv`: all candidate scores, failures and selected rows.
+- `ensemble_weighted.json`: grid, fit settings, source identities, selection
+  interpretation and reasons for unavailable pairs.
+
+Development diagonals are computed on each model's full finite saved population;
+off-diagonals use pairwise intersections. All weighted reports are regenerated
+from current saved arrays even when `plots` reuses other numeric tables. The
+original equal-weight `ensemble_ctr` report remains available independently.
+
 Explicit saved-model operations:
 
 ```bash

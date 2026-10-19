@@ -30,6 +30,9 @@ from waveform_analysis.reporting.latex_tables import (
 from waveform_analysis.reporting.model_labels import model_label
 from waveform_analysis.reporting.metric_rows import blind_metric_rows as _blind_metric_rows
 from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
+from waveform_analysis.reporting.weighted_ensemble import (
+    WEIGHT_GRID, WEIGHTED_ENSEMBLE_VERSION, weighted_ensemble,
+)
 
 
 def _json(path):
@@ -400,6 +403,54 @@ def _read_matrix(path):
     )
 
 
+def _weighted_ensemble_report(group, payloads, seed, table_dir, plot_dir, cfg, ordered):
+    fit = resolve_run_config(group[0]["directory"])["fit"]
+    result = weighted_ensemble(group, payloads, fit, seed=seed)
+    for key, filename in (
+        ("weights", "ensemble_weights"),
+        ("development_ctr", "ensemble_development_ctr"),
+        ("blind_ctr", "ensemble_weighted_ctr"),
+        ("development_n", "ensemble_development_ctr_n"),
+        ("blind_n", "ensemble_weighted_ctr_n"),
+    ):
+        matrix = _reorder_matrix(result["labels"], result[key], ordered)
+        _matrix(table_dir / f"{filename}.csv", ordered, matrix)
+        if key.endswith("_n"):
+            continue
+        title = {
+            "weights": "Ensemble weights selected by development CTR\nCell: row-model weight; column-model weight = 1 − cell",
+            "development_ctr": "Selected ensemble development CTR [ps]\nIn-sample predictions from final fitted models",
+            "blind_ctr": "Weighted ensemble blind CTR [ps]\nWeights frozen from development CTR; diagonal: single model",
+        }[key]
+        heatmap(matrix, ordered, output_path(plot_dir, filename, cfg), cfg,
+                title=title, absolute=True,
+                value_format=".2f" if key == "weights" else ".1f",
+                colorbar_label="Row-model weight" if key == "weights" else "CTR [ps] (lower is better)",
+                limits=(0., 1.) if key == "weights" else None)
+    scan_path = table_dir / "ensemble_weight_scan.csv"
+    if result["scan"]:
+        write_csv(scan_path, result["scan"])
+    else:
+        # Replace any stale scan, including after sources disappear/exclusions.
+        with scan_path.open("w", encoding="utf-8", newline="") as stream:
+            csv.writer(stream).writerow(["model_a", "model_b", "weight_a", "weight_b",
+                                        "development_ctr_ps", "n_events", "selected", "status", "reason"])
+    atomic_json(table_dir / "ensemble_weighted.json", {
+        "version": WEIGHTED_ENSEMBLE_VERSION,
+        "weight_grid": list(WEIGHT_GRID), "seed": seed, "fit": fit,
+        "prediction": "w * row_prediction + (1 - w) * column_prediction",
+        "selection_role": "development", "selection_metric": "ctr_ps",
+        "development_prediction_basis": "in_sample_final_model",
+        "development_ctr_interpretation": "training-population selection score; potentially optimistic",
+        "tie_break": "nearest 0.5, then smaller weight for alphabetically first model",
+        "diagonal": "single model; weight 1; full original population",
+        "population": "fixed finite matched events per pair and dataset role",
+        "blind_used_in_selection": False,
+        "development_sources": result["development_sources"],
+        "unavailable_pairs": result["unavailable_pairs"],
+    })
+
+
 def _matrix_order(group: list[dict[str, Any]]) -> list[str]:
     """Order display axes by formulation, then model name, without refitting."""
     ordered = sorted(
@@ -510,6 +561,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             title="Blind ensemble CTR [ps] — equal-weight mean\nDiagonal: single model; pairs: matched events",
             absolute=True, colorbar_label="CTR [ps] (lower is better)",
         )
+        _weighted_ensemble_report(group, payloads, seed, table_dir, plot_dir, cfg, ordered)
         for metric in ("ctr", "rmse"):
             central_path = table_dir / f"paired_{metric}.csv"
             std_path = table_dir / f"paired_{metric}_std.csv"
@@ -575,6 +627,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "development_distribution_version": DEVELOPMENT_DISTRIBUTION_VERSION,
             "blind_boxplot_version": 1,
             "ensemble_ctr_version": 1,
+            "weighted_ensemble_version": WEIGHTED_ENSEMBLE_VERSION,
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables
             ],
