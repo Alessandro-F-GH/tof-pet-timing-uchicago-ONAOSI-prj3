@@ -350,6 +350,16 @@ def _explain_one(run, lookup, cache_override, top_k, logger):
                     matrices["blind"], weights, dev_mean, predictions, labels,
                     group_size=group_size, intercept=intercept,
                     clip=fitted.output_max_abs_ps, chunk_size=chunk)
+                temporal = None
+                if shapelets is not None and config["window_name"] == "wide":
+                    from waveform_analysis.engine.rdst_temporal import temporal_match_maps
+                    with _stage(logger, "RDST time-localized contributions"):
+                        temporal = temporal_match_maps(
+                            spec=spec, fitted=fitted, blind=blind, mode=mode,
+                            features=matrices["blind"], reference_mean=dev_mean,
+                            coefficients=weights, group_labels=labels,
+                            time_ps=apply_sample_mask_to_time(time, mask),
+                            chunk_size=chunk, logger=logger)
                 examples, waves = {}, {}
                 masked_time = apply_sample_mask_to_time(time, mask)
                 for name, group in groups.items():
@@ -383,6 +393,7 @@ def _explain_one(run, lookup, cache_override, top_k, logger):
                 key: value for key, value in group.items() if key != "indices"
             } for name, group in groups.items()},
             "reference_prediction_ps": float(agg["reference_prediction_ps"]),
+            "temporal_explanation": "best_match_start, conserved net shapelet contributions" if temporal is not None else None,
             "clipped_events": int(agg["clipped_events"]),
             "max_reconstruction_error_ps": float(agg["max_reconstruction_error_ps"]),
             "explanation_definition": "coefficient*(original frozen feature - development population mean), before clipping",
@@ -396,6 +407,20 @@ def _explain_one(run, lookup, cache_override, top_k, logger):
         np.savez_compressed(temp_output / "aggregate_contributions.npz", **agg)
         _csv_results(temp_output / "group_importance.csv", agg, shapelets=shapelets)
         atomic_json(temp_output / "representative_events.json", examples)
+        if temporal is not None:
+            from waveform_analysis.reporting.rdst_temporal import plot_temporal_importance
+            np.savez_compressed(temp_output / "temporal_importance.npz", **temporal)
+            with (temp_output / "temporal_importance.csv").open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(["group", "time_ns", "mean_absolute_ps", "mean_signed_ps", "fraction", "matches_per_event"])
+                for k, name in enumerate(GROUP_NAMES):
+                    for t in range(len(temporal["time_ps"])):
+                        writer.writerow([name, float(temporal["time_ps"][t] / 1000),
+                                         float(temporal["combined_absolute_ps"][k, t]),
+                                         float(temporal["combined_signed_ps"][k, t]),
+                                         float(temporal["combined_fraction"][k, t]),
+                                         float(temporal["combined_match_count_per_event"][k, t])])
+            plot_temporal_importance(temp_output, temporal)
         if shapelets is not None:
             np.savez_compressed(temp_output / "original_shapelets.npz", **shapelets)
             with (temp_output / "feature_families.csv").open("w", newline="", encoding="utf-8") as handle:
