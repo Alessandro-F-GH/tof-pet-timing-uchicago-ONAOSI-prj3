@@ -73,46 +73,140 @@ def _plot_waveform_map(path, time_ps, waveform, relevance, *, title, label):
     plt.close(fig)
 
 
+def _importance_scale(relevance):
+    """Robustly scale a local map for display only; saved attributions remain in ps."""
+    values = np.asarray(relevance, dtype=np.float64)
+    finite = np.abs(values[np.isfinite(values)])
+    if finite.size == 0 or not np.any(finite):
+        return np.zeros_like(values)
+    scale = float(np.quantile(finite, 0.98))
+    if not np.isfinite(scale) or scale <= np.finfo(float).eps:
+        scale = float(np.max(finite))
+    return np.clip(values / max(scale, np.finfo(float).eps), -1.0, 1.0)
+
+
+def _importance_zoom_limits(time_ns, relevance, *, mass_fraction=0.90):
+    """Return a padded interval containing most attribution mass, if genuinely local."""
+    magnitude = np.sum(np.abs(np.asarray(relevance, dtype=np.float64)), axis=0)
+    total = float(magnitude.sum())
+    if not np.isfinite(total) or total <= 0 or len(time_ns) < 3:
+        return None
+    cumulative = np.concatenate([[0.0], np.cumsum(magnitude)])
+    target = mass_fraction * total
+    best = (0, len(magnitude), len(magnitude))
+    right = 1
+    for left in range(len(magnitude)):
+        right = max(right, left + 1)
+        while right <= len(magnitude) and cumulative[right] - cumulative[left] < target:
+            right += 1
+        if right > len(magnitude):
+            break
+        width = right - left
+        if width < best[2]:
+            best = (left, right, width)
+    left, right, _ = best
+    span = float(time_ns[-1] - time_ns[0])
+    lo = float(time_ns[max(0, left)]); hi = float(time_ns[min(len(time_ns)-1, right-1)])
+    if hi - lo >= 0.70 * span:
+        return None
+    pad = max(0.08 * (hi - lo), 0.015 * span)
+    lo, hi = max(float(time_ns[0]), lo-pad), min(float(time_ns[-1]), hi+pad)
+    min_width = min(0.18 * span, 1.0 if span <= 10 else 4.0)
+    if hi-lo < min_width:
+        center = 0.5*(lo+hi)
+        lo, hi = max(float(time_ns[0]), center-min_width/2), min(float(time_ns[-1]), center+min_width/2)
+    return (lo, hi) if hi > lo else None
+
+
 def _plot_event(folder, stem, event_id, prediction, target, time, waveform, relevance,
-                detector_names, method):
+                detector_names, method, *, shared):
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import TwoSlopeNorm
 
-    time_ns = np.asarray(time, dtype=np.float64) / 1000.
+    time_ns = np.asarray(time, dtype=np.float64) / 1000.0
+    waveform = np.asarray(waveform, dtype=np.float64)
+    relevance = np.asarray(relevance, dtype=np.float64)
     n_channels = waveform.shape[0]
-    fig, axes = plt.subplots(n_channels, 1, figsize=(11, 3.1 * n_channels), squeeze=False)
-    max_abs = float(np.max(np.abs(relevance))) if relevance.size else 0.
-    for ch, ax in enumerate(axes[:, 0]):
-        values = np.asarray(waveform[ch], dtype=np.float64)
-        rel = np.asarray(relevance[min(ch, relevance.shape[0]-1)], dtype=np.float64)
-        ax.plot(time_ns, values, color="0.80", linewidth=1.0, zorder=1)
-        if len(time_ns) >= 2 and np.any(rel):
-            points = np.column_stack([time_ns, values]).reshape(-1, 1, 2)
-            segments = np.concatenate([points[:-1], points[1:]], axis=1)
-            segment_rel = .5 * (rel[:-1] + rel[1:])
-            local_max = max(float(np.max(np.abs(segment_rel))), 1e-15)
-            norm = TwoSlopeNorm(vmin=-local_max, vcenter=0., vmax=local_max)
-            line = LineCollection(segments, cmap="coolwarm", norm=norm, linewidths=2.6, zorder=2)
-            line.set_array(segment_rel)
-            ax.add_collection(line)
-            fig.colorbar(line, ax=ax, pad=.015, label="Signed contribution (ps)")
-        ax.set_ylabel(f"Detector {ch+1} amplitude")
-        ax.set_xlabel("Time relative to window start (ns)")
-        ax.set_title(detector_names[ch] if len(detector_names) == n_channels else
-                     f"Detector {ch+1} — {detector_names[0]} attribution")
-        ax.grid(alpha=.18)
-        ax.margins(x=.01)
-    fig.suptitle(
-        f"{stem} | event {event_id} | prediction={prediction:.3f} ps | "
-        f"target={target:.3f} ps\n{method}",
-        y=1.01, fontsize=11,
-    )
-    fig.tight_layout()
-    fig.savefig(folder / f"{stem}.png", dpi=180, bbox_inches="tight")
-    fig.savefig(folder / f"{stem}.pdf", bbox_inches="tight")
-    plt.close(fig)
+    if shared and relevance.shape[0] != n_channels:
+        raise ValueError("Shared model should provide one attribution map per detector")
+    if not shared and relevance.shape[0] != 1:
+        raise ValueError("Direct model should provide one joint-pair attribution map")
+    display_relevance = _importance_scale(relevance)
+    zoom = _importance_zoom_limits(time_ns, relevance)
 
+    # Shared models permit detector-specific overlays. Direct models only provide
+    # joint-pair relevance, so show both waveforms neutrally and the joint map below.
+    if shared:
+        rows = [(f"Detector {ch+1} waveform", "wave", ch) for ch in range(n_channels)]
+        rows += [(f"Detector {ch+1} signed attribution", "importance", ch) for ch in range(n_channels)]
+        # Interleave waveform/importance per detector to keep each pair visually linked.
+        rows = []
+        for ch in range(n_channels):
+            rows.extend([(f"Detector {ch+1} waveform", "wave", ch),
+                         (f"Detector {ch+1} signed attribution", "importance", ch)])
+    else:
+        rows = [(f"Detector {ch+1} waveform (joint attribution)", "wave", ch)
+                for ch in range(n_channels)]
+        rows.append(("Joint-pair signed attribution", "importance", 0))
+
+    def draw(path, xlim=None):
+        fig, axes = plt.subplots(len(rows), 1, figsize=(12, 2.0*len(rows)+1.0),
+                                 sharex=True, squeeze=False,
+                                 gridspec_kw={"height_ratios": [1.0 if r[1] == "wave" else 0.62 for r in rows],
+                                              "hspace": 0.12})
+        axes = axes[:, 0]
+        overlay_lines = []
+        for ax, (label, kind, ch) in zip(axes, rows):
+            if kind == "wave":
+                values = waveform[ch]
+                ax.plot(time_ns, values, color="0.78", linewidth=1.0, zorder=1)
+                if shared and len(time_ns) >= 2 and np.any(display_relevance[ch]):
+                    points = np.column_stack([time_ns, values]).reshape(-1, 1, 2)
+                    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+                    seg_rel = 0.5*(display_relevance[ch, :-1]+display_relevance[ch, 1:])
+                    line = LineCollection(segments, cmap="coolwarm",
+                                          norm=TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1),
+                                          linewidths=2.3, zorder=2)
+                    line.set_array(seg_rel)
+                    ax.add_collection(line)
+                    overlay_lines.append(line)
+                ax.set_ylabel(f"D{ch+1}")
+                ax.set_title(label, loc="left", fontsize=9)
+                ax.grid(alpha=0.16)
+            else:
+                rel = display_relevance[ch]
+                ax.axhline(0.0, color="0.5", linewidth=0.7)
+                ax.fill_between(time_ns, 0.0, rel, where=rel >= 0,
+                                color="#d95f5f", alpha=0.8, linewidth=0)
+                ax.fill_between(time_ns, 0.0, rel, where=rel < 0,
+                                color="#4778c7", alpha=0.8, linewidth=0)
+                ax.plot(time_ns, rel, color="0.25", linewidth=0.55, alpha=0.8)
+                ax.set_ylim(-1.08, 1.08)
+                ax.set_yticks([-1, 0, 1])
+                ax.set_ylabel("Norm.")
+                ax.set_title(label, loc="left", fontsize=9)
+                ax.grid(alpha=0.16)
+        axes[-1].set_xlabel("Time relative to waveform window start (ns)")
+        axes[-1].set_xlim(xlim if xlim is not None else (float(time_ns[0]), float(time_ns[-1])))
+        fig.suptitle(
+            f"{stem} | event {event_id} | prediction={prediction:.3f} ps | target={target:.3f} ps\n"
+            f"Colored attribution is robust-normalized for visibility (clipped at 98th percentile); "
+            f"red increases, blue decreases the model output.",
+            y=0.995, fontsize=10,
+        )
+        if overlay_lines:
+            fig.colorbar(overlay_lines[0], ax=[axes[i] for i, row in enumerate(rows) if row[1] == "wave"],
+                         pad=0.012, fraction=0.025, label="Normalized signed attribution")
+        fig.tight_layout(rect=(0, 0, 1, 0.965))
+        fig.savefig(path, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
+    draw(folder / f"{stem}.png")
+    draw(folder / f"{stem}.pdf")
+    if zoom is not None:
+        draw(folder / f"{stem}_zoom.png", zoom)
+        draw(folder / f"{stem}_zoom.pdf", zoom)
 
 def explain_representatives(results, *, models=None, cache_root=None,
                             n_ppv_features=None, yes_overwrite=False, logger=None):
@@ -244,19 +338,10 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
             row = row_for_event[idx]
             relevance = event_signed[row]
             waveform = np.asarray(masked_blind[row], dtype=np.float64)
-            if relevance.shape[0] == 1 and waveform.shape[0] == 2:
-                # A direct paired model yields a joint time map, not a
-                # separately identified detector attribution. Show the same
-                # joint temporal relevance on both traces and label it honestly.
-                plot_relevance = np.repeat(relevance, 2, axis=0)
-                plot_names = ["joint_pair attribution"] * 2
-            else:
-                plot_relevance = relevance
-                plot_names = detector_names
             _plot_event(
                 temp_output, name, str(ids[idx]), float(predictions[idx]),
-                float(target[idx]), masked_time, waveform, plot_relevance,
-                plot_names, method,
+                float(target[idx]), masked_time, waveform, relevance,
+                detector_names, method, shared=shared,
             )
             records.append({
                 "group": name, "quantile_interval": list(INTERVALS[name]),
