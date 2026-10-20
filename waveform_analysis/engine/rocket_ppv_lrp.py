@@ -142,8 +142,11 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
                     unlocalized_signed += relevance
                 index += 1
     if input_attribution is not None:
-        input_attribution[0] += input_signed
-        input_attribution[1] += input_absolute
+        # Arrays live inside a tuple. Mutate their elements, never the
+        # immutable tuple slots (Numba rejects tuple-slot augmented assignment).
+        for t in range(length + trim):
+            input_attribution[0][t] += input_signed[t]
+            input_attribution[1][t] += input_absolute[t]
         input_attribution[2][0] += input_residual
     return reconstructed, signed, absolute, hits, unlocalized_abs, unlocalized_signed
 
