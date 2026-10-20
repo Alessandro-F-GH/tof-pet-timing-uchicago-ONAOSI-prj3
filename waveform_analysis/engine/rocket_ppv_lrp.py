@@ -113,6 +113,11 @@ def _params(artifact, which):
         offsets = np.arange(n + 1, dtype=np.int32)
     elif len(params) == 5:
         nch, channels, dilations, counts, biases = params
+        if which == "difference":
+            # aeon 1.6 _transform_multi explicitly reuses channels from
+            # self.parameter (raw), even though parameter1 carries its
+            # own channel arrays. Match the actual fitted transformation.
+            nch, channels = t.parameter[0], t.parameter[1]
         nch = np.asarray(nch, dtype=np.int32)
         channels = np.asarray(channels, dtype=np.int32)
         offsets = np.concatenate(([0], np.cumsum(nch, dtype=np.int32)))
