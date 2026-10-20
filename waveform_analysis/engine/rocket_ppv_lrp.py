@@ -198,12 +198,17 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     weighted = np.asarray(coefficients[start:end], dtype=np.float64)
     centered_ref = np.asarray(reference_mean[start:end], dtype=np.float64)
     ppv_scores = np.zeros(len(ppv_cols), dtype=np.float64)
+    if logger:
+        logger.info("ROCKET-LRP PPV ranking | full-blind events=%d | candidate PPV features=%d | requested top=%s",
+                    features.shape[0], len(ppv_cols), n_ppv_features if n_ppv_features is not None else "all")
     for lo in range(0, features.shape[0], 256):
         hi = min(lo + 256, features.shape[0])
         block_features = np.asarray(features[lo:hi, start:end], dtype=np.float64)
         ppv_scores += np.abs(
             (block_features[:, ppv_cols] - centered_ref[ppv_cols])
             * weighted[ppv_cols]).sum(axis=0)
+        if logger and (lo == 0 or hi == features.shape[0] or (lo // 256 + 1) % 20 == 0):
+            logger.info("ROCKET-LRP PPV ranking | %d/%d blind events", hi, features.shape[0])
     ppv_scores /= features.shape[0]
     ranking = np.argsort(-ppv_scores, kind="stable")
     selected = np.sort(ranking[:min(n_ppv_features or len(ppv_cols), len(ppv_cols))])
@@ -233,6 +238,9 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     selected_total_abs = 0.0
     all_features_abs = 0.0
     valid_tol = 2e-4
+    if logger:
+        logger.info("ROCKET-LRP PPV tracing | starting %d events | selected PPV features=%d",
+                    len(indices), len(selected_ppv_columns))
     for pos, event_index in enumerate(indices):
         pair = apply_sample_mask(
             waveform_view(blind, mode, [int(event_index)]).materialize(),
@@ -308,8 +316,9 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                 counts[rep, detector] += n_hits
                 unlocalized_abs[rep, detector] += ua
                 unlocalized_signed[rep, detector] += us
-        if logger and (pos == 0 or (pos+1) % 100 == 0 or pos+1 == len(indices)):
-            logger.info("ROCKET-LRP PPV | %d/%d blind events", pos+1, len(indices))
+        if logger and (pos == 0 or (pos+1) % 10 == 0 or pos+1 == len(indices)):
+            logger.info("ROCKET-LRP PPV tracing | %d/%d blind events | top_features=%d",
+                        pos+1, len(indices), len(selected_ppv_columns))
     n = len(indices)
     signed /= n
     absolute /= n
