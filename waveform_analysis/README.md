@@ -591,3 +591,6 @@ Use \`--yes-overwrite\` to explicitly skip the prompt. Run focused tests with:
 \`\`\`bash
 python -m pytest waveform_analysis/tests/test_representative_explainer.py waveform_analysis/tests/test_rdst_temporal.py -q
 \`\`\`
+
+
+Representative-event temporal-importance plots display binned signed contribution values in physical picoseconds (ps), with a shared symmetric y-axis limit across the low/central/high representative events within each model run. Color intensity is normalized independently per event for visual contrast; color intensity is therefore not intended for cross-event magnitude comparisons. Compare bar heights and y-axis values for magnitude.
