@@ -57,7 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     stratified.add_argument("--models", nargs="+", metavar="MODEL")
     stratified.add_argument("--cache-root", type=Path, help="Original prepared development/blind caches")
     stratified.add_argument("--top-k", type=int, default=20)
-    stratified.add_argument("--max-events-per-group", type=int, help="Temporal RDST only: reproducible event cap for all/low/central/high; full-blind quantiles and standard XAI stay unchanged")
+    stratified.add_argument("--max-events-per-group", type=int, help="Temporal RDST only: cap total sampled blind events; full-blind standard XAI stays unchanged")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
