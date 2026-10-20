@@ -264,6 +264,9 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     n_det = 2 if shared else 1
     # Keep representation-specific histograms, detector-specific for shared.
     signed = np.zeros((2, n_det, len(time)), dtype=np.float64)
+    input_signed = np.zeros((2, n_det, len(time)), dtype=np.float64)
+    input_absolute = np.zeros_like(input_signed)
+    input_residual = np.zeros((2, n_det), dtype=np.float64)
     absolute = np.zeros_like(signed)
     counts = np.zeros_like(signed, dtype=np.int64)
     unlocalized_abs = np.zeros((2, n_det), dtype=np.float64)
@@ -303,11 +306,17 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                     # Differenced responses are indexed by their right sample;
                     # this convention deliberately avoids half-grid bins.
                     pass
+                attribution = np.zeros((2, len(time)), dtype=np.float64)
+                residual = np.zeros(1, dtype=np.float64)
                 r, s, a, n_hits, ua, us = _trace_rep(
                     np.ascontiguousarray(values, dtype=np.float32),
                     *params, np.asarray(centered[columns], dtype=np.float64),
                     np.asarray(scales[columns], dtype=np.float64), trim,
-                    selected_mask=np.asarray(selected_mask[columns], dtype=np.bool_))
+                    selected_mask=np.asarray(selected_mask[columns], dtype=np.bool_),
+                    input_attribution=(attribution[0], attribution[1], residual))
+                input_signed[rep, detector] += attribution[0]
+                input_absolute[rep, detector] += attribution[1]
+                input_residual[rep, detector] += residual[0]
                 # Direct: compare to saved features. Shared: collect the two
                 # detector feature vectors, then check their difference.
                 if not shared:
@@ -354,6 +363,9 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
             logger.info("ROCKET-LRP PPV tracing | %d/%d blind events | top_features=%d",
                         pos+1, len(indices), len(selected_ppv_columns))
     n = len(indices)
+    input_signed /= n
+    input_absolute /= n
+    input_residual /= n
     signed /= n
     absolute /= n
     counts = counts / n
@@ -361,6 +373,14 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     unlocalized_signed /= n
     combined_abs = absolute.mean(axis=1).sum(axis=0)
     combined_signed = signed.mean(axis=1).sum(axis=0)
+    input_total_absolute = input_absolute.mean(axis=1).sum(axis=0)
+    input_total_signed = input_signed.mean(axis=1).sum(axis=0)
+    input_missing = input_residual.mean(axis=1).sum()
+    np.testing.assert_allclose(
+        input_total_absolute.sum() + input_missing + unlocalized_abs.mean(axis=1).sum(),
+        selected_total_abs / n, rtol=1e-7, atol=1e-5)
+    input_fraction = (input_total_absolute / input_total_absolute.sum()
+                      if input_total_absolute.sum() else np.zeros_like(input_total_absolute))
     mass = combined_abs.sum() + unlocalized_abs.mean(axis=1).sum()
     np.testing.assert_allclose(mass, selected_total_abs / n, rtol=1e-8, atol=1e-5)
     normalized = (combined_abs / combined_abs.sum() if combined_abs.sum() else
@@ -371,7 +391,7 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         "n_events": np.asarray(n),
         "model_family": np.asarray("multirocket_ppv"),
         "method": np.asarray("rocket_lrp_ppv_pooling_response_positions"),
-        "method_version": np.asarray(1),
+        "method_version": np.asarray(3),
         "scope": np.asarray("PPV-only; no convolution-to-input LRP"),
         "representation_names": np.asarray(["raw", "first_difference"]),
         "detector_names": np.asarray(["joint_pair"] if not shared else ["detector_1", "detector_2"]),
@@ -380,6 +400,14 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         "positive_match_count_per_event": counts,
         "unlocalized_abs_ps": unlocalized_abs,
         "unlocalized_signed_ps": unlocalized_signed,
+        "input_absolute_ps": input_absolute,
+        "input_signed_ps": input_signed,
+        "input_residual_abs_ps": input_residual,
+        "combined_input_absolute_ps": input_total_absolute,
+        "combined_input_signed_ps": input_total_signed,
+        "combined_input_fraction": input_fraction,
+        "input_attribution_method": np.asarray(
+            "abs_input_kernel_product_with_difference_endpoint_split"),
         "combined_absolute_ps": combined_abs,
         "combined_signed_ps": combined_signed,
         "combined_fraction": normalized,
