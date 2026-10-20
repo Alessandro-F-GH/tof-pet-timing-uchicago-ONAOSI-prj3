@@ -356,10 +356,14 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                     predictions = predict_features(spec, fitted, matrices["blind"], chunk, logger=logger, role="blind")
                 ids = np.asarray(blind.event_index)
                 labels, groups = select_quantile_groups(ids, predictions)
-                agg = aggregate_contributions(
-                    matrices["blind"], weights, dev_mean, predictions, labels,
-                    group_size=group_size, intercept=intercept,
-                    clip=fitted.output_max_abs_ps, chunk_size=chunk)
+                with _stage(logger, f"{spec.name} full-blind regression contribution aggregation"):
+                    if logger:
+                        logger.info("Regression XAI | model=%s | events=%d | features=%d | batch_size=%d",
+                                    spec.name, blind.n_events, len(weights), chunk)
+                    agg = aggregate_contributions(
+                        matrices["blind"], weights, dev_mean, predictions, labels,
+                        group_size=group_size, intercept=intercept,
+                        clip=fitted.output_max_abs_ps, chunk_size=chunk, logger=logger)
                 temporal = None
                 if shapelets is not None and config["window_name"] == "wide":
                     from waveform_analysis.engine.rdst_temporal import temporal_match_maps
