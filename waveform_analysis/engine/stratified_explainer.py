@@ -311,7 +311,10 @@ def _explain_one(run, lookup, cache_override, top_k, logger):
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     fitted = load_fitted_model(spec, model_dir, run["best"]["parameters"], config)
-    weights = np.asarray(fitted.artifact.regressor.coef_, dtype=np.float64).reshape(-1)
+    # Preserve the Ridge head's native dtype for numerical reconstruction checks.
+    # float32 LSQR coefficients MUST NOT be upcast at this call site: the
+    # attribution routine performs its own float64 accumulation separately.
+    weights = np.asarray(fitted.artifact.regressor.coef_).reshape(-1)
     intercept = float(fitted.artifact.regressor.intercept_)
     chunk = int(config["runtime"]["prediction_chunk_size"])
     mask = fitted.sample_mask
