@@ -522,3 +522,33 @@ Tests cover independent signal references, reference/current model outputs,
 actual miniature batches, masks, CV/pruning, feature caches, saved-model reload,
 reporting, canonical ownership, conversion and resume. Real acquisition data and
 GPU execution are not represented by these synthetic CPU checks.
+
+
+#### Time distribution over actual waveform inputs
+
+The wide-window RDST temporal explainer now produces both the historical
+`temporal_importance.pdf` (best-match starts) and
+`temporal_sample_importance.pdf` (equal-weight relevance on the ACTUAL
+dilated shapelet taps). A length-L shapelet with dilation d and match start
+p deposits |c|/L at p, p+d, ..., p+(L-1)d only; intermediate samples are
+not credited. Full signed and absolute sample maps are stored in the
+existing RDST temporal NPZ; sample contributions conserve net shapelet
+importance, including shared detector averaging.
+
+MultiRocket PPV also exports `ppv_input_importance.pdf` and
+`ppv_input_importance.png`. After the validated ROCKET-LRP PPV pooling
+redistribution, convolution-response relevance is allocated to the
+actual valid (unpadded) 9-tap input support of each kernel, weighting
+each original input by the absolute magnitude of its input-times-kernel
+weight. A response with no nonzero input-weight products is explicitly
+recorded as unallocated mass. For first-difference inputs, each
+difference's support is allocated half to the preceding original
+waveform sample and half to the succeeding sample, so magnitudes are
+conserved. This is a *conservative magnitude-based input-support
+allocation*, not the original ROCKET-LRP epsilon stabilization or a
+formal signed-gradient/causal analysis. Other MultiRocket pooling
+statistics remain unaccounted for, and `--n-ppv-features` further
+restricts coverage. Both original response-position and input-support
+plots remain available for comparison. Input distribution requires
+additional tracing time.
+
