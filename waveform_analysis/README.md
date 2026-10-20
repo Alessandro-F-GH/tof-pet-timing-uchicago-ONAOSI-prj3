@@ -594,3 +594,8 @@ python -m pytest waveform_analysis/tests/test_representative_explainer.py wavefo
 
 
 Representative-event temporal-importance plots display binned signed contribution values in physical picoseconds (ps), with a shared symmetric y-axis limit across the low/central/high representative events within each model run. Color intensity is normalized independently per event for visual contrast; color intensity is therefore not intended for cross-event magnitude comparisons. Compare bar heights and y-axis values for magnitude.
+
+
+Representative explanation reruns first ask for confirmation when output exists. If all three representative NPZ attribution files and the CSV are available, the command reuses the stored attribution arrays and regenerates plots only; it does not rerun feature transformations, predictions, or attribution estimation. Newly computed NPZ files also store the masked representative waveforms so later plot-only reruns need no dataset access. Legacy NPZ files without saved waveforms load only the blind waveform cache to reconstruct plots. If attribution artifacts are incomplete or invalid, the full explanation workflow is rerun after confirmation.
+
+Detector waveform legend placement: energy mode uses upper left; timing mode uses upper right; Onishi-window plots always use upper left.
