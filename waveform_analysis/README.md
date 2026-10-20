@@ -170,6 +170,15 @@ Each run writes `explanations/stratified/IDENTITY/`, containing:
 
 ### RDST temporal contribution maps (wide window)
 
+To cap **only** temporal localization (not the main XAI summaries or
+prediction quantiles), pass `--max-events-per-group 5000` to
+`explain-stratified`. It reproducibly samples up to 5,000 blind events
+in each low/central/high interval plus an independent all-blind sample
+of up to 5,000 events. The sampled IDs and per-curve counts are recorded
+in `temporal_importance.npz`. Omit the option to use all blind events.
+The cap is included in the explanation cache fingerprint.
+
+
 For saved `direct_rdst` and `shared_rdst` **wide-window** runs,
 `explain-stratified` now additionally exports
 `temporal_importance.npz`, `temporal_importance.csv`,
