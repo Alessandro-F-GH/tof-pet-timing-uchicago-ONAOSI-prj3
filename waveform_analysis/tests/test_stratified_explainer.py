@@ -90,3 +90,35 @@ def test_clipping_checked_against_teacher_and_raises_on_mismatch():
     with pytest.raises(ValueError, match="reconstruction"):
         aggregate_contributions(features, [1.], [0.], predictions+1, labels,
                                 group_size=1, intercept=0, clip=10, chunk_size=70)
+
+
+def test_direct_float32_ridge_prediction_reconstructs_in_original_precision():
+    """Regression: sklearn LSQR Ridge uses float32 for the original prediction.
+
+    Converting weights to float64 for feature attribution must not require
+    float64 equality from the original float32 BLAS calculation.
+    """
+    rng = np.random.default_rng(31415)
+    n = 1000
+    features = (rng.normal(size=(n, 6)) * 8000).astype(np.float32)
+    weights = np.array([3.33, -1.72, 2.14, 1.13, -.43, 4.67], dtype=np.float32)
+    intercept = np.float32(123456.25)
+    predictions = np.asarray(features @ weights + intercept, dtype=np.float32)
+    exact64 = (features.astype(np.float64) @ weights.astype(np.float64)
+               + float(intercept))
+    assert np.max(np.abs(predictions - exact64)) > 1e-4
+
+    labels, _ = select_quantile_groups(np.arange(n), predictions)
+    summary = aggregate_contributions(
+        features, weights, np.zeros(6), predictions, labels,
+        group_size=3, intercept=intercept, clip=None, chunk_size=127,
+    )
+    assert summary["max_reconstruction_error_ps"] < 0.1
+    assert summary["count"].tolist() == [1000, 80, 80, 80]
+
+    # Float32-aware rounding is not a license to accept wrong predictions.
+    with pytest.raises(ValueError, match="reconstruction"):
+        aggregate_contributions(
+            features, weights, np.zeros(6), predictions + 10, labels,
+            group_size=3, intercept=intercept, clip=None, chunk_size=127,
+        )
