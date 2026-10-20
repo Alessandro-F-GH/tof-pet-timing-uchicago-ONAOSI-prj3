@@ -311,7 +311,8 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                      "selection": "model_specific_rank",
                      "temporal_max_events_per_group": max_events_per_group,
                      "temporal_sampling_seed": 1729,
-                     "temporal_method_version": 2},
+                     "temporal_method_version": 2,
+                     "ppv_pooling_method_version": 1},
         "final_fit": manifest["stage_fingerprints"]["final_fit"],
         "development": development.manifest["analysis_protocol_identity"],
         "blind": blind.manifest["analysis_protocol_identity"],
@@ -372,6 +373,22 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                             time_ps=apply_sample_mask_to_time(time, mask),
                             chunk_size=chunk, logger=logger,
                             event_indices=selection, position_cache_root=root)
+                ppv_map = None
+                if ("multirocket" in spec.name and config["window_name"] == "wide"):
+                    from waveform_analysis.engine.rocket_ppv_lrp import ppv_temporal_map
+                    ppv_selection = np.arange(blind.n_events, dtype=np.int64)
+                    if max_events_per_group is not None:
+                        rng = np.random.default_rng(1729)
+                        ppv_selection = np.sort(rng.choice(
+                            ppv_selection, size=min(max_events_per_group, len(ppv_selection)),
+                            replace=False))
+                    with _stage(logger, "MultiRocket PPV pooling time attribution"):
+                        ppv_map = ppv_temporal_map(
+                            fitted=fitted, blind=blind, mode=mode,
+                            features=matrices["blind"], reference_mean=dev_mean,
+                            coefficients=weights,
+                            time_ps=apply_sample_mask_to_time(time, mask),
+                            event_indices=ppv_selection, logger=logger)
                 examples, waves = {}, {}
                 masked_time = apply_sample_mask_to_time(time, mask)
                 for name, group in groups.items():
@@ -432,6 +449,17 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                                      float(temporal["combined_fraction"][t]),
                                      float(temporal["combined_match_count_per_event"][t])])
             plot_temporal_importance(temp_output, temporal)
+        if ppv_map is not None:
+            from waveform_analysis.reporting.rocket_ppv import plot_rocket_ppv
+            np.savez_compressed(temp_output / "ppv_temporal_importance.npz", **ppv_map)
+            with (temp_output / "ppv_temporal_importance.csv").open("w", newline="", encoding="utf-8") as stream:
+                wr = csv.writer(stream)
+                wr.writerow(["time_ns", "absolute_ps", "signed_ps", "localized_fraction"])
+                for k, t in enumerate(ppv_map["time_ps"]):
+                    wr.writerow([float(t / 1000), float(ppv_map["combined_absolute_ps"][k]),
+                                 float(ppv_map["combined_signed_ps"][k]),
+                                 float(ppv_map["combined_fraction"][k])])
+            plot_rocket_ppv(temp_output, ppv_map)
         if shapelets is not None:
             np.savez_compressed(temp_output / "original_shapelets.npz", **shapelets)
             with (temp_output / "feature_families.csv").open("w", newline="", encoding="utf-8") as handle:
