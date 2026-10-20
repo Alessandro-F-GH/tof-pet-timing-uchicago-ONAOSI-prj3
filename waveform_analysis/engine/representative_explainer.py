@@ -414,6 +414,11 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
         if logger:
             logger.info("Representative explanation | skipped overwrite | %s", destination)
         return None
+    if destination.exists() and _cached_representatives_are_reusable(destination):
+        return _replot_existing(
+            destination, directory, config, manifest, PreparedCacheLookup(),
+            cache_override, logger,
+        )
     model_dir = directory / "model"
     if not saved_model_complete(spec, model_dir):
         raise FileNotFoundError(f"Complete saved model with original transform required: {model_dir}")
@@ -493,6 +498,8 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
         masked_blind = apply_sample_mask(
             waveform_view(blind, mode, event_indices).materialize(), fitted.sample_mask
         )
+        is_onishi = any(part.lower() == "onishi" for part in directory.parts)
+        legend_loc = _legend_location(mode, is_onishi)
         # Share the physical y-axis range across the three representatives from
         # this model run. Colors remain event-normalized for visual contrast.
         physical_limit_ps = 0.0
@@ -513,7 +520,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
                 temp_output, name, str(ids[idx]), float(predictions[idx]),
                 float(target[idx]), masked_time, waveform, relevance,
                 detector_names, method, shared=shared,
-                contribution_limit_ps=physical_limit_ps,
+                contribution_limit_ps=physical_limit_ps, legend_loc=legend_loc,
             )
             records.append({
                 "group": name, "quantile_interval": list(INTERVALS[name]),
@@ -523,7 +530,8 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
             })
             np.savez_compressed(
                 temp_output / f"{name}_attribution.npz",
-                time_ps=masked_time, signed_contribution_ps=relevance,
+                time_ps=masked_time, waveform=np.asarray(waveform),
+                signed_contribution_ps=relevance,
                 absolute_contribution_ps=event_abs[row],
                 event_id=np.asarray(str(ids[idx])), prediction_ps=np.asarray(predictions[idx]),
                 target_ps=np.asarray(target[idx]),
