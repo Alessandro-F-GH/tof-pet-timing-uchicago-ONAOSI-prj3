@@ -552,3 +552,35 @@ restricts coverage. Both original response-position and input-support
 plots remain available for comparison. Input distribution requires
 additional tracing time.
 
+
+
+### Local temporal maps for representative events
+
+Run from the repository root:
+
+\`\`\`bash
+python -m waveform_analysis.cli explain-representatives \\
+  --results waveform_analysis/results/FBK/benchmark_48V_final \\
+  --models direct_rdst shared_rdst direct_multirocket shared_multirocket
+\`\`\`
+
+The command reuses the existing blind prediction rank-band selector and selects
+the median-ranked event in each of the 2–10%, 46–54%, and 90–98% bands. It uses
+the existing RDST dilated-shapelet attribution or MultiRocket PPV-to-input
+redistribution methods on those events. MultiRocket's global PPV ranking is
+computed once per model call and reused for all representatives.
+
+Outputs are written directly to each selected model run's \`representatives/\`
+directory (no stratified/hash nesting): one PNG and PDF per low/central/high
+event, per-event signed and absolute attribution arrays, a representative CSV,
+and a summary JSON. Signed color overlays indicate whether a local contribution
+pushes the model output positive or negative. These are model attributions, not
+causal claims. Direct models provide a joint-pair temporal map; shared models
+provide detector-specific maps.
+
+If the output directory already exists, the command asks before overwriting.
+Use \`--yes-overwrite\` to explicitly skip the prompt. Run focused tests with:
+
+\`\`\`bash
+python -m pytest waveform_analysis/tests/test_representative_explainer.py waveform_analysis/tests/test_rdst_temporal.py -q
+\`\`\`
