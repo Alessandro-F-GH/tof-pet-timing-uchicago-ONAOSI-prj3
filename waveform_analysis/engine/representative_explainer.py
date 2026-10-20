@@ -124,7 +124,6 @@ def explain_representatives(results, *, models=None, cache_root=None,
         raise ValueError(f"Requested models not found: {sorted(set(models) - available)}")
     supported = {
         "direct_rdst", "shared_rdst", "direct_multirocket", "shared_multirocket",
-        "direct_multirocket_rdst", "shared_multirocket_rdst",
     }
     selected_runs = [
         run for run in runs
@@ -233,8 +232,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
             method = "MultiRocket PPV pooling attribution redistributed to input samples; raw and difference views combined"
         if event_signed.shape[0] != len(event_indices):
             raise RuntimeError("Temporal attribution output does not align with representative events")
-        target = np.asarray(getattr(blind, f"{family}_target", []))
-        # Use the same target extraction used by the existing batch model view.
+        # Use the same target extraction as the original batch evaluation.
         from waveform_analysis.data.view import model_target
         target = model_target(blind, mode)
         records = []
