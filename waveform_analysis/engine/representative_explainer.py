@@ -85,6 +85,29 @@ def _importance_scale(relevance):
     return np.clip(values / max(scale, np.finfo(float).eps), -1.0, 1.0)
 
 
+
+def _aggregate_signed_importance(time_ns, relevance, *, bin_samples=8):
+    """Sum signed sample-level contributions in consecutive fixed-sample bins."""
+    time_ns = np.asarray(time_ns, dtype=np.float64)
+    values = np.asarray(relevance, dtype=np.float64)
+    if values.ndim == 1:
+        values = values[None, :]
+    if values.ndim != 2 or values.shape[1] != len(time_ns):
+        raise ValueError("Attribution must have shape (channels, samples) matching time grid")
+    if bin_samples < 1:
+        raise ValueError("bin_samples must be positive")
+    if len(time_ns) == 0:
+        return np.empty(0), np.empty((values.shape[0], 0)), np.empty(0)
+
+    centers, widths, sums = [], [], []
+    sample_dt = float(np.median(np.diff(time_ns))) if len(time_ns) > 1 else 0.0
+    for start in range(0, len(time_ns), bin_samples):
+        stop = min(start + bin_samples, len(time_ns))
+        centers.append(float(np.mean(time_ns[start:stop])))
+        widths.append(sample_dt * (stop - start))
+        sums.append(np.sum(values[:, start:stop], axis=1))
+    return np.asarray(centers), np.stack(sums, axis=1), np.asarray(widths)
+
 def _importance_zoom_limits(time_ns, relevance, *, mass_fraction=0.90):
     """Return a padded interval containing most attribution mass, if genuinely local."""
     magnitude = np.sum(np.abs(np.asarray(relevance, dtype=np.float64)), axis=0)
@@ -132,7 +155,13 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
         raise ValueError("Shared model should provide one attribution map per detector")
     if not shared and relevance.shape[0] != 1:
         raise ValueError("Direct model should provide one joint-pair attribution map")
-    display_relevance = _importance_scale(relevance)
+    # Keep the underlying sample-level arrays untouched. For plotting only,
+    # aggregate signed contributions in 8-sample bins (~100 ps at 12.5 ps/sample),
+    # then normalize the binned values for readable visualization.
+    importance_time_ns, binned_relevance, bin_widths_ns = _aggregate_signed_importance(
+        time_ns, relevance, bin_samples=8,
+    )
+    display_relevance = _importance_scale(binned_relevance)
     zoom = _importance_zoom_limits(time_ns, relevance)
 
     # Always show the two detector signals together. Waveform colors identify
@@ -172,16 +201,17 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
                 ax.grid(alpha=0.18)
             else:
                 rel = display_relevance[ch]
+                # Blockwise bars show the net signed contribution per time bin.
+                # Zoomed plots clip the x-axis only; the waveform itself remains
+                # free of saliency coloring, while this panel retains the real
+                # binned attribution values inside the crop.
                 ax.axhline(0.0, color="0.5", linewidth=0.7)
-                ax.fill_between(
-                    time_ns, 0.0, rel, where=rel >= 0,
-                    color="#d95f5f", alpha=0.8, linewidth=0,
+                colors = np.where(rel >= 0, "#d95f5f", "#4778c7")
+                ax.bar(
+                    importance_time_ns, rel,
+                    width=np.maximum(bin_widths_ns * 0.92, 1e-6),
+                    color=colors, edgecolor="none", alpha=0.88, align="center",
                 )
-                ax.fill_between(
-                    time_ns, 0.0, rel, where=rel < 0,
-                    color="#4778c7", alpha=0.8, linewidth=0,
-                )
-                ax.plot(time_ns, rel, color="0.25", linewidth=0.7, alpha=0.9)
                 ax.set_ylim(-1.08, 1.08)
                 ax.set_yticks([-1, 0, 1])
                 ax.set_ylabel("Norm.")
