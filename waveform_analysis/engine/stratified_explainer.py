@@ -79,6 +79,10 @@ def aggregate_contributions(features, coefficients, reference_mean, predictions,
     relative to the full *development* reference feature mean; the original
     prediction is still reconstructed from uncentered contributions.
     """
+    # Keep the fitted head's original precision for reconstruction tolerances.
+    # Casting coefficients to float64 for attribution must NOT imply that
+    # sklearn Ridge predicted in float64 (float32 LSQR heads predict in float32).
+    coefficient_dtype = np.asarray(coefficients).dtype
     weights = np.asarray(coefficients, dtype=np.float64).reshape(-1)
     mu = np.asarray(reference_mean, dtype=np.float64).reshape(-1)
     preds = np.asarray(predictions, dtype=np.float64)
@@ -98,10 +102,8 @@ def aggregate_contributions(features, coefficients, reference_mean, predictions,
     type_signed = np.zeros((4, group_size))
     type_absolute = np.zeros((4, group_size))
     center = weights * mu
-    epsilon = np.finfo(np.result_type(features.dtype, weights.dtype)).eps
+    epsilon = np.finfo(np.result_type(features.dtype, coefficient_dtype)).eps
     max_error, clipped_count = 0., 0
-    local = {}
-    representative_rows = {}  # populated by caller via optional group_indices
     for start in range(0, n, chunk_size):
         end = min(start + chunk_size, n)
         original = np.asarray(features[start:end], dtype=np.float64) * weights
@@ -116,7 +118,13 @@ def aggregate_contributions(features, coefficients, reference_mean, predictions,
         # Match the original predictor with a tolerance for BLAS rounding.
         tolerance = 1e-4 + 8 * epsilon * (np.abs(original).sum(axis=1) + abs(intercept))
         if np.any(diff > tolerance):
-            raise ValueError("Feature contributions fail frozen prediction reconstruction")
+            worst = int(np.argmax(diff / np.maximum(tolerance, np.finfo(float).tiny)))
+            raise ValueError(
+                "Feature contributions fail frozen prediction reconstruction "
+                f"(event row={start + worst}, error={diff[worst]:.6g} ps, "
+                f"tolerance={tolerance[worst]:.6g} ps, "
+                f"input_dtype={features.dtype}, coefficient_dtype={coefficient_dtype})"
+            )
         for group_index in range(4):
             take = (np.ones(end-start, dtype=bool) if group_index == 0
                     else labels[start:end] == group_index - 1)
