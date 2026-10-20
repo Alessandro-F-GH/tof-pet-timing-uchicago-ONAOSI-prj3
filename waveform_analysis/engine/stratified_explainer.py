@@ -285,7 +285,8 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
     directory, manifest = Path(run["directory"]), run["manifest"]
     config = resolve_run_config(directory)
     spec = get_model(manifest["model"])
-    if spec.name not in {"direct_rdst", "shared_rdst", "direct_multirocket", "shared_multirocket"}:
+    if spec.name not in {"direct_rdst", "shared_rdst", "direct_multirocket", "shared_multirocket",
+                          "direct_multirocket_rdst", "shared_multirocket_rdst"}:
         raise ValueError("Stratified explanations currently support RDST and MultiRocket Ridge heads only")
     model_dir = directory / "model"
     if not saved_model_complete(spec, model_dir):
@@ -333,7 +334,7 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
     chunk = int(config["runtime"]["prediction_chunk_size"])
     mask = fitted.sample_mask
     shapelets = (export_shapelets(fitted.feature_transform.artifact.transformer)
-                 if spec.name.endswith("_rdst") else None)
+                 if spec.name in {"direct_rdst", "shared_rdst"} else None)
     group_size = 3 if shapelets is not None else 1
     temp_output = Path(tempfile.mkdtemp(prefix=".stratified-", dir=destination.parent))
     try:
