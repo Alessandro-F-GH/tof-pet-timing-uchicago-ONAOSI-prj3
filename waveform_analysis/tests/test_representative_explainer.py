@@ -4,6 +4,7 @@ import pytest
 
 from waveform_analysis.engine.representative_explainer import (
     _confirm_overwrite, _importance_scale, _importance_zoom_limits, _aggregate_signed_importance,
+    _legend_location, _cached_representatives_are_reusable,
 )
 from waveform_analysis.engine.stratified_explainer import INTERVALS, select_quantile_groups
 
@@ -83,3 +84,31 @@ def test_aggregated_signed_importance_preserves_cancellation():
     relevance = np.array([[1., 1., 1., 1., -1., -1., -1., -1.]])
     _, binned, _ = _aggregate_signed_importance(time_ns, relevance, bin_samples=8)
     assert binned[0, 0] == pytest.approx(0.0)
+
+
+
+def test_legend_location_depends_on_channel_and_onishi_window():
+    assert _legend_location("energy_to_energy", False) == "upper left"
+    assert _legend_location("timing_to_timing", False) == "upper right"
+    assert _legend_location("timing_to_timing", True) == "upper left"
+
+
+def test_existing_attributions_are_detected_for_plot_only_reuse(tmp_path):
+    destination = tmp_path / "representatives"
+    destination.mkdir()
+    (destination / "representatives.csv").write_text(
+        "group,population_index\nlow,1\ncentral,2\nhigh,3\n", encoding="utf-8"
+    )
+    for group in ("low", "central", "high"):
+        np.savez_compressed(
+            destination / f"{group}_attribution.npz",
+            time_ps=np.arange(16, dtype=float),
+            signed_contribution_ps=np.zeros((1, 16)),
+            absolute_contribution_ps=np.zeros((1, 16)),
+            event_id=np.asarray(group),
+            prediction_ps=np.asarray(0.),
+            target_ps=np.asarray(0.),
+        )
+    assert _cached_representatives_are_reusable(destination)
+    (destination / "high_attribution.npz").unlink()
+    assert not _cached_representatives_are_reusable(destination)
