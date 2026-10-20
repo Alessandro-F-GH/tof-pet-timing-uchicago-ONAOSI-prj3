@@ -57,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     stratified.add_argument("--models", nargs="+", metavar="MODEL")
     stratified.add_argument("--cache-root", type=Path, help="Original prepared development/blind caches")
     stratified.add_argument("--top-k", type=int, default=20)
+    stratified.add_argument("--max-events-per-group", type=int, help="Temporal RDST only: reproducible event cap for all/low/central/high; full-blind quantiles and standard XAI stay unchanged")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -81,7 +82,7 @@ def main() -> None:
     if args.command == "explain-stratified":
         from .engine.stratified_explainer import explain_stratified
         for output in explain_stratified(args.results, models=args.models, cache_root=args.cache_root,
-                                         top_k=args.top_k, logger=logger):
+                                         top_k=args.top_k, max_events_per_group=args.max_events_per_group, logger=logger):
             print(output)
         return
     if args.command in {"plots", "report"}:
