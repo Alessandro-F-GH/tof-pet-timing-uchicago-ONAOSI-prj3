@@ -335,7 +335,7 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                             f"reconstructed_scaled={float(r[worst]):.7g} "
                             f"saved_scaled={float(expected[worst]):.7g} "
                             f"scale={float(scales[columns[worst]]):.7g} "
-                            f"max_error={float(delta[worst]):.7g}")
+                            f"max_error={float(delta[worst_active]):.7g}")
                 else:
                     if detector == 0:
                         if rep == 0:
@@ -348,7 +348,8 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                         active = selected_mask[columns]
                         if not np.allclose((baseline-r)[active], expected[active], atol=valid_tol, rtol=valid_tol):
                             delta = np.abs((baseline-r)[active] - expected[active])
-                            worst = int(np.flatnonzero(active)[np.argmax(delta)])
+                            worst_active = int(np.argmax(delta))
+                            worst = int(np.flatnonzero(active)[worst_active])
                             raise ValueError(
                                 f"Shared PPV reconstruction failed | event={int(event_index)} "
                                 f"representation={['raw','difference'][rep]} "
