@@ -48,7 +48,7 @@ def _plot_waveform_map(path, time_ps, waveform, relevance, *, title, label):
     if waveform.ndim != 1 or relevance.shape != waveform.shape:
         raise ValueError("Waveform and local temporal attribution must have matching 1-D shapes")
     fig, ax = plt.subplots(figsize=(10, 3.3))
-    ax.plot(time_ns, waveform, color="0.78", linewidth=1.1, zorder=1)
+    ax.plot(time_ns, waveform, color="0.25", linewidth=1.8, zorder=1)
     if len(time_ns) >= 2 and np.any(relevance):
         points = np.column_stack([time_ns, waveform]).reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
@@ -160,7 +160,7 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
         for ax, (label, kind, ch) in zip(axes, rows):
             if kind == "wave":
                 values = waveform[ch]
-                ax.plot(time_ns, values, color="0.78", linewidth=1.0, zorder=1)
+                ax.plot(time_ns, values, color="0.25", linewidth=1.8, zorder=1)
                 # In the cropped/zoomed figure, keep waveform traces neutral:
                 # the dedicated signed-attribution panel below carries the colors.
                 # Full-window figures retain the overlay for quick visual orientation.
@@ -193,9 +193,7 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
         axes[-1].set_xlabel("Time relative to waveform window start (ns)")
         axes[-1].set_xlim(xlim if xlim is not None else (float(time_ns[0]), float(time_ns[-1])))
         fig.suptitle(
-            f"{stem} | event {event_id} | prediction={prediction:.3f} ps | target={target:.3f} ps\n"
-            f"Colored attribution is robust-normalized for visibility (clipped at 98th percentile); "
-            f"red increases, blue decreases the model output.",
+            f"{stem} | event {event_id} | prediction={prediction:.3f} ps | target={target:.3f} ps",
             y=0.995, fontsize=10,
         )
         if overlay_lines:
