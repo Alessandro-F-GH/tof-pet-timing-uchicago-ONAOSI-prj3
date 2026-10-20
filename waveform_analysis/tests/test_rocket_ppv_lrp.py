@@ -123,7 +123,7 @@ def test_ppv_subset_matches_aeon_selected_columns_only():
 
 def test_ppv_input_relevance_conserved_and_sparse_dilated():
     signal = np.zeros((1, 33), dtype=np.float32)
-    signal[10] = 1.
+    signal[0, 10] = 1.
     kernel = np.array([[0, 1, 2]], dtype=np.int32)
     args = (signal, np.array([1], np.int32), np.array([0], np.int32),
             np.array([0, 1], np.int32), np.array([2], np.int32),
