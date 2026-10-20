@@ -375,7 +375,8 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                             coefficients=weights, group_labels=labels,
                             time_ps=apply_sample_mask_to_time(time, mask),
                             chunk_size=chunk, logger=logger,
-                            event_indices=selection, all_membership=all_membership)
+                            event_indices=selection, all_membership=all_membership,
+                            position_cache_root=root)
                 examples, waves = {}, {}
                 masked_time = apply_sample_mask_to_time(time, mask)
                 for name, group in groups.items():
