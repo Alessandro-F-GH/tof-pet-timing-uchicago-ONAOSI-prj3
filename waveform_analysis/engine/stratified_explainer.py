@@ -72,7 +72,7 @@ def select_quantile_groups(event_ids, predictions, intervals=INTERVALS):
 
 
 def aggregate_contributions(features, coefficients, reference_mean, predictions,
-                            intervals_labels, *, group_size, intercept, clip, chunk_size):
+                            intervals_labels, *, group_size, intercept, clip, chunk_size, logger=None):
     """Stream exact pre-clipping additive contributions in O(n_features) memory.
 
     Net shapelet contributions are added before absolute values. Centering is
@@ -149,6 +149,9 @@ def aggregate_contributions(features, coefficients, reference_mean, predictions,
             typed = corrected[take].reshape(-1, ng, group_size).sum(axis=1)
             type_signed[group_index] += typed.sum(axis=0)
             type_absolute[group_index] += np.abs(typed).sum(axis=0)
+        if logger and (start == 0 or end == n or (start // chunk_size + 1) % 10 == 0):
+            logger.info("Regression XAI aggregation | %d/%d blind events | features=%d | max_reconstruction_error=%.5g ps",
+                        end, n, p, max_error)
     if np.any(counts == 0):
         raise ValueError("At least one explanation group is empty")
     mean = totals / counts[:, None]
