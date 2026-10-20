@@ -310,7 +310,8 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
         "settings": {"intervals": INTERVALS, "top_k": top_k, "reference": "development_mean",
                      "selection": "model_specific_rank",
                      "temporal_max_events_per_group": max_events_per_group,
-                     "temporal_sampling_seed": 1729},
+                     "temporal_sampling_seed": 1729,
+                     "temporal_method_version": 2},
         "final_fit": manifest["stage_fingerprints"]["final_fit"],
         "development": development.manifest["analysis_protocol_identity"],
         "blind": blind.manifest["analysis_protocol_identity"],
@@ -358,25 +359,19 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                 if shapelets is not None and config["window_name"] == "wide":
                     from waveform_analysis.engine.rdst_temporal import temporal_match_maps
                     selection = np.arange(blind.n_events, dtype=np.int64)
-                    sampled_all = None
                     if max_events_per_group is not None:
                         rng = np.random.default_rng(1729)
-                        sampled_all = np.sort(rng.choice(selection, size=min(max_events_per_group, len(selection)), replace=False))
-                        choices = [sampled_all]
-                        for band in range(3):
-                            available_band = np.flatnonzero(labels == band)
-                            choices.append(rng.choice(available_band, size=min(max_events_per_group, len(available_band)), replace=False))
-                        selection = np.unique(np.concatenate(choices))
-                    all_membership = None if sampled_all is None else np.isin(selection, sampled_all)
+                        selection = np.sort(rng.choice(
+                            selection, size=min(max_events_per_group, len(selection)),
+                            replace=False))
                     with _stage(logger, "RDST time-localized contributions"):
                         temporal = temporal_match_maps(
-                            spec=spec, fitted=fitted, blind=blind, mode=mode,
+                            fitted=fitted, blind=blind, mode=mode,
                             features=matrices["blind"], reference_mean=dev_mean,
-                            coefficients=weights, group_labels=labels,
+                            coefficients=weights,
                             time_ps=apply_sample_mask_to_time(time, mask),
                             chunk_size=chunk, logger=logger,
-                            event_indices=selection, all_membership=all_membership,
-                            position_cache_root=root)
+                            event_indices=selection, position_cache_root=root)
                 examples, waves = {}, {}
                 masked_time = apply_sample_mask_to_time(time, mask)
                 for name, group in groups.items():
@@ -429,14 +424,13 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
             np.savez_compressed(temp_output / "temporal_importance.npz", **temporal)
             with (temp_output / "temporal_importance.csv").open("w", newline="", encoding="utf-8") as stream:
                 writer = csv.writer(stream)
-                writer.writerow(["group", "time_ns", "mean_absolute_ps", "mean_signed_ps", "fraction", "matches_per_event"])
-                for k, name in enumerate(GROUP_NAMES):
-                    for t in range(len(temporal["time_ps"])):
-                        writer.writerow([name, float(temporal["time_ps"][t] / 1000),
-                                         float(temporal["combined_absolute_ps"][k, t]),
-                                         float(temporal["combined_signed_ps"][k, t]),
-                                         float(temporal["combined_fraction"][k, t]),
-                                         float(temporal["combined_match_count_per_event"][k, t])])
+                writer.writerow(["time_ns", "mean_absolute_ps", "mean_signed_ps", "fraction", "matches_per_event"])
+                for t in range(len(temporal["time_ps"])):
+                    writer.writerow([float(temporal["time_ps"][t] / 1000),
+                                     float(temporal["combined_absolute_ps"][t]),
+                                     float(temporal["combined_signed_ps"][t]),
+                                     float(temporal["combined_fraction"][t]),
+                                     float(temporal["combined_match_count_per_event"][t])])
             plot_temporal_importance(temp_output, temporal)
         if shapelets is not None:
             np.savez_compressed(temp_output / "original_shapelets.npz", **shapelets)
