@@ -170,54 +170,33 @@ Each run writes `explanations/stratified/IDENTITY/`, containing:
 
 ### RDST temporal contribution maps (wide window)
 
-To cap **only** temporal localization (not the main XAI summaries or
-prediction quantiles), pass `--max-events-per-group 5000` to
-`explain-stratified`. It reproducibly samples up to 5,000 blind events
-in each low/central/high interval plus an independent all-blind sample
-of up to 5,000 events. The sampled IDs and per-curve counts are recorded
-in `temporal_importance.npz`. Omit the option to use all blind events.
-The cap is included in the explanation cache fingerprint.
+`explain-stratified` retains standard full-blind global and
+low/central/high feature-contribution outputs. For **wide-window RDST**
+models it additionally computes **one global** contribution-weighted
+best-match-start importance curve, rather than plotting very similar
+temporal distributions for each prediction group.
 
+Use `--max-events-per-group 5000` to bound the **total number of blind
+events** analyzed for temporal XAI to 5,000, selected reproducibly.
+(The option name remains for command-line compatibility; it no longer
+samples four groups.) Omit it for all blind events. Full-blind prediction
+quantiles and standard shapelet XAI are unchanged. The sampled IDs and
+actual event count are stored in `temporal_importance.npz`.
 
-For saved `direct_rdst` and `shared_rdst` **wide-window** runs,
-`explain-stratified` now additionally exports
-`temporal_importance.npz`, `temporal_importance.csv`,
-`temporal_importance.png` and `temporal_importance.pdf`.
-Shared models also export separate-detector maps
-(`temporal_importance_detectors.png/.pdf`).
+Outputs: `temporal_importance.npz`, `temporal_importance.csv`,
+`temporal_importance.png`, and `temporal_importance.pdf`. Shared RDST
+additionally exports `temporal_importance_detectors.png/.pdf`.
+Each shapelet contributes its **net** sum of its three centered Ridge terms,
+deposited at its best-match start position; separate shapelet weights
+accumulate when matches share a position. The time-axis plot marks the
+Onishi window. It describes match-position relevance rather than causal
+sample-level attribution. Standard signed, absolute and normalized values,
+plus match-count diagnostics, remain available in the NPZ arrays.
 
-Each event/shapelet has one contribution: the sum of its **three**
-development-mean-centered RDST Ridge terms (distance, argmin, occurrence)
-**before taking absolute value**. The full net shapelet contribution is
-associated with the **start sample of its best matching subsequence**.
-Different shapelets matching at the same sample have additive absolute
-contribution mass. The maps include all blind events and the existing
-low/central/high prediction-rank groups. They export absolute and signed
-ps-per-event-per-sample, unweighted match counts, normalized fractions,
-and contribution mass within the Onishi interval (−1.5 through 2 ns).
-Plots mark these boundaries explicitly.
-
-Direct RDST has a *joint two-channel* shapelet match, so its map is not
-detector-specific. For shared RDST, the two detector-specific best-match positions cannot be
-recovered from the saved difference feature alone. A one-time application of
-the **original frozen** shapelet transform to the two detector signals is
-required. It now uses a single pooled call per 64 event pairs and persists
-both position arrays, indexed by blind population index, under the prepared
-cache root in `rdst_temporal_positions/`. Matching positions are reused
-across explanation reruns, sample sizes, and overlapping quantile groups.
-The position cache is tied to the transform identity, blind-population ID,
-event order, control-derived input mask, and retained time grid. Completed
-64-event batches are retained after interruption; missing events alone need
-recalculation on restart. Use `--cache-root` to relocate this cache if needed.
-Positions are verified against the original frozen shared feature differences. The two position histograms show where
-the original *net paired* contribution is located in either detector;
-the averaged map conserves that net mass without double counting, but
-is not a separate additive detector attribution.
-
-This visualization is **contribution-weighted match-position
-localization**, not causal/sample-level attribution. It uses no input
-occlusion and no model refitting. Existing standard coefficient-based
-shapelet XAI and all pre-existing stratified plots remain available.
+Shared RDST detector positions are computed once with the saved frozen
+transform and checkpointed under `rdst_temporal_positions/` in the
+prepared cache root. Already computed event positions are reused across
+reruns and sampling limits. No model fitting or input modification occurs.
 
 The explanation is `coefficient * (frozen feature - development mean)`; it
 decomposes pre-output-clipping predictions and checks reconstruction *after*
