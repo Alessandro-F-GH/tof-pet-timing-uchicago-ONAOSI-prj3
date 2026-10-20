@@ -46,17 +46,17 @@ def test_direct_temporal_map_conserves_net_shapelet_contribution():
     result = temporal_match_maps(
         spec=None, fitted=_dummy_fitted(False), blind=None, mode="energy_to_energy",
         features=features, reference_mean=np.zeros(6),
-        coefficients=weights, group_labels=labels,
+        coefficients=weights,
         time_ps=np.arange(8)*100., chunk_size=7,
     )
-    assert result["n_events"].tolist() == [30, 4, 4, 4]
+    assert int(result["n_events"]) == 30
     assert result["detector_names"].tolist() == ["joint_pair"]
     # First shapelet's terms +10 and -10 cancel *before* abs.
     # Second shapelet has a +3 contribution.
-    assert result["net_shapelet_abs_ps"][0] == pytest.approx(3.)
-    assert result["combined_absolute_ps"][0, 3] == pytest.approx(3.)
-    assert result["combined_fraction"][0].sum() == pytest.approx(1.)
-    assert result["combined_match_count_per_event"][0].sum() == pytest.approx(2.)
+    assert float(result["net_shapelet_abs_ps"]) == pytest.approx(3.)
+    assert result["combined_absolute_ps"][3] == pytest.approx(3.)
+    assert result["combined_fraction"].sum() == pytest.approx(1.)
+    assert result["combined_match_count_per_event"].sum() == pytest.approx(2.)
 
 
 def test_shared_position_cache_reuses_events_and_recovers_after_interruption(tmp_path, monkeypatch):
