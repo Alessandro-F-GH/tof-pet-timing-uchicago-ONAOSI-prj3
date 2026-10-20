@@ -2,8 +2,8 @@
 
 The three RDST feature contributions for each shapelet are combined BEFORE
 taking their absolute value, and this net contribution is deposited at the
-shapelet's best-match START position. This is descriptive match localization,
-not causal attribution to individual waveform samples.
+shapelet's best-match START position and separately over its dilated
+sampling points. These are descriptive localization maps, not causality.
 
 Only one reproducible blind sample is used, independently of the standard
 prediction-quantile feature-space explanations.
@@ -33,6 +33,35 @@ def recover_argmin(scaled_features, scales, lengths, dilations, n_samples):
             or np.any(index > maximum[None, :])):
         raise ValueError("Recovered RDST argmin does not match valid sample starts")
     return index
+
+
+
+def distribute_dilated_matches(positions, contributions, lengths, dilations, n_samples):
+    """Credit only the dilated sample points, never intervening samples."""
+    p = np.asarray(positions, dtype=np.int64)
+    c = np.asarray(contributions, dtype=np.float64)
+    l = np.asarray(lengths, dtype=np.int64)
+    d = np.asarray(dilations, dtype=np.int64)
+    if (p.ndim != 2 or c.shape != p.shape or l.shape != (p.shape[1],)
+            or d.shape != l.shape or np.any(l < 1) or np.any(d < 1)
+            or not np.all(np.isfinite(c)) or np.any(p < 0)
+            or np.any(p + (l[None, :] - 1) * d[None, :] >= n_samples)):
+        raise ValueError("Invalid dilated shapelet match positions or contributions")
+    signed = np.zeros(n_samples, dtype=np.float64)
+    absolute = np.zeros(n_samples, dtype=np.float64)
+    frequency = np.zeros(n_samples, dtype=np.float64)
+    for tap in range(int(l.max())):
+        active = np.flatnonzero(l > tap)
+        sampled = (p[:, active] + tap * d[active][None, :]).reshape(-1)
+        portions = (c[:, active] / l[active][None, :]).reshape(-1)
+        signed += np.bincount(sampled, weights=portions, minlength=n_samples)
+        absolute += np.bincount(sampled, weights=np.abs(portions), minlength=n_samples)
+        frequency += np.bincount(
+            sampled,
+            weights=np.broadcast_to(
+                1.0 / l[active][None, :], (len(p), len(active))).reshape(-1),
+            minlength=n_samples)
+    return signed, absolute, frequency
 
 
 def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
@@ -73,6 +102,9 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
     absolute_sum = np.zeros((n_detectors, len(time)), dtype=np.float64)
     signed_sum = np.zeros_like(absolute_sum)
     count_sum = np.zeros_like(absolute_sum, dtype=np.int64)
+    sample_absolute_sum = np.zeros_like(absolute_sum)
+    sample_signed_sum = np.zeros_like(absolute_sum)
+    sample_count_sum = np.zeros_like(absolute_sum)
     net_absolute_sum = 0.0
     net_signed_sum = 0.0
 
@@ -106,6 +138,11 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
             signed_sum[detector] += np.bincount(
                 locs, weights=contribution, minlength=len(time))
             count_sum[detector] += np.bincount(locs, minlength=len(time))
+            ds, da, dc = distribute_dilated_matches(
+                position, net, lengths, dilations, len(time))
+            sample_signed_sum[detector] += ds
+            sample_absolute_sum[detector] += da
+            sample_count_sum[detector] += dc
 
         if logger and (stop == len(indices) or start == 0):
             logger.info("RDST temporal XAI | %d/%d blind events | shared=%s",
@@ -115,6 +152,9 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
     absolute = absolute_sum / n_events
     signed = signed_sum / n_events
     frequency = count_sum / n_events
+    sample_absolute = sample_absolute_sum / n_events
+    sample_signed = sample_signed_sum / n_events
+    sample_frequency = sample_count_sum / n_events
     # Each shapelet deposits its net contribution exactly once in EACH
     # shared-detector view. The combined profile averages the two.
     np.testing.assert_allclose(
@@ -122,6 +162,18 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
     np.testing.assert_allclose(
         signed.sum(axis=1), net_signed_sum / n_events, rtol=2e-12, atol=1e-8)
 
+    np.testing.assert_allclose(
+        sample_absolute.sum(axis=1), net_absolute_sum / n_events,
+        rtol=2e-12, atol=1e-8)
+    np.testing.assert_allclose(
+        sample_signed.sum(axis=1), net_signed_sum / n_events,
+        rtol=2e-12, atol=1e-8)
+    combined_sample_absolute = sample_absolute.mean(axis=0)
+    combined_sample_signed = sample_signed.mean(axis=0)
+    combined_sample_frequency = sample_frequency.mean(axis=0)
+    sample_total = combined_sample_absolute.sum()
+    sample_normalized = (combined_sample_absolute / sample_total if sample_total > 0
+                         else np.zeros_like(combined_sample_absolute))
     combined_absolute = absolute.mean(axis=0)
     combined_signed = signed.mean(axis=0)
     combined_frequency = frequency.mean(axis=0)
@@ -142,11 +194,21 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
         "combined_signed_ps": combined_signed,
         "combined_match_count_per_event": combined_frequency,
         "combined_fraction": normalized,
+        "sample_absolute_ps": sample_absolute,
+        "sample_signed_ps": sample_signed,
+        "sample_count_per_event": sample_frequency,
+        "combined_sample_absolute_ps": combined_sample_absolute,
+        "combined_sample_signed_ps": combined_sample_signed,
+        "combined_sample_count_per_event": combined_sample_frequency,
+        "combined_sample_fraction": sample_normalized,
+        "sample_onishi_fraction": np.asarray(sample_normalized[within_onishi].sum()),
+        "sample_distribution_method": np.asarray(
+            "uniform_over_exact_dilated_shapelet_sample_positions"),
         "onishi_fraction": np.asarray(normalized[within_onishi].sum()),
         "net_shapelet_abs_ps": np.asarray(net_absolute_sum / n_events),
         "net_shapelet_signed_ps": np.asarray(net_signed_sum / n_events),
         "method": np.asarray("global_contribution_weighted_best_match_start"),
-        "method_version": np.asarray(2, dtype=np.int32),
+        "method_version": np.asarray(3, dtype=np.int32),
         "shared_aggregation": np.asarray(
             "mean_of_two_detector_maps" if shared else "joint_multichannel_match"),
     }
