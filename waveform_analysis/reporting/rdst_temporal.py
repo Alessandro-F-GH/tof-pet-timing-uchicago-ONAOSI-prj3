@@ -46,3 +46,19 @@ def plot_temporal_importance(directory, temporal):
             fig.savefig(folder / f"temporal_importance_detectors.{ext}",
                         dpi=170, bbox_inches="tight")
         plt.close(fig)
+
+    # Separate main input-support view; retain original match-start diagnostics.
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    axes[0].plot(time, temporal["combined_sample_absolute_ps"])
+    axes[1].plot(time, temporal["combined_sample_fraction"])
+    axes[0].set_ylabel("Dilated-tap absolute relevance [ps/event/sample]")
+    axes[1].set_ylabel("Fraction of total / sample")
+    axes[1].set_xlabel("Time relative to alignment [ns]")
+    for ax in axes:
+        ax.axvspan(-1.5, 2., color="orange", alpha=.12)
+        ax.grid(alpha=.15)
+    fig.suptitle("RDST importance distributed over actual dilated shapelet taps")
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        fig.savefig(folder / f"temporal_sample_importance.{ext}", dpi=170, bbox_inches="tight")
+    plt.close(fig)
