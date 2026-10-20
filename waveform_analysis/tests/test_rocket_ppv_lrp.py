@@ -120,3 +120,31 @@ def test_ppv_subset_matches_aeon_selected_columns_only():
         assert np.isnan(restored[~selected]).all()
         np.testing.assert_allclose(restored[selected], scaled[0, columns[selected]],
                                    atol=2e-4, rtol=2e-4, err_msg=rep)
+
+def test_ppv_input_relevance_conserved_and_sparse_dilated():
+    signal = np.zeros((1, 33), dtype=np.float32)
+    signal[10] = 1.
+    kernel = np.array([[0, 1, 2]], dtype=np.int32)
+    args = (signal, np.array([1], np.int32), np.array([0], np.int32),
+            np.array([0, 1], np.int32), np.array([2], np.int32),
+            np.array([1], np.int32), np.array([-100.], np.float32),
+            kernel, np.array([5.]), np.ones(1), 0)
+    attr = np.zeros((2, 33), dtype=np.float64)
+    missing = np.zeros(1, dtype=np.float64)
+    _trace_rep(*args, input_attribution=(attr[0], attr[1], missing))
+    assert attr[1].sum() + missing[0] == pytest.approx(5., abs=1e-7)
+    assert attr[0].sum() == pytest.approx(attr[1].sum(), abs=1e-7)
+
+def test_ppv_difference_input_allocates_two_endpoints():
+    x = np.zeros((1, 32), dtype=np.float32)
+    x[0, 10] = 1.
+    args = (x, np.array([1], np.int32), np.array([0], np.int32),
+            np.array([0, 1], np.int32), np.array([1], np.int32),
+            np.array([1], np.int32), np.array([-100.], np.float32),
+            np.array([[0, 1, 2]], np.int32),
+            np.array([5.]), np.ones(1), 1)
+    attr = np.zeros((2, 33), dtype=np.float64)
+    missing = np.zeros(1, dtype=np.float64)
+    _trace_rep(*args, input_attribution=(attr[0], attr[1], missing))
+    assert attr[1].sum() + missing[0] == pytest.approx(5., abs=1e-7)
+    assert attr[1, 10] > 0 and attr[1, 11] > 0
