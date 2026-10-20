@@ -59,7 +59,7 @@ def _histogram(positions, contributions, group_indices, hist_signed, hist_abs, h
 
 def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
                         coefficients, group_labels, time_ps, chunk_size, logger=None,
-                        event_indices=None, all_membership=None):
+                        event_indices=None, all_membership=None, position_cache_root=None):
     """Compute descriptive match-start maps without modifying model inputs.
 
     Direct: the multichannel shapelet has one joint match position.
@@ -103,21 +103,15 @@ def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
         net = ((np.asarray(data, dtype=np.float64) - ref) * weights).reshape(-1, len(lengths), 3).sum(axis=2)
         positions = []
         if shared:
-            # Differenced argmin columns are not individual detector positions.
-            # Re-evaluate the SAVED shapelet bank on the two original detectors.
-            pair = apply_sample_mask(waveform_view(blind, mode, selected_ids).materialize(),
-                                     fitted.sample_mask)
-            first = np.asarray(artifact.transformer.transform(pair[:, :1]), dtype=np.float32)
-            second = np.asarray(artifact.transformer.transform(pair[:, 1:]), dtype=np.float32)
-            # Reproduce the same float32 scaling and differencing as rdst_common.
-            z1 = np.asarray(artifact.scaler.transform(first), dtype=np.float32)
-            z2 = np.asarray(artifact.scaler.transform(second), dtype=np.float32)
-            if not np.allclose(np.asarray(z1 - z2, np.float32), data, atol=2e-4, rtol=2e-4):
-                raise ValueError("Separate-detector RDST features do not reconstruct saved shared features")
-            positions = [
-                recover_argmin(z1, scales, lengths, dilations, len(time)),
-                recover_argmin(z2, scales, lengths, dilations, len(time)),
-            ]
+            if position_cache_root is None:
+                raise ValueError("Shared RDST temporal explanations require position_cache_root")
+            from waveform_analysis.engine.rdst_position_cache import shared_positions_for_events
+            recovered = shared_positions_for_events(
+                cache_root=position_cache_root, fitted=fitted, dataset=blind,
+                mode=mode, event_indices=selected_ids, frozen_features=features,
+                time_ps=time, logger=logger if start == 0 else None,
+            )
+            positions = [recovered[:, 0, :], recovered[:, 1, :]]
         else:
             positions = [recover_argmin(data, scales, lengths, dilations, len(time))]
         chosen = labels[selected_ids]
