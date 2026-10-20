@@ -41,11 +41,11 @@ def recover_argmin(scaled_features, scales, lengths, dilations, n_samples):
     return index
 
 
-def _histogram(positions, contributions, group_indices, hist_signed, hist_abs, hist_count):
+def _histogram(positions, contributions, group_indices, hist_signed, hist_abs, hist_count, *, all_selected=None):
     """Add event-shapelet weights at their best-match locations, chunkwise."""
     n_samples = hist_signed.shape[-1]
     for detector, position in enumerate(positions):
-        for row, selected in enumerate((np.ones(len(contributions), dtype=bool),
+        for row, selected in enumerate((np.ones(len(contributions), dtype=bool) if all_selected is None else all_selected,
                                         group_indices == 0, group_indices == 1,
                                         group_indices == 2)):
             if not np.any(selected):
@@ -58,7 +58,8 @@ def _histogram(positions, contributions, group_indices, hist_signed, hist_abs, h
 
 
 def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
-                        coefficients, group_labels, time_ps, chunk_size, logger=None):
+                        coefficients, group_labels, time_ps, chunk_size, logger=None,
+                        event_indices=None, all_membership=None):
     """Compute descriptive match-start maps without modifying model inputs.
 
     Direct: the multichannel shapelet has one joint match position.
@@ -75,10 +76,16 @@ def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
     ref = np.asarray(reference_mean, dtype=np.float64)
     weights = np.asarray(coefficients, dtype=np.float64)
     labels = np.asarray(group_labels, dtype=np.int8)
-    n, p = features.shape
+    n_total, p = features.shape
+    indices = np.arange(n_total, dtype=np.int64) if event_indices is None else np.asarray(event_indices, dtype=np.int64)
+    if indices.ndim != 1 or not len(indices) or np.any(indices < 0) or np.any(indices >= n_total) or np.any(np.diff(indices) <= 0):
+        raise ValueError("Temporal event indices must be nonempty, sorted and unique")
+    membership = np.ones(len(indices), dtype=bool) if all_membership is None else np.asarray(all_membership, dtype=bool)
+    if membership.shape != indices.shape:
+        raise ValueError("All-population membership must align with selected events")
     if (time.ndim != 1 or not np.all(np.isfinite(time))
             or np.any(np.diff(time) <= 0) or ref.shape != (p,) or weights.shape != (p,)
-            or p != 3 * len(lengths) or labels.shape != (n,) or chunk_size < 1):
+            or p != 3 * len(lengths) or labels.shape != (n_total,) or chunk_size < 1):
         raise ValueError("Temporal XAI expects aligned original frozen features and grid")
     shared = bool(artifact.shared)
     detector_names = np.asarray(["detector_1", "detector_2"] if shared else ["joint_pair"])
@@ -89,15 +96,16 @@ def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
     sample_count = np.zeros(4, dtype=np.int64)
     net_abs_total = np.zeros(4, dtype=np.float64)
     net_signed_total = np.zeros(4, dtype=np.float64)
-    for start in range(0, n, chunk_size):
-        stop = min(start + chunk_size, n)
-        data = np.asarray(features[start:stop], dtype=np.float32)
+    for start in range(0, len(indices), chunk_size):
+        stop = min(start + chunk_size, len(indices))
+        selected_ids = indices[start:stop]
+        data = np.asarray(features[selected_ids], dtype=np.float32)
         net = ((np.asarray(data, dtype=np.float64) - ref) * weights).reshape(-1, len(lengths), 3).sum(axis=2)
         positions = []
         if shared:
             # Differenced argmin columns are not individual detector positions.
             # Re-evaluate the SAVED shapelet bank on the two original detectors.
-            pair = apply_sample_mask(waveform_view(blind, mode, np.arange(start, stop)).materialize(),
+            pair = apply_sample_mask(waveform_view(blind, mode, selected_ids).materialize(),
                                      fitted.sample_mask)
             first = np.asarray(artifact.transformer.transform(pair[:, :1]), dtype=np.float32)
             second = np.asarray(artifact.transformer.transform(pair[:, 1:]), dtype=np.float32)
@@ -112,15 +120,17 @@ def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
             ]
         else:
             positions = [recover_argmin(data, scales, lengths, dilations, len(time))]
-        chosen = labels[start:stop]
-        for g, mask in enumerate((np.ones(len(net), dtype=bool),
+        chosen = labels[selected_ids]
+        all_selected = membership[start:stop]
+        for g, mask in enumerate((all_selected,
                                   chosen == 0, chosen == 1, chosen == 2)):
             sample_count[g] += int(mask.sum())
             net_abs_total[g] += np.abs(net[mask]).sum()
             net_signed_total[g] += net[mask].sum()
-        _histogram(positions, net, chosen, hist_signed, hist_abs, hist_count)
-        if logger and (stop == n or start == 0):
-            logger.info("RDST temporal XAI | %d/%d blind events | shared=%s", stop, n, shared)
+        _histogram(positions, net, chosen, hist_signed, hist_abs, hist_count,
+                   all_selected=all_selected)
+        if logger and (stop == len(indices) or start == 0):
+            logger.info("RDST temporal XAI | %d/%d blind events | shared=%s", stop, len(indices), shared)
     if np.any(sample_count <= 0):
         raise ValueError("Temporal explanation groups must be nonempty")
     signed = hist_signed / sample_count[:, None, None]
@@ -147,6 +157,8 @@ def temporal_match_maps(*, spec, fitted, blind, mode, features, reference_mean,
         "group_names": np.asarray(GROUPS),
         "detector_names": detector_names,
         "n_events": sample_count,
+        "sampled_population_indices": indices,
+        "all_population_membership": membership,
         "absolute_ps": absolute,
         "signed_ps": signed,
         "match_count_per_event": frequency,
