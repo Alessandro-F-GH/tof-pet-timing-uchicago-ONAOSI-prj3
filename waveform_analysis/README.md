@@ -195,6 +195,20 @@ This is **NOT full convolution-to-input ROCKET-LRP**, and it does not
 attribute MPV, MIPV, LSPV, Hydra or MiniRocket. The NPZ records how
 much total absolute Ridge feature contribution comes from PPV.
 
+For faster PPV maps, specify `--n-ppv-features 100` to trace only
+the top 100 PPV feature columns, ranked by **mean absolute
+development-centered Ridge contribution on the entire blind dataset**.
+The expensive Numba tracer skips entire kernel/dilation combinations
+and thresholds that contain no selected PPV columns. It still validates
+the reconstructed frozen values of every selected column. Both
+`--n-ppv-features` and the temporal event limit are independent;
+selection uses the full blind dataset regardless of the temporal sample.
+By default all PPV columns are analyzed. NPZ contains the selected
+original PPV feature column indices, global importance scores, and the
+proportion of total PPV contribution magnitude covered by the selection.
+The plots are explicitly **top-N PPV-only** when a feature cap is used;
+unselected features are not counted as unlocalized contributions.
+
 For initial tests start with e.g. `--max-events-per-group 20`:
 Numba compiles response-tracing routines on first use and recomputing
 convolution responses is expensive. No frozen models are refitted.
