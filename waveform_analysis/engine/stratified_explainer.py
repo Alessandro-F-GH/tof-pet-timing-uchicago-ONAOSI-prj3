@@ -102,7 +102,10 @@ def aggregate_contributions(features, coefficients, reference_mean, predictions,
     type_signed = np.zeros((4, group_size))
     type_absolute = np.zeros((4, group_size))
     center = weights * mu
-    epsilon = np.finfo(np.result_type(features.dtype, coefficient_dtype)).eps
+    # Saved float32 features set the conservative dot-product error budget,
+    # even when fitted Ridge coefficients are float64. Attributions themselves
+    # are still accumulated separately in float64.
+    epsilon = np.finfo(features.dtype).eps
     max_error, clipped_count = 0., 0
     for start in range(0, n, chunk_size):
         end = min(start + chunk_size, n)
@@ -117,6 +120,11 @@ def aggregate_contributions(features, coefficients, reference_mean, predictions,
         max_error = max(max_error, float(diff.max()))
         # Match the original predictor with a tolerance for BLAS rounding.
         tolerance = 1e-4 + 8 * epsilon * (np.abs(original).sum(axis=1) + abs(intercept))
+        if np.any(tolerance > 1.0):
+            raise ValueError(
+                'Ill-conditioned linear reconstruction: numerical error allowance '
+                f'up to {float(tolerance.max()):.5g} ps exceeds the 1 ps safety limit'
+            )
         if np.any(diff > tolerance):
             worst = int(np.argmax(diff / np.maximum(tolerance, np.finfo(float).tiny)))
             raise ValueError(
