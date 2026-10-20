@@ -198,9 +198,18 @@ and contribution mass within the Onishi interval (−1.5 through 2 ns).
 Plots mark these boundaries explicitly.
 
 Direct RDST has a *joint two-channel* shapelet match, so its map is not
-detector-specific. For shared RDST the original **frozen** bank is
-reapplied independently to each detector, with reconstruction against
-the saved differenced features. The two position histograms show where
+detector-specific. For shared RDST, the two detector-specific best-match positions cannot be
+recovered from the saved difference feature alone. A one-time application of
+the **original frozen** shapelet transform to the two detector signals is
+required. It now uses a single pooled call per 64 event pairs and persists
+both position arrays, indexed by blind population index, under the prepared
+cache root in `rdst_temporal_positions/`. Matching positions are reused
+across explanation reruns, sample sizes, and overlapping quantile groups.
+The position cache is tied to the transform identity, blind-population ID,
+event order, control-derived input mask, and retained time grid. Completed
+64-event batches are retained after interruption; missing events alone need
+recalculation on restart. Use `--cache-root` to relocate this cache if needed.
+Positions are verified against the original frozen shared feature differences. The two position histograms show where
 the original *net paired* contribution is located in either detector;
 the averaged map conserves that net mass without double counting, but
 is not a separate additive detector attribution.
