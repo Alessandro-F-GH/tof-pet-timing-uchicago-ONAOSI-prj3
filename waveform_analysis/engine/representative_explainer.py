@@ -121,13 +121,13 @@ def _importance_zoom_limits(time_ns, relevance, *, mass_fraction=0.90):
 def _plot_event(folder, stem, event_id, prediction, target, time, waveform, relevance,
                 detector_names, method, *, shared):
     import matplotlib.pyplot as plt
-    from matplotlib.collections import LineCollection
-    from matplotlib.colors import TwoSlopeNorm
 
     time_ns = np.asarray(time, dtype=np.float64) / 1000.0
     waveform = np.asarray(waveform, dtype=np.float64)
     relevance = np.asarray(relevance, dtype=np.float64)
     n_channels = waveform.shape[0]
+    if n_channels != 2:
+        raise ValueError(f"Expected two detector waveforms, got {n_channels}")
     if shared and relevance.shape[0] != n_channels:
         raise ValueError("Shared model should provide one attribution map per detector")
     if not shared and relevance.shape[0] != 1:
@@ -135,70 +135,66 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
     display_relevance = _importance_scale(relevance)
     zoom = _importance_zoom_limits(time_ns, relevance)
 
-    # Shared models permit detector-specific overlays. Direct models only provide
-    # joint-pair relevance, so show both waveforms neutrally and the joint map below.
+    # Always show the two detector signals together. Waveform colors identify
+    # detectors only; attribution colors are reserved for the importance panels.
+    rows = [("Detector waveforms", "wave_overlay", None)]
     if shared:
-        rows = [(f"Detector {ch+1} waveform", "wave", ch) for ch in range(n_channels)]
-        rows += [(f"Detector {ch+1} signed attribution", "importance", ch) for ch in range(n_channels)]
-        # Interleave waveform/importance per detector to keep each pair visually linked.
-        rows = []
-        for ch in range(n_channels):
-            rows.extend([(f"Detector {ch+1} waveform", "wave", ch),
-                         (f"Detector {ch+1} signed attribution", "importance", ch)])
+        rows.extend([
+            ("Detector 1 signed attribution", "importance", 0),
+            ("Detector 2 signed attribution", "importance", 1),
+        ])
     else:
-        rows = [(f"Detector {ch+1} waveform (joint attribution)", "wave", ch)
-                for ch in range(n_channels)]
         rows.append(("Joint-pair signed attribution", "importance", 0))
 
+    detector_colors = ["tab:blue", "tab:orange"]
+
     def draw(path, xlim=None):
-        fig, axes = plt.subplots(len(rows), 1, figsize=(12, 2.0*len(rows)+1.0),
-                                 sharex=True, squeeze=False,
-                                 gridspec_kw={"height_ratios": [1.0 if r[1] == "wave" else 0.62 for r in rows],
-                                              "hspace": 0.12})
+        fig, axes = plt.subplots(
+            len(rows), 1, figsize=(12, 2.4 + 1.8 * (len(rows) - 1)),
+            sharex=True, squeeze=False,
+            gridspec_kw={
+                "height_ratios": [1.15 if row[1] == "wave_overlay" else 0.68 for row in rows],
+                "hspace": 0.14,
+            },
+        )
         axes = axes[:, 0]
-        overlay_lines = []
         for ax, (label, kind, ch) in zip(axes, rows):
-            if kind == "wave":
-                values = waveform[ch]
-                ax.plot(time_ns, values, color="0.25", linewidth=1.8, zorder=1)
-                # In the cropped/zoomed figure, keep waveform traces neutral:
-                # the dedicated signed-attribution panel below carries the colors.
-                # Full-window figures retain the overlay for quick visual orientation.
-                if xlim is None and shared and len(time_ns) >= 2 and np.any(display_relevance[ch]):
-                    points = np.column_stack([time_ns, values]).reshape(-1, 1, 2)
-                    segments = np.concatenate([points[:-1], points[1:]], axis=1)
-                    seg_rel = 0.5*(display_relevance[ch, :-1]+display_relevance[ch, 1:])
-                    line = LineCollection(segments, cmap="coolwarm",
-                                          norm=TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1),
-                                          linewidths=2.3, zorder=2)
-                    line.set_array(seg_rel)
-                    ax.add_collection(line)
-                    overlay_lines.append(line)
-                ax.set_ylabel(f"D{ch+1}")
+            if kind == "wave_overlay":
+                for detector in range(n_channels):
+                    ax.plot(
+                        time_ns, waveform[detector],
+                        color=detector_colors[detector], linewidth=1.8,
+                        label=f"Detector {detector + 1}", zorder=2,
+                    )
+                ax.set_ylabel("Amplitude")
                 ax.set_title(label, loc="left", fontsize=9)
-                ax.grid(alpha=0.16)
+                ax.legend(loc="upper right", frameon=True, fontsize=8, ncol=2)
+                ax.grid(alpha=0.18)
             else:
                 rel = display_relevance[ch]
                 ax.axhline(0.0, color="0.5", linewidth=0.7)
-                ax.fill_between(time_ns, 0.0, rel, where=rel >= 0,
-                                color="#d95f5f", alpha=0.8, linewidth=0)
-                ax.fill_between(time_ns, 0.0, rel, where=rel < 0,
-                                color="#4778c7", alpha=0.8, linewidth=0)
-                ax.plot(time_ns, rel, color="0.25", linewidth=0.55, alpha=0.8)
+                ax.fill_between(
+                    time_ns, 0.0, rel, where=rel >= 0,
+                    color="#d95f5f", alpha=0.8, linewidth=0,
+                )
+                ax.fill_between(
+                    time_ns, 0.0, rel, where=rel < 0,
+                    color="#4778c7", alpha=0.8, linewidth=0,
+                )
+                ax.plot(time_ns, rel, color="0.25", linewidth=0.7, alpha=0.9)
                 ax.set_ylim(-1.08, 1.08)
                 ax.set_yticks([-1, 0, 1])
                 ax.set_ylabel("Norm.")
                 ax.set_title(label, loc="left", fontsize=9)
-                ax.grid(alpha=0.16)
+                ax.grid(alpha=0.18)
         axes[-1].set_xlabel("Time relative to waveform window start (ns)")
-        axes[-1].set_xlim(xlim if xlim is not None else (float(time_ns[0]), float(time_ns[-1])))
+        axes[-1].set_xlim(
+            xlim if xlim is not None else (float(time_ns[0]), float(time_ns[-1]))
+        )
         fig.suptitle(
             f"{stem} | event {event_id} | prediction={prediction:.3f} ps | target={target:.3f} ps",
             y=0.995, fontsize=10,
         )
-        if overlay_lines:
-            fig.colorbar(overlay_lines[0], ax=[axes[i] for i, row in enumerate(rows) if row[1] == "wave"],
-                         pad=0.012, fraction=0.025, label="Normalized signed attribution")
         fig.tight_layout(rect=(0, 0, 1, 0.965))
         fig.savefig(path, dpi=180, bbox_inches="tight")
         plt.close(fig)
