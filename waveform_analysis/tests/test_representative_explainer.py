@@ -1,8 +1,9 @@
 """Tests for representative-event explanation selection and overwrite protection."""
 import numpy as np
+import pytest
 
 from waveform_analysis.engine.representative_explainer import (
-    _confirm_overwrite, _importance_scale, _importance_zoom_limits,
+    _confirm_overwrite, _importance_scale, _importance_zoom_limits, _aggregate_signed_importance,
 )
 from waveform_analysis.engine.stratified_explainer import INTERVALS, select_quantile_groups
 
@@ -59,3 +60,26 @@ def test_importance_zoom_skips_when_relevance_is_not_localized():
     time = np.arange(1000, dtype=float) * 0.0125
     relevance = np.ones((1, 1000), dtype=float)
     assert _importance_zoom_limits(time, relevance) is None
+
+
+
+def test_signed_importance_is_summed_in_eight_sample_bins():
+    time_ns = np.arange(19, dtype=float) * 0.0125
+    relevance = np.zeros((2, 19), dtype=float)
+    relevance[0, :8] = 1.0
+    relevance[0, 8:16] = -0.5
+    relevance[1, 16:] = 2.0
+    centers, binned, widths = _aggregate_signed_importance(time_ns, relevance, bin_samples=8)
+    assert binned.shape == (2, 3)
+    np.testing.assert_allclose(binned[0], [8.0, -4.0, 0.0])
+    np.testing.assert_allclose(binned[1], [0.0, 0.0, 6.0])
+    assert widths[0] == pytest.approx(0.1)
+    assert widths[-1] == pytest.approx(0.0375)
+    assert len(centers) == 3
+
+
+def test_aggregated_signed_importance_preserves_cancellation():
+    time_ns = np.arange(8, dtype=float) * 0.0125
+    relevance = np.array([[1., 1., 1., 1., -1., -1., -1., -1.]])
+    _, binned, _ = _aggregate_signed_importance(time_ns, relevance, bin_samples=8)
+    assert binned[0, 0] == pytest.approx(0.0)
