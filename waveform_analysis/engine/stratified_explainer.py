@@ -252,11 +252,13 @@ def _plot_results(folder, agg, examples, waveforms, time_ps, shapelets=None, top
     plt.close(fig)
 
 
-def explain_stratified(results, *, models=None, cache_root=None, top_k=20, max_events_per_group=None, logger=None):
+def explain_stratified(results, *, models=None, cache_root=None, top_k=20, max_events_per_group=None, n_ppv_features=None, logger=None):
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
         raise ValueError("top_k must be a positive integer")
     if max_events_per_group is not None and (isinstance(max_events_per_group, bool) or max_events_per_group < 1):
         raise ValueError("max_events_per_group must be a positive integer")
+    if n_ppv_features is not None and (isinstance(n_ppv_features, bool) or not isinstance(n_ppv_features, int) or n_ppv_features < 1):
+        raise ValueError("n_ppv_features must be a positive integer")
     runs = discover_runs(Path(results).expanduser().resolve())
     if not runs:
         raise ValueError(f"No complete canonical runs found in {results}")
@@ -269,7 +271,7 @@ def explain_stratified(results, *, models=None, cache_root=None, top_k=20, max_e
         if models is not None and run["manifest"]["model"] not in models:
             continue
         try:
-            outputs.append(_explain_one(run, lookup, cache_root, top_k, logger, max_events_per_group))
+            outputs.append(_explain_one(run, lookup, cache_root, top_k, logger, max_events_per_group, n_ppv_features))
         except Exception as exc:
             failures.append(f"{run['directory']}: {exc}")
             if logger:
@@ -281,7 +283,7 @@ def explain_stratified(results, *, models=None, cache_root=None, top_k=20, max_e
     return outputs
 
 
-def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_group=None):
+def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_group=None, n_ppv_features=None):
     directory, manifest = Path(run["directory"]), run["manifest"]
     config = resolve_run_config(directory)
     spec = get_model(manifest["model"])
@@ -313,7 +315,8 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                      "temporal_max_events_per_group": max_events_per_group,
                      "temporal_sampling_seed": 1729,
                      "temporal_method_version": 2,
-                     "ppv_pooling_method_version": 1},
+                     "ppv_pooling_method_version": 2,
+                     "n_ppv_features": n_ppv_features},
         "final_fit": manifest["stage_fingerprints"]["final_fit"],
         "development": development.manifest["analysis_protocol_identity"],
         "blind": blind.manifest["analysis_protocol_identity"],
@@ -389,7 +392,8 @@ def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_grou
                             features=matrices["blind"], reference_mean=dev_mean,
                             coefficients=weights,
                             time_ps=apply_sample_mask_to_time(time, mask),
-                            event_indices=ppv_selection, logger=logger)
+                            event_indices=ppv_selection, logger=logger,
+                            n_ppv_features=n_ppv_features)
                 examples, waves = {}, {}
                 masked_time = apply_sample_mask_to_time(time, mask)
                 for name, group in groups.items():
