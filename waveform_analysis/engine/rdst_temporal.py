@@ -105,6 +105,8 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
     sample_absolute_sum = np.zeros_like(absolute_sum)
     sample_signed_sum = np.zeros_like(absolute_sum)
     sample_count_sum = np.zeros_like(absolute_sum)
+    event_sample_signed = np.zeros((len(indices), n_detectors, len(time)), dtype=np.float64)
+    event_sample_absolute = np.zeros_like(event_sample_signed)
     net_absolute_sum = 0.0
     net_signed_sum = 0.0
 
@@ -143,6 +145,8 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
             sample_signed_sum[detector] += ds
             sample_absolute_sum[detector] += da
             sample_count_sum[detector] += dc
+            event_sample_signed[start:stop, detector] = ds
+            event_sample_absolute[start:stop, detector] = da
 
         if logger and (stop == len(indices) or start == 0):
             logger.info("RDST temporal XAI | %d/%d blind events | shared=%s",
@@ -196,6 +200,8 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
         "combined_fraction": normalized,
         "sample_absolute_ps": sample_absolute,
         "sample_signed_ps": sample_signed,
+        "event_sample_signed_ps": event_sample_signed,
+        "event_sample_absolute_ps": event_sample_absolute,
         "sample_count_per_event": sample_frequency,
         "combined_sample_absolute_ps": combined_sample_absolute,
         "combined_sample_signed_ps": combined_sample_signed,
