@@ -30,7 +30,7 @@ def _confirm_overwrite(destination: Path, yes: bool) -> bool:
     try:
         answer = input(
             f"Representative explanations already exist at {destination}. "
-            "Overwrite them? [y/N] "
+            "Reuse saved attributions and regenerate plots when available? [y/N] "
         ).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
@@ -142,7 +142,7 @@ def _importance_zoom_limits(time_ns, relevance, *, mass_fraction=0.90):
 
 
 def _plot_event(folder, stem, event_id, prediction, target, time, waveform, relevance,
-                detector_names, method, *, shared, contribution_limit_ps=None):
+                detector_names, method, *, shared, contribution_limit_ps=None, legend_loc="upper right"):
     import matplotlib.pyplot as plt
 
     time_ns = np.asarray(time, dtype=np.float64) / 1000.0
@@ -197,7 +197,7 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
                     )
                 ax.set_ylabel("Amplitude")
                 ax.set_title(label, loc="left", fontsize=9)
-                ax.legend(loc="upper right", frameon=True, fontsize=8, ncol=2)
+                ax.legend(loc=legend_loc, frameon=True, fontsize=8, ncol=2)
                 ax.grid(alpha=0.18)
             else:
                 # Bar heights remain the actual net contributions in ps. Color
@@ -274,6 +274,135 @@ def explain_representatives(results, *, models=None, cache_root=None,
     if failures:
         raise RuntimeError("Representative explanation failures:\n" + "\n".join(failures))
     return outputs
+
+
+
+def _legend_location(mode, is_onishi):
+    """Place the detector legend away from the waveform's most useful region."""
+    if is_onishi:
+        return "upper left"
+    return "upper left" if "energy" in str(mode).lower() else "upper right"
+
+
+def _cached_representatives_are_reusable(destination):
+    """True when every representative already has the numeric arrays needed to replot."""
+    required = {"time_ps", "signed_contribution_ps", "absolute_contribution_ps",
+                "event_id", "prediction_ps", "target_ps"}
+    if not (destination / "representatives.csv").is_file():
+        return False
+    try:
+        with (destination / "representatives.csv").open(newline="", encoding="utf-8") as stream:
+            groups = {row.get("group") for row in csv.DictReader(stream)}
+        if not {"low", "central", "high"}.issubset(groups):
+            return False
+        for group in ("low", "central", "high"):
+            path = destination / f"{group}_attribution.npz"
+            if not path.is_file():
+                return False
+            with np.load(path, allow_pickle=False) as saved:
+                if not required.issubset(saved.files):
+                    return False
+                if saved["signed_contribution_ps"].ndim != 2:
+                    return False
+        return True
+    except (OSError, ValueError, KeyError, EOFError):
+        return False
+
+
+def _replot_existing(destination, directory, config, manifest, lookup, cache_override, logger):
+    """Regenerate figures from saved attributions without loading/fitting transforms."""
+    records_path = destination / "representatives.csv"
+    with records_path.open(newline="", encoding="utf-8") as stream:
+        records = {row["group"]: row for row in csv.DictReader(stream)}
+    groups = ("low", "central", "high")
+    saved = {}
+    needs_waveforms = False
+    for group in groups:
+        with np.load(destination / f"{group}_attribution.npz", allow_pickle=False) as source:
+            saved[group] = {key: np.asarray(source[key]).copy() for key in source.files}
+        needs_waveforms = needs_waveforms or "waveform" not in saved[group]
+
+    blind = None
+    raw_waveforms = {}
+    if needs_waveforms:
+        root = _cache_root(config, directory, cache_override, roles=("blind",))
+        blind = lookup.find(root, "blind", config, manifest)
+        mode = config["mode"]
+        family = waveform_view(blind, mode, [0]).family
+        raw_time = np.asarray(getattr(blind, f"{family}_time_ps"), dtype=np.float64)
+        indices = np.asarray([int(records[group]["population_index"]) for group in groups], dtype=np.int64)
+        materialized = waveform_view(blind, mode, indices).materialize()
+        for row, group in enumerate(groups):
+            wanted_time = np.asarray(saved[group]["time_ps"], dtype=np.float64)
+            positions = np.searchsorted(raw_time, wanted_time)
+            if np.any(positions >= len(raw_time)):
+                raise ValueError(f"Saved time grid for {group} is outside the blind waveform grid")
+            if not np.allclose(raw_time[positions], wanted_time, rtol=0.0, atol=1e-7):
+                raise ValueError(f"Saved time grid for {group} does not match blind waveform grid")
+            raw_waveforms[group] = np.asarray(materialized[row], dtype=np.float64)[:, positions]
+
+    summary_path = destination / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        summary = {}
+    mode = config["mode"]
+    is_onishi = any(part.lower() == "onishi" for part in directory.parts)
+    legend_loc = _legend_location(mode, is_onishi)
+    method = summary.get("method", "Saved model-specific temporal attribution")
+    plot_dir = Path(tempfile.mkdtemp(prefix=".representative-replot-", dir=destination))
+    try:
+        max_limit = 0.0
+        binned_by_group = {}
+        for group in groups:
+            relevance = saved[group]["signed_contribution_ps"]
+            centers, binned, _ = _aggregate_signed_importance(
+                np.asarray(saved[group]["time_ps"], dtype=np.float64) / 1000.0,
+                relevance, bin_samples=8,
+            )
+            binned_by_group[group] = (centers, binned)
+            if binned.size:
+                max_limit = max(max_limit, float(np.max(np.abs(binned))))
+        physical_limit_ps = max(max_limit * 1.08, 1.0)
+
+        for group in groups:
+            data = saved[group]
+            waveform = data.get("waveform", raw_waveforms.get(group))
+            if waveform is None:
+                raise ValueError(f"No waveform available to redraw {group} representative")
+            relevance = data["signed_contribution_ps"]
+            shared = relevance.shape[0] == 2
+            event_id = str(np.asarray(data["event_id"]).item())
+            prediction = float(np.asarray(data["prediction_ps"]).item())
+            target = float(np.asarray(data["target_ps"]).item())
+            _plot_event(
+                plot_dir, group, event_id, prediction, target, data["time_ps"],
+                waveform, relevance, ["detector_1", "detector_2"] if shared else ["joint_pair"],
+                method, shared=shared, contribution_limit_ps=physical_limit_ps,
+                legend_loc=legend_loc,
+            )
+            if "waveform" not in data:
+                data["waveform"] = np.asarray(waveform)
+                np.savez_compressed(plot_dir / f"{group}_attribution.npz", **data)
+
+        # Replace plots only; keep the existing metadata and attribution arrays.
+        for group in groups:
+            for suffix in (".png", ".pdf", "_zoom.png", "_zoom.pdf"):
+                name = f"{group}{suffix}"
+                generated = plot_dir / name
+                existing = destination / name
+                if generated.exists():
+                    generated.replace(existing)
+                elif suffix.startswith("_zoom") and existing.exists():
+                    existing.unlink()
+            cached_npz = plot_dir / f"{group}_attribution.npz"
+            if cached_npz.exists():
+                cached_npz.replace(destination / cached_npz.name)
+        if logger:
+            logger.info("Representative explanations | reused attributions; plots regenerated | %s", destination)
+        return destination
+    finally:
+        shutil.rmtree(plot_dir, ignore_errors=True)
 
 
 def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, logger):
