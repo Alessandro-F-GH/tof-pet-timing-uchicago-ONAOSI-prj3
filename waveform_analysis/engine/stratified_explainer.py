@@ -252,9 +252,11 @@ def _plot_results(folder, agg, examples, waveforms, time_ps, shapelets=None, top
     plt.close(fig)
 
 
-def explain_stratified(results, *, models=None, cache_root=None, top_k=20, logger=None):
+def explain_stratified(results, *, models=None, cache_root=None, top_k=20, max_events_per_group=None, logger=None):
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
         raise ValueError("top_k must be a positive integer")
+    if max_events_per_group is not None and (isinstance(max_events_per_group, bool) or max_events_per_group < 1):
+        raise ValueError("max_events_per_group must be a positive integer")
     runs = discover_runs(Path(results).expanduser().resolve())
     if not runs:
         raise ValueError(f"No complete canonical runs found in {results}")
@@ -267,7 +269,7 @@ def explain_stratified(results, *, models=None, cache_root=None, top_k=20, logge
         if models is not None and run["manifest"]["model"] not in models:
             continue
         try:
-            outputs.append(_explain_one(run, lookup, cache_root, top_k, logger))
+            outputs.append(_explain_one(run, lookup, cache_root, top_k, logger, max_events_per_group))
         except Exception as exc:
             failures.append(f"{run['directory']}: {exc}")
             if logger:
@@ -279,7 +281,7 @@ def explain_stratified(results, *, models=None, cache_root=None, top_k=20, logge
     return outputs
 
 
-def _explain_one(run, lookup, cache_override, top_k, logger):
+def _explain_one(run, lookup, cache_override, top_k, logger, max_events_per_group=None):
     directory, manifest = Path(run["directory"]), run["manifest"]
     config = resolve_run_config(directory)
     spec = get_model(manifest["model"])
@@ -306,7 +308,9 @@ def _explain_one(run, lookup, cache_override, top_k, logger):
     identity = {
         "method": "stratified_original_feature_contributions_v1",
         "settings": {"intervals": INTERVALS, "top_k": top_k, "reference": "development_mean",
-                     "selection": "model_specific_rank"},
+                     "selection": "model_specific_rank",
+                     "temporal_max_events_per_group": max_events_per_group,
+                     "temporal_sampling_seed": 1729},
         "final_fit": manifest["stage_fingerprints"]["final_fit"],
         "development": development.manifest["analysis_protocol_identity"],
         "blind": blind.manifest["analysis_protocol_identity"],
@@ -353,13 +357,25 @@ def _explain_one(run, lookup, cache_override, top_k, logger):
                 temporal = None
                 if shapelets is not None and config["window_name"] == "wide":
                     from waveform_analysis.engine.rdst_temporal import temporal_match_maps
+                    selection = np.arange(blind.n_events, dtype=np.int64)
+                    sampled_all = None
+                    if max_events_per_group is not None:
+                        rng = np.random.default_rng(1729)
+                        sampled_all = np.sort(rng.choice(selection, size=min(max_events_per_group, len(selection)), replace=False))
+                        choices = [sampled_all]
+                        for band in range(3):
+                            available_band = np.flatnonzero(labels == band)
+                            choices.append(rng.choice(available_band, size=min(max_events_per_group, len(available_band)), replace=False))
+                        selection = np.unique(np.concatenate(choices))
+                    all_membership = None if sampled_all is None else np.isin(selection, sampled_all)
                     with _stage(logger, "RDST time-localized contributions"):
                         temporal = temporal_match_maps(
                             spec=spec, fitted=fitted, blind=blind, mode=mode,
                             features=matrices["blind"], reference_mean=dev_mean,
                             coefficients=weights, group_labels=labels,
                             time_ps=apply_sample_mask_to_time(time, mask),
-                            chunk_size=chunk, logger=logger)
+                            chunk_size=chunk, logger=logger,
+                            event_indices=selection, all_membership=all_membership)
                 examples, waves = {}, {}
                 masked_time = apply_sample_mask_to_time(time, mask)
                 for name, group in groups.items():
