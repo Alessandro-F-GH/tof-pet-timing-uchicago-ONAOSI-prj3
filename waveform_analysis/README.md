@@ -168,6 +168,37 @@ Each run writes `explanations/stratified/IDENTITY/`, containing:
   are intentionally not labeled as pooling type until aeon's persisted feature
   layout is validated.
 
+### PPV-only ROCKET-LRP pooling explanations for MultiRocket
+
+The same `explain-stratified` command now exports a PPV-only temporal
+relevance map for **wide-window** `direct_multirocket`,
+`shared_multirocket`, and the MultiRocket part of the
+`direct_multirocket_rdst` / `shared_multirocket_rdst` hybrids.
+
+Outputs: `ppv_temporal_importance.npz`,
+`ppv_temporal_importance.csv`, `ppv_temporal_importance.png/.pdf`,
+and `ppv_temporal_representations.png/.pdf`. The existing
+`--max-events-per-group` cap applies to this global PPV sample, too.
+
+Implements the ROCKET-LRP **PPV pooling redistribution rule only**:
+the signed, development-centered Ridge contribution of each PPV feature
+is distributed equally over positions where the original frozen
+convolution response exceeds the fitted bias. It reconstructs PPV
+statistics from aeon 1.6's saved kernels, dilations, channels and padding
+and verifies the recovered PPV columns against the frozen features,
+including detector differences for shared models. Original sample-time
+grid is used for raw responses; differenced-response positions are
+associated with the following original sample. Signed maps are retained.
+Features with no positive responses contribute to an explicit
+**unlocalized relevance** diagnostic, never a fabricated time position.
+This is **NOT full convolution-to-input ROCKET-LRP**, and it does not
+attribute MPV, MIPV, LSPV, Hydra or MiniRocket. The NPZ records how
+much total absolute Ridge feature contribution comes from PPV.
+
+For initial tests start with e.g. `--max-events-per-group 20`:
+Numba compiles response-tracing routines on first use and recomputing
+convolution responses is expensive. No frozen models are refitted.
+
 ### RDST temporal contribution maps (wide window)
 
 `explain-stratified` retains standard full-blind global and
