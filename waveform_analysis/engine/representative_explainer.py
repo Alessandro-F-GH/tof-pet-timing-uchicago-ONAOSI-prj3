@@ -142,7 +142,7 @@ def _importance_zoom_limits(time_ns, relevance, *, mass_fraction=0.90):
 
 
 def _plot_event(folder, stem, event_id, prediction, target, time, waveform, relevance,
-                detector_names, method, *, shared):
+                detector_names, method, *, shared, contribution_limit_ps=None):
     import matplotlib.pyplot as plt
 
     time_ns = np.asarray(time, dtype=np.float64) / 1000.0
@@ -200,21 +200,25 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
                 ax.legend(loc="upper right", frameon=True, fontsize=8, ncol=2)
                 ax.grid(alpha=0.18)
             else:
-                rel = display_relevance[ch]
-                # Blockwise bars show the net signed contribution per time bin.
-                # Zoomed plots clip the x-axis only; the waveform itself remains
-                # free of saliency coloring, while this panel retains the real
-                # binned attribution values inside the crop.
+                # Bar heights remain the actual net contributions in ps. Color
+                # intensity is normalized independently for this event only.
+                rel_ps = binned_relevance[ch]
+                color_strength = display_relevance[ch]
+                cmap = plt.get_cmap("coolwarm")
+                colors = cmap((color_strength + 1.0) / 2.0)
                 ax.axhline(0.0, color="0.5", linewidth=0.7)
-                colors = np.where(rel >= 0, "#d95f5f", "#4778c7")
                 ax.bar(
-                    importance_time_ns, rel,
+                    importance_time_ns, rel_ps,
                     width=np.maximum(bin_widths_ns * 0.92, 1e-6),
-                    color=colors, edgecolor="none", alpha=0.88, align="center",
+                    color=colors, edgecolor="none", alpha=0.95, align="center",
                 )
-                ax.set_ylim(-1.08, 1.08)
-                ax.set_yticks([-1, 0, 1])
-                ax.set_ylabel("Norm.")
+                if contribution_limit_ps is None:
+                    local_limit = float(np.max(np.abs(binned_relevance))) if binned_relevance.size else 0.0
+                    y_limit = max(local_limit * 1.08, 1.0)
+                else:
+                    y_limit = max(float(contribution_limit_ps), 1e-9)
+                ax.set_ylim(-y_limit, y_limit)
+                ax.set_ylabel("Contribution (ps)")
                 ax.set_title(label, loc="left", fontsize=9)
                 ax.grid(alpha=0.18)
         axes[-1].set_xlabel("Time relative to waveform window start (ns)")
@@ -360,6 +364,17 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
         masked_blind = apply_sample_mask(
             waveform_view(blind, mode, event_indices).materialize(), fitted.sample_mask
         )
+        # Share the physical y-axis range across the three representatives from
+        # this model run. Colors remain event-normalized for visual contrast.
+        physical_limit_ps = 0.0
+        for map_row in range(len(event_indices)):
+            _, binned_map, _ = _aggregate_signed_importance(
+                np.asarray(masked_time, dtype=np.float64) / 1000.0,
+                event_signed[map_row], bin_samples=8,
+            )
+            if binned_map.size:
+                physical_limit_ps = max(physical_limit_ps, float(np.max(np.abs(binned_map))))
+        physical_limit_ps = max(physical_limit_ps * 1.08, 1.0)
         for name in ("low", "central", "high"):
             idx = reps[name]
             row = row_for_event[idx]
@@ -369,6 +384,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
                 temp_output, name, str(ids[idx]), float(predictions[idx]),
                 float(target[idx]), masked_time, waveform, relevance,
                 detector_names, method, shared=shared,
+                contribution_limit_ps=physical_limit_ps,
             )
             records.append({
                 "group": name, "quantile_interval": list(INTERVALS[name]),
