@@ -269,6 +269,11 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     signed = np.zeros((2, n_det, len(time)), dtype=np.float64)
     input_signed = np.zeros((2, n_det, len(time)), dtype=np.float64)
     input_absolute = np.zeros_like(input_signed)
+    # Retain event-level maps as well as the existing population aggregate.
+    # This lets representative-event explanations reuse the same PPV ranking
+    # and kernel tracing pass instead of rerunning the expensive tracer per event.
+    event_input_signed = np.zeros((len(indices), 2, n_det, len(time)), dtype=np.float64)
+    event_input_absolute = np.zeros_like(event_input_signed)
     input_residual = np.zeros((2, n_det), dtype=np.float64)
     absolute = np.zeros_like(signed)
     counts = np.zeros_like(signed, dtype=np.int64)
@@ -319,6 +324,8 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                     input_attribution=(attribution[0], attribution[1], residual))
                 input_signed[rep, detector] += attribution[0]
                 input_absolute[rep, detector] += attribution[1]
+                event_input_signed[pos, rep, detector] += attribution[0]
+                event_input_absolute[pos, rep, detector] += attribution[1]
                 input_residual[rep, detector] += residual[0]
                 # Direct: compare to saved features. Shared: collect the two
                 # detector feature vectors, then check their difference.
@@ -406,6 +413,8 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         "unlocalized_signed_ps": unlocalized_signed,
         "input_absolute_ps": input_absolute,
         "input_signed_ps": input_signed,
+        "event_input_signed_ps": event_input_signed,
+        "event_input_absolute_ps": event_input_absolute,
         "input_residual_abs_ps": input_residual,
         "combined_input_absolute_ps": input_total_absolute,
         "combined_input_signed_ps": input_total_signed,
