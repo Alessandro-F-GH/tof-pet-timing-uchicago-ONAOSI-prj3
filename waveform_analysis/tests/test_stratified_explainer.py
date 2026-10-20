@@ -122,3 +122,28 @@ def test_direct_float32_ridge_prediction_reconstructs_in_original_precision():
             features, weights, np.zeros(6), predictions + 10, labels,
             group_size=3, intercept=intercept, clip=None, chunk_size=127,
         )
+
+
+def test_mixed_float32_features_float64_coefficients_roundoff_budget():
+    """Ridge with float64 coefficients can differ from a float64 grouped sum.
+
+    The validation bound is tied to the actual feature precision (float32),
+    but must reject differences far beyond that bound.
+    """
+    rng = np.random.default_rng(23)
+    features = rng.normal(0, 1000, (1000, 300)).astype(np.float32)
+    coefficients = rng.normal(size=300).astype(np.float64)
+    exact = (features.astype(np.float64) * coefficients).sum(axis=1)
+    labels, _ = select_quantile_groups(np.arange(len(features)), exact)
+    # Simulate a modest alternate BLAS summation/accumulation error.
+    prediction = exact + 0.03
+    summary = aggregate_contributions(
+        features, coefficients, np.zeros(300), prediction, labels,
+        group_size=1, intercept=0., clip=None, chunk_size=200,
+    )
+    assert summary["max_reconstruction_error_ps"] == pytest.approx(0.03, abs=1e-8)
+    with pytest.raises(ValueError, match="reconstruction"):
+        aggregate_contributions(
+            features, coefficients, np.zeros(300), exact + 2., labels,
+            group_size=1, intercept=0., clip=None, chunk_size=200,
+        )
