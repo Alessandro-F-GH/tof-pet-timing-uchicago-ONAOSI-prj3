@@ -19,7 +19,7 @@ from waveform_analysis.signal.sample_mask import apply_sample_mask
 
 @njit(cache=True)
 def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dilation,
-               biases, kernel_indices, feature_relevance, scale, trim, selected_mask=None):
+               biases, kernel_indices, feature_relevance, scale, trim, selected_mask=None, input_attribution=None):
     """Trace ONE waveform representation using aeon 1.6 convolution geometry.
 
     The output maps use convolution *response positions*, not input LRP.
@@ -35,6 +35,9 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
     unlocalized_abs = 0.0
     unlocalized_signed = 0.0
     index = 0
+    input_signed = np.zeros(length + trim, dtype=np.float64)
+    input_absolute = np.zeros(length + trim, dtype=np.float64)
+    input_residual = 0.0
     for di in range(len(dilations)):
         n_bias = int(per_dilation[di])
         first = index
@@ -107,10 +110,41 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
                             signed[at] += portion
                             absolute[at] += abs(portion)
                             hits[at] += 1
+                            if input_attribution is not None:
+                                denom = 0.0
+                                for k in range(left, right):
+                                    ch = channel_ids[k]
+                                    for tap in range(9):
+                                        source = t + (tap - 4) * dilation + (1 if trim and tap < 4 else 0)
+                                        if 0 <= source < length:
+                                            weight = 2.0 if (tap == a0 or tap == a1 or tap == a2) else -1.0
+                                            denom += abs(float(x[ch, source]) * weight)
+                                if denom <= 1e-30:
+                                    input_residual += abs(portion)
+                                else:
+                                    for k in range(left, right):
+                                        ch = channel_ids[k]
+                                        for tap in range(9):
+                                            source = t + (tap - 4) * dilation + (1 if trim and tap < 4 else 0)
+                                            if 0 <= source < length:
+                                                weight = 2.0 if (tap == a0 or tap == a1 or tap == a2) else -1.0
+                                                part = portion * abs(float(x[ch, source]) * weight) / denom
+                                                if trim:
+                                                    input_signed[source] += 0.5 * part
+                                                    input_signed[source + 1] += 0.5 * part
+                                                    input_absolute[source] += 0.5 * abs(part)
+                                                    input_absolute[source + 1] += 0.5 * abs(part)
+                                                else:
+                                                    input_signed[source] += part
+                                                    input_absolute[source] += abs(part)
                 else:
                     unlocalized_abs += abs(relevance)
                     unlocalized_signed += relevance
                 index += 1
+    if input_attribution is not None:
+        input_attribution[0] += input_signed
+        input_attribution[1] += input_absolute
+        input_attribution[2][0] += input_residual
     return reconstructed, signed, absolute, hits, unlocalized_abs, unlocalized_signed
 
 
