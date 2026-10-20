@@ -65,6 +65,10 @@ def test_direct_temporal_map_conserves_net_shapelet_contribution():
     assert result["combined_sample_absolute_ps"].sum() == pytest.approx(3.)
     assert result["combined_sample_signed_ps"].sum() == pytest.approx(3.)
     assert result["combined_sample_fraction"].sum() == pytest.approx(1.)
+    assert result["event_sample_signed_ps"].shape == (n, 1, 8)
+    assert result["event_sample_absolute_ps"].shape == (n, 1, 8)
+    np.testing.assert_allclose(result["event_sample_signed_ps"][0, 0, 3:6],
+                               np.ones(3), atol=1e-12)
 
 
 def test_shared_position_cache_reuses_events_and_recovers_after_interruption(tmp_path, monkeypatch):
