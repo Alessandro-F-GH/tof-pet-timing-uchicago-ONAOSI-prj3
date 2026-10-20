@@ -59,6 +59,12 @@ def _parser() -> argparse.ArgumentParser:
     stratified.add_argument("--top-k", type=int, default=20)
     stratified.add_argument("--n-ppv-features", type=int, help="Trace only top N MultiRocket PPV columns ranked by full-blind mean absolute Ridge contributions")
     stratified.add_argument("--max-events-per-group", type=int, help="Temporal RDST only: cap total sampled blind events; full-blind standard XAI stays unchanged")
+    representatives = sub.add_parser("explain-representatives", help="Create local temporal attribution overlays for representative blind events")
+    representatives.add_argument("--results", type=Path, required=True)
+    representatives.add_argument("--models", nargs="+", metavar="MODEL")
+    representatives.add_argument("--cache-root", type=Path, help="Original prepared development/blind caches")
+    representatives.add_argument("--n-ppv-features", type=int, help="Optional top-N MultiRocket PPV features; default uses all")
+    representatives.add_argument("--yes-overwrite", action="store_true", help="Overwrite existing representative outputs without prompting")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -85,6 +91,14 @@ def main() -> None:
         for output in explain_stratified(args.results, models=args.models, cache_root=args.cache_root,
                                          top_k=args.top_k, max_events_per_group=args.max_events_per_group,
                                          n_ppv_features=args.n_ppv_features, logger=logger):
+            print(output)
+        return
+    if args.command == "explain-representatives":
+        from .engine.representative_explainer import explain_representatives
+        for output in explain_representatives(
+                args.results, models=args.models, cache_root=args.cache_root,
+                n_ppv_features=args.n_ppv_features,
+                yes_overwrite=args.yes_overwrite, logger=logger):
             print(output)
         return
     if args.command in {"plots", "report"}:
