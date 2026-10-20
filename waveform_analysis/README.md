@@ -574,10 +574,13 @@ Outputs are written directly to each selected model run's \`representatives/\`
 directory (no stratified/hash nesting): one full-window PNG/PDF per low/central/high
 event, an additional automatically focused `_zoom.png`/`_zoom.pdf` when attributions
 are localized, per-event signed and absolute attribution arrays, a representative
-CSV, and a summary JSON. Plots separate waveform amplitude from signed temporal
-importance (direct models have a joint importance track; shared models have one
-track per detector). Importance is robust-normalized for display only; the saved
-arrays preserve original contribution values in ps. Signed color overlays indicate whether a local contribution
+CSV, and a summary JSON. The two detector waveforms are overlaid in blue and
+orange, with a legend. Signed temporal importance is shown separately in blockwise
+bars aggregated over 8 consecutive samples (about 100 ps at 12.5 ps/sample); direct
+models have a joint importance track and shared models have one track per detector.
+Only plot values are aggregated and normalized; saved sample-level attribution arrays
+preserve the original contribution values in ps. Waveforms in cropped plots are not
+colored by saliency. Signed color overlays indicate whether a local contribution
 pushes the model output positive or negative. These are model attributions, not
 causal claims. Direct models provide a joint-pair temporal map; shared models
 provide detector-specific maps.
