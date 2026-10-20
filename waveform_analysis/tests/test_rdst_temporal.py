@@ -57,3 +57,69 @@ def test_direct_temporal_map_conserves_net_shapelet_contribution():
     assert result["combined_absolute_ps"][0, 3] == pytest.approx(3.)
     assert result["combined_fraction"][0].sum() == pytest.approx(1.)
     assert result["combined_match_count_per_event"][0].sum() == pytest.approx(2.)
+
+
+def test_shared_position_cache_reuses_events_and_recovers_after_interruption(tmp_path, monkeypatch):
+    from waveform_analysis.engine import rdst_position_cache as cache
+
+    class FakeTransformer:
+        def __init__(self):
+            self.calls = 0
+            self.shapelets_ = (
+                np.zeros((2, 1, 3)), np.zeros(2),
+                np.array([3, 3]), np.array([1, 1]),
+                np.zeros(2), np.zeros(2), np.zeros(2), np.zeros(2), np.zeros(2),
+            )
+            self.n_shapelets_ = 2
+
+        def transform(self, x):
+            self.calls += 1
+            z = np.zeros((len(x), 6), dtype=np.float32)
+            # Original pair has detector-specific argmin at 2 and 3.
+            z[:, 1] = np.asarray(x[:, 0, 0], dtype=np.float32)
+            z[:, 4] = np.asarray(x[:, 0, 0], dtype=np.float32)
+            return z
+
+    class FakeScaler:
+        scale_ = np.ones(6, dtype=np.float64)
+
+        def transform(self, x):
+            return x
+
+    transform = FakeTransformer()
+    artifact = SimpleNamespace(shared=True, transformer=transform, scaler=FakeScaler())
+    fitted = SimpleNamespace(feature_transform=SimpleNamespace(
+        artifact=artifact, identity="fixture_frozen_transform"),
+        sample_mask=np.ones(8, dtype=bool))
+    values = np.zeros((5, 2, 8), dtype=np.float32)
+    values[:, 0, 0] = 2
+    values[:, 1, 0] = 3
+    dataset = SimpleNamespace(
+        n_events=5, event_index=np.arange(5),
+        manifest={"analysis_protocol_identity": "fixture_population"})
+    frozen = np.zeros((5, 6), dtype=np.float32)
+    frozen[:, 1] = -1
+    frozen[:, 4] = -1
+    monkeypatch.setattr(cache, "waveform_view", lambda data, mode, ids: SimpleNamespace(
+        materialize=lambda: values[ids]))
+    indices = np.array([0, 2, 4])
+    args = dict(cache_root=tmp_path, fitted=fitted, dataset=dataset,
+                mode="energy_to_energy", frozen_features=frozen,
+                time_ps=np.arange(8, dtype=np.float64))
+    a = cache.shared_positions_for_events(event_indices=indices, **args)
+    assert transform.calls == 1
+    np.testing.assert_array_equal(a[:, 0, :], 2)
+    np.testing.assert_array_equal(a[:, 1, :], 3)
+
+    b = cache.shared_positions_for_events(event_indices=indices, **args)
+    np.testing.assert_array_equal(b, a)
+    assert transform.calls == 1
+
+    # Only unseen event index 1 requires another frozen transform.
+    cache.shared_positions_for_events(event_indices=np.array([1, 2]), **args)
+    assert transform.calls == 2
+
+    # Changing the control mask must not reuse the old position cache.
+    fitted.sample_mask[7] = False
+    with pytest.raises(ValueError, match="grid"):
+        cache.shared_positions_for_events(event_indices=indices, **args)
