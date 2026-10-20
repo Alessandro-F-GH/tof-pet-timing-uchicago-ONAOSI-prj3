@@ -19,7 +19,7 @@ from waveform_analysis.signal.sample_mask import apply_sample_mask
 
 @njit(cache=True)
 def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dilation,
-               biases, kernel_indices, feature_relevance, scale, trim):
+               biases, kernel_indices, feature_relevance, scale, trim, selected_mask=None):
     """Trace ONE waveform representation using aeon 1.6 convolution geometry.
 
     The output maps use convolution *response positions*, not input LRP.
@@ -28,7 +28,7 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
     channels, length = x.shape
     n_kernels = len(kernel_indices)
     features = n_kernels * np.sum(per_dilation)
-    reconstructed = np.empty(features, dtype=np.float64)
+    reconstructed = np.full(features, np.nan, dtype=np.float64)
     signed = np.zeros(length + trim, dtype=np.float64)
     absolute = np.zeros(length + trim, dtype=np.float64)
     hits = np.zeros(length + trim, dtype=np.int64)
@@ -36,6 +36,13 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
     unlocalized_signed = 0.0
     index = 0
     for di in range(len(dilations)):
+        n_bias = int(per_dilation[di])
+        first = index
+        last = first + n_kernels * n_bias
+        if selected_mask is not None:
+            if not np.any(selected_mask[first:last]):
+                index = last
+                continue
         dilation = int(dilations[di])
         padding = 4 * dilation
         # Reproduce the C_alpha/C_gamma arithmetic in aeon 1.6.0.
@@ -57,8 +64,11 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
                     if 0 <= at < length:
                         a[ch, t] += -x[ch, at]
                         g[tap, ch, t] = x[ch, at] + x[ch, at] + x[ch, at]
-        n_bias = int(per_dilation[di])
         for ki in range(n_kernels):
+            if selected_mask is not None:
+                if not np.any(selected_mask[index:index + n_bias]):
+                    index += n_bias
+                    continue
             chosen = np.empty(length, dtype=np.float32)
             left = int(offsets[di * n_kernels + ki])
             right = int(offsets[di * n_kernels + ki + 1])
@@ -78,6 +88,9 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
             if hi <= lo:
                 raise ValueError("Invalid MultiRocket dilation relative to samples")
             for bj in range(n_bias):
+                if selected_mask is not None and not selected_mask[index]:
+                    index += 1
+                    continue
                 bias = biases[index]
                 positives = 0
                 for t in range(lo, hi):
@@ -147,7 +160,7 @@ def _ppv_columns(artifact):
 
 
 def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficients,
-                     time_ps, event_indices, logger=None):
+                     time_ps, event_indices, logger=None, n_ppv_features=None):
     """Explain the PPV-only feature contribution with response-position maps.
 
     The RDST+MultiRocket combined estimator is supported using its frozen
@@ -176,6 +189,33 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         raise ValueError("Frozen Ridge/transform feature mismatch")
     raw_cols, diff_cols, raw_params, diff_params = _ppv_columns(block)
     ppv_cols = np.concatenate([raw_cols, diff_cols])
+    if n_ppv_features is not None and (
+            isinstance(n_ppv_features, bool) or not isinstance(n_ppv_features, int)
+            or n_ppv_features < 1):
+        raise ValueError("n_ppv_features must be a positive integer")
+    # Rank PPV columns using ALL blind events, not the sampled XAI subset.
+    # Use original development-centered linear contributions and stable ties.
+    weighted = np.asarray(coefficients[start:end], dtype=np.float64)
+    centered_ref = np.asarray(reference_mean[start:end], dtype=np.float64)
+    ppv_scores = np.zeros(len(ppv_cols), dtype=np.float64)
+    for lo in range(0, features.shape[0], 256):
+        hi = min(lo + 256, features.shape[0])
+        block_features = np.asarray(features[lo:hi, start:end], dtype=np.float64)
+        ppv_scores += np.abs(
+            (block_features[:, ppv_cols] - centered_ref[ppv_cols])
+            * weighted[ppv_cols]).sum(axis=0)
+    ppv_scores /= features.shape[0]
+    ranking = np.argsort(-ppv_scores, kind="stable")
+    selected = np.sort(ranking[:min(n_ppv_features or len(ppv_cols), len(ppv_cols))])
+    selected_ppv_columns = ppv_cols[selected]
+    selected_mask = np.zeros(end - start, dtype=np.bool_)
+    selected_mask[selected_ppv_columns] = True
+    importance_coverage = (
+        ppv_scores[selected].sum() / ppv_scores.sum()
+        if ppv_scores.sum() else 0.0)
+    if logger:
+        logger.info("ROCKET-LRP PPV selection | selected=%d/%d | global importance covered=%.2f%%",
+                    len(selected), len(ppv_cols), 100 * importance_coverage)
     scales = np.asarray(block.scaler.scale_, dtype=np.float64)
     if len(scales) != end - start or np.any(scales <= 0):
         raise ValueError("Missing MultiRocket control scaling")
@@ -190,6 +230,7 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     unlocalized_abs = np.zeros((2, n_det), dtype=np.float64)
     unlocalized_signed = np.zeros((2, n_det), dtype=np.float64)
     ppv_total_abs = 0.0
+    selected_total_abs = 0.0
     all_features_abs = 0.0
     valid_tol = 2e-4
     for pos, event_index in enumerate(indices):
@@ -199,6 +240,7 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         event_features = np.asarray(features[event_index], dtype=np.float64)
         centered = (event_features[start:end] - reference) * weights
         ppv_total_abs += np.abs(centered[ppv_cols]).sum()
+        selected_total_abs += np.abs(centered[selected_ppv_columns]).sum()
         all_features_abs += np.abs((event_features - reference_mean) * coefficients).sum()
         # Shared feature differences are indivisible at the feature level:
         # use the SAME net contribution in each detector view and average
@@ -222,14 +264,16 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                 r, s, a, n_hits, ua, us = _trace_rep(
                     np.ascontiguousarray(values, dtype=np.float32),
                     *params, np.asarray(centered[columns], dtype=np.float64),
-                    np.asarray(scales[columns], dtype=np.float64), trim)
+                    np.asarray(scales[columns], dtype=np.float64), trim,
+                    selected_mask=np.asarray(selected_mask[columns], dtype=np.bool_))
                 # Direct: compare to saved features. Shared: collect the two
                 # detector feature vectors, then check their difference.
                 if not shared:
                     expected = event_features[start:end][columns]
-                    if not np.allclose(r, expected, atol=valid_tol, rtol=valid_tol):
-                        delta = np.abs(r - expected)
-                        worst = int(np.argmax(delta))
+                    active = selected_mask[columns]
+                    if not np.allclose(r[active], expected[active], atol=valid_tol, rtol=valid_tol):
+                        delta = np.abs(r[active] - expected[active])
+                        worst = int(np.flatnonzero(active)[np.argmax(delta)])
                         raise ValueError(
                             f"PPV reconstruction failed | event={int(event_index)} "
                             f"representation={['raw','difference'][rep]} "
@@ -247,9 +291,10 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                     else:
                         baseline = first_raw if rep == 0 else first_diff
                         expected = event_features[start:end][columns]
-                        if not np.allclose(baseline - r, expected, atol=valid_tol, rtol=valid_tol):
-                            delta = np.abs(baseline - r - expected)
-                            worst = int(np.argmax(delta))
+                        active = selected_mask[columns]
+                        if not np.allclose((baseline-r)[active], expected[active], atol=valid_tol, rtol=valid_tol):
+                            delta = np.abs((baseline-r)[active] - expected[active])
+                            worst = int(np.flatnonzero(active)[np.argmax(delta)])
                             raise ValueError(
                                 f"Shared PPV reconstruction failed | event={int(event_index)} "
                                 f"representation={['raw','difference'][rep]} "
@@ -274,7 +319,7 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     combined_abs = absolute.mean(axis=1).sum(axis=0)
     combined_signed = signed.mean(axis=1).sum(axis=0)
     mass = combined_abs.sum() + unlocalized_abs.mean(axis=1).sum()
-    np.testing.assert_allclose(mass, ppv_total_abs / n, rtol=1e-8, atol=1e-5)
+    np.testing.assert_allclose(mass, selected_total_abs / n, rtol=1e-8, atol=1e-5)
     normalized = (combined_abs / combined_abs.sum() if combined_abs.sum() else
                   np.zeros_like(combined_abs))
     return {
@@ -296,6 +341,12 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         "combined_signed_ps": combined_signed,
         "combined_fraction": normalized,
         "ppv_total_abs_ps": np.asarray(ppv_total_abs / n),
+        "selected_ppv_abs_ps": np.asarray(selected_total_abs / n),
+        "selected_ppv_columns": selected_ppv_columns,
+        "ppv_global_importance": ppv_scores,
+        "ppv_global_selection_coverage": np.asarray(importance_coverage),
+        "n_ppv_features_selected": np.asarray(len(selected)),
+        "n_ppv_features_available": np.asarray(len(ppv_cols)),
         "all_feature_total_abs_ps": np.asarray(all_features_abs / n),
         "ppv_feature_fraction_abs": np.asarray(ppv_total_abs / max(all_features_abs, 1e-30)),
         "onishi_fraction_localized": np.asarray(normalized[(time >= -1500) & (time <= 2000)].sum()),
