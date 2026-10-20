@@ -145,8 +145,12 @@ def temporal_match_maps(*, fitted, blind, mode, features, reference_mean,
             sample_signed_sum[detector] += ds
             sample_absolute_sum[detector] += da
             sample_count_sum[detector] += dc
-            event_sample_signed[start:stop, detector] = ds
-            event_sample_absolute[start:stop, detector] = da
+            for local in range(len(selected)):
+                event_signed, event_absolute, _ = distribute_dilated_matches(
+                    position[local:local + 1], net[local:local + 1],
+                    lengths, dilations, len(time))
+                event_sample_signed[start + local, detector] = event_signed
+                event_sample_absolute[start + local, detector] = event_absolute
 
         if logger and (stop == len(indices) or start == 0):
             logger.info("RDST temporal XAI | %d/%d blind events | shared=%s",
