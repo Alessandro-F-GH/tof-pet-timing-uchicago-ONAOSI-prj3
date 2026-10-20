@@ -571,9 +571,13 @@ redistribution methods on those events. MultiRocket's global PPV ranking is
 computed once per model call and reused for all representatives.
 
 Outputs are written directly to each selected model run's \`representatives/\`
-directory (no stratified/hash nesting): one PNG and PDF per low/central/high
-event, per-event signed and absolute attribution arrays, a representative CSV,
-and a summary JSON. Signed color overlays indicate whether a local contribution
+directory (no stratified/hash nesting): one full-window PNG/PDF per low/central/high
+event, an additional automatically focused `_zoom.png`/`_zoom.pdf` when attributions
+are localized, per-event signed and absolute attribution arrays, a representative
+CSV, and a summary JSON. Plots separate waveform amplitude from signed temporal
+importance (direct models have a joint importance track; shared models have one
+track per detector). Importance is robust-normalized for display only; the saved
+arrays preserve original contribution values in ps. Signed color overlays indicate whether a local contribution
 pushes the model output positive or negative. These are model attributions, not
 causal claims. Direct models provide a joint-pair temporal map; shared models
 provide detector-specific maps.
