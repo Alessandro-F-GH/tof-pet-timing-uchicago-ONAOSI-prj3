@@ -134,6 +134,55 @@ JIT compilation, so early ETAs may be inflated.
 
 For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
+## Output-stratified timing explanations (RDST and MultiRocket)
+
+Generate global frozen-feature contributions and compare equally populated blind
+prediction-rank bands 2–10%, 46–54%, and 90–98%:
+
+```bash
+python -m waveform_analysis.cli explain-stratified --results waveform_analysis/results/UC/BATCH --models direct_rdst shared_rdst direct_multirocket shared_multirocket
+```
+
+Options: `--cache-root PATH`, `--top-k 20`. The command operates on
+complete saved models with their original prepared development and blind caches,
+reusing verified frozen feature caches when possible. It **never retrains**
+transformations or estimators and does not modify original evaluation artifacts.
+
+Each run writes `explanations/stratified/IDENTITY/`, containing:
+
+- `summary.json`: provenance, group sizes, actual correction ranges in ps,
+  development-reference definition, exact reconstruction error and clipping count.
+- `event_groups.npz` and `groups.csv`: full blind population's event IDs,
+  predictions, disjoint rank-band assignments and representative indices.
+- `group_importance.csv` and `aggregate_contributions.npz`: signed/absolute
+  centered contributions and population variability for all blind events and
+  for each band; CSV includes standard errors (not bootstrap CIs).
+- `representative_events.json`: example near the center rank of each band and
+  its leading signed net contributions.
+- `global_and_stratified.png/.pdf` and
+  `representative_events.png/.pdf`: overall and grouped feature-importance
+  views and real prepared waveforms, without invented temporal heatmaps.
+- RDST-only `original_shapelets.npz`, `important_shapelets.png/.pdf` and
+  `feature_families.csv` for the original frozen shapelet bank and three
+  feature types (distance/location/occurrence). MultiRocket feature indices
+  are intentionally not labeled as pooling type until aeon's persisted feature
+  layout is validated.
+
+The explanation is `coefficient * (frozen feature - development mean)`; it
+decomposes pre-output-clipping predictions and checks reconstruction *after*
+the original clipping. Shapelet-level feature contributions are summed before
+taking absolute values. Positive/negative contributions reflect deviations
+relative to the development reference and are **not** causal effects.
+Selecting groups by prediction produces descriptive conditional comparisons.
+For the shared models, features remain original detector differences;
+antisymmetry is not broken by any explanatory refit.
+
+There is currently **no temporal relevance heatmap**: random-kernel importance
+and saved shapelet IDs alone do not establish a faithful feature-to-time
+attribution. The plots show actual waveforms alongside contributions, not
+unvalidated highlights. Only the four individual RDST/MultiRocket models are
+supported, not their joint-feature ensembles.
+
 ## Source configuration
 
 Shipped JSONs under `config/batches` are executable examples. A source batch owns:
