@@ -52,6 +52,11 @@ def _parser() -> argparse.ArgumentParser:
     explain.add_argument("--depths", nargs="+", type=int, default=[2, 3, 4, 5])
     explain.add_argument("--min-samples-leaf", type=int, default=20)
     explain.add_argument("--max-events", type=int, help="Optional reproducible event cap per role; default: all events")
+    stratified = sub.add_parser("explain-stratified", help="Read-only output-stratified RDST/MultiRocket explanations")
+    stratified.add_argument("--results", type=Path, required=True)
+    stratified.add_argument("--models", nargs="+", metavar="MODEL")
+    stratified.add_argument("--cache-root", type=Path, help="Original prepared development/blind caches")
+    stratified.add_argument("--top-k", type=int, default=20)
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -71,6 +76,12 @@ def main() -> None:
         from .engine.regression_explainer import explain_regression
         for output in explain_regression(args.results, models=args.models, cache_root=args.cache_root,
                 depths=args.depths, min_samples_leaf=args.min_samples_leaf, max_events=args.max_events, logger=logger):
+            print(output)
+        return
+    if args.command == "explain-stratified":
+        from .engine.stratified_explainer import explain_stratified
+        for output in explain_stratified(args.results, models=args.models, cache_root=args.cache_root,
+                                         top_k=args.top_k, logger=logger):
             print(output)
         return
     if args.command in {"plots", "report"}:
