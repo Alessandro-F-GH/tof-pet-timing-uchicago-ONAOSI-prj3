@@ -133,26 +133,30 @@ def shared_positions_for_events(*, cache_root, fitted, dataset, mode, event_indi
             logger.info("RDST position cache | hit=%d missing=%d | %s",
                         int(have.sum()), int(len(missing)), directory)
         if len(missing):
-            pair = apply_sample_mask(waveform_view(dataset, mode, missing).materialize(),
-                                     fitted.sample_mask)
-            k = len(missing)
-            pooled = np.concatenate((pair[:, :1, :], pair[:, 1:, :]), axis=0)
-            # Single frozen transformation call, rather than twice per chunk.
-            raw = np.asarray(artifact.transformer.transform(pooled), dtype=np.float32)
-            if raw.shape != (2*k, 3*identity["n_shapelets"]):
-                raise ValueError("Unexpected original shared RDST transformation output")
-            z = np.asarray(artifact.scaler.transform(raw), dtype=np.float32)
-            stored = np.asarray(frozen_features[missing], dtype=np.float32)
-            if not np.allclose(z[:k] - z[k:], stored, atol=2e-4, rtol=2e-4):
-                raise ValueError("Individual detector transforms do not match frozen shared features")
-            p1 = recover_argmin(z[:k], scale, lengths, dilations, identity["n_samples"])
-            p2 = recover_argmin(z[k:], scale, lengths, dilations, identity["n_samples"])
-            positions[missing, 0, :] = p1
-            positions[missing, 1, :] = p2
-            # Commit positions before marking rows reusable. Completed rows
-            # survive SIGINT/SIGTERM and can be reused after a restart.
-            positions.flush()
-            done[missing] = 1
-            done.flush()
+            # Bounded computation and per-batch durable checkpoints. This is
+            # particularly important for wide waveforms and expensive aeon JIT.
+            for offset in range(0, len(missing), 64):
+                subset = missing[offset:offset + 64]
+                pair = apply_sample_mask(waveform_view(dataset, mode, subset).materialize(),
+                                         fitted.sample_mask)
+                k = len(subset)
+                pooled = np.concatenate((pair[:, :1, :], pair[:, 1:, :]), axis=0)
+                raw = np.asarray(artifact.transformer.transform(pooled), dtype=np.float32)
+                if raw.shape != (2*k, 3*identity["n_shapelets"]):
+                    raise ValueError("Unexpected original shared RDST transformation output")
+                z = np.asarray(artifact.scaler.transform(raw), dtype=np.float32)
+                stored = np.asarray(frozen_features[subset], dtype=np.float32)
+                if not np.allclose(z[:k] - z[k:], stored, atol=2e-4, rtol=2e-4):
+                    raise ValueError("Individual detector transforms do not match frozen shared features")
+                p1 = recover_argmin(z[:k], scale, lengths, dilations, identity["n_samples"])
+                p2 = recover_argmin(z[k:], scale, lengths, dilations, identity["n_samples"])
+                positions[subset, 0, :] = p1
+                positions[subset, 1, :] = p2
+                positions.flush()
+                done[subset] = 1
+                done.flush()
+                if logger:
+                    logger.info("RDST position cache | computed=%d/%d | saved",
+                                min(offset + 64, len(missing)), len(missing))
         result = np.asarray(positions[ids], dtype=np.int32)
     return result
