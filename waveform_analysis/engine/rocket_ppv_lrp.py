@@ -45,7 +45,12 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
         for tap in range(9):
             if tap == 4:
                 continue
-            offset = (tap - 4) * dilation
+            # aeon 1.6.0 difference branch initializes its left-shift
+            # loop with n_timepoints - padding, where n_timepoints is the
+            # ORIGINAL series length. The differenced series is one shorter,
+            # shifting the four negative-index taps right by one sample.
+            # Preserve this exact (asymmetric) reference behavior.
+            offset = (tap - 4) * dilation + (1 if trim and tap < 4 else 0)
             for ch in range(channels):
                 for t in range(length):
                     at = t + offset
