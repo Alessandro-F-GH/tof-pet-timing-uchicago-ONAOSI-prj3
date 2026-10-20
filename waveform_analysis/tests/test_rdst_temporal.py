@@ -35,7 +35,8 @@ def test_direct_temporal_map_conserves_net_shapelet_contribution():
     n = 30
     features = np.zeros((n, 6), dtype=np.float32)
     features[:, 1] = np.arange(n) % 5
-    features[:, 4] = 3
+    features[:, 4] = 3  # argmin location of second shapelet
+    features[:, 5] = 3.  # occurrence feature: actual +3 ps contribution
     features[:, 0] = 10.
     features[:, 2] = -10.
     weights = np.array([1., 0., 1., 2., 0., 1.], dtype=float)
@@ -57,6 +58,13 @@ def test_direct_temporal_map_conserves_net_shapelet_contribution():
     assert result["combined_absolute_ps"][3] == pytest.approx(3.)
     assert result["combined_fraction"].sum() == pytest.approx(1.)
     assert result["combined_match_count_per_event"].sum() == pytest.approx(2.)
+    # The second length-3, dilation-1 shapelet starts at sample 3:
+    # input-support relevance is 1 ps at 3, 4, 5, not all 3 ps at start.
+    np.testing.assert_allclose(result["combined_sample_absolute_ps"][[3, 4, 5]],
+                               np.ones(3), atol=1e-12)
+    assert result["combined_sample_absolute_ps"].sum() == pytest.approx(3.)
+    assert result["combined_sample_signed_ps"].sum() == pytest.approx(3.)
+    assert result["combined_sample_fraction"].sum() == pytest.approx(1.)
 
 
 def test_shared_position_cache_reuses_events_and_recovers_after_interruption(tmp_path, monkeypatch):
