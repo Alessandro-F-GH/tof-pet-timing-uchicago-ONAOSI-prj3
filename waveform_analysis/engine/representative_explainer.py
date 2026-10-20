@@ -161,7 +161,10 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
             if kind == "wave":
                 values = waveform[ch]
                 ax.plot(time_ns, values, color="0.78", linewidth=1.0, zorder=1)
-                if shared and len(time_ns) >= 2 and np.any(display_relevance[ch]):
+                # In the cropped/zoomed figure, keep waveform traces neutral:
+                # the dedicated signed-attribution panel below carries the colors.
+                # Full-window figures retain the overlay for quick visual orientation.
+                if xlim is None and shared and len(time_ns) >= 2 and np.any(display_relevance[ch]):
                     points = np.column_stack([time_ns, values]).reshape(-1, 1, 2)
                     segments = np.concatenate([points[:-1], points[1:]], axis=1)
                     seg_rel = 0.5*(display_relevance[ch, :-1]+display_relevance[ch, 1:])
