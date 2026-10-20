@@ -168,6 +168,39 @@ Each run writes `explanations/stratified/IDENTITY/`, containing:
   are intentionally not labeled as pooling type until aeon's persisted feature
   layout is validated.
 
+### RDST temporal contribution maps (wide window)
+
+For saved `direct_rdst` and `shared_rdst` **wide-window** runs,
+`explain-stratified` now additionally exports
+`temporal_importance.npz`, `temporal_importance.csv`,
+`temporal_importance.png` and `temporal_importance.pdf`.
+Shared models also export separate-detector maps
+(`temporal_importance_detectors.png/.pdf`).
+
+Each event/shapelet has one contribution: the sum of its **three**
+development-mean-centered RDST Ridge terms (distance, argmin, occurrence)
+**before taking absolute value**. The full net shapelet contribution is
+associated with the **start sample of its best matching subsequence**.
+Different shapelets matching at the same sample have additive absolute
+contribution mass. The maps include all blind events and the existing
+low/central/high prediction-rank groups. They export absolute and signed
+ps-per-event-per-sample, unweighted match counts, normalized fractions,
+and contribution mass within the Onishi interval (−1.5 through 2 ns).
+Plots mark these boundaries explicitly.
+
+Direct RDST has a *joint two-channel* shapelet match, so its map is not
+detector-specific. For shared RDST the original **frozen** bank is
+reapplied independently to each detector, with reconstruction against
+the saved differenced features. The two position histograms show where
+the original *net paired* contribution is located in either detector;
+the averaged map conserves that net mass without double counting, but
+is not a separate additive detector attribution.
+
+This visualization is **contribution-weighted match-position
+localization**, not causal/sample-level attribution. It uses no input
+occlusion and no model refitting. Existing standard coefficient-based
+shapelet XAI and all pre-existing stratified plots remain available.
+
 The explanation is `coefficient * (frozen feature - development mean)`; it
 decomposes pre-output-clipping predictions and checks reconstruction *after*
 the original clipping. Shapelet-level feature contributions are summed before
