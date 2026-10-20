@@ -123,3 +123,23 @@ def test_shared_position_cache_reuses_events_and_recovers_after_interruption(tmp
     fitted.sample_mask[7] = False
     with pytest.raises(ValueError, match="grid"):
         cache.shared_positions_for_events(event_indices=indices, **args)
+
+def test_distribute_dilated_matches_uses_only_actual_taps():
+    from waveform_analysis.engine.rdst_temporal import distribute_dilated_matches
+    signed, absolute, frequency = distribute_dilated_matches(
+        np.array([[2]]), np.array([[-12.]]),
+        np.array([3]), np.array([2]), 10)
+    np.testing.assert_allclose(signed[[2, 4, 6]], [-4, -4, -4])
+    np.testing.assert_allclose(absolute[[2, 4, 6]], [4, 4, 4])
+    assert signed.sum() == pytest.approx(-12.)
+    assert absolute.sum() == pytest.approx(12.)
+    assert frequency.sum() == pytest.approx(1.)
+    assert np.count_nonzero(absolute) == 3
+    assert absolute[3] == 0 and absolute[5] == 0
+
+def test_distribute_dilated_matches_rejects_outside_grid():
+    from waveform_analysis.engine.rdst_temporal import distribute_dilated_matches
+    with pytest.raises(ValueError, match="Invalid dilated"):
+        distribute_dilated_matches(
+            np.array([[5]]), np.array([[1.]]),
+            np.array([3]), np.array([2]), 9)
