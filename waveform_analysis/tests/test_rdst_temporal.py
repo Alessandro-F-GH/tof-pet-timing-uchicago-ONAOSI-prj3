@@ -44,7 +44,7 @@ def test_direct_temporal_map_conserves_net_shapelet_contribution():
     labels[4:8] = 1
     labels[8:12] = 2
     result = temporal_match_maps(
-        spec=None, fitted=_dummy_fitted(False), blind=None, mode="energy_to_energy",
+        fitted=_dummy_fitted(False), blind=None, mode="energy_to_energy",
         features=features, reference_mean=np.zeros(6),
         coefficients=weights,
         time_ps=np.arange(8)*100., chunk_size=7,
