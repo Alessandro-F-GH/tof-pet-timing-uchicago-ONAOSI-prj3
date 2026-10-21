@@ -7,7 +7,8 @@ import pytest
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
-    _detector_difference, _led_reference_levels,
+    _detector_difference, _led_line_extent, _led_reference_levels,
+    _native_led_baselines,
     _is_excluded_tshap_window, _new_explainer, _plot_local_event, _publish_directory,
     _select_local_events, _selection_seed,
 )
@@ -297,6 +298,7 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         time_ps=time_ps,
         waveform_mv=waveform_mv,
         dataset_mean_difference_mv=np.zeros(waveform_mv.shape[1], dtype=np.float64),
+        led_baseline_mv=np.asarray([5.0, 2.0]),
         attribution=attribution,
         group="typical",
         event_id=123,
@@ -304,8 +306,6 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         prediction_ps=2.0,
         improvement_ps=2.0,
         led_threshold_mv=20.0,
-        baseline_window_ns=(-1.0, -0.5),
-        led_times_ps=np.zeros(2, dtype=np.float64),
     )
 
     assert output.is_file()
@@ -313,17 +313,51 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
 
 
 
-def test_led_reference_levels_include_each_detector_baseline():
-    time_ns = np.asarray([-1.0, -0.75, -0.5, -0.25, 0.0])
-    waveform_mv = np.asarray([
-        [-8.0, -7.0, -3.0, 12.0, 25.0],
-        [-7.0, -6.0, -2.0, 10.0, 22.0],
-    ])
-    levels = _led_reference_levels(
-        waveform_mv, time_ns, led_times_ps=np.zeros(2), threshold_mv=20.0,
-        baseline_window_ns=(-1.0, -0.5)
-    )
+def test_led_reference_levels_add_calibrated_threshold_to_native_baselines():
+    levels = _led_reference_levels(np.asarray([-6.0, -5.0]), threshold_mv=20.0)
     np.testing.assert_allclose(levels, [14.0, 15.0])
+
+
+def test_led_reference_line_stops_at_time_zero():
+    np.testing.assert_allclose(
+        _led_line_extent(np.asarray([-2.0, -1.0, 0.0, 1.0, 2.0])),
+        (-2.0, 0.0),
+    )
+
+
+def test_native_led_baselines_use_original_trigger_relative_window(tmp_path):
+    from types import SimpleNamespace
+
+    native = tmp_path / "blind_native" / "native-a"
+    native.mkdir(parents=True)
+    (native / "manifest.json").write_text(json.dumps({
+        "source": "source.root",
+        "mode": "energy_to_energy",
+        "family": "energy",
+        "materialized_window_ns": {"before": 5.0, "after": 5.0},
+    }))
+    event_ids = np.asarray([101, 102, 103], dtype=np.int64)
+    waves = np.zeros((3, 2, 10), dtype=np.float32)
+    waves[0, 0, 3:5] = [1.0, 3.0]
+    waves[0, 1, 3:5] = [5.0, 7.0]
+    waves[1, 0, 3:5] = [10.0, 12.0]
+    waves[1, 1, 3:5] = [-2.0, 0.0]
+    waves[2] = 999.0
+    intervals = np.full((3, 2), 1e-9, dtype=np.float64)
+    np.save(native / "event_index.npy", event_ids)
+    np.save(native / "energy_windows_mV.npy", waves)
+    np.save(native / "energy_sample_interval_s.npy", intervals)
+
+    dataset = SimpleNamespace(
+        manifest={"analysis_source": "source.root"},
+        event_index=np.asarray([101, 102], dtype=np.int64),
+        n_events=2,
+    )
+    baselines = _native_led_baselines(
+        tmp_path, dataset, "energy_to_energy", np.asarray([1, 0]),
+        baseline_window_ns=(-2.0, -1.0),
+    )
+    np.testing.assert_allclose(baselines, [[11.0, -1.0], [2.0, 6.0]])
 
 
 
