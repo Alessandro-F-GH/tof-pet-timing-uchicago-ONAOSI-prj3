@@ -1,12 +1,10 @@
-"""ROCKET-LRP's PPV pooling redistribution on frozen aeon 1.6 MultiRocket.
+"""PPV-to-input LRP for frozen aeon 1.6 MultiRocket with Ridge regression.
 
-This implements the PPV *pooling* rule of ROCKET-LRP: distribute a PPV
-feature's signed Ridge contribution uniformly over positions where the
-corresponding frozen convolution response exceeds its fitted bias.
-It is NOT full convolution-to-input LRP and does not attribute MPV/MIPV/LSPV.
+Based on the ROCKET-LRP pooling and convolution rules:
+https://github.com/zhijian0111/ROCKET-LRP_aeon/tree/main/LRP
 
-The convolution and PPV are reconstructed independently of aeon's tabular
-transform and verified against the original model's frozen feature values.
+Adapts signed epsilon LRP to aeon's convolution geometry, centered Ridge
+contributions and first-difference signals. PPV-only, not causal.
 """
 from __future__ import annotations
 
@@ -17,9 +15,43 @@ from waveform_analysis.data.view import waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
 
 
+
+LRP_EPSILON = 1e-6  # ROCKET-LRP reference convolution stabilizer.
+
+
+@njit(cache=True)
+def _lrp_epsilon_patch(contributions, bias, relevance, epsilon=LRP_EPSILON):
+    """Signed epsilon LRP over an affine patch with uniform bias allocation.
+
+    Adapted from ROCKET-LRP LRP/utils.py (LRP_computation); sign-aware
+    epsilon replaces the reference's unconditional positive stabilizer.
+    """
+    z = float(np.sum(contributions)) + float(bias)
+    denominator = z + (epsilon if z >= 0.0 else -epsilon)
+    result = np.zeros(len(contributions), dtype=np.float64)
+    if abs(denominator) <= 1e-30 or len(contributions) == 0:
+        return result
+    bias_part = float(bias) / len(contributions)
+    for i in range(len(contributions)):
+        result[i] = relevance * (contributions[i] + bias_part) / denominator
+    return result
+
+
+@njit(cache=True)
+def _lrp_difference_pair(x_left, x_right, relevance, epsilon=LRP_EPSILON):
+    """Signed epsilon LRP through x[t+1] - x[t]."""
+    z = float(x_right) - float(x_left)
+    denominator = z + (epsilon if z >= 0.0 else -epsilon)
+    if abs(denominator) <= 1e-30:
+        return 0.0, 0.0
+    return (relevance * (-float(x_left)) / denominator,
+            relevance * float(x_right) / denominator)
+
+
 @njit(cache=True)
 def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dilation,
-               biases, kernel_indices, feature_relevance, scale, trim, selected_mask=None, input_attribution=None):
+               biases, kernel_indices, feature_relevance, scale, trim, selected_mask=None, input_attribution=None,
+               original_x=None):
     """Trace ONE waveform representation using aeon 1.6 convolution geometry.
 
     The output maps use convolution *response positions*, not input LRP.
@@ -111,32 +143,53 @@ def _trace_rep(x, n_channels_by_kernel, channel_ids, offsets, dilations, per_dil
                             absolute[at] += abs(portion)
                             hits[at] += 1
                             if input_attribution is not None:
-                                denom = 0.0
+                                # Build the exact 9-tap receptive field and its
+                                # SIGNED weighted contributions.
+                                valid = 0
                                 for k in range(left, right):
-                                    ch = channel_ids[k]
                                     for tap in range(9):
                                         source = t + (tap - 4) * dilation + (1 if trim and tap < 4 else 0)
                                         if 0 <= source < length:
-                                            weight = 2.0 if (tap == a0 or tap == a1 or tap == a2) else -1.0
-                                            denom += abs(float(x[ch, source]) * weight)
-                                if denom <= 1e-30:
+                                            valid += 1
+                                if valid == 0:
                                     input_residual += abs(portion)
                                 else:
+                                    contributions = np.empty(valid, dtype=np.float64)
+                                    channels_idx = np.empty(valid, dtype=np.int32)
+                                    sources_idx = np.empty(valid, dtype=np.int32)
+                                    tap_idx = 0
                                     for k in range(left, right):
                                         ch = channel_ids[k]
                                         for tap in range(9):
                                             source = t + (tap - 4) * dilation + (1 if trim and tap < 4 else 0)
                                             if 0 <= source < length:
                                                 weight = 2.0 if (tap == a0 or tap == a1 or tap == a2) else -1.0
-                                                part = portion * abs(float(x[ch, source]) * weight) / denom
-                                                if trim:
-                                                    input_signed[source] += 0.5 * part
-                                                    input_signed[source + 1] += 0.5 * part
-                                                    input_absolute[source] += 0.5 * abs(part)
-                                                    input_absolute[source + 1] += 0.5 * abs(part)
-                                                else:
-                                                    input_signed[source] += part
-                                                    input_absolute[source] += abs(part)
+                                                contributions[tap_idx] = float(x[ch, source]) * weight
+                                                channels_idx[tap_idx] = ch
+                                                sources_idx[tap_idx] = source
+                                                tap_idx += 1
+                                    # PPV tests conv > threshold: bias = -threshold.
+                                    patch = _lrp_epsilon_patch(contributions, -float(bias), portion)
+                                    allocated_total = 0.0
+                                    for tap_idx in range(valid):
+                                        part = patch[tap_idx]
+                                        ch = channels_idx[tap_idx]
+                                        source = sources_idx[tap_idx]
+                                        if trim:
+                                            if original_x is None:
+                                                raise ValueError("Original waveform required for difference LRP")
+                                            left_part, right_part = _lrp_difference_pair(
+                                                original_x[ch, source], original_x[ch, source + 1], part)
+                                            input_signed[source] += left_part
+                                            input_signed[source + 1] += right_part
+                                            input_absolute[source] += abs(left_part)
+                                            input_absolute[source + 1] += abs(right_part)
+                                            allocated_total += left_part + right_part
+                                        else:
+                                            input_signed[source] += part
+                                            input_absolute[source] += abs(part)
+                                            allocated_total += part
+                                    input_residual += abs(portion - allocated_total)
                 else:
                     unlocalized_abs += abs(relevance)
                     unlocalized_signed += relevance
@@ -321,7 +374,8 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                     *params, np.asarray(centered[columns], dtype=np.float64),
                     np.asarray(scales[columns], dtype=np.float64), trim,
                     selected_mask=np.asarray(selected_mask[columns], dtype=np.bool_),
-                    input_attribution=(attribution[0], attribution[1], residual))
+                    input_attribution=(attribution[0], attribution[1], residual),
+                    original_x=x if trim else None)
                 input_signed[rep, detector] += attribution[0]
                 input_absolute[rep, detector] += attribution[1]
                 event_input_signed[pos, rep, detector] += attribution[0]
@@ -387,9 +441,10 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     input_total_absolute = input_absolute.mean(axis=1).sum(axis=0)
     input_total_signed = input_signed.mean(axis=1).sum(axis=0)
     input_missing = input_residual.mean(axis=1).sum()
-    np.testing.assert_allclose(
-        input_total_absolute.sum() + input_missing + unlocalized_abs.mean(axis=1).sum(),
-        selected_total_abs / n, rtol=1e-7, atol=1e-5)
+    # Unlike nonnegative redistribution, signed epsilon LRP does not
+    # conserve sums of absolute input relevance (opposing terms cancel).
+    if not np.all(np.isfinite(input_total_signed)):
+        raise FloatingPointError("Non-finite signed convolution LRP attribution")
     input_fraction = (input_total_absolute / input_total_absolute.sum()
                       if input_total_absolute.sum() else np.zeros_like(input_total_absolute))
     mass = combined_abs.sum() + unlocalized_abs.mean(axis=1).sum()
@@ -401,9 +456,9 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         "event_indices": indices,
         "n_events": np.asarray(n),
         "model_family": np.asarray("multirocket_ppv"),
-        "method": np.asarray("rocket_lrp_ppv_pooling_response_positions"),
-        "method_version": np.asarray(3),
-        "scope": np.asarray("PPV-only; no convolution-to-input LRP"),
+        "method": np.asarray("rocket_lrp_ppv_conv_epsilon_difference"),
+        "method_version": np.asarray(4),
+        "scope": np.asarray("PPV-only; epsilon convolution and difference LRP; MPV/MIPV/LSPV excluded"),
         "representation_names": np.asarray(["raw", "first_difference"]),
         "detector_names": np.asarray(["joint_pair"] if not shared else ["detector_1", "detector_2"]),
         "absolute_ps": absolute,
@@ -420,7 +475,7 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
         "combined_input_signed_ps": input_total_signed,
         "combined_input_fraction": input_fraction,
         "input_attribution_method": np.asarray(
-            "abs_input_kernel_product_with_difference_endpoint_split"),
+            "signed_lrp_epsilon_convolution_and_first_difference"),
         "combined_absolute_ps": combined_abs,
         "combined_signed_ps": combined_signed,
         "combined_fraction": normalized,
