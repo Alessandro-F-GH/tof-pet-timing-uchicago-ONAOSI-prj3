@@ -142,7 +142,7 @@ def _importance_zoom_limits(time_ns, relevance, *, mass_fraction=0.90):
 
 
 def _plot_event(folder, stem, event_id, prediction, target, time, waveform, relevance,
-                detector_names, method, *, shared, contribution_limit_ps=None, legend_loc="upper right"):
+                detector_names, method, *, shared, legend_loc="upper right"):
     import matplotlib.pyplot as plt
 
     time_ns = np.asarray(time, dtype=np.float64) / 1000.0
@@ -212,13 +212,13 @@ def _plot_event(folder, stem, event_id, prediction, target, time, waveform, rele
                     width=np.maximum(bin_widths_ns * 0.92, 1e-6),
                     color=colors, edgecolor="none", alpha=0.95, align="center",
                 )
-                if contribution_limit_ps is None:
-                    local_limit = float(np.max(np.abs(binned_relevance))) if binned_relevance.size else 0.0
-                    y_limit = max(local_limit * 1.08, 1.0)
-                else:
-                    y_limit = max(float(contribution_limit_ps), 1e-9)
+                # Independent symmetric scale for this event and detector panel.
+                # Values stay in ps; only the axis limits adapt to the plotted map.
+                finite = np.abs(rel_ps[np.isfinite(rel_ps)])
+                local_limit = float(np.max(finite)) if finite.size else 0.0
+                y_limit = max(local_limit * 1.08, 1e-9)
                 ax.set_ylim(-y_limit, y_limit)
-                ax.set_ylabel("Contribution (ps)")
+                ax.set_ylabel("Attributed correction (ps)")
                 ax.set_title(label, loc="left", fontsize=9)
                 ax.grid(alpha=0.18)
         axes[-1].set_xlabel("Time relative to waveform window start (ns)")
@@ -359,19 +359,6 @@ def _replot_existing(destination, directory, config, manifest, lookup, cache_ove
     method = summary.get("method", "Saved model-specific temporal attribution")
     plot_dir = Path(tempfile.mkdtemp(prefix=".representative-replot-", dir=destination))
     try:
-        max_limit = 0.0
-        binned_by_group = {}
-        for group in groups:
-            relevance = saved[group]["signed_contribution_ps"]
-            centers, binned, _ = _aggregate_signed_importance(
-                np.asarray(saved[group]["time_ps"], dtype=np.float64) / 1000.0,
-                relevance, bin_samples=8,
-            )
-            binned_by_group[group] = (centers, binned)
-            if binned.size:
-                max_limit = max(max_limit, float(np.max(np.abs(binned))))
-        physical_limit_ps = max(max_limit * 1.08, 1.0)
-
         for group in groups:
             data = saved[group]
             waveform = data.get("waveform", raw_waveforms.get(group))
@@ -385,8 +372,7 @@ def _replot_existing(destination, directory, config, manifest, lookup, cache_ove
             _plot_event(
                 plot_dir, group, event_id, prediction, target, data["time_ps"],
                 waveform, relevance, ["detector_1", "detector_2"] if shared else ["joint_pair"],
-                method, shared=shared, contribution_limit_ps=physical_limit_ps,
-                legend_loc=legend_loc,
+                method, shared=shared, legend_loc=legend_loc,
             )
             if "waveform" not in data:
                 data["waveform"] = np.asarray(waveform)
@@ -507,17 +493,6 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
         )
         is_onishi = any(part.lower() == "onishi" for part in directory.parts)
         legend_loc = _legend_location(mode, is_onishi)
-        # Share the physical y-axis range across the three representatives from
-        # this model run. Colors remain event-normalized for visual contrast.
-        physical_limit_ps = 0.0
-        for map_row in range(len(event_indices)):
-            _, binned_map, _ = _aggregate_signed_importance(
-                np.asarray(masked_time, dtype=np.float64) / 1000.0,
-                event_signed[map_row], bin_samples=8,
-            )
-            if binned_map.size:
-                physical_limit_ps = max(physical_limit_ps, float(np.max(np.abs(binned_map))))
-        physical_limit_ps = max(physical_limit_ps * 1.08, 1.0)
         for name in ("low", "central", "high"):
             idx = reps[name]
             row = row_for_event[idx]
@@ -527,7 +502,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
                 temp_output, name, str(ids[idx]), float(predictions[idx]),
                 float(target[idx]), masked_time, waveform, relevance,
                 detector_names, method, shared=shared,
-                contribution_limit_ps=physical_limit_ps, legend_loc=legend_loc,
+                legend_loc=legend_loc,
             )
             records.append({
                 "group": name, "quantile_interval": list(INTERVALS[name]),
