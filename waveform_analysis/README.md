@@ -168,7 +168,7 @@ Each run writes `explanations/stratified/IDENTITY/`, containing:
   are intentionally not labeled as pooling type until aeon's persisted feature
   layout is validated.
 
-### PPV-only ROCKET-LRP pooling explanations for MultiRocket
+### PPV-only signed epsilon ROCKET-LRP explanations for MultiRocket
 
 The same `explain-stratified` command now exports a PPV-only temporal
 relevance map for **wide-window** `direct_multirocket`,
@@ -180,7 +180,7 @@ Outputs: `ppv_temporal_importance.npz`,
 and `ppv_temporal_representations.png/.pdf`. The existing
 `--max-events-per-group` cap applies to this global PPV sample, too.
 
-Implements the ROCKET-LRP **PPV pooling redistribution rule only**:
+Implements ROCKET-LRP-inspired **PPV pooling and signed epsilon convolution LRP**:
 the signed, development-centered Ridge contribution of each PPV feature
 is distributed equally over positions where the original frozen
 convolution response exceeds the fitted bias. It reconstructs PPV
@@ -191,9 +191,18 @@ grid is used for raw responses; differenced-response positions are
 associated with the following original sample. Signed maps are retained.
 Features with no positive responses contribute to an explicit
 **unlocalized relevance** diagnostic, never a fabricated time position.
-This is **NOT full convolution-to-input ROCKET-LRP**, and it does not
-attribute MPV, MIPV, LSPV, Hydra or MiniRocket. The NPZ records how
-much total absolute Ridge feature contribution comes from PPV.
+After PPV redistribution, relevance is propagated through the original
+9-tap convolutions using signed LRP-epsilon with epsilon=1e-6, bias
+distributed across valid taps, and sign-aware denominator stabilization.
+First-difference relevance propagates through x[t+1]-x[t] to both original
+samples rather than being split evenly. This follows the theoretical structure
+and open-source convolution rule of ROCKET-LRP, with adaptations for centered
+Ridge regression and aeon 1.6 geometry:
+https://github.com/zhijian0111/ROCKET-LRP_aeon/tree/main/LRP .
+This remains **PPV-only**: MPV, MIPV, LSPV, Hydra, and MiniRocket are
+not attributed. Signed epsilon propagation can amplify opposite signed
+contributions; sums of absolute relevance are not conserved. The NPZ records
+how much of the overall absolute Ridge contribution comes from PPV.
 
 For faster PPV maps, specify `--n-ppv-features 100` to trace only
 the top 100 PPV feature columns, ranked by **mean absolute
@@ -536,21 +545,16 @@ existing RDST temporal NPZ; sample contributions conserve net shapelet
 importance, including shared detector averaging.
 
 MultiRocket PPV also exports `ppv_input_importance.pdf` and
-`ppv_input_importance.png`. After the validated ROCKET-LRP PPV pooling
-redistribution, convolution-response relevance is allocated to the
-actual valid (unpadded) 9-tap input support of each kernel, weighting
-each original input by the absolute magnitude of its input-times-kernel
-weight. A response with no nonzero input-weight products is explicitly
-recorded as unallocated mass. For first-difference inputs, each
-difference's support is allocated half to the preceding original
-waveform sample and half to the succeeding sample, so magnitudes are
-conserved. This is a *conservative magnitude-based input-support
-allocation*, not the original ROCKET-LRP epsilon stabilization or a
-formal signed-gradient/causal analysis. Other MultiRocket pooling
-statistics remain unaccounted for, and `--n-ppv-features` further
-restricts coverage. Both original response-position and input-support
-plots remain available for comparison. Input distribution requires
-additional tracing time.
+`ppv_input_importance.png`. Its PPV pooled relevance passes backward through
+the signed convolution input-weight products with LRP-epsilon, rather than the
+previous absolute product weighting. This is not a gradient or a causal
+attribution. For first-difference representations, LRP propagates through
+the signed difference to both original input samples, rather than assigning
+a 50/50 split. Contributions may have opposite signs and therefore
+absolute relevance need not be conserved. Residual diagnostics reflect
+stabilization losses. Other MultiRocket pooling statistics remain unaccounted
+for, and `--n-ppv-features` further restricts coverage. The plots and NPZ
+field names remain compatible, but their numerical values have changed.
 
 
 
@@ -599,3 +603,10 @@ Representative-event temporal-importance plots display binned signed contributio
 Representative explanation reruns first ask for confirmation when output exists. If all three representative NPZ attribution files and the CSV are available, the command reuses the stored attribution arrays and regenerates plots only; it does not rerun feature transformations, predictions, or attribution estimation. Newly computed NPZ files also store the masked representative waveforms so later plot-only reruns need no dataset access. Legacy NPZ files without saved waveforms load only the blind waveform cache to reconstruct plots. If attribution artifacts are incomplete or invalid, the full explanation workflow is rerun after confirmation.
 
 Detector waveform legend placement: energy mode uses upper left; timing mode uses upper right; Onishi-window plots always use upper left.
+
+
+**Method migration:** MultiRocket representative caches from the earlier
+absolute-kernel-product attribution are invalidated automatically; the first
+rerun recomputes PPV attribution and writes method version 4 to the summary.
+Subsequent reruns can regenerate plots from the new cached values. RDST
+attributions are unaffected.
