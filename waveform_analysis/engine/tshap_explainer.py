@@ -314,8 +314,31 @@ def _center_detector_difference(values):
     return difference - np.mean(difference)
 
 
+def _led_reference_levels(waveform_mv, time_ns, threshold_mv, baseline_window_ns):
+    """Return detector-specific LED levels: waveform baseline plus the fixed threshold."""
+    waveform_mv = np.asarray(waveform_mv, dtype=np.float64)
+    time_ns = np.asarray(time_ns, dtype=np.float64)
+    window = np.asarray(baseline_window_ns, dtype=np.float64).reshape(-1)
+    if waveform_mv.shape != (2, time_ns.size):
+        raise ValueError("Expected waveforms with shape [2 detectors, samples]")
+    if window.size != 2 or not np.all(np.isfinite(window)) or window[1] <= window[0]:
+        raise ValueError("LED baseline window must contain two increasing finite endpoints")
+    selected = (time_ns >= window[0]) & (time_ns <= window[1])
+    if not np.any(selected):
+        raise ValueError("LED baseline window has no samples in the plotted waveform")
+    baselines = np.asarray([
+        np.mean(waveform_mv[channel, selected][np.isfinite(waveform_mv[channel, selected])])
+        if np.any(np.isfinite(waveform_mv[channel, selected])) else np.nan
+        for channel in range(2)
+    ])
+    if not np.all(np.isfinite(baselines)) or not np.isfinite(threshold_mv):
+        raise ValueError("Cannot determine finite LED reference levels")
+    return baselines + float(threshold_mv)
+
+
 def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_id,
-                      target_ps, prediction_ps, improvement_ps, led_threshold_mv):
+                      target_ps, prediction_ps, improvement_ps, led_threshold_mv,
+                      baseline_window_ns):
     """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
@@ -330,6 +353,9 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
         raise ValueError("Waveforms and LED threshold must be finite")
 
     waveform_difference = _center_detector_difference(waveform_mv)
+    led_levels_mv = _led_reference_levels(
+        waveform_mv, time_ns, led_threshold_mv, baseline_window_ns
+    )
 
     fig, axes = plt.subplots(
         3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
@@ -349,8 +375,12 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
     ax.plot(time_ns, waveform_mv[0], linewidth=1.15, label="Detector 1")
     ax.plot(time_ns, waveform_mv[1], linewidth=1.15, label="Detector 2")
     ax.axhline(
-        float(led_threshold_mv), color="0.35", linestyle="--", linewidth=0.9,
-        label=f"LED threshold ({float(led_threshold_mv):g} mV)",
+        led_levels_mv[0], linestyle="--", linewidth=0.9,
+        label=f"Detector 1 LED threshold ({led_levels_mv[0]:g} mV)",
+    )
+    ax.axhline(
+        led_levels_mv[1], linestyle=":", linewidth=0.9,
+        label=f"Detector 2 LED threshold ({led_levels_mv[1]:g} mV)",
     )
     ax.set_title("Detector waveforms")
     ax.set_ylabel("Amplitude (mV)")
@@ -381,7 +411,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
 
 
 def _refresh_local_presentation(
-    destination, *, waveform_transform, led_threshold_mv
+    destination, *, waveform_transform, led_threshold_mv, baseline_window_ns
 ):
     """Refresh plots and physical-unit waveforms from cached normalized inputs."""
     summary_path = destination / "summary.json"
@@ -426,6 +456,7 @@ def _refresh_local_presentation(
             prediction_ps=float(predictions[i]),
             improvement_ps=float(improvements[i]),
             led_threshold_mv=threshold,
+            baseline_window_ns=baseline_window_ns,
         )
         plot_names.append(plot_name)
 
@@ -816,6 +847,7 @@ def explain_tshap_local(
                     destination,
                     waveform_transform=waveform_transform,
                     led_threshold_mv=led_threshold_mv,
+                    baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
@@ -941,6 +973,7 @@ def explain_tshap_local(
                             prediction_ps=prediction_ps,
                             improvement_ps=improvement_ps,
                             led_threshold_mv=led_threshold_mv,
+                            baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
                         )
                         plot_names.append(plot_name)
                         writer.writerow([
