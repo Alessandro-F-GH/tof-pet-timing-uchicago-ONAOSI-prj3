@@ -7,7 +7,7 @@ import pytest
 matplotlib.use("Agg")
 
 from waveform_analysis.reporting.plotting import _xai_one_ns, plot_run_xai
-from waveform_analysis.engine.xai import temporal_occlusion_importance
+from waveform_analysis.engine.xai import _predict_array, temporal_occlusion_importance
 
 
 class DummyDataset:
@@ -82,3 +82,27 @@ def test_xai_plot_exports(formulation, tmp_path):
 def test_one_ns_unscaled_scores():
     _, _, raw = _xai_one_ns(np.array([0., .5, 1., 1.5]), np.array([2., 2., 4., 4.]), normalize=False)
     np.testing.assert_allclose(raw, [2., 4.])
+
+
+
+def test_xai_prediction_makes_masked_inputs_contiguous_before_transform():
+    pair = np.arange(3 * 2 * 10, dtype=np.float32).reshape(3, 2, 10)
+    mask = np.asarray([True, False, True, False, True, True, False, True, False, True])
+
+    class ContiguousTransform:
+        def apply(self, values):
+            assert values.flags.c_contiguous
+            np.testing.assert_array_equal(values, pair[..., mask])
+            return values
+
+    fitted = SimpleNamespace(
+        sample_mask=mask,
+        feature_transform=ContiguousTransform(),
+        artifact=None,
+        output_max_abs_ps=None,
+    )
+    spec = SimpleNamespace(
+        predict=lambda artifact, values: np.sum(values, axis=(1, 2))
+    )
+    prediction = _predict_array(spec, fitted, pair)
+    np.testing.assert_allclose(prediction, np.sum(pair[..., mask], axis=(1, 2)))
