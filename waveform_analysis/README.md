@@ -134,6 +134,52 @@ JIT compilation, so early ETAs may be inflated.
 
 For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
+## TSHAP post-training explanations
+
+TSHAP uses the upstream `tshap==0.0.1` package (GPL-3.0) for overlapping-window aggregation and optional region-of-interest identification. Its perturbation scoring is evaluated in bounded batches to avoid constructing all synthetic events simultaneously.
+
+```bash
+python -m waveform_analysis.cli explain-tshap \
+  --results waveform_analysis/results/UC/BATCH \
+  --output-root ./xai \
+  --models direct_linear_ridge direct_hydra \
+  --max-events 100 \
+  --n-baselines 8 \
+  --seed 42 \
+  --window-samples 20 --stride-samples 10 \
+  --predict-batch-size 64 \
+  --roi
+```
+
+The method replays **frozen** saved models on verified prepared control/blind caches; it does not refit models, transforms or calibration, nor read ROOT acquisitions. `--cache-root PATH` locates moved original prepared caches. Selects a reproducible, seed-controlled cap of blind events (`--max-events`; default 100) and control baseline waveforms (`--n-baselines`; default 8). The explicit `--seed` (default 42) controls both selections independently of model name, so models using the same control/blind populations and event limits receive the same blind event IDs and baseline IDs. Separate role-specific derived seeds prevent the blind and control selections from sharing the same random stream. All 2 detector inputs remain present for direct and shared models. Samples and stride refer to the **original prepared time grid**, even when the fitted model uses a sample mask. Check the saved `time_ps` grid before selecting settings. Only complete results with matching model/data/settings fingerprints are reused; use `--overwrite` to deliberately replace an existing matching explanation. A different event count, window or baseline count creates a different fingerprinted output, not a duplicate calculation. Incomplete results are not silently replaced.
+
+Artifacts are saved outside the supplied results tree, by default under `./xai/BATCH/RUN/tshap/`; pass `--output-root PATH` to choose another dedicated output directory. The batch and run path components prevent collisions when explaining several batches or model runs. Each run has exactly one `tshap/` directory containing `summary.json`, `attributions.npz` (event IDs, control baseline IDs, time grid, original predictions and window/optional ROI maps), `global_importance.csv`, and `global_importance.png`. The identity fingerprint is stored in `summary.json`, not in the directory name. Matching fingerprints reuse the cache without inference; if the requested settings change, the old contents are replaced in place only after a successful recalculation. Legacy hash-named TSHAP folders are migrated into the stable directory and removed after a successful migration; stale TSHAP artifacts in the results tree are cleaned up after a successful cache hit or replacement. Other result artifacts are left untouched. The plot separates mean absolute attribution, mean signed attribution and control-reference waveform into different rows, with separate detector columns. The horizontal axis is nanoseconds (the stored grid is picoseconds). Model outputs and window scores are in ps, but the upstream library redistributes window scores over samples; exported per-sample attribution maps are therefore labelled ps/sample. Input waveforms use dimensionless min-max normalization in [0, 1]. Results are independent of training, blind evaluation, bootstrap and existing XAI receipts.
+
+**Interpretation:** TSHAP computes a two-player SHAP score for each time window against its complement. Its overlapping-window attribution map redistributes those window scores and **is not** an exact additive Shapley decomposition of individual samples. Reference substitutions can also produce unphysical transition boundaries; inspect reference sensitivity before asserting physical importance. Upstream project/paper: https://github.com/mlgig/tshap (Nguyen and Ifrim, ECML-PKDD 2025).
+
+### Local TSHAP case studies (separate from global explanations)
+
+Use the distinct `explain-tshap-local` command to explain individual blind events. It does not overwrite or reuse the global `tshap/` directory; outputs are stored in the stable `xai/BATCH/RUN/tshap_local/` directory.
+
+```bash
+python -m waveform_analysis.cli explain-tshap-local \
+  --results waveform_analysis/results/UC/BATCH \
+  --output-root ./xai \
+  --models direct_linear_ridge direct_hydra \
+  --events-per-group 2 \
+  --extreme-margin 0.05 \
+  --n-baselines 8 \
+  --seed 42 \
+  --window-samples 20 --stride-samples 10 \
+  --predict-batch-size 64
+```
+
+By default, the command explains 10 events per model: two good positive corrections, two good negative corrections, two bad positive corrections, two bad negative corrections, and two typical corrections. Positive/negative refers to the **predicted correction**. Signed improvement is `abs(target) - abs(target - prediction)` in ps: positive means the absolute timing error decreased; negative means it increased.
+
+The default 5% extreme margin avoids selecting the absolute best/worst cases: good events are selected near the 90th and 95th percentiles of positive improvement within each correction-sign group; bad events are selected near the 5th and 10th percentiles of negative improvement. Typical events are the unused predictions closest to the median predicted correction, which need not be zero. If a category has too few eligible events, the command fails with a category-specific error rather than silently substituting another type of event.
+
+Each event gets an individual three-panel plot titled with its group, event ID, predicted correction, signed improvement, and target correction. The detector waveforms are shown as deviations from their pointwise pair mean, followed by the explicit detector-1-minus-detector-2 waveform difference; the TSHAP panel similarly removes the shared attribution component. The figure therefore emphasizes local detector-to-detector variations and does not plot the common average component. Cached local attributions are reused to refresh older plots, so a plotting-layout update does not require rerunning TSHAP. The stable `tshap_local/` cache contains `summary.json`, `events.csv`, `local_attributions.npz`, and individual PNGs. Matching settings reuse completed outputs; changed settings replace the contents only after successful recomputation. `--overwrite` forces recalculation. The command predicts across the blind population to select cases but computes TSHAP only for the selected events. Event selection is model-specific because good/bad status depends on that model's predictions; the control baseline sample is reproducible and model-independent for a fixed seed.
+
 ## Source configuration
 
 Shipped JSONs under `config/batches` are executable examples. A source batch owns:
