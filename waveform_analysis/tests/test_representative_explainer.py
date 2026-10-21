@@ -112,3 +112,38 @@ def test_existing_attributions_are_detected_for_plot_only_reuse(tmp_path):
     assert _cached_representatives_are_reusable(destination)
     (destination / "high_attribution.npz").unlink()
     assert not _cached_representatives_are_reusable(destination)
+
+
+
+def test_multirocket_reuse_requires_current_attribution_version(tmp_path):
+    from waveform_analysis.engine.representative_explainer import (
+        _cached_representatives_are_reusable,
+    )
+    import json
+    folder = tmp_path / "representatives"
+    folder.mkdir()
+    (folder / "representatives.csv").write_text(
+        "group,population_index\nlow,0\ncentral,1\nhigh,2\n",
+        encoding="utf-8",
+    )
+    for group in ("low", "central", "high"):
+        np.savez_compressed(
+            folder / f"{group}_attribution.npz",
+            time_ps=np.arange(16, dtype=float),
+            signed_contribution_ps=np.zeros((1, 16)),
+            absolute_contribution_ps=np.zeros((1, 16)),
+            event_id=np.asarray(group), prediction_ps=np.asarray(0.0),
+            target_ps=np.asarray(0.0),
+        )
+    (folder / "summary.json").write_text(
+        json.dumps({"attribution_method_version": 3}), encoding="utf-8"
+    )
+    assert not _cached_representatives_are_reusable(
+        folder, model_name="direct_multirocket"
+    )
+    (folder / "summary.json").write_text(
+        json.dumps({"attribution_method_version": 4}), encoding="utf-8"
+    )
+    assert _cached_representatives_are_reusable(
+        folder, model_name="direct_multirocket"
+    )
