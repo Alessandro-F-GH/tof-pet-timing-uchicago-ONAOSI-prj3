@@ -233,7 +233,14 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
         _validate_positive_int(name, value)
     tshap_version = version("tshap")
     results_path = Path(results).expanduser().resolve()
-    output_root = Path(output_root).expanduser().resolve() if output_root is not None else Path.cwd() / "xai"
+    if output_root is None:
+        output_root = (Path.cwd() / "xai").resolve()
+        if output_root.is_relative_to(results_path):
+            output_root = results_path.parent / "xai"
+    else:
+        output_root = Path(output_root).expanduser().resolve()
+        if output_root == results_path or output_root.is_relative_to(results_path):
+            raise ValueError("TSHAP output-root must be outside the supplied results tree")
     runs = discover_runs(results_path)
     if not runs:
         raise ValueError(f"No complete saved-model runs found in {results}")
