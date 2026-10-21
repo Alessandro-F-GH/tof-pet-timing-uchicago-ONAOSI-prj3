@@ -327,8 +327,6 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     if waveform.shape != (2, time_ns.size) or attribution.shape != waveform.shape:
         raise ValueError("Local TSHAP plot arrays must have shape [2 detectors, samples]")
 
-    # Only the signal-difference panel is mean-centered. The original signals
-    # and the original TSHAP attribution curves are plotted without alteration.
     waveform_difference = _center_detector_difference(waveform)
 
     fig, axes = plt.subplots(
@@ -355,9 +353,9 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
 
     ax = axes[1]
     ax.plot(time_ns, waveform_difference, linewidth=1.15,
-            label="(Detector 1 − Detector 2) − temporal mean")
+            label="Centered detector difference")
     ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Detector difference (temporal mean removed)")
+    ax.set_title("Detector difference")
     ax.set_ylabel("Centered amplitude difference")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9)
@@ -366,7 +364,7 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     ax.plot(time_ns, attribution[0], linewidth=1.1, label="Detector 1")
     ax.plot(time_ns, attribution[1], linewidth=1.1, label="Detector 2")
     ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Local TSHAP attributions (unchanged)")
+    ax.set_title("Local TSHAP attributions")
     ax.set_ylabel("Attribution (ps/sample)")
     ax.set_xlabel("Waveform time (ns)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
