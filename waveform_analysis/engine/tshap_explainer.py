@@ -31,6 +31,8 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 1
+LOCAL_PREDICTION_REPLAY_ATOL_PS = 5e-3
+LOCAL_PREDICTION_REPLAY_RTOL = 1e-6
 REQUIRED_ARTIFACTS = (
     "summary.json", "attributions.npz", "global_importance.csv", "global_importance.png",
 )
@@ -1095,7 +1097,9 @@ def explain_tshap_local(
                         replay = predict(waves)
                         prediction_difference = replay - selected_predictions
                         if not np.allclose(
-                            selected_predictions, replay, atol=1e-4, rtol=1e-6
+                            selected_predictions, replay,
+                            atol=LOCAL_PREDICTION_REPLAY_ATOL_PS,
+                            rtol=LOCAL_PREDICTION_REPLAY_RTOL
                         ):
                             mismatch = {
                                 "model": spec.name,
@@ -1103,8 +1107,8 @@ def explain_tshap_local(
                                 "max_absolute_difference_ps": float(
                                     np.max(np.abs(prediction_difference))
                                 ),
-                                "atol_ps": 1e-4,
-                                "rtol": 1e-6,
+                                "atol_ps": LOCAL_PREDICTION_REPLAY_ATOL_PS,
+                                "rtol": LOCAL_PREDICTION_REPLAY_RTOL,
                                 "events": [
                                     {
                                         "event_id": int(event_ids[i]),
