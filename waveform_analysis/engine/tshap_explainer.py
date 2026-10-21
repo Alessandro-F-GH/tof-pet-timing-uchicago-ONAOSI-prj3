@@ -297,7 +297,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 4
+LOCAL_PLOT_VERSION = 5
 
 
 def _detector_difference(values):
@@ -314,20 +314,22 @@ def _center_detector_difference(values):
     return difference - np.mean(difference)
 
 
-def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
-                      target_ps, prediction_ps, improvement_ps):
-    """Plot raw detector signals and attributions plus a mean-centered signal difference."""
+def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_id,
+                      target_ps, prediction_ps, improvement_ps, led_threshold_mv):
+    """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     time_ns = np.asarray(time_ps, dtype=np.float64) / 1000.0
-    waveform = np.asarray(waveform, dtype=np.float64)
+    waveform_mv = np.asarray(waveform_mv, dtype=np.float64)
     attribution = np.asarray(attribution, dtype=np.float64)
-    if waveform.shape != (2, time_ns.size) or attribution.shape != waveform.shape:
+    if waveform_mv.shape != (2, time_ns.size) or attribution.shape != waveform_mv.shape:
         raise ValueError("Local TSHAP plot arrays must have shape [2 detectors, samples]")
+    if not np.all(np.isfinite(waveform_mv)) or not np.isfinite(led_threshold_mv):
+        raise ValueError("Waveforms and LED threshold must be finite")
 
-    waveform_difference = _center_detector_difference(waveform)
+    waveform_difference = _center_detector_difference(waveform_mv)
 
     fig, axes = plt.subplots(
         3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
@@ -344,19 +346,23 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     )
 
     ax = axes[0]
-    ax.plot(time_ns, waveform[0], linewidth=1.15, label="Detector 1")
-    ax.plot(time_ns, waveform[1], linewidth=1.15, label="Detector 2")
+    ax.plot(time_ns, waveform_mv[0], linewidth=1.15, label="Detector 1")
+    ax.plot(time_ns, waveform_mv[1], linewidth=1.15, label="Detector 2")
+    ax.axhline(
+        float(led_threshold_mv), color="0.35", linestyle="--", linewidth=0.9,
+        label=f"LED threshold ({float(led_threshold_mv):g} mV)",
+    )
     ax.set_title("Detector waveforms")
-    ax.set_ylabel("Normalized amplitude")
+    ax.set_ylabel("Amplitude (mV)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
-    ax.legend(loc="best", fontsize=9, ncols=2)
+    ax.legend(loc="best", fontsize=9, ncols=3)
 
     ax = axes[1]
     ax.plot(time_ns, waveform_difference, linewidth=1.15,
             label="Centered detector difference")
     ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
     ax.set_title("Detector difference")
-    ax.set_ylabel("Centered amplitude difference")
+    ax.set_ylabel("Amplitude difference (mV)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9)
 
@@ -374,22 +380,37 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     plt.close(fig)
 
 
-def _refresh_local_presentation(destination):
-    """Refresh local plots from cached attributions without rerunning TSHAP."""
+def _refresh_local_presentation(
+    destination, *, waveform_transform, led_threshold_mv
+):
+    """Refresh plots and physical-unit waveforms from cached normalized inputs."""
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     if summary.get("plot_version", 0) >= LOCAL_PLOT_VERSION:
         return
 
     with np.load(destination / "local_attributions.npz") as saved:
-        time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
-        waves = np.asarray(saved["waveform_normalized"], dtype=np.float64)
-        attributions = np.asarray(saved["attribution_ps_per_sample"], dtype=np.float64)
-        event_ids = np.asarray(saved["event_id"], dtype=np.int64)
-        groups = np.asarray(saved["group"]).astype(str)
-        targets = np.asarray(saved["target_correction_ps"], dtype=np.float64)
-        predictions = np.asarray(saved["predicted_correction_ps"], dtype=np.float64)
-        improvements = np.asarray(saved["signed_improvement_ps"], dtype=np.float64)
+        arrays = {key: np.asarray(saved[key]) for key in saved.files}
+    time_ps = np.asarray(arrays["time_ps"], dtype=np.float64)
+    waves = np.asarray(arrays["waveform_normalized"], dtype=np.float64)
+    attributions = np.asarray(arrays["attribution_ps_per_sample"], dtype=np.float64)
+    event_ids = np.asarray(arrays["event_id"], dtype=np.int64)
+    groups = np.asarray(arrays["group"]).astype(str)
+    targets = np.asarray(arrays["target_correction_ps"], dtype=np.float64)
+    predictions = np.asarray(arrays["predicted_correction_ps"], dtype=np.float64)
+    improvements = np.asarray(arrays["signed_improvement_ps"], dtype=np.float64)
+
+    waveform_mv = np.asarray(
+        arrays["waveform_mv"] if "waveform_mv" in arrays
+        else waveform_transform.inverse(waves),
+        dtype=np.float64,
+    )
+    threshold = float(np.asarray(
+        arrays["led_threshold_mv"] if "led_threshold_mv" in arrays
+        else led_threshold_mv
+    ).reshape(()))
+    arrays["waveform_mv"] = waveform_mv
+    arrays["led_threshold_mv"] = np.asarray(threshold, dtype=np.float64)
 
     plot_names = []
     for i in range(len(event_ids)):
@@ -397,18 +418,24 @@ def _refresh_local_presentation(destination):
         _plot_local_event(
             destination / plot_name,
             time_ps=time_ps,
-            waveform=waves[i],
+            waveform_mv=waveform_mv[i],
             attribution=attributions[i],
             group=groups[i],
             event_id=int(event_ids[i]),
             target_ps=float(targets[i]),
             prediction_ps=float(predictions[i]),
             improvement_ps=float(improvements[i]),
+            led_threshold_mv=threshold,
         )
         plot_names.append(plot_name)
 
+    refreshed = destination / "local_attributions.refresh.npz"
+    np.savez_compressed(refreshed, **arrays)
+    os.replace(refreshed, destination / "local_attributions.npz")
     summary["plots"] = plot_names
     summary["plot_version"] = LOCAL_PLOT_VERSION
+    summary["signal_units"] = "mV (inverse of frozen prepared waveform normalization)"
+    summary["led_threshold_mV"] = threshold
     atomic_json(summary_path, summary)
 
 
@@ -778,7 +805,18 @@ def explain_tshap_local(
             fingerprint = canonical_hash(identity)
             destination = _local_explanation_destination(output_root, directory)
             if _complete_local(destination, fingerprint, len(LOCAL_GROUP_LABELS) * events_per_group) and not overwrite:
-                _refresh_local_presentation(destination)
+                cache = _cache_root(config, directory, cache_root)
+                blind = lookup.find(cache, "blind", config, manifest)
+                family = mode_family(config["mode"])
+                waveform_transform = getattr(blind, f"{family}_transform")
+                if waveform_transform is None:
+                    raise ValueError("Missing frozen waveform normalization for mV plotting")
+                led_threshold_mv = float(blind.manifest["fixed_led_threshold_mV"])
+                _refresh_local_presentation(
+                    destination,
+                    waveform_transform=waveform_transform,
+                    led_threshold_mv=led_threshold_mv,
+                )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
                 outputs.append(destination)
@@ -828,6 +866,14 @@ def explain_tshap_local(
                         waves = waveform_view(
                             blind, config["mode"], dataset_indices
                         ).materialize()
+                        family = mode_family(config["mode"])
+                        waveform_transform = getattr(blind, f"{family}_transform")
+                        if waveform_transform is None:
+                            raise ValueError("Missing frozen waveform normalization for mV plotting")
+                        raw_waves_mv = np.asarray(waveform_transform.inverse(waves), dtype=np.float64)
+                        led_threshold_mv = float(blind.manifest["fixed_led_threshold_mV"])
+                        if not np.isfinite(led_threshold_mv):
+                            raise ValueError("LED threshold must be finite")
                         selected_predictions = predictions[dataset_indices]
                         selected_targets = targets[dataset_indices]
                         selected_improvements = improvement[dataset_indices]
@@ -887,13 +933,14 @@ def explain_tshap_local(
                         _plot_local_event(
                             temporary / plot_name,
                             time_ps=time_ps,
-                            waveform=waves[i],
+                            waveform_mv=raw_waves_mv[i],
                             attribution=local_maps[i],
                             group=group,
                             event_id=int(event_id),
                             target_ps=target_ps,
                             prediction_ps=prediction_ps,
                             improvement_ps=improvement_ps,
+                            led_threshold_mv=led_threshold_mv,
                         )
                         plot_names.append(plot_name)
                         writer.writerow([
@@ -909,6 +956,8 @@ def explain_tshap_local(
                     group=np.asarray(groups, dtype="U"),
                     time_ps=time_ps,
                     waveform_normalized=waves,
+                    waveform_mv=raw_waves_mv,
+                    led_threshold_mv=np.asarray(led_threshold_mv, dtype=np.float64),
                     attribution_ps_per_sample=local_maps,
                     target_correction_ps=selected_targets,
                     predicted_correction_ps=selected_predictions,
@@ -947,6 +996,8 @@ def explain_tshap_local(
                     "plots": plot_names,
                     "attribution_units": "ps/sample (upstream TSHAP window scores redistributed over samples)",
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
+                    "signal_units": "mV (inverse of frozen prepared waveform normalization)",
+                    "led_threshold_mV": led_threshold_mv,
                     "prediction_equivalence_max_error_ps": float(
                         np.max(np.abs(selected_predictions - replay))
                     ),
