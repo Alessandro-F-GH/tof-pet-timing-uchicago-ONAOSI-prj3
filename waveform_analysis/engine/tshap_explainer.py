@@ -135,25 +135,51 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
 
 
 def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_reference):
+    """Plot attribution scores and normalized control waveforms on separate axes.
+
+    Model outputs are timing corrections in ps, so the TSHAP scores inherit ps.
+    The prepared waveform inputs are min-max normalized and clipped to [0, 1],
+    so their amplitude is dimensionless; keep it on a separate row rather than
+    a twin axis to prevent the waveform from visually obscuring attribution.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    time_ns = np.asarray(time_ps) / 1000.
-    fig, axes = plt.subplots(2, 1, figsize=(11, 6), sharex=True, constrained_layout=True)
-    for channel, ax in enumerate(axes):
-        ax.plot(time_ns, mean_absolute[channel], label="Mean |TSHAP|", color="tab:blue")
-        ax.plot(time_ns, mean_signed[channel], label="Mean signed TSHAP", color="tab:orange",
-                linewidth=1, alpha=0.8)
-        ax.set_ylabel("Attribution (ps)")
-        wave_ax = ax.twinx()
-        wave_ax.plot(time_ns, mean_reference[channel], color="0.5", linewidth=1,
-                     linestyle="--", label="Mean control reference")
-        wave_ax.set_ylabel("Normalized amplitude")
-        ax.set_title(f"Detector {channel + 1}")
-        ax.legend(loc="upper left", fontsize=8)
-    axes[-1].set_xlabel("Waveform time (ns)")
-    fig.savefig(destination / "global_importance.png", dpi=180)
+    time_ps = np.asarray(time_ps, dtype=np.float64)
+    time_ns = time_ps / 1000.0
+    mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
+    mean_signed = np.asarray(mean_signed, dtype=np.float64)
+    mean_reference = np.asarray(mean_reference, dtype=np.float64)
+    expected_shape = (2, time_ps.size)
+    if any(a.shape != expected_shape for a in (mean_absolute, mean_signed, mean_reference)):
+        raise ValueError("Global TSHAP summaries must have shape [2 detectors, samples]")
+
+    # One quantity per row: no twin y-axes and no attribution/waveform overlap.
+    fig, axes = plt.subplots(
+        3, 2, figsize=(13, 8), sharex=True, constrained_layout=True,
+        gridspec_kw={"height_ratios": [1.15, 1.15, 1.0]},
+    )
+    row_labels = (
+        ("Mean absolute TSHAP attribution (ps)", mean_absolute, "tab:blue"),
+        ("Mean signed TSHAP attribution (ps)", mean_signed, "tab:orange"),
+        ("Mean control baseline amplitude (0–1)", mean_reference, "0.35"),
+    )
+    for channel in range(2):
+        axes[0, channel].set_title(f"Detector {channel + 1}")
+        for row, (ylabel, values, color) in enumerate(row_labels):
+            ax = axes[row, channel]
+            ax.plot(time_ns, values[channel], color=color, linewidth=1.15)
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.22, linewidth=0.6)
+            ax.margins(x=0.005)
+            if row < 2:
+                ax.axhline(0.0, color="0.45", linewidth=0.75, linestyle=":")
+            else:
+                ax.set_ylim(-0.03, 1.03)
+        axes[2, channel].set_xlabel("Waveform time (ns)")
+
+    fig.savefig(destination / "global_importance.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
 
