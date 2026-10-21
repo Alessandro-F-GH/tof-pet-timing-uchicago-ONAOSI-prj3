@@ -241,11 +241,35 @@ def _refresh_presentation(destination):
     atomic_json(summary_path, summary)
 
 
-def _explanation_destination(output_root, run_directory, fingerprint):
-    """Place XAI artifacts in a separate output tree, preserving batch/run identity."""
+def _explanation_destination(output_root, run_directory):
+    """Return one stable TSHAP directory per run; fingerprints belong in metadata only."""
     batch = batch_root(run_directory)
     relative_run = Path(run_directory).resolve().relative_to(batch)
-    return Path(output_root).resolve() / batch.name / relative_run / "tshap" / fingerprint[:16]
+    return Path(output_root).resolve() / batch.name / relative_run / "tshap"
+
+
+def _copy_cached_explanation(source, destination, *, remove_source=False, logger=None):
+    """Migrate a complete legacy cache into the stable directory without inference."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".tshap-migrate-", dir=destination.parent))
+    shutil.rmtree(temporary)
+    try:
+        shutil.copytree(source, temporary)
+        _refresh_presentation(temporary)
+        _publish_directory(temporary, destination, overwrite=True)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    if remove_source:
+        shutil.rmtree(source)
+        # Remove now-empty legacy containers only; never remove the run itself.
+        for parent in (source.parent, source.parent.parent):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+    if logger:
+        logger.info("TSHAP | migrated cached explanation | %s -> %s", source, destination)
 
 
 def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
@@ -303,32 +327,32 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 "model": spec.name, "mode": config["mode"], "seed": seed, "settings": settings,
             }
             fingerprint = canonical_hash(identity)
-            destination = _explanation_destination(output_root, directory, fingerprint)
-            legacy_destination = directory / "explanations" / "tshap" / fingerprint[:16]
+            destination = _explanation_destination(output_root, directory)
+            legacy_results = directory / "explanations" / "tshap" / fingerprint[:16]
+            legacy_xai = destination / fingerprint[:16]
+
+            # A matching flat cache is the canonical hit: no model inference.
             if _complete(destination, fingerprint) and not overwrite:
                 _refresh_presentation(destination)
                 if logger:
-                    logger.info("TSHAP | reuse complete | %s", destination)
+                    logger.info("TSHAP | cache hit | %s", destination)
                 outputs.append(destination)
                 continue
-            if not overwrite and not destination.exists() and _complete(legacy_destination, fingerprint):
-                # Relocate an already-computed result without repeating inference.
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                temporary_copy = Path(tempfile.mkdtemp(prefix=".tshap-reuse-", dir=destination.parent))
-                shutil.rmtree(temporary_copy)
-                try:
-                    shutil.copytree(legacy_destination, temporary_copy)
-                    _publish_directory(temporary_copy, destination, overwrite=False)
-                    _refresh_presentation(destination)
-                finally:
-                    if temporary_copy.exists():
-                        shutil.rmtree(temporary_copy)
-                if logger:
-                    logger.info("TSHAP | reused existing result outside results tree | %s", destination)
+
+            # Migrate old hash-folder layouts rather than creating another copy.
+            if not overwrite and _complete(legacy_xai, fingerprint):
+                _copy_cached_explanation(legacy_xai, destination, logger=logger)
                 outputs.append(destination)
                 continue
-            if destination.exists() and not overwrite:
-                raise FileExistsError(f"Existing TSHAP explanation is incomplete: {destination}; use --overwrite")
+            if not overwrite and _complete(legacy_results, fingerprint):
+                _copy_cached_explanation(
+                    legacy_results, destination, remove_source=True, logger=logger
+                )
+                outputs.append(destination)
+                continue
+
+            # No matching cache: compute in a temporary directory and replace the
+            # stable tshap directory only after all artifacts have been written.
             cache = _cache_root(config, directory, cache_root)
             control = lookup.find(cache, "control", config, manifest)
             blind = lookup.find(cache, "blind", config, manifest)
@@ -411,7 +435,9 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     "prediction_equivalence_max_error_ps": float(np.max(np.abs(original - replay))),
                     "reference": "https://github.com/mlgig/tshap",
                 })
-                _publish_directory(temporary, destination, overwrite=overwrite)
+                # Replace stale settings/incomplete artifacts in-place. The cache
+                # check above prevents recalculation when the fingerprint matches.
+                _publish_directory(temporary, destination, overwrite=True)
             finally:
                 if temporary.exists():
                     shutil.rmtree(temporary)
