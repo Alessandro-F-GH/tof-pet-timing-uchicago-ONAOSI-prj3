@@ -52,6 +52,17 @@ def _parser() -> argparse.ArgumentParser:
     explain.add_argument("--depths", nargs="+", type=int, default=[2, 3, 4, 5])
     explain.add_argument("--min-samples-leaf", type=int, default=20)
     explain.add_argument("--max-events", type=int, help="Optional reproducible event cap per role; default: all events")
+    tshap = sub.add_parser("explain-tshap", help="TSHAP temporal explanations from frozen saved models")
+    tshap.add_argument("--results", type=Path, required=True)
+    tshap.add_argument("--models", nargs="+", metavar="MODEL")
+    tshap.add_argument("--cache-root", type=Path)
+    tshap.add_argument("--max-events", type=int, default=100, help="Maximum blind events per model (default: 100)")
+    tshap.add_argument("--n-baselines", type=int, default=8, help="Control reference events (default: 8)")
+    tshap.add_argument("--window-samples", type=int, default=20)
+    tshap.add_argument("--stride-samples", type=int, default=10)
+    tshap.add_argument("--predict-batch-size", type=int, default=64)
+    tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
+    tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -67,6 +78,15 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
+    if args.command == "explain-tshap":
+        from .engine.tshap_explainer import explain_tshap
+        for output in explain_tshap(args.results, models=args.models, cache_root=args.cache_root,
+                max_events=args.max_events, n_baselines=args.n_baselines,
+                window_samples=args.window_samples, stride_samples=args.stride_samples,
+                predict_batch_size=args.predict_batch_size, roi=args.roi,
+                overwrite=args.overwrite, logger=logger):
+            print(output)
+        return
     if args.command == "explain-regression":
         from .engine.regression_explainer import explain_regression
         for output in explain_regression(args.results, models=args.models, cache_root=args.cache_root,
