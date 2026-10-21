@@ -833,6 +833,13 @@ def explain_tshap_local(
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
+            if _is_excluded_tshap_window(config):
+                if logger:
+                    logger.info(
+                        "TSHAP local skipped | excluded window=%s | model=%s",
+                        config.get("window_name"), manifest["model"],
+                    )
+                continue
             spec = get_model(manifest["model"])
             model_dir = directory / "model"
             if not saved_model_complete(spec, model_dir):
