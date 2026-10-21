@@ -136,9 +136,9 @@ For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
 ## TSHAP post-training explanations
 
-TSHAP uses the upstream \`tshap==0.0.1\` package (GPL-3.0) for overlapping-window aggregation and optional region-of-interest identification. Its perturbation scoring is evaluated in bounded batches to avoid constructing all synthetic events simultaneously.
+TSHAP uses the upstream `tshap==0.0.1` package (GPL-3.0) for overlapping-window aggregation and optional region-of-interest identification. Its perturbation scoring is evaluated in bounded batches to avoid constructing all synthetic events simultaneously.
 
-\`\`\`bash
+```bash
 python -m waveform_analysis.cli explain-tshap \
   --results waveform_analysis/results/UC/BATCH \
   --models direct_linear_ridge direct_hydra \
@@ -147,11 +147,11 @@ python -m waveform_analysis.cli explain-tshap \
   --window-samples 20 --stride-samples 10 \
   --predict-batch-size 64 \
   --roi
-\`\`\`
+```
 
-The method replays **frozen** saved models on verified prepared control/blind caches; it does not refit models, transforms or calibration, nor read ROOT acquisitions. \`--cache-root PATH\` locates moved original prepared caches. Selects a reproducible, seed-controlled cap of blind events (\`--max-events\`; default 100) and control baseline waveforms (\`--n-baselines\`; default 8). All 2 detector inputs remain present for direct and shared models. Samples and stride refer to the **original prepared time grid**, even when the fitted model uses a sample mask. Check the saved \`time_ps\` grid before selecting settings. Only complete results with matching model/data/settings fingerprints are reused; use \`--overwrite\` to deliberately replace an existing matching explanation. A different event count, window or baseline count creates a different fingerprinted output, not a duplicate calculation. Incomplete results are not silently replaced.
+The method replays **frozen** saved models on verified prepared control/blind caches; it does not refit models, transforms or calibration, nor read ROOT acquisitions. `--cache-root PATH` locates moved original prepared caches. Selects a reproducible, seed-controlled cap of blind events (`--max-events`; default 100) and control baseline waveforms (`--n-baselines`; default 8). All 2 detector inputs remain present for direct and shared models. Samples and stride refer to the **original prepared time grid**, even when the fitted model uses a sample mask. Check the saved `time_ps` grid before selecting settings. Only complete results with matching model/data/settings fingerprints are reused; use `--overwrite` to deliberately replace an existing matching explanation. A different event count, window or baseline count creates a different fingerprinted output, not a duplicate calculation. Incomplete results are not silently replaced.
 
-Each model's \`explanations/tshap/IDENTITY/\` contains \`summary.json\`, \`attributions.npz\` (event IDs, control baseline IDs, time grid, original predictions and window/optional ROI maps), \`global_importance.csv\`, and \`global_importance.png\`. The plot shows mean signed and mean absolute temporal attribution with a control-reference waveform. Results are independent of training, blind evaluation, bootstrap and existing XAI receipts.
+Each model's `explanations/tshap/IDENTITY/` contains `summary.json`, `attributions.npz` (event IDs, control baseline IDs, time grid, original predictions and window/optional ROI maps), `global_importance.csv`, and `global_importance.png`. The plot shows mean signed and mean absolute temporal attribution with a control-reference waveform. Results are independent of training, blind evaluation, bootstrap and existing XAI receipts.
 
 **Interpretation:** TSHAP computes a two-player SHAP score for each time window against its complement. Its overlapping-window attribution map redistributes those window scores and **is not** an exact additive Shapley decomposition of individual samples. Reference substitutions can also produce unphysical transition boundaries; inspect reference sensitivity before asserting physical importance. Upstream project/paper: https://github.com/mlgig/tshap (Nguyen and Ifrim, ECML-PKDD 2025).
 
