@@ -3,7 +3,9 @@ import numpy as np
 import pytest
 from types import SimpleNamespace
 
-from waveform_analysis.engine.rocket_ppv_lrp import _trace_rep, _ppv_columns
+from waveform_analysis.engine.rocket_ppv_lrp import (
+    _trace_rep, _ppv_columns, _lrp_epsilon_patch, _lrp_difference_pair,
+)
 
 
 def test_ppv_uniform_relevance_and_zero_positive_mass():
@@ -121,7 +123,30 @@ def test_ppv_subset_matches_aeon_selected_columns_only():
         np.testing.assert_allclose(restored[selected], scaled[0, columns[selected]],
                                    atol=2e-4, rtol=2e-4, err_msg=rep)
 
-def test_ppv_input_relevance_conserved_and_sparse_dilated():
+
+def test_standard_lrp_epsilon_patch_uses_signed_kernel_terms():
+    # Input-weight terms +3 and -1 must receive opposite signed relevance.
+    values = np.array([3.0, -1.0])
+    relevance = _lrp_epsilon_patch(values, 0.0, 10.0)
+    assert relevance[0] == pytest.approx(15.0, rel=1e-5)
+    assert relevance[1] == pytest.approx(-5.0, rel=1e-5)
+    assert relevance.sum() == pytest.approx(10.0, rel=1e-5)
+
+
+def test_lrp_epsilon_patch_includes_bias_and_is_finite_at_zero():
+    result = _lrp_epsilon_patch(np.array([0.0, 0.0]), -1.0, 3.0)
+    np.testing.assert_allclose(result, [1.5, 1.5], atol=1e-5)
+    assert np.isfinite(_lrp_epsilon_patch(np.array([2.0, -2.0]), 0.0, 3.0)).all()
+
+
+def test_first_difference_lrp_propagates_signed_relevance():
+    left, right = _lrp_difference_pair(1.0, 3.0, 10.0)
+    assert left == pytest.approx(-5.0, rel=1e-5)
+    assert right == pytest.approx(15.0, rel=1e-5)
+    assert left + right == pytest.approx(10.0, rel=1e-5)
+
+
+def test_ppv_input_signed_epsilon_lrp_not_absolute_mass_conservation():
     signal = np.zeros((1, 33), dtype=np.float32)
     signal[0, 10] = 1.
     kernel = np.array([[0, 1, 2]], dtype=np.int32)
@@ -132,19 +157,25 @@ def test_ppv_input_relevance_conserved_and_sparse_dilated():
     attr = np.zeros((2, 33), dtype=np.float64)
     missing = np.zeros(1, dtype=np.float64)
     _trace_rep(*args, input_attribution=(attr[0], attr[1], missing))
-    assert attr[1].sum() + missing[0] == pytest.approx(5., abs=1e-7)
-    assert attr[0].sum() == pytest.approx(attr[1].sum(), abs=1e-7)
+    assert np.isfinite(attr).all()
+    assert np.isfinite(missing).all()
+    assert attr[0].sum() == pytest.approx(5., abs=1e-4)
+    assert attr[1].sum() >= abs(attr[0].sum())
 
-def test_ppv_difference_input_allocates_two_endpoints():
-    x = np.zeros((1, 32), dtype=np.float32)
-    x[0, 10] = 1.
-    args = (x, np.array([1], np.int32), np.array([0], np.int32),
+
+def test_ppv_difference_input_uses_actual_original_endpoints():
+    original = np.zeros((1, 33), dtype=np.float32)
+    original[0, 10] = 1.
+    xdiff = np.diff(original, axis=1)
+    args = (xdiff, np.array([1], np.int32), np.array([0], np.int32),
             np.array([0, 1], np.int32), np.array([1], np.int32),
             np.array([1], np.int32), np.array([-100.], np.float32),
             np.array([[0, 1, 2]], np.int32),
             np.array([5.]), np.ones(1), 1)
     attr = np.zeros((2, 33), dtype=np.float64)
     missing = np.zeros(1, dtype=np.float64)
-    _trace_rep(*args, input_attribution=(attr[0], attr[1], missing))
-    assert attr[1].sum() + missing[0] == pytest.approx(5., abs=1e-7)
-    assert attr[1, 10] > 0 and attr[1, 11] > 0
+    _trace_rep(*args, input_attribution=(attr[0], attr[1], missing),
+               original_x=original)
+    assert np.isfinite(attr).all()
+    assert attr[0, 10] != 0.0
+    assert attr[0, 11] != 0.0
