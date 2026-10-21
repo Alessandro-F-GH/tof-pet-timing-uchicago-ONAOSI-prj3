@@ -66,6 +66,27 @@ def _parser() -> argparse.ArgumentParser:
                        help="Fixed sampling seed shared across models (default: 42)")
     tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
     tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
+
+    tshap_local = sub.add_parser(
+        "explain-tshap-local",
+        help="Explain representative good, bad and typical blind events individually",
+    )
+    tshap_local.add_argument("--results", type=Path, required=True)
+    tshap_local.add_argument("--models", nargs="+", metavar="MODEL")
+    tshap_local.add_argument("--cache-root", type=Path)
+    tshap_local.add_argument("--output-root", type=Path, help="Dedicated XAI output directory (default: ./xai, outside --results)")
+    tshap_local.add_argument("--events-per-group", type=int, default=2,
+                             help="Number of events per local category (default: 2; 10 total)")
+    tshap_local.add_argument("--extreme-margin", type=float, default=0.05,
+                             help="Exclude the most extreme margin of each good/bad tail (default: 0.05)")
+    tshap_local.add_argument("--n-baselines", type=int, default=8)
+    tshap_local.add_argument("--window-samples", type=int, default=20)
+    tshap_local.add_argument("--stride-samples", type=int, default=10)
+    tshap_local.add_argument("--predict-batch-size", type=int, default=64)
+    tshap_local.add_argument("--seed", type=int, default=42,
+                             help="Fixed control-baseline sampling seed (default: 42)")
+    tshap_local.add_argument("--overwrite", action="store_true",
+                             help="Force recomputation of local explanations")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -87,6 +108,17 @@ def main() -> None:
                 output_root=args.output_root, max_events=args.max_events, n_baselines=args.n_baselines,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed, roi=args.roi,
+                overwrite=args.overwrite, logger=logger):
+            print(output)
+        return
+    if args.command == "explain-tshap-local":
+        from .engine.tshap_explainer import explain_tshap_local
+        for output in explain_tshap_local(
+                args.results, models=args.models, cache_root=args.cache_root,
+                output_root=args.output_root, events_per_group=args.events_per_group,
+                extreme_margin=args.extreme_margin, n_baselines=args.n_baselines,
+                window_samples=args.window_samples, stride_samples=args.stride_samples,
+                predict_batch_size=args.predict_batch_size, seed=args.seed,
                 overwrite=args.overwrite, logger=logger):
             print(output)
         return
