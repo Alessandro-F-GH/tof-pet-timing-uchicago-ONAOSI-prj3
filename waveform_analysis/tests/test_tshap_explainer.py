@@ -205,3 +205,16 @@ def test_local_cache_requires_all_expected_event_plots(tmp_path):
     assert not _complete_local(destination, "fingerprint", expected_events=3)
     (destination / "bad.png").unlink()
     assert not _complete_local(destination, "fingerprint", expected_events=2)
+
+
+def test_local_explanations_use_a_separate_stable_folder(tmp_path, monkeypatch):
+    from waveform_analysis.engine import tshap_explainer
+
+    batch = tmp_path / "results" / "batch-A"
+    run = batch / "energy" / "wide" / "direct_linear_ridge"
+    run.mkdir(parents=True)
+    monkeypatch.setattr(tshap_explainer, "batch_root", lambda _: batch)
+    path = _local_explanation_destination(tmp_path / "xai", run)
+    assert path == tmp_path / "xai" / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap_local"
+    assert path.name == "tshap_local"
+    assert not path.is_relative_to(batch)
