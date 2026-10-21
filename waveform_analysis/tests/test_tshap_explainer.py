@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
-    _choose_indices, _complete, _explanation_destination, _new_explainer, _publish_directory,
+    _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
+    _new_explainer, _publish_directory,
 )
 
 
@@ -75,3 +76,18 @@ def test_explanation_destination_is_separate_and_collision_safe(tmp_path, monkey
     assert path == output_root / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap"
     assert not path.is_relative_to(batch)
     assert path.name == "tshap"  # Identity fingerprints stay in summary.json, not in path names.
+
+
+def test_cleanup_removes_only_legacy_tshap_outputs(tmp_path):
+    run = tmp_path / "run"
+    legacy = run / "explanations" / "tshap" / "old-hash"
+    legacy.mkdir(parents=True)
+    (legacy / "summary.json").write_text("{}")
+    unrelated = run / "explanations" / "other-xai"
+    unrelated.mkdir(parents=True)
+    (unrelated / "keep.txt").write_text("keep")
+
+    _cleanup_legacy_result_tshap(run)
+
+    assert not (run / "explanations" / "tshap").exists()
+    assert (unrelated / "keep.txt").read_text() == "keep"
