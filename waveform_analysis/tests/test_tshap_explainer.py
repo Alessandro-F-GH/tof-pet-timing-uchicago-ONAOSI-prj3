@@ -267,6 +267,7 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         improvement_ps=2.0,
         led_threshold_mv=20.0,
         baseline_window_ns=(-1.0, -0.5),
+        led_times_ps=np.zeros(2, dtype=np.float64),
     )
 
     assert output.is_file()
@@ -281,6 +282,7 @@ def test_led_reference_levels_include_each_detector_baseline():
         [-7.0, -6.0, -2.0, 10.0, 22.0],
     ])
     levels = _led_reference_levels(
-        waveform_mv, time_ns, threshold_mv=20.0, baseline_window_ns=(-1.0, -0.5)
+        waveform_mv, time_ns, led_times_ps=np.zeros(2), threshold_mv=20.0,
+        baseline_window_ns=(-1.0, -0.5)
     )
     np.testing.assert_allclose(levels, [14.0, 15.0])
