@@ -190,7 +190,7 @@ def test_local_selection_rejects_insufficient_categories():
 def test_local_cache_requires_all_expected_event_plots(tmp_path):
     destination = tmp_path / "tshap_local"
     destination.mkdir()
-    (destination / "events.csv").write_text("event_id\\n")
+    (destination / "events.csv").write_text("event_id\n")
     (destination / "local_attributions.npz").touch()
     plot_names = ["good.png", "bad.png"]
     for name in plot_names:
@@ -214,7 +214,7 @@ def test_local_explanations_use_a_separate_stable_folder(tmp_path, monkeypatch):
     run = batch / "energy" / "wide" / "direct_linear_ridge"
     run.mkdir(parents=True)
     monkeypatch.setattr(tshap_explainer, "batch_root", lambda _: batch)
-    path = _local_explanation_destination(tmp_path / "xai", run)
+    path = tshap_explainer._local_explanation_destination(tmp_path / "xai", run)
     assert path == tmp_path / "xai" / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap_local"
     assert path.name == "tshap_local"
     assert not path.is_relative_to(batch)
