@@ -178,4 +178,9 @@ def test_ppv_difference_input_uses_actual_original_endpoints():
                original_x=original)
     assert np.isfinite(attr).all()
     assert attr[0, 10] != 0.0
-    assert attr[0, 11] != 0.0
+    # Unlike the old 50/50 endpoint split, signed LRP assigns zero
+    # relevance to an endpoint whose original input value is zero.
+    assert attr[0, 11] == pytest.approx(0.0)
+    assert attr[0, 9] == pytest.approx(0.0)
+    # The helper is tested separately with two nonzero endpoints, where
+    # both receive signed relevance according to -x[t] and +x[t+1].
