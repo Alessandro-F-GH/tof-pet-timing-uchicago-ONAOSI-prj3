@@ -7,7 +7,8 @@ import pytest
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
     _center_detector_difference, _complete_local, _detector_difference, _led_reference_levels,
-    _new_explainer, _plot_local_event, _publish_directory, _select_local_events, _selection_seed,
+    _is_excluded_tshap_window, _new_explainer, _plot_local_event, _publish_directory,
+    _select_local_events, _selection_seed,
 )
 
 
@@ -286,3 +287,14 @@ def test_led_reference_levels_include_each_detector_baseline():
         baseline_window_ns=(-1.0, -0.5)
     )
     np.testing.assert_allclose(levels, [14.0, 15.0])
+
+
+
+@pytest.mark.parametrize("window_name", ["onishi", "Onishi", "ONISHI"])
+def test_tshap_excludes_onishi_window(window_name):
+    assert _is_excluded_tshap_window({"window_name": window_name})
+
+
+@pytest.mark.parametrize("window_name", ["wide", "default", ""])
+def test_tshap_keeps_non_onishi_windows(window_name):
+    assert not _is_excluded_tshap_window({"window_name": window_name})
