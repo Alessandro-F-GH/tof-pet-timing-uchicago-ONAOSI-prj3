@@ -161,8 +161,8 @@ def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_referenc
         gridspec_kw={"height_ratios": [1.15, 1.15, 1.0]},
     )
     row_labels = (
-        ("Mean absolute TSHAP attribution (ps)", mean_absolute, "tab:blue"),
-        ("Mean signed TSHAP attribution (ps)", mean_signed, "tab:orange"),
+        ("Mean absolute TSHAP attribution (ps/sample)", mean_absolute, "tab:blue"),
+        ("Mean signed TSHAP attribution (ps/sample)", mean_signed, "tab:orange"),
         ("Mean control baseline amplitude (0–1)", mean_reference, "0.35"),
     )
     for channel in range(2):
@@ -326,7 +326,7 @@ def explain_tshap(results, *, models=None, cache_root=None, max_events=100, n_ba
                 np.savez_compressed(temporary / "attributions.npz", **payload)
                 with (temporary / "global_importance.csv").open("w", newline="", encoding="utf-8") as stream:
                     writer = csv.writer(stream)
-                    writer.writerow(["channel", "time_ps", "window_mean_abs_ps", "window_mean_signed_ps",
+                    writer.writerow(["channel", "time_ps", "window_mean_abs_ps_per_sample", "window_mean_signed_ps_per_sample",
                                      "roi_mean_abs_ps", "roi_mean_signed_ps"])
                     for ch in range(2):
                         for j, t in enumerate(time_ps):
@@ -339,7 +339,7 @@ def explain_tshap(results, *, models=None, cache_root=None, max_events=100, n_ba
                     **identity, "identity_sha256": fingerprint, "n_explained_events": len(event_ids),
                     "n_control_baselines": len(baseline_ids), "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
-                    "attribution_units": "ps (sample-wise redistributed upstream window score)",
+                    "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
                     "interpretation": "Two-player window/complement SHAP with reference substitution; "
                                       "overlapping-window maps are not exact sample-level Shapley values.",
                     "cohort": "blind", "input_units": "frozen normalized waveform",
