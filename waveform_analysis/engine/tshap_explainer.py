@@ -40,6 +40,12 @@ def _validate_positive_int(name, value):
         raise ValueError(f"{name} must be an integer >= 1")
 
 
+def _is_excluded_tshap_window(config):
+    """Return whether a run uses the intentionally excluded Onishi window."""
+    name = str(config.get("window_name", "")).strip().lower()
+    return name == "onishi"
+
+
 def _choose_indices(n, cap, seed):
     return np.sort(np.random.default_rng(seed).choice(n, size=min(n, cap), replace=False))
 
@@ -619,6 +625,13 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
+            if _is_excluded_tshap_window(config):
+                if logger:
+                    logger.info(
+                        "TSHAP skipped | excluded window=%s | model=%s",
+                        config.get("window_name"), manifest["model"],
+                    )
+                continue
             spec = get_model(manifest["model"])
             model_dir = directory / "model"
             if not saved_model_complete(spec, model_dir):
