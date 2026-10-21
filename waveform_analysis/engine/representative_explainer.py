@@ -284,8 +284,15 @@ def _legend_location(mode, is_onishi):
     return "upper left" if "energy" in str(mode).lower() else "upper right"
 
 
-def _cached_representatives_are_reusable(destination):
+def _cached_representatives_are_reusable(destination, *, model_name=None):
     """True when every representative already has the numeric arrays needed to replot."""
+    if model_name is not None and "multirocket" in model_name:
+        try:
+            summary = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if summary.get("attribution_method_version") != 4:
+            return False
     required = {"time_ps", "signed_contribution_ps", "absolute_contribution_ps",
                 "event_id", "prediction_ps", "target_ps"}
     if not (destination / "representatives.csv").is_file():
@@ -414,7 +421,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
         if logger:
             logger.info("Representative explanation | skipped overwrite | %s", destination)
         return None
-    if destination.exists() and _cached_representatives_are_reusable(destination):
+    if destination.exists() and _cached_representatives_are_reusable(destination, model_name=spec.name):
         return _replot_existing(
             destination, directory, config, manifest, PreparedCacheLookup(),
             cache_override, logger,
@@ -488,7 +495,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
             event_abs = np.asarray(maps["event_input_absolute_ps"]).sum(axis=1)
             shared = bool(getattr(fitted.feature_transform.artifact, "shared", False))
             detector_names = ["detector_1", "detector_2"] if shared else ["joint_pair"]
-            method = "MultiRocket PPV pooling attribution redistributed to input samples; raw and difference views combined"
+            method = "MultiRocket PPV + signed epsilon convolution LRP, propagated through first differences (PPV-only)"
         if event_signed.shape[0] != len(event_indices):
             raise RuntimeError("Temporal attribution output does not align with representative events")
         # Use the same target extraction as the original batch evaluation.
@@ -542,6 +549,7 @@ def _explain_one(run, lookup, cache_override, n_ppv_features, yes_overwrite, log
             writer.writerows(records)
         atomic_json(temp_output / "summary.json", {
             "model": spec.name, "teacher_run": str(directory), "method": method,
+            "attribution_method_version": 4 if "multirocket" in spec.name else None,
             "selection": "existing stable blind prediction rank bands; median-ranked event per band",
             "quantile_intervals": INTERVALS, "representatives": records,
             "map_semantics": (
