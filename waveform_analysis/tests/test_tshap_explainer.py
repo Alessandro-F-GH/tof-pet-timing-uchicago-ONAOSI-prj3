@@ -6,7 +6,7 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
-    _new_explainer, _publish_directory, _select_local_events, _selection_seed,
+    _complete_local, _new_explainer, _publish_directory, _select_local_events, _selection_seed,
 )
 
 
@@ -185,3 +185,23 @@ def test_local_selection_rejects_insufficient_categories():
             events_per_group=2,
             extreme_margin=0.05,
         )
+
+
+def test_local_cache_requires_all_expected_event_plots(tmp_path):
+    destination = tmp_path / "tshap_local"
+    destination.mkdir()
+    (destination / "events.csv").write_text("event_id\\n")
+    (destination / "local_attributions.npz").touch()
+    plot_names = ["good.png", "bad.png"]
+    for name in plot_names:
+        (destination / name).touch()
+    (destination / "summary.json").write_text(json.dumps({
+        "identity_sha256": "fingerprint",
+        "n_explained_events": 2,
+        "plots": plot_names,
+    }))
+
+    assert _complete_local(destination, "fingerprint", expected_events=2)
+    assert not _complete_local(destination, "fingerprint", expected_events=3)
+    (destination / "bad.png").unlink()
+    assert not _complete_local(destination, "fingerprint", expected_events=2)
