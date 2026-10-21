@@ -211,6 +211,36 @@ def _complete(destination, fingerprint):
         return False
 
 
+def _refresh_presentation(destination):
+    """Regenerate plots/tables from saved attributions without rerunning TSHAP."""
+    summary_path = destination / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if summary.get("plot_version", 0) >= 2:
+        return
+    with np.load(destination / "attributions.npz") as saved:
+        time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
+        window_maps = np.asarray(saved["window_attribution_ps"], dtype=np.float64)
+        reference = np.asarray(saved["reference_mean_normalized"], dtype=np.float64)
+        roi_maps = np.asarray(saved["roi_attribution_ps"], dtype=np.float64) if "roi_attribution_ps" in saved else None
+    mean_absolute = np.mean(np.abs(window_maps), axis=0)
+    mean_signed = np.mean(window_maps, axis=0)
+    with (destination / "global_importance.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["channel", "time_ps", "window_mean_abs_ps_per_sample",
+                         "window_mean_signed_ps_per_sample", "roi_mean_abs_ps_per_sample",
+                         "roi_mean_signed_ps_per_sample"])
+        for channel in range(2):
+            for j, t in enumerate(time_ps):
+                writer.writerow([channel + 1, float(t), float(mean_absolute[channel, j]),
+                                 float(mean_signed[channel, j]),
+                                 float(np.mean(np.abs(roi_maps[:, channel, j])) ) if roi_maps is not None else "",
+                                 float(np.mean(roi_maps[:, channel, j])) if roi_maps is not None else ""])
+    _plot_global(destination, time_ps, mean_absolute, mean_signed, reference)
+    summary["plot_version"] = 2
+    summary["attribution_units"] = "ps/sample (upstream window score redistributed across temporal samples)"
+    atomic_json(summary_path, summary)
+
+
 def _explanation_destination(output_root, run_directory, fingerprint):
     """Place XAI artifacts in a separate output tree, preserving batch/run identity."""
     batch = batch_root(run_directory)
@@ -276,6 +306,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             destination = _explanation_destination(output_root, directory, fingerprint)
             legacy_destination = directory / "explanations" / "tshap" / fingerprint[:16]
             if _complete(destination, fingerprint) and not overwrite:
+                _refresh_presentation(destination)
                 if logger:
                     logger.info("TSHAP | reuse complete | %s", destination)
                 outputs.append(destination)
@@ -288,6 +319,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 try:
                     shutil.copytree(legacy_destination, temporary_copy)
                     _publish_directory(temporary_copy, destination, overwrite=False)
+                    _refresh_presentation(destination)
                 finally:
                     if temporary_copy.exists():
                         shutil.rmtree(temporary_copy)
@@ -368,7 +400,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                                              float(np.mean(roi_maps[:, ch, j])) if roi else ""])
                 _plot_global(temporary, time_ps, win_abs, win_signed, payload["reference_mean_normalized"])
                 atomic_json(temporary / "summary.json", {
-                    **identity, "identity_sha256": fingerprint, "n_explained_events": len(event_ids),
+                    **identity, "identity_sha256": fingerprint, "plot_version": 2,
+                    "n_explained_events": len(event_ids),
                     "n_control_baselines": len(baseline_ids), "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
                     "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
