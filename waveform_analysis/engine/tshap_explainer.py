@@ -17,7 +17,7 @@ from importlib.metadata import version
 import numpy as np
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
-from waveform_analysis.data.results import discover_runs, resolve_run_config
+from waveform_analysis.data.results import batch_root, discover_runs, resolve_run_config
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, waveform_view
 from waveform_analysis.engine.train import (
@@ -211,7 +211,14 @@ def _complete(destination, fingerprint):
         return False
 
 
-def explain_tshap(results, *, models=None, cache_root=None, max_events=100, n_baselines=8,
+def _explanation_destination(output_root, run_directory, fingerprint):
+    """Place XAI artifacts in a separate output tree, preserving batch/run identity."""
+    batch = batch_root(run_directory)
+    relative_run = Path(run_directory).resolve().relative_to(batch)
+    return Path(output_root).resolve() / batch.name / relative_run / "tshap" / fingerprint[:16]
+
+
+def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=10, predict_batch_size=64,
                   roi=False, overwrite=False, logger=None):
     """Explain saved regressors using reproducible blind/control subsets.
@@ -225,7 +232,9 @@ def explain_tshap(results, *, models=None, cache_root=None, max_events=100, n_ba
                         ("predict_batch_size", predict_batch_size)):
         _validate_positive_int(name, value)
     tshap_version = version("tshap")
-    runs = discover_runs(Path(results).expanduser().resolve())
+    results_path = Path(results).expanduser().resolve()
+    output_root = Path(output_root).expanduser().resolve() if output_root is not None else Path.cwd() / "xai"
+    runs = discover_runs(results_path)
     if not runs:
         raise ValueError(f"No complete saved-model runs found in {results}")
     available = {run["manifest"]["model"] for run in runs}
@@ -257,10 +266,26 @@ def explain_tshap(results, *, models=None, cache_root=None, max_events=100, n_ba
                 "model": spec.name, "mode": config["mode"], "seed": seed, "settings": settings,
             }
             fingerprint = canonical_hash(identity)
-            destination = directory / "explanations" / "tshap" / fingerprint[:16]
+            destination = _explanation_destination(output_root, directory, fingerprint)
+            legacy_destination = directory / "explanations" / "tshap" / fingerprint[:16]
             if _complete(destination, fingerprint) and not overwrite:
                 if logger:
                     logger.info("TSHAP | reuse complete | %s", destination)
+                outputs.append(destination)
+                continue
+            if not overwrite and not destination.exists() and _complete(legacy_destination, fingerprint):
+                # Relocate an already-computed result without repeating inference.
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary_copy = Path(tempfile.mkdtemp(prefix=".tshap-reuse-", dir=destination.parent))
+                shutil.rmtree(temporary_copy)
+                try:
+                    shutil.copytree(legacy_destination, temporary_copy)
+                    _publish_directory(temporary_copy, destination, overwrite=False)
+                finally:
+                    if temporary_copy.exists():
+                        shutil.rmtree(temporary_copy)
+                if logger:
+                    logger.info("TSHAP | reused existing result outside results tree | %s", destination)
                 outputs.append(destination)
                 continue
             if destination.exists() and not overwrite:
