@@ -56,6 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     tshap.add_argument("--results", type=Path, required=True)
     tshap.add_argument("--models", nargs="+", metavar="MODEL")
     tshap.add_argument("--cache-root", type=Path)
+    tshap.add_argument("--output-root", type=Path, help="Dedicated XAI output directory (default: ./xai, outside --results)")
     tshap.add_argument("--max-events", type=int, default=100, help="Maximum blind events per model (default: 100)")
     tshap.add_argument("--n-baselines", type=int, default=8, help="Control reference events (default: 8)")
     tshap.add_argument("--window-samples", type=int, default=20)
@@ -81,7 +82,7 @@ def main() -> None:
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
         for output in explain_tshap(args.results, models=args.models, cache_root=args.cache_root,
-                max_events=args.max_events, n_baselines=args.n_baselines,
+                output_root=args.output_root, max_events=args.max_events, n_baselines=args.n_baselines,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, roi=args.roi,
                 overwrite=args.overwrite, logger=logger):
