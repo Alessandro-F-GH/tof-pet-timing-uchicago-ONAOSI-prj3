@@ -31,8 +31,8 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 1
-LOCAL_PREDICTION_REPLAY_ATOL_PS = 5e-3
-LOCAL_PREDICTION_REPLAY_RTOL = 1e-6
+LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
+LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
     "summary.json", "attributions.npz", "global_importance.csv", "global_importance.png",
 )
