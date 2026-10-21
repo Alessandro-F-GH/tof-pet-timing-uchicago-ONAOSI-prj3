@@ -147,3 +147,17 @@ def test_multirocket_reuse_requires_current_attribution_version(tmp_path):
     assert _cached_representatives_are_reusable(
         folder, model_name="direct_multirocket"
     )
+
+
+def test_importance_y_limits_are_local_per_event_and_remain_in_ps():
+    # Plotting uses raw binned ps contributions; a tiny event should not
+    # inherit the y-axis range of a much larger representative.
+    from waveform_analysis.engine.representative_explainer import _aggregate_signed_importance
+    time = np.arange(16, dtype=float) * 0.0125
+    _, small, _ = _aggregate_signed_importance(time, np.full((1, 16), 0.01), bin_samples=8)
+    _, large, _ = _aggregate_signed_importance(time, np.full((1, 16), 10.0), bin_samples=8)
+    small_limit = max(float(np.max(np.abs(small))) * 1.08, 1e-9)
+    large_limit = max(float(np.max(np.abs(large))) * 1.08, 1e-9)
+    assert small_limit == pytest.approx(0.0864)
+    assert large_limit == pytest.approx(86.4)
+    assert large_limit / small_limit == pytest.approx(1000.0)
