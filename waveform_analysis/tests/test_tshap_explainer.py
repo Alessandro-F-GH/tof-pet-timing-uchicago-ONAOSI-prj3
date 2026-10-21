@@ -6,7 +6,8 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
-    _complete_local, _new_explainer, _publish_directory, _select_local_events, _selection_seed,
+    _complete_local, _detector_difference, _new_explainer, _publish_directory,
+    _remove_pair_mean, _select_local_events, _selection_seed,
 )
 
 
@@ -218,3 +219,27 @@ def test_local_explanations_use_a_separate_stable_folder(tmp_path, monkeypatch):
     assert path == tmp_path / "xai" / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap_local"
     assert path.name == "tshap_local"
     assert not path.is_relative_to(batch)
+
+
+def test_local_plot_components_remove_shared_average_and_preserve_detector_difference():
+    values = np.asarray([
+        [0.10, 0.40, 0.80, 0.70],
+        [0.06, 0.30, 0.74, 0.76],
+    ])
+    relative = _remove_pair_mean(values)
+    difference = _detector_difference(values)
+
+    # The common component is removed pointwise: the detector-relative curves
+    # sum to zero at each sample, and their difference equals the original
+    # detector 1 minus detector 2 signal.
+    np.testing.assert_allclose(relative.sum(axis=0), 0.0, atol=1e-12)
+    np.testing.assert_allclose(relative[0] - relative[1], difference)
+    np.testing.assert_allclose(difference, values[0] - values[1])
+    assert np.any(np.abs(difference) > 0)
+
+
+def test_local_plot_component_helpers_reject_invalid_shapes():
+    with pytest.raises(ValueError, match="2 detectors"):
+        _remove_pair_mean(np.ones((3, 10)))
+    with pytest.raises(ValueError, match="2 detectors"):
+        _detector_difference(np.ones((10, 2)))
