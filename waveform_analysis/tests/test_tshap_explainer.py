@@ -6,7 +6,7 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
-    _new_explainer, _publish_directory, _selection_seed,
+    _new_explainer, _publish_directory, _select_local_events, _selection_seed,
 )
 
 
@@ -115,3 +115,73 @@ def test_sampling_seed_is_fixed_and_model_independent():
         _choose_indices(1000, 100, _selection_seed(seed + 1, "blind_events")),
         _choose_indices(1000, 100, blind_seed_1),
     )
+
+
+def test_local_selection_returns_two_nonoverlapping_events_per_group_and_trims_extremes():
+    # Build a controlled population with enough examples in each correction/
+    # improvement category, plus predictions near the population median.
+    pred_parts = [
+        np.full(40, 10.0),    # good positive
+        np.full(40, -10.0),   # good negative
+        np.full(40, 10.0),    # bad positive
+        np.full(40, -10.0),   # bad negative
+        np.linspace(-2.0, 2.0, 20),  # typical corrections around the median
+    ]
+    target_parts = [
+        np.linspace(6.0, 9.9, 40),
+        -np.linspace(6.0, 9.9, 40),
+        np.linspace(0.1, 4.9, 40),
+        -np.linspace(0.1, 4.9, 40),
+        np.linspace(-2.0, 2.0, 20),
+    ]
+    predictions = np.concatenate(pred_parts)
+    targets = np.concatenate(target_parts)
+
+    selected, improvement, median_prediction = _select_local_events(
+        predictions, targets, events_per_group=2, extreme_margin=0.05
+    )
+    assert len(selected) == 10
+    assert len({item["index"] for item in selected}) == 10
+    counts = {group: sum(item["group"] == group for item in selected) for group in (
+        "good_positive", "good_negative", "bad_positive", "bad_negative", "typical"
+    )}
+    assert all(count == 2 for count in counts.values())
+
+    for item in selected:
+        index = item["index"]
+        group = item["group"]
+        if group.endswith("positive"):
+            assert predictions[index] > 0
+        elif group.endswith("negative"):
+            assert predictions[index] < 0
+        if group.startswith("good_"):
+            assert improvement[index] > 0
+        elif group.startswith("bad_"):
+            assert improvement[index] < 0
+
+    # Good selections should not be the maximum improvement; bad selections
+    # should not be the minimum improvement in their respective eligible pools.
+    good_positive = np.flatnonzero((predictions > 0) & (improvement > 0))
+    bad_positive = np.flatnonzero((predictions > 0) & (improvement < 0))
+    selected_good_values = [improvement[item["index"]] for item in selected if item["group"] == "good_positive"]
+    selected_bad_values = [improvement[item["index"]] for item in selected if item["group"] == "bad_positive"]
+    assert max(selected_good_values) < np.max(improvement[good_positive])
+    assert min(selected_bad_values) > np.min(improvement[bad_positive])
+
+    # Typical events are the closest unused predictions to the blind median.
+    typical_indices = [item["index"] for item in selected if item["group"] == "typical"]
+    used_before_typical = {item["index"] for item in selected if item["group"] != "typical"}
+    remaining = np.asarray([i for i in range(len(predictions)) if i not in used_before_typical])
+    distances = np.abs(predictions[remaining] - median_prediction)
+    typical_distances = np.abs(predictions[typical_indices] - median_prediction)
+    assert np.max(typical_distances) <= np.sort(distances)[1]
+
+
+def test_local_selection_rejects_insufficient_categories():
+    with pytest.raises(ValueError, match="Cannot select"):
+        _select_local_events(
+            np.asarray([1.0, -1.0, 1.0]),
+            np.asarray([2.0, -2.0, 0.0]),
+            events_per_group=2,
+            extreme_margin=0.05,
+        )
