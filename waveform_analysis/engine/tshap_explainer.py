@@ -361,6 +361,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 _copy_cached_explanation(
                     legacy_results, destination, remove_source=True, logger=logger
                 )
+                _cleanup_legacy_result_tshap(directory)
                 outputs.append(destination)
                 continue
 
