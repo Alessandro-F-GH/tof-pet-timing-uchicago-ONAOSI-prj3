@@ -7,7 +7,7 @@ import pytest
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
     _center_detector_difference, _complete_local, _detector_difference,
-    _new_explainer, _publish_directory, _select_local_events, _selection_seed,
+    _new_explainer, _plot_local_event, _publish_directory, _select_local_events, _selection_seed,
 )
 
 
@@ -240,3 +240,33 @@ def test_signal_difference_helpers_reject_invalid_shapes():
         _detector_difference(np.ones((3, 10)))
     with pytest.raises(ValueError, match="2 detectors"):
         _center_detector_difference(np.ones((10, 2)))
+
+
+
+def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
+    time_ps = np.arange(8, dtype=np.float64) * 25.0
+    waveform_mv = np.asarray([
+        [-8.0, -7.0, -3.0, 12.0, 25.0, 15.0, 2.0, -5.0],
+        [-7.0, -6.0, -2.0, 10.0, 22.0, 14.0, 1.0, -4.0],
+    ])
+    attribution = np.asarray([
+        [0.1, 0.2, 0.5, 1.0, 0.7, 0.3, 0.1, 0.0],
+        [0.0, 0.1, 0.4, 0.8, 0.9, 0.4, 0.2, 0.1],
+    ])
+    output = tmp_path / "local_event.png"
+
+    _plot_local_event(
+        output,
+        time_ps=time_ps,
+        waveform_mv=waveform_mv,
+        attribution=attribution,
+        group="typical",
+        event_id=123,
+        target_ps=10.0,
+        prediction_ps=2.0,
+        improvement_ps=2.0,
+        led_threshold_mv=20.0,
+    )
+
+    assert output.is_file()
+    assert output.stat().st_size > 0
