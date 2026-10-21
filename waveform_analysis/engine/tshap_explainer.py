@@ -303,7 +303,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 7
+LOCAL_PLOT_VERSION = 8
 
 
 def _detector_difference(values):
@@ -314,10 +314,35 @@ def _detector_difference(values):
     return values[0] - values[1]
 
 
-def _center_detector_difference(values):
-    """Remove the temporal mean from detector 1 minus detector 2."""
+def _center_detector_difference(values, dataset_mean_difference):
+    """Subtract the per-sample mean detector difference estimated across events."""
     difference = _detector_difference(values)
-    return difference - np.mean(difference)
+    dataset_mean = np.asarray(dataset_mean_difference, dtype=np.float64)
+    if dataset_mean.shape != difference.shape:
+        raise ValueError("Dataset mean difference must match the waveform sample grid")
+    if not np.all(np.isfinite(dataset_mean)):
+        raise ValueError("Dataset mean difference must be finite")
+    return difference - dataset_mean
+
+
+def _dataset_mean_difference_mv(
+    dataset, mode, waveform_transform, seed, max_events=1000
+):
+    """Estimate mean detector difference per sample from a reproducible event sample."""
+    _validate_positive_int("max_events", max_events)
+    if dataset.n_events < 1:
+        raise ValueError("Cannot estimate dataset mean from an empty population")
+    indices = _choose_indices(
+        dataset.n_events, max_events, _selection_seed(int(seed), "blind_events")
+    )
+    normalized = waveform_view(dataset, mode, indices).materialize()
+    waveform_mv = np.asarray(waveform_transform.inverse(normalized), dtype=np.float64)
+    if waveform_mv.ndim != 3 or waveform_mv.shape[1] != 2:
+        raise ValueError("Dataset waveforms must have shape [events, 2 detectors, samples]")
+    differences = waveform_mv[:, 0, :] - waveform_mv[:, 1, :]
+    if not np.all(np.isfinite(differences)):
+        raise ValueError("Dataset sample used for mean difference contains non-finite values")
+    return np.mean(differences, axis=0), indices
 
 
 def _led_reference_levels(
@@ -348,9 +373,9 @@ def _led_reference_levels(
     return baselines + float(threshold_mv)
 
 
-def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_id,
-                      target_ps, prediction_ps, improvement_ps, led_threshold_mv,
-                      baseline_window_ns, led_times_ps):
+def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
+                      attribution, group, event_id, target_ps, prediction_ps,
+                      improvement_ps, led_threshold_mv, baseline_window_ns, led_times_ps):
     """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
@@ -364,7 +389,9 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
     if not np.all(np.isfinite(waveform_mv)) or not np.isfinite(led_threshold_mv):
         raise ValueError("Waveforms and LED threshold must be finite")
 
-    waveform_difference = _center_detector_difference(waveform_mv)
+    waveform_difference = _center_detector_difference(
+        waveform_mv, dataset_mean_difference_mv
+    )
     led_levels_mv = _led_reference_levels(
         waveform_mv, time_ns, led_times_ps, led_threshold_mv, baseline_window_ns
     )
@@ -401,9 +428,9 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
 
     ax = axes[1]
     ax.plot(time_ns, waveform_difference, linewidth=1.15,
-            label="Centered detector difference")
+            label="Detector difference − dataset mean")
     ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Detector difference")
+    ax.set_title("Detector difference relative to dataset mean")
     ax.set_ylabel("Amplitude difference (mV)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9)
@@ -423,16 +450,20 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
 
 
 def _refresh_local_presentation(
-    destination, *, waveform_transform, led_threshold_mv, baseline_window_ns, led_times_ps
+    destination, *, waveform_transform, led_threshold_mv, baseline_window_ns,
+    led_times_ps, dataset, mode, seed
 ):
-    """Refresh plots and physical-unit waveforms from cached normalized inputs."""
+    """Refresh plots from cached attributions and a cached dataset-mean waveform."""
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    if summary.get("plot_version", 0) >= LOCAL_PLOT_VERSION:
-        return
-
     with np.load(destination / "local_attributions.npz") as saved:
         arrays = {key: np.asarray(saved[key]) for key in saved.files}
+    if (
+        summary.get("plot_version", 0) >= LOCAL_PLOT_VERSION
+        and "dataset_mean_difference_mv" in arrays
+    ):
+        return
+
     time_ps = np.asarray(arrays["time_ps"], dtype=np.float64)
     waves = np.asarray(arrays["waveform_normalized"], dtype=np.float64)
     attributions = np.asarray(arrays["attribution_ps_per_sample"], dtype=np.float64)
@@ -457,9 +488,25 @@ def _refresh_local_presentation(
         arrays["led_threshold_mv"] if "led_threshold_mv" in arrays
         else led_threshold_mv
     ).reshape(()))
+
+    if "dataset_mean_difference_mv" in arrays:
+        dataset_mean = np.asarray(arrays["dataset_mean_difference_mv"], dtype=np.float64)
+        mean_indices = np.asarray(
+            arrays.get("dataset_mean_sample_indices", np.empty(0, dtype=np.int64)),
+            dtype=np.int64,
+        )
+    else:
+        dataset_mean, mean_indices = _dataset_mean_difference_mv(
+            dataset, mode, waveform_transform, seed, max_events=1000
+        )
+    if dataset_mean.shape != time_ps.shape or not np.all(np.isfinite(dataset_mean)):
+        raise ValueError("Cached dataset mean difference does not match the waveform grid")
+
     arrays["waveform_mv"] = waveform_mv
     arrays["led_time_ps"] = selected_led_times_ps
     arrays["led_threshold_mv"] = np.asarray(threshold, dtype=np.float64)
+    arrays["dataset_mean_difference_mv"] = dataset_mean
+    arrays["dataset_mean_sample_indices"] = mean_indices
 
     plot_names = []
     for i in range(len(event_ids)):
@@ -468,6 +515,7 @@ def _refresh_local_presentation(
             destination / plot_name,
             time_ps=time_ps,
             waveform_mv=waveform_mv[i],
+            dataset_mean_difference_mv=dataset_mean,
             attribution=attributions[i],
             group=groups[i],
             event_id=int(event_ids[i]),
@@ -487,6 +535,8 @@ def _refresh_local_presentation(
     summary["plot_version"] = LOCAL_PLOT_VERSION
     summary["signal_units"] = "mV (inverse of frozen prepared waveform normalization)"
     summary["led_threshold_mV"] = threshold
+    summary["difference_centering"] = "per-sample mean across up to 1000 seeded blind events"
+    summary["difference_centering_sample_size"] = int(mean_indices.size)
     atomic_json(summary_path, summary)
 
 
@@ -889,6 +939,9 @@ def explain_tshap_local(
                     led_threshold_mv=led_threshold_mv,
                     baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
                     led_times_ps=selected_led_times_ps,
+                    dataset=blind,
+                    mode=config["mode"],
+                    seed=int(seed),
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
@@ -944,6 +997,12 @@ def explain_tshap_local(
                         if waveform_transform is None:
                             raise ValueError("Missing frozen waveform normalization for mV plotting")
                         raw_waves_mv = np.asarray(waveform_transform.inverse(waves), dtype=np.float64)
+                        dataset_mean_difference_mv, dataset_mean_sample_indices = (
+                            _dataset_mean_difference_mv(
+                                blind, config["mode"], waveform_transform, int(seed),
+                                max_events=1000,
+                            )
+                        )
                         led_threshold_mv = float(blind.manifest["fixed_led_threshold_mV"])
                         led_times = getattr(blind, f"{family}_led_time_ps")
                         if led_times is None:
@@ -1011,6 +1070,7 @@ def explain_tshap_local(
                             temporary / plot_name,
                             time_ps=time_ps,
                             waveform_mv=raw_waves_mv[i],
+                            dataset_mean_difference_mv=dataset_mean_difference_mv,
                             attribution=local_maps[i],
                             group=group,
                             event_id=int(event_id),
@@ -1036,6 +1096,8 @@ def explain_tshap_local(
                     time_ps=time_ps,
                     waveform_normalized=waves,
                     waveform_mv=raw_waves_mv,
+                    dataset_mean_difference_mv=dataset_mean_difference_mv,
+                    dataset_mean_sample_indices=dataset_mean_sample_indices,
                     led_threshold_mv=np.asarray(led_threshold_mv, dtype=np.float64),
                     led_time_ps=selected_led_times_ps,
                     attribution_ps_per_sample=local_maps,
@@ -1078,6 +1140,8 @@ def explain_tshap_local(
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
+                    "difference_centering": "per-sample mean across up to 1000 seeded blind events",
+                    "difference_centering_sample_size": int(dataset_mean_sample_indices.size),
                     "prediction_equivalence_max_error_ps": float(
                         np.max(np.abs(selected_predictions - replay))
                     ),
