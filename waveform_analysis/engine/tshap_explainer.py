@@ -618,3 +618,274 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
         raise RuntimeError("Some TSHAP explanations failed; successful results retained:\n"
                            + "\n".join(failures))
     return outputs
+
+
+def explain_tshap_local(
+    results, *, models=None, cache_root=None, output_root=None, events_per_group=2,
+    extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
+    predict_batch_size=64, seed=42, overwrite=False, logger=None,
+):
+    """Explain a small, reproducible set of good/bad and typical blind events.
+
+    Categories use the sign of the predicted correction and signed improvement:
+    abs(target) - abs(target - prediction). Good/bad cases are selected near
+    improvement quantiles while excluding the outer extreme_margin fraction.
+    """
+    for name, value in (
+        ("events_per_group", events_per_group),
+        ("n_baselines", n_baselines),
+        ("window_samples", window_samples),
+        ("stride_samples", stride_samples),
+        ("predict_batch_size", predict_batch_size),
+    ):
+        _validate_positive_int(name, value)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("TSHAP seed must be an integer")
+    if not np.isfinite(extreme_margin) or not 0 < extreme_margin < 0.25:
+        raise ValueError("extreme_margin must be greater than 0 and less than 0.25")
+
+    tshap_version = version("tshap")
+    results_path = Path(results).expanduser().resolve()
+    if output_root is None:
+        output_root = (Path.cwd() / "xai").resolve()
+        if output_root.is_relative_to(results_path):
+            output_root = results_path.parent / "xai"
+    else:
+        output_root = Path(output_root).expanduser().resolve()
+        if output_root == results_path or output_root.is_relative_to(results_path):
+            raise ValueError("TSHAP output-root must be outside the supplied results tree")
+
+    runs = discover_runs(results_path)
+    if not runs:
+        raise ValueError(f"No complete saved-model runs found in {results}")
+    available = {run["manifest"]["model"] for run in runs}
+    if models is not None and set(models) - available:
+        raise ValueError(f"Requested models not found: {sorted(set(models) - available)}")
+
+    lookup = PreparedCacheLookup()
+    outputs, failures = [], []
+    for run in runs:
+        manifest = run["manifest"]
+        if models is not None and manifest["model"] not in models:
+            continue
+        directory = Path(run["directory"])
+        try:
+            config = resolve_run_config(directory)
+            spec = get_model(manifest["model"])
+            model_dir = directory / "model"
+            if not saved_model_complete(spec, model_dir):
+                raise FileNotFoundError(
+                    f"Saved model or frozen feature transform missing: {model_dir}"
+                )
+            settings = dict(
+                events_per_group=events_per_group,
+                extreme_margin=float(extreme_margin),
+                n_baselines=n_baselines,
+                window_samples=window_samples,
+                stride_samples=stride_samples,
+                predict_batch_size=predict_batch_size,
+                seed=int(seed),
+            )
+            identity = {
+                "method": "tshap_local_case_study",
+                "method_version": 1,
+                "upstream_version": tshap_version,
+                "final_fit": manifest["stage_fingerprints"]["final_fit"],
+                "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
+                "blind": manifest["dataset_populations"]["blind"]["analysis_protocol_identity"],
+                "model": spec.name,
+                "mode": config["mode"],
+                "seed": int(seed),
+                "settings": settings,
+            }
+            fingerprint = canonical_hash(identity)
+            destination = _local_explanation_destination(output_root, directory)
+            if _complete_local(destination, fingerprint) and not overwrite:
+                if logger:
+                    logger.info("TSHAP local | cache hit | %s", destination)
+                outputs.append(destination)
+                continue
+
+            cache = _cache_root(config, directory, cache_root)
+            control = lookup.find(cache, "control", config, manifest)
+            blind = lookup.find(cache, "blind", config, manifest)
+            time_ps = _check_prepared_grids(control, blind, config["mode"])
+            if window_samples > time_ps.size:
+                raise ValueError("TSHAP window longer than input waveform")
+            targets = np.asarray(model_target(blind, config["mode"]), dtype=np.float64)
+            if targets.shape != (blind.n_events,) or not np.all(np.isfinite(targets)):
+                raise ValueError("Blind targets must be finite and match the event population")
+
+            baseline_ids = _choose_indices(
+                control.n_events, n_baselines,
+                _selection_seed(int(seed), "control_baselines"),
+            )
+            baselines = waveform_view(control, config["mode"], baseline_ids).materialize()
+            if baselines.shape[1:] != (2, time_ps.size) or not np.all(np.isfinite(baselines)):
+                raise ValueError("TSHAP control baselines must be finite [events, 2, samples] arrays")
+
+            parent = destination.parent
+            parent.mkdir(parents=True, exist_ok=True)
+            temporary = Path(tempfile.mkdtemp(prefix=".tshap-local-", dir=parent))
+            try:
+                with diagnostic_random_state():
+                    fitted = load_fitted_model(spec, model_dir, run["best"]["parameters"], config)
+                    try:
+                        # Predictions over the full blind population are needed only
+                        # to select cases; the expensive TSHAP stage explains 10 by default.
+                        all_indices = np.arange(blind.n_events, dtype=np.int64)
+                        predictions = predict_indices(
+                            spec, fitted, blind, config["mode"], all_indices,
+                            chunk_size=predict_batch_size,
+                        )
+                        selected, improvement, median_prediction = _select_local_events(
+                            predictions, targets, events_per_group=events_per_group,
+                            extreme_margin=extreme_margin,
+                        )
+                        dataset_indices = np.asarray(
+                            [item["index"] for item in selected], dtype=np.int64
+                        )
+                        groups = [item["group"] for item in selected]
+                        event_ids = np.asarray(blind.event_index[dataset_indices], dtype=np.int64)
+                        waves = waveform_view(
+                            blind, config["mode"], dataset_indices
+                        ).materialize()
+                        selected_predictions = predictions[dataset_indices]
+                        selected_targets = targets[dataset_indices]
+                        selected_improvements = improvement[dataset_indices]
+
+                        predict = lambda x: _predict_bounded(
+                            spec, fitted, x, predict_batch_size
+                        )
+                        replay = predict(waves)
+                        if not np.allclose(
+                            selected_predictions, replay, atol=1e-4, rtol=1e-6
+                        ):
+                            raise ValueError(
+                                "TSHAP local adapter does not reproduce saved-model predictions"
+                            )
+
+                        explainer = _new_explainer(
+                            window_samples, stride_samples, roi=False,
+                            predict_batch_size=predict_batch_size,
+                        )
+                        local_maps = np.empty_like(waves, dtype=np.float64)
+                        for i, pair in enumerate(waves):
+                            window_map, _ = explainer.explain(
+                                pair[None, ...], baselines, predict
+                            )
+                            local_maps[i] = window_map[0]
+                            if logger:
+                                logger.info(
+                                    "TSHAP local | %s | %d/%d | %s | event=%s",
+                                    spec.name, i + 1, len(waves), groups[i], event_ids[i],
+                                )
+                    finally:
+                        del fitted
+                        release_training_memory()
+
+                if not np.all(np.isfinite(local_maps)):
+                    raise ValueError("Non-finite local TSHAP attribution values")
+
+                plot_names = []
+                with (temporary / "events.csv").open(
+                    "w", newline="", encoding="utf-8"
+                ) as stream:
+                    writer = csv.writer(stream)
+                    writer.writerow([
+                        "group", "event_id", "dataset_index", "target_correction_ps",
+                        "predicted_correction_ps", "residual_ps", "initial_abs_error_ps",
+                        "final_abs_error_ps", "signed_improvement_ps",
+                        "median_predicted_correction_ps",
+                    ])
+                    for i, (group, event_id, dataset_index) in enumerate(
+                        zip(groups, event_ids, dataset_indices)
+                    ):
+                        target_ps = float(selected_targets[i])
+                        prediction_ps = float(selected_predictions[i])
+                        residual_ps = target_ps - prediction_ps
+                        improvement_ps = float(selected_improvements[i])
+                        plot_name = f"{group}__event_{int(event_id)}.png"
+                        _plot_local_event(
+                            temporary / plot_name,
+                            time_ps=time_ps,
+                            waveform=waves[i],
+                            attribution=local_maps[i],
+                            group=group,
+                            event_id=int(event_id),
+                            target_ps=target_ps,
+                            prediction_ps=prediction_ps,
+                            improvement_ps=improvement_ps,
+                        )
+                        plot_names.append(plot_name)
+                        writer.writerow([
+                            group, int(event_id), int(dataset_index), target_ps,
+                            prediction_ps, residual_ps, abs(target_ps), abs(residual_ps),
+                            improvement_ps, median_prediction,
+                        ])
+
+                np.savez_compressed(
+                    temporary / "local_attributions.npz",
+                    event_id=event_ids,
+                    dataset_index=dataset_indices,
+                    group=np.asarray(groups, dtype="U"),
+                    time_ps=time_ps,
+                    waveform_normalized=waves,
+                    attribution_ps_per_sample=local_maps,
+                    target_correction_ps=selected_targets,
+                    predicted_correction_ps=selected_predictions,
+                    residual_ps=selected_targets - selected_predictions,
+                    signed_improvement_ps=selected_improvements,
+                    control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
+                    median_predicted_correction_ps=np.asarray(median_prediction, dtype=np.float64),
+                )
+                group_counts = {
+                    group: sum(item == group for item in groups)
+                    for group in LOCAL_GROUP_LABELS
+                }
+                atomic_json(temporary / "summary.json", {
+                    **identity,
+                    "identity_sha256": fingerprint,
+                    "n_explained_events": len(event_ids),
+                    "n_events_per_group": events_per_group,
+                    "n_control_baselines": len(baseline_ids),
+                    "waveform_samples": int(time_ps.size),
+                    "median_predicted_correction_ps": median_prediction,
+                    "group_counts": group_counts,
+                    "selection": {
+                        "correction_sign": "sign of model-predicted correction",
+                        "signed_improvement_definition": "abs(target) - abs(target - prediction)",
+                        "good_quantiles": [
+                            float(1.0 - 2.0 * extreme_margin),
+                            float(1.0 - extreme_margin),
+                        ],
+                        "bad_quantiles": [
+                            float(extreme_margin), float(2.0 * extreme_margin),
+                        ],
+                        "extreme_margin": float(extreme_margin),
+                        "typical": "closest predicted corrections to the blind-population median, excluding other selected events",
+                    },
+                    "plots": plot_names,
+                    "attribution_units": "ps/sample (upstream TSHAP window scores redistributed over samples)",
+                    "input_units": "dimensionless min-max-normalized waveform amplitude",
+                    "prediction_equivalence_max_error_ps": float(
+                        np.max(np.abs(selected_predictions - replay))
+                    ),
+                    "reference": "https://github.com/mlgig/tshap",
+                })
+                _publish_directory(temporary, destination, overwrite=True)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+            outputs.append(destination)
+        except Exception as exc:
+            failures.append(f"{directory}: {exc}")
+            if logger:
+                logger.exception("TSHAP local failed | %s", directory)
+
+    if failures:
+        raise RuntimeError(
+            "Some local TSHAP case-study explanations failed; successful results retained:\n"
+            + "\n".join(failures)
+        )
+    return outputs
