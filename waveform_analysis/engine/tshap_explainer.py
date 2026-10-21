@@ -19,7 +19,7 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.data.results import batch_root, discover_runs, resolve_run_config
 from waveform_analysis.data.splits import semantic_seed
-from waveform_analysis.data.view import mode_family, waveform_view
+from waveform_analysis.data.view import mode_family, model_target, waveform_view
 from waveform_analysis.engine.train import (
     load_fitted_model, predict_indices, release_training_memory, saved_model_complete,
 )
@@ -217,6 +217,144 @@ def _complete(destination, fingerprint):
     try:
         return json.loads((destination / "summary.json").read_text(encoding="utf-8")).get("identity_sha256") == fingerprint
     except (ValueError, OSError):
+        return False
+
+
+LOCAL_GROUP_LABELS = {
+    "good_positive": "Good positive correction",
+    "good_negative": "Good negative correction",
+    "bad_positive": "Bad positive correction",
+    "bad_negative": "Bad negative correction",
+    "typical": "Typical correction",
+}
+
+
+def _select_local_events(predictions, targets, events_per_group=2, extreme_margin=0.05):
+    """Select two non-overlapping examples per correction/improvement category.
+
+    Good examples target upper improvement quantiles; bad examples target lower
+    improvement quantiles. The outer extreme_margin fraction is excluded, so
+    examples are near the good/bad tails without selecting absolute extremes.
+    Typical examples are closest to the median predicted correction.
+    """
+    _validate_positive_int("events_per_group", events_per_group)
+    predictions = np.asarray(predictions, dtype=np.float64)
+    targets = np.asarray(targets, dtype=np.float64)
+    if predictions.ndim != 1 or targets.shape != predictions.shape or not predictions.size:
+        raise ValueError("Local TSHAP selection requires matching nonempty prediction/target vectors")
+    if not np.all(np.isfinite(predictions)) or not np.all(np.isfinite(targets)):
+        raise ValueError("Local TSHAP selection requires finite predictions and targets")
+    if not np.isfinite(extreme_margin) or not 0 < extreme_margin < 0.25:
+        raise ValueError("extreme_margin must be greater than 0 and less than 0.25")
+
+    improvement = np.abs(targets) - np.abs(targets - predictions)
+    masks = {
+        "good_positive": (predictions > 0) & (improvement > 0),
+        "good_negative": (predictions < 0) & (improvement > 0),
+        "bad_positive": (predictions > 0) & (improvement < 0),
+        "bad_negative": (predictions < 0) & (improvement < 0),
+    }
+    selected = []
+    used = set()
+    for group in ("good_positive", "good_negative", "bad_positive", "bad_negative"):
+        candidates = np.flatnonzero(masks[group])
+        if candidates.size < events_per_group:
+            raise ValueError(
+                f"Cannot select {events_per_group} events for {group}: "
+                f"only {candidates.size} eligible events"
+            )
+        values = improvement[candidates]
+        order = candidates[np.argsort(values, kind="stable")]
+        if group.startswith("good_"):
+            quantiles = np.linspace(1.0 - 2.0 * extreme_margin, 1.0 - extreme_margin,
+                                    events_per_group)
+        else:
+            quantiles = np.linspace(extreme_margin, 2.0 * extreme_margin, events_per_group)
+        used_ranks = set()
+        for quantile in quantiles:
+            desired_rank = int(round(float(quantile) * (len(order) - 1)))
+            available_ranks = [rank for rank in range(len(order)) if rank not in used_ranks]
+            rank = min(available_ranks, key=lambda candidate: (abs(candidate - desired_rank), candidate))
+            used_ranks.add(rank)
+            index = int(order[rank])
+            selected.append({"group": group, "index": index})
+            used.add(index)
+
+    median_prediction = float(np.median(predictions))
+    typical_candidates = np.asarray([i for i in range(len(predictions)) if i not in used], dtype=np.int64)
+    if typical_candidates.size < events_per_group:
+        raise ValueError(
+            f"Cannot select {events_per_group} non-overlapping typical events: "
+            f"only {typical_candidates.size} events remain"
+        )
+    distance = np.abs(predictions[typical_candidates] - median_prediction)
+    typical_order = typical_candidates[np.argsort(distance, kind="stable")]
+    for index in typical_order[:events_per_group]:
+        selected.append({"group": "typical", "index": int(index)})
+
+    if len({item["index"] for item in selected}) != len(selected):
+        raise AssertionError("Local TSHAP selection produced duplicate events")
+    return selected, improvement, median_prediction
+
+
+def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
+                      target_ps, prediction_ps, improvement_ps):
+    """Save an individual event plot without mixing waveform and attribution axes."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    time_ns = np.asarray(time_ps, dtype=np.float64) / 1000.0
+    waveform = np.asarray(waveform, dtype=np.float64)
+    attribution = np.asarray(attribution, dtype=np.float64)
+    if waveform.shape != (2, time_ns.size) or attribution.shape != waveform.shape:
+        raise ValueError("Local TSHAP plot arrays must have shape [2 detectors, samples]")
+
+    fig, axes = plt.subplots(
+        2, 2, figsize=(13, 7), sharex=True, constrained_layout=True,
+        gridspec_kw={"height_ratios": [1.0, 1.15]},
+    )
+    label = LOCAL_GROUP_LABELS[group]
+    fig.suptitle(
+        f"{label} | event {int(event_id)}\n"
+        f"Predicted correction: {prediction_ps:+.2f} ps | "
+        f"Signed improvement: {improvement_ps:+.2f} ps | "
+        f"Target correction: {target_ps:+.2f} ps",
+        fontsize=12,
+    )
+    for channel in range(2):
+        axes[0, channel].plot(time_ns, waveform[channel], linewidth=1.15)
+        axes[0, channel].set_title(f"Detector {channel + 1} waveform")
+        axes[0, channel].set_ylabel("Normalized amplitude")
+        axes[0, channel].grid(True, alpha=0.22, linewidth=0.6)
+        axes[1, channel].plot(time_ns, attribution[channel], linewidth=1.1)
+        axes[1, channel].axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
+        axes[1, channel].set_title(f"Detector {channel + 1} TSHAP")
+        axes[1, channel].set_ylabel("Attribution (ps/sample)")
+        axes[1, channel].grid(True, alpha=0.22, linewidth=0.6)
+        axes[1, channel].set_xlabel("Waveform time (ns)")
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _local_explanation_destination(output_root, run_directory):
+    """Return one stable local-case-study folder per run."""
+    batch = batch_root(run_directory)
+    relative_run = Path(run_directory).resolve().relative_to(batch)
+    return Path(output_root).resolve() / batch.name / relative_run / "tshap_local"
+
+
+def _complete_local(destination, fingerprint):
+    required = ("summary.json", "events.csv", "local_attributions.npz")
+    if not all((destination / name).is_file() for name in required):
+        return False
+    try:
+        summary = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
+        if summary.get("identity_sha256") != fingerprint:
+            return False
+        plots = summary.get("plots", [])
+        return bool(plots) and all((destination / name).is_file() for name in plots)
+    except (ValueError, OSError, TypeError):
         return False
 
 
