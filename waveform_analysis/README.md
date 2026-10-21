@@ -136,7 +136,7 @@ For headless plotting, set `MPLBACKEND=Agg` and a writable `MPLCONFIGDIR`.
 
 ## TSHAP post-training explanations
 
-TSHAP uses the upstream `tshap==0.0.1` package (GPL-3.0) for overlapping-window aggregation and optional region-of-interest identification. Its perturbation scoring is evaluated in bounded batches to avoid constructing all synthetic events simultaneously.
+TSHAP uses the upstream `tshap==0.0.1` package (GPL-3.0) for overlapping-window aggregation and optional region-of-interest identification. Its perturbation scoring is evaluated in bounded batches to avoid constructing all synthetic events simultaneously. Both global and local TSHAP commands skip runs whose configured `window_name` is `onishi`; wide-window runs remain eligible. Skipped runs are logged and no new TSHAP outputs are generated for them.
 
 ```bash
 python -m waveform_analysis.cli explain-tshap \
