@@ -344,7 +344,7 @@ def _local_explanation_destination(output_root, run_directory):
     return Path(output_root).resolve() / batch.name / relative_run / "tshap_local"
 
 
-def _complete_local(destination, fingerprint):
+def _complete_local(destination, fingerprint, expected_events):
     required = ("summary.json", "events.csv", "local_attributions.npz")
     if not all((destination / name).is_file() for name in required):
         return False
@@ -352,8 +352,10 @@ def _complete_local(destination, fingerprint):
         summary = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
         if summary.get("identity_sha256") != fingerprint:
             return False
+        if summary.get("n_explained_events") != expected_events:
+            return False
         plots = summary.get("plots", [])
-        return bool(plots) and all((destination / name).is_file() for name in plots)
+        return len(plots) == expected_events and all((destination / name).is_file() for name in plots)
     except (ValueError, OSError, TypeError):
         return False
 
@@ -700,7 +702,7 @@ def explain_tshap_local(
             }
             fingerprint = canonical_hash(identity)
             destination = _local_explanation_destination(output_root, directory)
-            if _complete_local(destination, fingerprint) and not overwrite:
+            if _complete_local(destination, fingerprint, len(LOCAL_GROUP_LABELS) * events_per_group) and not overwrite:
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
                 outputs.append(destination)
