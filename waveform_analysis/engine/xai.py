@@ -17,7 +17,12 @@ XAI_METHOD_VERSION = 3
 
 
 def _predict_array(spec, fitted, pair):
-    values = apply_sample_mask(np.asarray(pair, dtype=np.float32), fitted.sample_mask)
+    # Match train._model_input exactly: feature transforms such as MultiRocket
+    # may rely on contiguous [event, detector, sample] arrays after masking.
+    values = np.ascontiguousarray(
+        apply_sample_mask(np.asarray(pair, dtype=np.float32), fitted.sample_mask),
+        dtype=np.float32,
+    )
     if fitted.feature_transform is not None:
         values = fitted.feature_transform.apply(values)
     prediction = np.asarray(
