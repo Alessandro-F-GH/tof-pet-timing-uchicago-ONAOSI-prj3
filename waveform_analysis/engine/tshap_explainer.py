@@ -314,31 +314,37 @@ def _center_detector_difference(values):
     return difference - np.mean(difference)
 
 
-def _led_reference_levels(waveform_mv, time_ns, threshold_mv, baseline_window_ns):
-    """Return detector-specific LED levels: waveform baseline plus the fixed threshold."""
+def _led_reference_levels(
+    waveform_mv, time_ns, led_times_ps, threshold_mv, baseline_window_ns
+):
+    """Return baseline-adjusted LED levels using trigger-relative baseline windows."""
     waveform_mv = np.asarray(waveform_mv, dtype=np.float64)
     time_ns = np.asarray(time_ns, dtype=np.float64)
+    led_times_ps = np.asarray(led_times_ps, dtype=np.float64).reshape(-1)
     window = np.asarray(baseline_window_ns, dtype=np.float64).reshape(-1)
-    if waveform_mv.shape != (2, time_ns.size):
-        raise ValueError("Expected waveforms with shape [2 detectors, samples]")
+    if waveform_mv.shape != (2, time_ns.size) or led_times_ps.shape != (2,):
+        raise ValueError("Expected two detector waveforms and two LED crossing times")
     if window.size != 2 or not np.all(np.isfinite(window)) or window[1] <= window[0]:
         raise ValueError("LED baseline window must contain two increasing finite endpoints")
-    selected = (time_ns >= window[0]) & (time_ns <= window[1])
-    if not np.any(selected):
-        raise ValueError("LED baseline window has no samples in the plotted waveform")
-    baselines = np.asarray([
-        np.mean(waveform_mv[channel, selected][np.isfinite(waveform_mv[channel, selected])])
-        if np.any(np.isfinite(waveform_mv[channel, selected])) else np.nan
-        for channel in range(2)
-    ])
-    if not np.all(np.isfinite(baselines)) or not np.isfinite(threshold_mv):
-        raise ValueError("Cannot determine finite LED reference levels")
+    if not np.all(np.isfinite(led_times_ps)) or not np.isfinite(threshold_mv):
+        raise ValueError("LED crossing times and threshold must be finite")
+    baselines = np.empty(2, dtype=np.float64)
+    for detector in range(2):
+        sample_time_trigger_ns = time_ns + led_times_ps[detector] / 1000.0
+        selected = (
+            (sample_time_trigger_ns >= window[0])
+            & (sample_time_trigger_ns <= window[1])
+            & np.isfinite(waveform_mv[detector])
+        )
+        if not np.any(selected):
+            raise ValueError("LED baseline window has no finite samples for a detector")
+        baselines[detector] = np.mean(waveform_mv[detector, selected])
     return baselines + float(threshold_mv)
 
 
 def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_id,
                       target_ps, prediction_ps, improvement_ps, led_threshold_mv,
-                      baseline_window_ns):
+                      baseline_window_ns, led_times_ps):
     """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
@@ -354,7 +360,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
 
     waveform_difference = _center_detector_difference(waveform_mv)
     led_levels_mv = _led_reference_levels(
-        waveform_mv, time_ns, led_threshold_mv, baseline_window_ns
+        waveform_mv, time_ns, led_times_ps, led_threshold_mv, baseline_window_ns
     )
 
     fig, axes = plt.subplots(
@@ -411,7 +417,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, attribution, group, event_i
 
 
 def _refresh_local_presentation(
-    destination, *, waveform_transform, led_threshold_mv, baseline_window_ns
+    destination, *, waveform_transform, led_threshold_mv, baseline_window_ns, led_times_ps
 ):
     """Refresh plots and physical-unit waveforms from cached normalized inputs."""
     summary_path = destination / "summary.json"
@@ -435,11 +441,18 @@ def _refresh_local_presentation(
         else waveform_transform.inverse(waves),
         dtype=np.float64,
     )
+    selected_led_times_ps = np.asarray(
+        arrays["led_time_ps"] if "led_time_ps" in arrays else led_times_ps,
+        dtype=np.float64,
+    )
+    if selected_led_times_ps.shape != (len(event_ids), 2):
+        raise ValueError("Cached local LED crossing times must have shape [events, 2]")
     threshold = float(np.asarray(
         arrays["led_threshold_mv"] if "led_threshold_mv" in arrays
         else led_threshold_mv
     ).reshape(()))
     arrays["waveform_mv"] = waveform_mv
+    arrays["led_time_ps"] = selected_led_times_ps
     arrays["led_threshold_mv"] = np.asarray(threshold, dtype=np.float64)
 
     plot_names = []
@@ -457,6 +470,7 @@ def _refresh_local_presentation(
             improvement_ps=float(improvements[i]),
             led_threshold_mv=threshold,
             baseline_window_ns=baseline_window_ns,
+            led_times_ps=selected_led_times_ps[i],
         )
         plot_names.append(plot_name)
 
@@ -843,11 +857,18 @@ def explain_tshap_local(
                 if waveform_transform is None:
                     raise ValueError("Missing frozen waveform normalization for mV plotting")
                 led_threshold_mv = float(blind.manifest["fixed_led_threshold_mV"])
+                led_times = getattr(blind, f"{family}_led_time_ps")
+                if led_times is None:
+                    raise ValueError("Missing frozen LED crossing times for mV plotting")
+                with np.load(destination / "local_attributions.npz") as saved:
+                    cached_indices = np.asarray(saved["dataset_index"], dtype=np.int64)
+                selected_led_times_ps = np.asarray(led_times[cached_indices], dtype=np.float64)
                 _refresh_local_presentation(
                     destination,
                     waveform_transform=waveform_transform,
                     led_threshold_mv=led_threshold_mv,
                     baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
+                    led_times_ps=selected_led_times_ps,
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
@@ -904,8 +925,12 @@ def explain_tshap_local(
                             raise ValueError("Missing frozen waveform normalization for mV plotting")
                         raw_waves_mv = np.asarray(waveform_transform.inverse(waves), dtype=np.float64)
                         led_threshold_mv = float(blind.manifest["fixed_led_threshold_mV"])
-                        if not np.isfinite(led_threshold_mv):
-                            raise ValueError("LED threshold must be finite")
+                        led_times = getattr(blind, f"{family}_led_time_ps")
+                        if led_times is None:
+                            raise ValueError("Missing frozen LED crossing times for mV plotting")
+                        selected_led_times_ps = np.asarray(led_times[dataset_indices], dtype=np.float64)
+                        if not np.isfinite(led_threshold_mv) or not np.all(np.isfinite(selected_led_times_ps)):
+                            raise ValueError("LED threshold and crossing times must be finite")
                         selected_predictions = predictions[dataset_indices]
                         selected_targets = targets[dataset_indices]
                         selected_improvements = improvement[dataset_indices]
@@ -974,6 +999,7 @@ def explain_tshap_local(
                             improvement_ps=improvement_ps,
                             led_threshold_mv=led_threshold_mv,
                             baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
+                            led_times_ps=selected_led_times_ps[i],
                         )
                         plot_names.append(plot_name)
                         writer.writerow([
@@ -991,6 +1017,7 @@ def explain_tshap_local(
                     waveform_normalized=waves,
                     waveform_mv=raw_waves_mv,
                     led_threshold_mv=np.asarray(led_threshold_mv, dtype=np.float64),
+                    led_time_ps=selected_led_times_ps,
                     attribution_ps_per_sample=local_maps,
                     target_correction_ps=selected_targets,
                     predicted_correction_ps=selected_predictions,
