@@ -159,9 +159,9 @@ Artifacts are saved outside the supplied results tree, by default under `./xai/B
 
 ### Local TSHAP case studies (separate from global explanations)
 
-Use the distinct \`explain-tshap-local\` command to explain a small set of individual blind events. It does not overwrite or reuse the global \`tshap/\` directory; outputs are stored in the stable \`xai/BATCH/RUN/tshap_local/\` directory.
+Use the distinct `explain-tshap-local` command to explain a small set of individual blind events. It does not overwrite or reuse the global `tshap/` directory; outputs are stored in the stable `xai/BATCH/RUN/tshap_local/` directory.
 
-\`\`\`bash
+```bash
 python -m waveform_analysis.cli explain-tshap-local \
   --results waveform_analysis/results/UC/BATCH \
   --output-root ./xai \
@@ -172,13 +172,13 @@ python -m waveform_analysis.cli explain-tshap-local \
   --seed 42 \
   --window-samples 20 --stride-samples 10 \
   --predict-batch-size 64
-\`\`\`
+```
 
-With the defaults, the command explains 10 events per model: two good positive corrections, two good negative corrections, two bad positive corrections, two bad negative corrections, and two typical corrections. Positive/negative refers to the **predicted correction**. Signed improvement is \`abs(target) - abs(target - prediction)\` in ps: positive means the absolute timing error decreased; negative means it increased.
+With the defaults, the command explains 10 events per model: two good positive corrections, two good negative corrections, two bad positive corrections, two bad negative corrections, and two typical corrections. Positive/negative refers to the **predicted correction**. Signed improvement is `abs(target) - abs(target - prediction)` in ps: positive means the absolute timing error decreased; negative means it increased.
 
 The default 5% extreme margin avoids choosing the absolute best/worst cases: good events are selected near the 90th and 95th percentiles of positive improvement within each correction-sign group; bad events are selected near the 5th and 10th percentiles of negative improvement. Typical events are the unused predictions closest to the median predicted correction, which need not be zero. If a category has too few eligible events, the command fails with a category-specific error rather than silently substituting a different type of event.
 
-Each event gets an individual plot titled with its group, event ID, predicted correction, signed improvement, and target correction. The stable \`tshap_local/\` cache contains \`summary.json\`, \`events.csv\`, \`local_attributions.npz\`, and the individual PNGs. Matching settings reuse completed outputs; changed settings replace the contents only after successful recomputation. \`--overwrite\` forces recalculation. The command predicts across the blind population to select cases but computes TSHAP only for the selected events. Event selection is model-specific because good/bad status depends on that model's predictions; the control baseline sample is reproducible and model-independent for a fixed seed.
+Each event gets an individual plot titled with its group, event ID, predicted correction, signed improvement, and target correction. The stable `tshap_local/` cache contains `summary.json`, `events.csv`, `local_attributions.npz`, and the individual PNGs. Matching settings reuse completed outputs; changed settings replace the contents only after successful recomputation. `--overwrite` forces recalculation. The command predicts across the blind population to select cases but computes TSHAP only for the selected events. Event selection is model-specific because good/bad status depends on that model's predictions; the control baseline sample is reproducible and model-independent for a fixed seed.
 
 
 
