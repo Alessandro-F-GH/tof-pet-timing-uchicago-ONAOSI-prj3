@@ -1093,11 +1093,37 @@ def explain_tshap_local(
                             spec, fitted, x, predict_batch_size
                         )
                         replay = predict(waves)
+                        prediction_difference = replay - selected_predictions
                         if not np.allclose(
                             selected_predictions, replay, atol=1e-4, rtol=1e-6
                         ):
+                            mismatch = {
+                                "model": spec.name,
+                                "run": str(directory),
+                                "max_absolute_difference_ps": float(
+                                    np.max(np.abs(prediction_difference))
+                                ),
+                                "atol_ps": 1e-4,
+                                "rtol": 1e-6,
+                                "events": [
+                                    {
+                                        "event_id": int(event_ids[i]),
+                                        "saved_model_prediction_ps": float(selected_predictions[i]),
+                                        "tshap_replay_prediction_ps": float(replay[i]),
+                                        "difference_ps": float(prediction_difference[i]),
+                                    }
+                                    for i in range(len(event_ids))
+                                ],
+                            }
+                            print(
+                                "TSHAP local prediction mismatch before failure:\\n"
+                                + json.dumps(mismatch, indent=2),
+                                flush=True,
+                            )
                             raise ValueError(
-                                "TSHAP local adapter does not reproduce saved-model predictions"
+                                "TSHAP local adapter does not reproduce saved-model predictions "
+                                f"(maximum absolute difference: "
+                                f"{mismatch['max_absolute_difference_ps']:.9g} ps)"
                             )
 
                         explainer = _new_explainer(
