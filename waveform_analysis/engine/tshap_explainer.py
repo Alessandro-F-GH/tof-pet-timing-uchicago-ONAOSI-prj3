@@ -297,9 +297,28 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
+LOCAL_PLOT_VERSION = 3
+
+
+def _remove_pair_mean(values):
+    """Remove the pointwise common component shared by the two detectors."""
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 2 or values.shape[0] != 2:
+        raise ValueError("Expected an array with shape [2 detectors, samples]")
+    return values - np.mean(values, axis=0, keepdims=True)
+
+
+def _detector_difference(values):
+    """Return detector 1 minus detector 2, with the shared component removed."""
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 2 or values.shape[0] != 2:
+        raise ValueError("Expected an array with shape [2 detectors, samples]")
+    return values[0] - values[1]
+
+
 def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
                       target_ps, prediction_ps, improvement_ps):
-    """Save an individual event plot without mixing waveform and attribution axes."""
+    """Plot only detector-relative variations, plus their explicit waveform difference."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -310,33 +329,93 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     if waveform.shape != (2, time_ns.size) or attribution.shape != waveform.shape:
         raise ValueError("Local TSHAP plot arrays must have shape [2 detectors, samples]")
 
+    # Remove the pointwise common/average component: the plots focus on local
+    # detector-to-detector differences rather than the shared pulse shape.
+    relative_waveform = _remove_pair_mean(waveform)
+    waveform_difference = _detector_difference(waveform)
+    relative_attribution = _remove_pair_mean(attribution)
+
     fig, axes = plt.subplots(
-        2, 2, figsize=(13, 7), sharex=True, constrained_layout=True,
-        gridspec_kw={"height_ratios": [1.0, 1.15]},
+        3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
+        gridspec_kw={"height_ratios": [1.0, 0.85, 1.1]},
     )
     label = LOCAL_GROUP_LABELS[group]
     fig.suptitle(
         f"{label} | event {int(event_id)}\n"
         f"Predicted correction: {prediction_ps:+.2f} ps | "
-        f"Signed improvement: {improvement_ps:+.2f} ps\n"
+        f"Signed improvement: {improvement_ps:+.2f} ps | "
         f"Target correction: {target_ps:+.2f} ps | "
         f"Final residual: {target_ps - prediction_ps:+.2f} ps",
         fontsize=11,
     )
-    for channel in range(2):
-        axes[0, channel].plot(time_ns, waveform[channel], linewidth=1.15)
-        axes[0, channel].set_title(f"Detector {channel + 1} waveform")
-        axes[0, channel].set_ylabel("Normalized amplitude (0–1)")
-        axes[0, channel].set_ylim(-0.03, 1.03)
-        axes[0, channel].grid(True, alpha=0.22, linewidth=0.6)
-        axes[1, channel].plot(time_ns, attribution[channel], linewidth=1.1)
-        axes[1, channel].axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-        axes[1, channel].set_title(f"Detector {channel + 1} TSHAP")
-        axes[1, channel].set_ylabel("Attribution (ps/sample)")
-        axes[1, channel].grid(True, alpha=0.22, linewidth=0.6)
-        axes[1, channel].set_xlabel("Waveform time (ns)")
+
+    ax = axes[0]
+    ax.plot(time_ns, relative_waveform[0], linewidth=1.15, label="Detector 1 − pair mean")
+    ax.plot(time_ns, relative_waveform[1], linewidth=1.15, label="Detector 2 − pair mean")
+    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
+    ax.set_title("Detector waveform variations (common component removed)")
+    ax.set_ylabel("Relative amplitude")
+    ax.grid(True, alpha=0.22, linewidth=0.6)
+    ax.legend(loc="best", fontsize=9, ncols=2)
+
+    ax = axes[1]
+    ax.plot(time_ns, waveform_difference, linewidth=1.15, label="Detector 1 − Detector 2")
+    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
+    ax.set_title("Detector waveform difference")
+    ax.set_ylabel("Amplitude difference")
+    ax.grid(True, alpha=0.22, linewidth=0.6)
+    ax.legend(loc="best", fontsize=9)
+
+    ax = axes[2]
+    ax.plot(time_ns, relative_attribution[0], linewidth=1.1, label="Detector 1 − pair mean")
+    ax.plot(time_ns, relative_attribution[1], linewidth=1.1, label="Detector 2 − pair mean")
+    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
+    ax.set_title("Local TSHAP variations (common attribution component removed)")
+    ax.set_ylabel("Relative attribution (ps/sample)")
+    ax.set_xlabel("Waveform time (ns)")
+    ax.grid(True, alpha=0.22, linewidth=0.6)
+    ax.legend(loc="best", fontsize=9, ncols=2)
+
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+
+
+def _refresh_local_presentation(destination):
+    """Refresh local plots from cached attributions without rerunning TSHAP."""
+    summary_path = destination / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if summary.get("plot_version", 0) >= LOCAL_PLOT_VERSION:
+        return
+
+    with np.load(destination / "local_attributions.npz") as saved:
+        time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
+        waves = np.asarray(saved["waveform_normalized"], dtype=np.float64)
+        attributions = np.asarray(saved["attribution_ps_per_sample"], dtype=np.float64)
+        event_ids = np.asarray(saved["event_id"], dtype=np.int64)
+        groups = np.asarray(saved["group"]).astype(str)
+        targets = np.asarray(saved["target_correction_ps"], dtype=np.float64)
+        predictions = np.asarray(saved["predicted_correction_ps"], dtype=np.float64)
+        improvements = np.asarray(saved["signed_improvement_ps"], dtype=np.float64)
+
+    plot_names = []
+    for i in range(len(event_ids)):
+        plot_name = f"{groups[i]}__event_{int(event_ids[i])}.png"
+        _plot_local_event(
+            destination / plot_name,
+            time_ps=time_ps,
+            waveform=waves[i],
+            attribution=attributions[i],
+            group=groups[i],
+            event_id=int(event_ids[i]),
+            target_ps=float(targets[i]),
+            prediction_ps=float(predictions[i]),
+            improvement_ps=float(improvements[i]),
+        )
+        plot_names.append(plot_name)
+
+    summary["plots"] = plot_names
+    summary["plot_version"] = LOCAL_PLOT_VERSION
+    atomic_json(summary_path, summary)
 
 
 def _local_explanation_destination(output_root, run_directory):
@@ -705,6 +784,7 @@ def explain_tshap_local(
             fingerprint = canonical_hash(identity)
             destination = _local_explanation_destination(output_root, directory)
             if _complete_local(destination, fingerprint, len(LOCAL_GROUP_LABELS) * events_per_group) and not overwrite:
+                _refresh_local_presentation(destination)
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
                 outputs.append(destination)
@@ -850,6 +930,7 @@ def explain_tshap_local(
                 atomic_json(temporary / "summary.json", {
                     **identity,
                     "identity_sha256": fingerprint,
+                    "plot_version": LOCAL_PLOT_VERSION,
                     "n_explained_events": len(event_ids),
                     "n_events_per_group": events_per_group,
                     "n_control_baselines": len(baseline_ids),
