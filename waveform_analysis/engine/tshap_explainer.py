@@ -27,6 +27,7 @@ from waveform_analysis.engine.xai import _predict_array
 from waveform_analysis.engine.xai_replay import PreparedCacheLookup, _cache_root
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.models import get_model
+from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 1
@@ -303,7 +304,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 8
+LOCAL_PLOT_VERSION = 9
 
 
 def _detector_difference(values):
@@ -345,37 +346,101 @@ def _dataset_mean_difference_mv(
     return np.mean(differences, axis=0), indices
 
 
-def _led_reference_levels(
-    waveform_mv, time_ns, led_times_ps, threshold_mv, baseline_window_ns
+def _native_led_baselines(
+    cache_root, dataset, mode, dataset_indices, baseline_window_ns
 ):
-    """Return baseline-adjusted LED levels using trigger-relative baseline windows."""
-    waveform_mv = np.asarray(waveform_mv, dtype=np.float64)
-    time_ns = np.asarray(time_ns, dtype=np.float64)
-    led_times_ps = np.asarray(led_times_ps, dtype=np.float64).reshape(-1)
-    window = np.asarray(baseline_window_ns, dtype=np.float64).reshape(-1)
-    if waveform_mv.shape != (2, time_ns.size) or led_times_ps.shape != (2,):
-        raise ValueError("Expected two detector waveforms and two LED crossing times")
-    if window.size != 2 or not np.all(np.isfinite(window)) or window[1] <= window[0]:
-        raise ValueError("LED baseline window must contain two increasing finite endpoints")
-    if not np.all(np.isfinite(led_times_ps)) or not np.isfinite(threshold_mv):
-        raise ValueError("LED crossing times and threshold must be finite")
-    baselines = np.empty(2, dtype=np.float64)
-    for detector in range(2):
-        sample_time_trigger_ns = time_ns + led_times_ps[detector] / 1000.0
-        selected = (
-            (sample_time_trigger_ns >= window[0])
-            & (sample_time_trigger_ns <= window[1])
-            & np.isfinite(waveform_mv[detector])
+    """Read detector baselines from the original trigger-relative native waveforms."""
+    cache_root = Path(cache_root).expanduser().resolve()
+    dataset_indices = np.asarray(dataset_indices, dtype=np.int64).reshape(-1)
+    if dataset_indices.size == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    if np.any(dataset_indices < 0) or np.any(dataset_indices >= dataset.n_events):
+        raise ValueError("LED baseline dataset indices are out of range")
+
+    source_event_ids = np.asarray(dataset.event_index, dtype=np.int64)[dataset_indices]
+    source = str(dataset.manifest.get("analysis_source", ""))
+    family = mode_family(mode)
+    native_root = cache_root / "blind_native"
+    candidates = []
+    for manifest_path in native_root.glob("*/manifest.json"):
+        try:
+            native_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            native_manifest.get("source") != source
+            or native_manifest.get("mode") != mode
+            or native_manifest.get("family") != family
+        ):
+            continue
+        directory = manifest_path.parent
+        event_path = directory / "event_index.npy"
+        waveform_path = directory / f"{family}_windows_mV.npy"
+        interval_path = directory / f"{family}_sample_interval_s.npy"
+        if not all(path.is_file() for path in (event_path, waveform_path, interval_path)):
+            continue
+        native_event_ids = np.asarray(np.load(event_path, mmap_mode="r"), dtype=np.int64)
+        row_lookup = {int(event_id): row for row, event_id in enumerate(native_event_ids)}
+        if all(int(event_id) in row_lookup for event_id in source_event_ids):
+            candidates.append(
+                (directory, native_manifest, row_lookup, waveform_path, interval_path)
+            )
+
+    if len(candidates) != 1:
+        raise ValueError(
+            "Expected exactly one matching original blind-native waveform cache "
+            f"for LED baselines, found {len(candidates)} in {native_root}"
         )
-        if not np.any(selected):
-            raise ValueError("LED baseline window has no finite samples for a detector")
-        baselines[detector] = np.mean(waveform_mv[detector, selected])
-    return baselines + float(threshold_mv)
+
+    directory, native_manifest, row_lookup, waveform_path, interval_path = candidates[0]
+    waves = np.load(waveform_path, mmap_mode="r")
+    intervals = np.load(interval_path, mmap_mode="r")
+    try:
+        before_ns = float(native_manifest["materialized_window_ns"]["before"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Blind-native cache is missing materialized_window_ns.before") from exc
+
+    baselines = np.empty((dataset_indices.size, 2), dtype=np.float64)
+    for output_row, event_id in enumerate(source_event_ids):
+        native_row = row_lookup[int(event_id)]
+        for detector in range(2):
+            baselines[output_row, detector] = baseline_level_mV(
+                waves[native_row, detector],
+                float(intervals[native_row, detector]),
+                before_ns,
+                baseline_window_ns,
+            )
+    if not np.all(np.isfinite(baselines)):
+        raise ValueError(
+            "Could not calculate a finite LED baseline from the original "
+            "preprocessed blind waveform"
+        )
+    return baselines
+
+
+def _led_reference_levels(baseline_mv, threshold_mv):
+    """Convert the calibrated baseline-relative LED threshold to absolute mV."""
+    baseline = np.asarray(baseline_mv, dtype=np.float64).reshape(-1)
+    if baseline.shape != (2,) or not np.all(np.isfinite(baseline)):
+        raise ValueError("Expected two finite detector baseline levels")
+    if not np.isfinite(threshold_mv):
+        raise ValueError("LED threshold must be finite")
+    return baseline + float(threshold_mv)
+
+
+def _led_line_extent(time_ns):
+    """Limit the LED reference line to the waveform start and time zero."""
+    time_ns = np.asarray(time_ns, dtype=np.float64).reshape(-1)
+    if time_ns.size == 0 or not np.all(np.isfinite(time_ns)):
+        raise ValueError("LED line time grid must contain finite samples")
+    start = float(time_ns[0])
+    end = float(time_ns[-1])
+    return (start, 0.0) if start <= 0.0 <= end else (start, end)
 
 
 def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
-                      attribution, group, event_id, target_ps, prediction_ps,
-                      improvement_ps, led_threshold_mv, baseline_window_ns, led_times_ps):
+                      led_baseline_mv, attribution, group, event_id, target_ps,
+                      prediction_ps, improvement_ps, led_threshold_mv):
     """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
@@ -392,9 +457,8 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     waveform_difference = _center_detector_difference(
         waveform_mv, dataset_mean_difference_mv
     )
-    led_levels_mv = _led_reference_levels(
-        waveform_mv, time_ns, led_times_ps, led_threshold_mv, baseline_window_ns
-    )
+    led_levels_mv = _led_reference_levels(led_baseline_mv, led_threshold_mv)
+    led_line_start_ns, led_line_end_ns = _led_line_extent(time_ns)
 
     fig, axes = plt.subplots(
         3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
@@ -413,12 +477,14 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax = axes[0]
     ax.plot(time_ns, waveform_mv[0], linewidth=1.15, label="Detector 1")
     ax.plot(time_ns, waveform_mv[1], linewidth=1.15, label="Detector 2")
-    ax.axhline(
-        led_levels_mv[0], linestyle="--", linewidth=0.9,
+    ax.hlines(
+        led_levels_mv[0], xmin=led_line_start_ns, xmax=led_line_end_ns,
+        linestyle="--", linewidth=0.9,
         label=f"Detector 1 LED threshold ({led_levels_mv[0]:g} mV)",
     )
-    ax.axhline(
-        led_levels_mv[1], linestyle=":", linewidth=0.9,
+    ax.hlines(
+        led_levels_mv[1], xmin=led_line_start_ns, xmax=led_line_end_ns,
+        linestyle=":", linewidth=0.9,
         label=f"Detector 2 LED threshold ({led_levels_mv[1]:g} mV)",
     )
     ax.set_title("Detector waveforms")
@@ -451,7 +517,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
 
 def _refresh_local_presentation(
     destination, *, waveform_transform, led_threshold_mv, baseline_window_ns,
-    led_times_ps, dataset, mode, seed
+    dataset, mode, seed, cache_root
 ):
     """Refresh plots from cached attributions and a cached dataset-mean waveform."""
     summary_path = destination / "summary.json"
@@ -461,6 +527,7 @@ def _refresh_local_presentation(
     if (
         summary.get("plot_version", 0) >= LOCAL_PLOT_VERSION
         and "dataset_mean_difference_mv" in arrays
+        and "led_baseline_mv" in arrays
     ):
         return
 
@@ -478,16 +545,18 @@ def _refresh_local_presentation(
         else waveform_transform.inverse(waves),
         dtype=np.float64,
     )
-    selected_led_times_ps = np.asarray(
-        arrays["led_time_ps"] if "led_time_ps" in arrays else led_times_ps,
-        dtype=np.float64,
-    )
+    selected_led_times_ps = np.asarray(arrays["led_time_ps"], dtype=np.float64)
     if selected_led_times_ps.shape != (len(event_ids), 2):
         raise ValueError("Cached local LED crossing times must have shape [events, 2]")
     threshold = float(np.asarray(
         arrays["led_threshold_mv"] if "led_threshold_mv" in arrays
         else led_threshold_mv
     ).reshape(()))
+    if "dataset_index" not in arrays:
+        raise ValueError("Cached local explanations are missing dataset indices")
+    led_baselines_mv = _native_led_baselines(
+        cache_root, dataset, mode, arrays["dataset_index"], baseline_window_ns
+    )
 
     if "dataset_mean_difference_mv" in arrays:
         dataset_mean = np.asarray(arrays["dataset_mean_difference_mv"], dtype=np.float64)
@@ -504,6 +573,7 @@ def _refresh_local_presentation(
 
     arrays["waveform_mv"] = waveform_mv
     arrays["led_time_ps"] = selected_led_times_ps
+    arrays["led_baseline_mv"] = led_baselines_mv
     arrays["led_threshold_mv"] = np.asarray(threshold, dtype=np.float64)
     arrays["dataset_mean_difference_mv"] = dataset_mean
     arrays["dataset_mean_sample_indices"] = mean_indices
@@ -516,6 +586,7 @@ def _refresh_local_presentation(
             time_ps=time_ps,
             waveform_mv=waveform_mv[i],
             dataset_mean_difference_mv=dataset_mean,
+            led_baseline_mv=led_baselines_mv[i],
             attribution=attributions[i],
             group=groups[i],
             event_id=int(event_ids[i]),
@@ -523,8 +594,6 @@ def _refresh_local_presentation(
             prediction_ps=float(predictions[i]),
             improvement_ps=float(improvements[i]),
             led_threshold_mv=threshold,
-            baseline_window_ns=baseline_window_ns,
-            led_times_ps=selected_led_times_ps[i],
         )
         plot_names.append(plot_name)
 
@@ -535,6 +604,8 @@ def _refresh_local_presentation(
     summary["plot_version"] = LOCAL_PLOT_VERSION
     summary["signal_units"] = "mV (inverse of frozen prepared waveform normalization)"
     summary["led_threshold_mV"] = threshold
+    summary["led_baseline_source"] = "original blind-native waveform using the timing pipeline baseline window"
+    summary["led_reference_line_extent"] = "waveform start to time zero"
     summary["difference_centering"] = "per-sample mean across up to 1000 seeded blind events"
     summary["difference_centering_sample_size"] = int(mean_indices.size)
     atomic_json(summary_path, summary)
@@ -938,10 +1009,10 @@ def explain_tshap_local(
                     waveform_transform=waveform_transform,
                     led_threshold_mv=led_threshold_mv,
                     baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
-                    led_times_ps=selected_led_times_ps,
                     dataset=blind,
                     mode=config["mode"],
                     seed=int(seed),
+                    cache_root=cache,
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
@@ -1008,6 +1079,10 @@ def explain_tshap_local(
                         if led_times is None:
                             raise ValueError("Missing frozen LED crossing times for mV plotting")
                         selected_led_times_ps = np.asarray(led_times[dataset_indices], dtype=np.float64)
+                        baseline_window_ns = config["preprocessing"]["selection"]["baseline_window_ns"]
+                        led_baselines_mv = _native_led_baselines(
+                            cache, blind, config["mode"], dataset_indices, baseline_window_ns
+                        )
                         if not np.isfinite(led_threshold_mv) or not np.all(np.isfinite(selected_led_times_ps)):
                             raise ValueError("LED threshold and crossing times must be finite")
                         selected_predictions = predictions[dataset_indices]
@@ -1071,6 +1146,7 @@ def explain_tshap_local(
                             time_ps=time_ps,
                             waveform_mv=raw_waves_mv[i],
                             dataset_mean_difference_mv=dataset_mean_difference_mv,
+                            led_baseline_mv=led_baselines_mv[i],
                             attribution=local_maps[i],
                             group=group,
                             event_id=int(event_id),
@@ -1078,8 +1154,6 @@ def explain_tshap_local(
                             prediction_ps=prediction_ps,
                             improvement_ps=improvement_ps,
                             led_threshold_mv=led_threshold_mv,
-                            baseline_window_ns=config["preprocessing"]["selection"]["baseline_window_ns"],
-                            led_times_ps=selected_led_times_ps[i],
                         )
                         plot_names.append(plot_name)
                         writer.writerow([
@@ -1096,6 +1170,7 @@ def explain_tshap_local(
                     time_ps=time_ps,
                     waveform_normalized=waves,
                     waveform_mv=raw_waves_mv,
+                    led_baseline_mv=led_baselines_mv,
                     dataset_mean_difference_mv=dataset_mean_difference_mv,
                     dataset_mean_sample_indices=dataset_mean_sample_indices,
                     led_threshold_mv=np.asarray(led_threshold_mv, dtype=np.float64),
@@ -1140,6 +1215,8 @@ def explain_tshap_local(
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
+                    "led_baseline_source": "original blind-native waveform using the timing pipeline baseline window",
+                    "led_reference_line_extent": "waveform start to time zero",
                     "difference_centering": "per-sample mean across up to 1000 seeded blind events",
                     "difference_centering_sample_size": int(dataset_mean_sample_indices.size),
                     "prediction_equivalence_max_error_ps": float(
