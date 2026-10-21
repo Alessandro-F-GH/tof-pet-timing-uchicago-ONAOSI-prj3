@@ -71,6 +71,7 @@ def test_explanation_destination_is_separate_and_collision_safe(tmp_path, monkey
     run.mkdir(parents=True)
     monkeypatch.setattr(tshap_explainer, "batch_root", lambda _: batch)
     output_root = tmp_path / "xai"
-    path = _explanation_destination(output_root, run, "abcdef0123456789")
-    assert path == output_root / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap" / "abcdef0123456789"
+    path = _explanation_destination(output_root, run)
+    assert path == output_root / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap"
     assert not path.is_relative_to(batch)
+    assert path.name == "tshap"  # Identity fingerprints stay in summary.json, not in path names.
