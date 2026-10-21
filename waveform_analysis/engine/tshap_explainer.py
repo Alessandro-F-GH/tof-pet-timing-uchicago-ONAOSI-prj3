@@ -271,6 +271,17 @@ def _copy_cached_explanation(source, destination, *, remove_source=False, logger
     if logger:
         logger.info("TSHAP | migrated cached explanation | %s -> %s", source, destination)
 
+def _cleanup_legacy_result_tshap(run_directory):
+    """Remove superseded hash-named TSHAP artifacts after a verified cache exists."""
+    legacy_root = Path(run_directory) / "explanations" / "tshap"
+    if legacy_root.exists():
+        shutil.rmtree(legacy_root)
+    for parent in (legacy_root.parent,):
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
 
 def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=10, predict_batch_size=64,
@@ -334,6 +345,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             # A matching flat cache is the canonical hit: no model inference.
             if _complete(destination, fingerprint) and not overwrite:
                 _refresh_presentation(destination)
+                _cleanup_legacy_result_tshap(directory)
                 if logger:
                     logger.info("TSHAP | cache hit | %s", destination)
                 outputs.append(destination)
@@ -342,6 +354,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             # Migrate old hash-folder layouts rather than creating another copy.
             if not overwrite and _complete(legacy_xai, fingerprint):
                 _copy_cached_explanation(legacy_xai, destination, logger=logger)
+                _cleanup_legacy_result_tshap(directory)
                 outputs.append(destination)
                 continue
             if not overwrite and _complete(legacy_results, fingerprint):
@@ -438,6 +451,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 # Replace stale settings/incomplete artifacts in-place. The cache
                 # check above prevents recalculation when the fingerprint matches.
                 _publish_directory(temporary, destination, overwrite=True)
+                _cleanup_legacy_result_tshap(directory)
             finally:
                 if temporary.exists():
                     shutil.rmtree(temporary)
