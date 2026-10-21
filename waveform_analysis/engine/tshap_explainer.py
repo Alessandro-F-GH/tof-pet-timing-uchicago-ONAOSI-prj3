@@ -44,6 +44,15 @@ def _choose_indices(n, cap, seed):
     return np.sort(np.random.default_rng(seed).choice(n, size=min(n, cap), replace=False))
 
 
+def _selection_seed(seed, role):
+    """Stable sampling seed independent of model identity."""
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("TSHAP seed must be an integer")
+    if role not in {"blind_events", "control_baselines"}:
+        raise ValueError(f"Unknown TSHAP sampling role: {role}")
+    return semantic_seed(seed, "tshap", role)
+
+
 def _check_prepared_grids(control, blind, mode):
     family = mode_family(mode)
     ctime = np.asarray(getattr(control, f"{family}_time_ps"))
@@ -284,7 +293,7 @@ def _cleanup_legacy_result_tshap(run_directory):
 
 
 def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
-                  window_samples=20, stride_samples=10, predict_batch_size=64,
+                  window_samples=20, stride_samples=10, predict_batch_size=64, seed=42,
                   roi=False, overwrite=False, logger=None):
     """Explain saved regressors using reproducible blind/control subsets.
 
@@ -296,6 +305,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         ("window_samples", window_samples), ("stride_samples", stride_samples),
                         ("predict_batch_size", predict_batch_size)):
         _validate_positive_int(name, value)
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("TSHAP seed must be an integer")
     tshap_version = version("tshap")
     results_path = Path(results).expanduser().resolve()
     if output_root is None:
@@ -325,17 +336,18 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             model_dir = directory / "model"
             if not saved_model_complete(spec, model_dir):
                 raise FileNotFoundError(f"Saved model or frozen feature transform missing: {model_dir}")
-            seed = semantic_seed(config["seed"], spec.name, "tshap")
+            sampling_seed = int(seed)
             settings = dict(max_events=max_events, n_baselines=n_baselines,
                             window_samples=window_samples, stride_samples=stride_samples,
-                            predict_batch_size=predict_batch_size, roi=bool(roi))
+                            predict_batch_size=predict_batch_size, seed=sampling_seed,
+                            roi=bool(roi))
             identity = {
                 "method": "tshap_window_roi" if roi else "tshap_window",
                 "method_version": TSHAP_METHOD_VERSION, "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
                 "blind": manifest["dataset_populations"]["blind"]["analysis_protocol_identity"],
-                "model": spec.name, "mode": config["mode"], "seed": seed, "settings": settings,
+                "model": spec.name, "mode": config["mode"], "seed": sampling_seed, "settings": settings,
             }
             fingerprint = canonical_hash(identity)
             destination = _explanation_destination(output_root, directory)
@@ -373,9 +385,12 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             time_ps = _check_prepared_grids(control, blind, config["mode"])
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
-            baseline_ids = _choose_indices(control.n_events, n_baselines,
-                                           semantic_seed(seed, "control_baselines"))
-            event_ids = _choose_indices(blind.n_events, max_events, semantic_seed(seed, "blind_events"))
+            baseline_ids = _choose_indices(
+                control.n_events, n_baselines, _selection_seed(sampling_seed, "control_baselines")
+            )
+            event_ids = _choose_indices(
+                blind.n_events, max_events, _selection_seed(sampling_seed, "blind_events")
+            )
             baselines = waveform_view(control, config["mode"], baseline_ids).materialize()
             waves = waveform_view(blind, config["mode"], event_ids).materialize()
             if baselines.shape[1:] != waves.shape[1:] or waves.shape[1] != 2:
