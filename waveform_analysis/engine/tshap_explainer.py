@@ -225,7 +225,7 @@ LOCAL_GROUP_LABELS = {
     "good_negative": "Good negative correction",
     "bad_positive": "Bad positive correction",
     "bad_negative": "Bad negative correction",
-    "typical": "Typical correction",
+    "typical": "Typical correction (median predicted output)",
 }
 
 
@@ -318,14 +318,16 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     fig.suptitle(
         f"{label} | event {int(event_id)}\n"
         f"Predicted correction: {prediction_ps:+.2f} ps | "
-        f"Signed improvement: {improvement_ps:+.2f} ps | "
-        f"Target correction: {target_ps:+.2f} ps",
-        fontsize=12,
+        f"Signed improvement: {improvement_ps:+.2f} ps\n"
+        f"Target correction: {target_ps:+.2f} ps | "
+        f"Final residual: {target_ps - prediction_ps:+.2f} ps",
+        fontsize=11,
     )
     for channel in range(2):
         axes[0, channel].plot(time_ns, waveform[channel], linewidth=1.15)
         axes[0, channel].set_title(f"Detector {channel + 1} waveform")
-        axes[0, channel].set_ylabel("Normalized amplitude")
+        axes[0, channel].set_ylabel("Normalized amplitude (0–1)")
+        axes[0, channel].set_ylim(-0.03, 1.03)
         axes[0, channel].grid(True, alpha=0.22, linewidth=0.6)
         axes[1, channel].plot(time_ns, attribution[channel], linewidth=1.1)
         axes[1, channel].axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
