@@ -6,7 +6,7 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
-    _center_detector_difference, _complete_local, _detector_difference,
+    _center_detector_difference, _complete_local, _detector_difference, _led_reference_levels,
     _new_explainer, _plot_local_event, _publish_directory, _select_local_events, _selection_seed,
 )
 
@@ -244,7 +244,7 @@ def test_signal_difference_helpers_reject_invalid_shapes():
 
 
 def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
-    time_ps = np.arange(8, dtype=np.float64) * 25.0
+    time_ps = np.asarray([-1000, -750, -500, -250, 0, 250, 500, 750], dtype=np.float64)
     waveform_mv = np.asarray([
         [-8.0, -7.0, -3.0, 12.0, 25.0, 15.0, 2.0, -5.0],
         [-7.0, -6.0, -2.0, 10.0, 22.0, 14.0, 1.0, -4.0],
@@ -266,7 +266,21 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         prediction_ps=2.0,
         improvement_ps=2.0,
         led_threshold_mv=20.0,
+        baseline_window_ns=(-1.0, -0.5),
     )
 
     assert output.is_file()
     assert output.stat().st_size > 0
+
+
+
+def test_led_reference_levels_include_each_detector_baseline():
+    time_ns = np.asarray([-1.0, -0.75, -0.5, -0.25, 0.0])
+    waveform_mv = np.asarray([
+        [-8.0, -7.0, -3.0, 12.0, 25.0],
+        [-7.0, -6.0, -2.0, 10.0, 22.0],
+    ])
+    levels = _led_reference_levels(
+        waveform_mv, time_ns, threshold_mv=20.0, baseline_window_ns=(-1.0, -0.5)
+    )
+    np.testing.assert_allclose(levels, [14.0, 15.0])
