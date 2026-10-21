@@ -335,6 +335,9 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
     ppv_total_abs = 0.0
     selected_total_abs = 0.0
     all_features_abs = 0.0
+    # Validate reconstruction in unscaled PPV space. Dividing PPV by a
+    # very small StandardScaler.scale_ amplifies float32 quantization and
+    # makes a scaled-space tolerance depend on the fitted feature variance.
     valid_tol = 2e-4
     if logger:
         logger.info("ROCKET-LRP PPV tracing | starting %d events | selected PPV features=%d",
@@ -386,17 +389,22 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                 if not shared:
                     expected = event_features[start:end][columns]
                     active = selected_mask[columns]
-                    if not np.allclose(r[active], expected[active], atol=valid_tol, rtol=valid_tol):
-                        delta = np.abs(r[active] - expected[active])
-                        worst = int(np.flatnonzero(active)[np.argmax(delta)])
+                    feature_scale = scales[columns]
+                    reconstructed_ppv = r * feature_scale
+                    expected_ppv = expected * feature_scale
+                    if not np.allclose(reconstructed_ppv[active], expected_ppv[active],
+                                       atol=valid_tol, rtol=valid_tol):
+                        delta = np.abs(reconstructed_ppv[active] - expected_ppv[active])
+                        worst_active = int(np.argmax(delta))
+                        worst = int(np.flatnonzero(active)[worst_active])
                         raise ValueError(
                             f"PPV reconstruction failed | event={int(event_index)} "
                             f"representation={['raw','difference'][rep]} "
                             f"feature_column={int(columns[worst])} "
-                            f"reconstructed_scaled={float(r[worst]):.7g} "
-                            f"saved_scaled={float(expected[worst]):.7g} "
-                            f"scale={float(scales[columns[worst]]):.7g} "
-                            f"max_error={float(delta[worst_active]):.7g}")
+                            f"reconstructed_ppv={float(reconstructed_ppv[worst]):.7g} "
+                            f"saved_ppv={float(expected_ppv[worst]):.7g} "
+                            f"scale={float(feature_scale[worst]):.7g} "
+                            f"max_error_ppv={float(delta[worst_active]):.7g}")
                 else:
                     if detector == 0:
                         if rep == 0:
@@ -407,18 +415,24 @@ def ppv_temporal_map(*, fitted, blind, mode, features, reference_mean, coefficie
                         baseline = first_raw if rep == 0 else first_diff
                         expected = event_features[start:end][columns]
                         active = selected_mask[columns]
-                        if not np.allclose((baseline-r)[active], expected[active], atol=valid_tol, rtol=valid_tol):
-                            delta = np.abs((baseline-r)[active] - expected[active])
+                        feature_scale = scales[columns]
+                        reconstructed_difference_ppv = (baseline - r) * feature_scale
+                        expected_difference_ppv = expected * feature_scale
+                        if not np.allclose(
+                                reconstructed_difference_ppv[active], expected_difference_ppv[active],
+                                atol=valid_tol, rtol=valid_tol):
+                            delta = np.abs(
+                                reconstructed_difference_ppv[active] - expected_difference_ppv[active])
                             worst_active = int(np.argmax(delta))
                             worst = int(np.flatnonzero(active)[worst_active])
                             raise ValueError(
                                 f"Shared PPV reconstruction failed | event={int(event_index)} "
                                 f"representation={['raw','difference'][rep]} "
                                 f"feature_column={int(columns[worst])} "
-                                f"reconstructed_difference={float((baseline-r)[worst]):.7g} "
-                                f"saved_difference={float(expected[worst]):.7g} "
-                                f"scale={float(scales[columns[worst]]):.7g} "
-                                f"max_error={float(delta[worst]):.7g}")
+                                f"reconstructed_difference_ppv={float(reconstructed_difference_ppv[worst]):.7g} "
+                                f"saved_difference_ppv={float(expected_difference_ppv[worst]):.7g} "
+                                f"scale={float(feature_scale[worst]):.7g} "
+                                f"max_error_ppv={float(delta[worst_active]):.7g}")
                 signed[rep, detector] += s
                 absolute[rep, detector] += a
                 counts[rep, detector] += n_hits
