@@ -6,7 +6,8 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
-    _center_detector_difference, _complete_local, _detector_difference, _led_reference_levels,
+    _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
+    _detector_difference, _led_reference_levels,
     _is_excluded_tshap_window, _new_explainer, _plot_local_event, _publish_directory,
     _select_local_events, _selection_seed,
 )
@@ -222,25 +223,60 @@ def test_local_explanations_use_a_separate_stable_folder(tmp_path, monkeypatch):
     assert not path.is_relative_to(batch)
 
 
-def test_local_signal_difference_removes_its_temporal_mean_only():
+def test_local_signal_difference_subtracts_dataset_mean_per_sample():
     values = np.asarray([
         [0.10, 0.40, 0.80, 0.70],
         [0.06, 0.30, 0.74, 0.76],
     ])
+    dataset_mean = np.asarray([0.02, 0.04, 0.01, -0.03])
     raw_difference = _detector_difference(values)
-    centered_difference = _center_detector_difference(values)
+    centered_difference = _center_detector_difference(values, dataset_mean)
 
     np.testing.assert_allclose(raw_difference, values[0] - values[1])
-    np.testing.assert_allclose(centered_difference, raw_difference - np.mean(raw_difference))
-    np.testing.assert_allclose(np.mean(centered_difference), 0.0, atol=1e-12)
-    assert np.any(np.abs(centered_difference) > 0)
+    np.testing.assert_allclose(centered_difference, raw_difference - dataset_mean)
+    assert not np.isclose(np.mean(centered_difference), 0.0)
 
 
 def test_signal_difference_helpers_reject_invalid_shapes():
     with pytest.raises(ValueError, match="2 detectors"):
         _detector_difference(np.ones((3, 10)))
     with pytest.raises(ValueError, match="2 detectors"):
-        _center_detector_difference(np.ones((10, 2)))
+        _center_detector_difference(np.ones((10, 2)), np.zeros(2))
+
+
+def test_dataset_mean_difference_is_per_sample_and_seeded():
+    from types import SimpleNamespace
+
+    waveforms = np.asarray([
+        [[1.0, 3.0], [0.0, 1.0]],
+        [[2.0, 5.0], [1.0, 2.0]],
+        [[4.0, 7.0], [1.0, 4.0]],
+        [[8.0, 9.0], [3.0, 5.0]],
+    ], dtype=np.float32)
+
+    class IdentityTransform:
+        @staticmethod
+        def inverse(values):
+            return np.asarray(values, dtype=np.float32)
+
+    dataset = SimpleNamespace(
+        n_events=waveforms.shape[0],
+        energy_windows=waveforms,
+        timing_windows=None,
+        energy_time_ps=np.asarray([0.0, 1.0]),
+        timing_time_ps=None,
+    )
+    mean, indices = _dataset_mean_difference_mv(
+        dataset, "energy_to_energy", IdentityTransform(), seed=42, max_events=4
+    )
+    all_differences = waveforms[:, 0, :] - waveforms[:, 1, :]
+    np.testing.assert_allclose(mean, np.mean(all_differences, axis=0))
+    np.testing.assert_array_equal(
+        indices,
+        _dataset_mean_difference_mv(
+            dataset, "energy_to_energy", IdentityTransform(), seed=42, max_events=4
+        )[1],
+    )
 
 
 
@@ -260,6 +296,7 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         output,
         time_ps=time_ps,
         waveform_mv=waveform_mv,
+        dataset_mean_difference_mv=np.zeros(waveform_mv.shape[1], dtype=np.float64),
         attribution=attribution,
         group="typical",
         event_id=123,
