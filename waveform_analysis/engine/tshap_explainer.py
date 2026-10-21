@@ -297,28 +297,26 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 3
-
-
-def _remove_pair_mean(values):
-    """Remove the pointwise common component shared by the two detectors."""
-    values = np.asarray(values, dtype=np.float64)
-    if values.ndim != 2 or values.shape[0] != 2:
-        raise ValueError("Expected an array with shape [2 detectors, samples]")
-    return values - np.mean(values, axis=0, keepdims=True)
+LOCAL_PLOT_VERSION = 4
 
 
 def _detector_difference(values):
-    """Return detector 1 minus detector 2, with the shared component removed."""
+    """Return the raw detector 1 minus detector 2 waveform."""
     values = np.asarray(values, dtype=np.float64)
     if values.ndim != 2 or values.shape[0] != 2:
         raise ValueError("Expected an array with shape [2 detectors, samples]")
     return values[0] - values[1]
 
 
+def _center_detector_difference(values):
+    """Remove the temporal mean from detector 1 minus detector 2."""
+    difference = _detector_difference(values)
+    return difference - np.mean(difference)
+
+
 def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
                       target_ps, prediction_ps, improvement_ps):
-    """Plot only detector-relative variations, plus their explicit waveform difference."""
+    """Plot raw detector signals and attributions plus a mean-centered signal difference."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -329,11 +327,9 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     if waveform.shape != (2, time_ns.size) or attribution.shape != waveform.shape:
         raise ValueError("Local TSHAP plot arrays must have shape [2 detectors, samples]")
 
-    # Remove the pointwise common/average component: the plots focus on local
-    # detector-to-detector differences rather than the shared pulse shape.
-    relative_waveform = _remove_pair_mean(waveform)
-    waveform_difference = _detector_difference(waveform)
-    relative_attribution = _remove_pair_mean(attribution)
+    # Only the signal-difference panel is mean-centered. The original signals
+    # and the original TSHAP attribution curves are plotted without alteration.
+    waveform_difference = _center_detector_difference(waveform)
 
     fig, axes = plt.subplots(
         3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
@@ -350,28 +346,28 @@ def _plot_local_event(path, *, time_ps, waveform, attribution, group, event_id,
     )
 
     ax = axes[0]
-    ax.plot(time_ns, relative_waveform[0], linewidth=1.15, label="Detector 1 − pair mean")
-    ax.plot(time_ns, relative_waveform[1], linewidth=1.15, label="Detector 2 − pair mean")
-    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Detector waveform variations (common component removed)")
-    ax.set_ylabel("Relative amplitude")
+    ax.plot(time_ns, waveform[0], linewidth=1.15, label="Detector 1")
+    ax.plot(time_ns, waveform[1], linewidth=1.15, label="Detector 2")
+    ax.set_title("Detector waveforms")
+    ax.set_ylabel("Normalized amplitude")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9, ncols=2)
 
     ax = axes[1]
-    ax.plot(time_ns, waveform_difference, linewidth=1.15, label="Detector 1 − Detector 2")
+    ax.plot(time_ns, waveform_difference, linewidth=1.15,
+            label="(Detector 1 − Detector 2) − temporal mean")
     ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Detector waveform difference")
-    ax.set_ylabel("Amplitude difference")
+    ax.set_title("Detector difference (temporal mean removed)")
+    ax.set_ylabel("Centered amplitude difference")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9)
 
     ax = axes[2]
-    ax.plot(time_ns, relative_attribution[0], linewidth=1.1, label="Detector 1 − pair mean")
-    ax.plot(time_ns, relative_attribution[1], linewidth=1.1, label="Detector 2 − pair mean")
+    ax.plot(time_ns, attribution[0], linewidth=1.1, label="Detector 1")
+    ax.plot(time_ns, attribution[1], linewidth=1.1, label="Detector 2")
     ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Local TSHAP variations (common attribution component removed)")
-    ax.set_ylabel("Relative attribution (ps/sample)")
+    ax.set_title("Local TSHAP attributions (unchanged)")
+    ax.set_ylabel("Attribution (ps/sample)")
     ax.set_xlabel("Waveform time (ns)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9, ncols=2)
