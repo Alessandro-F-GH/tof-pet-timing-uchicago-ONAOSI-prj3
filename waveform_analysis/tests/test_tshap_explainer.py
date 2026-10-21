@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
-    _choose_indices, _complete, _new_explainer, _publish_directory,
+    _choose_indices, _complete, _explanation_destination, _new_explainer, _publish_directory,
 )
 
 
@@ -61,3 +61,16 @@ def test_complete_identity_and_replace(tmp_path):
         (newer / file).touch()
     _publish_directory(newer, target, overwrite=True)
     assert _complete(target, "456")
+
+
+def test_explanation_destination_is_separate_and_collision_safe(tmp_path, monkeypatch):
+    from waveform_analysis.engine import tshap_explainer
+
+    batch = tmp_path / "results" / "batch-A"
+    run = batch / "energy" / "wide" / "direct_linear_ridge"
+    run.mkdir(parents=True)
+    monkeypatch.setattr(tshap_explainer, "batch_root", lambda _: batch)
+    output_root = tmp_path / "xai"
+    path = _explanation_destination(output_root, run, "abcdef0123456789")
+    assert path == output_root / "batch-A" / "energy" / "wide" / "direct_linear_ridge" / "tshap" / "abcdef0123456789"
+    assert not path.is_relative_to(batch)
