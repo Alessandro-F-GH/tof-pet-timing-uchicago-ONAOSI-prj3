@@ -6,7 +6,7 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
-    _new_explainer, _publish_directory,
+    _new_explainer, _publish_directory, _selection_seed,
 )
 
 
@@ -91,3 +91,27 @@ def test_cleanup_removes_only_legacy_tshap_outputs(tmp_path):
 
     assert not (run / "explanations" / "tshap").exists()
     assert (unrelated / "keep.txt").read_text() == "keep"
+
+
+def test_sampling_seed_is_fixed_and_model_independent():
+    seed = 2026
+    blind_seed_1 = _selection_seed(seed, "blind_events")
+    blind_seed_2 = _selection_seed(seed, "blind_events")
+    baseline_seed_1 = _selection_seed(seed, "control_baselines")
+    baseline_seed_2 = _selection_seed(seed, "control_baselines")
+
+    assert blind_seed_1 == blind_seed_2
+    assert baseline_seed_1 == baseline_seed_2
+    assert blind_seed_1 != baseline_seed_1
+    np.testing.assert_array_equal(
+        _choose_indices(1000, 100, blind_seed_1),
+        _choose_indices(1000, 100, blind_seed_2),
+    )
+    np.testing.assert_array_equal(
+        _choose_indices(500, 8, baseline_seed_1),
+        _choose_indices(500, 8, baseline_seed_2),
+    )
+    assert not np.array_equal(
+        _choose_indices(1000, 100, _selection_seed(seed + 1, "blind_events")),
+        _choose_indices(1000, 100, blind_seed_1),
+    )
