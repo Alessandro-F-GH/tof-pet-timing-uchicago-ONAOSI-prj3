@@ -11,3 +11,6 @@ awkward>=2.6
 
 # Pin the shapelet representation used for portable XAI exports.
 aeon==1.6.0
+
+# Reference implementation of window/ROI time-series SHAP.
+tshap==0.0.1
