@@ -480,12 +480,12 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax.hlines(
         led_levels_mv[0], xmin=led_line_start_ns, xmax=led_line_end_ns,
         linestyle="--", linewidth=0.9,
-        label=f"Detector 1 LED threshold ({led_levels_mv[0]:g} mV)",
+        label=f"Detector 1 LED threshold ({led_levels_mv[0]:.1f} mV)",
     )
     ax.hlines(
         led_levels_mv[1], xmin=led_line_start_ns, xmax=led_line_end_ns,
         linestyle=":", linewidth=0.9,
-        label=f"Detector 2 LED threshold ({led_levels_mv[1]:g} mV)",
+        label=f"Detector 2 LED threshold ({led_levels_mv[1]:.1f} mV)",
     )
     ax.set_title("Detector waveforms")
     ax.set_ylabel("Amplitude (mV)")
