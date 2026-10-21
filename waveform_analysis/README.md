@@ -610,3 +610,6 @@ absolute-kernel-product attribution are invalidated automatically; the first
 rerun recomputes PPV attribution and writes method version 4 to the summary.
 Subsequent reruns can regenerate plots from the new cached values. RDST
 attributions are unaffected.
+
+
+Representative-event temporal-importance bars show the raw signed net contribution in ps after summing each 8-sample bin. Each event's importance panel now uses its own symmetric y-axis limits based on that panel's maximum absolute binned contribution, with 8% headroom; the axis no longer shares limits across low/central/high events. This improves within-event visibility but means bar heights and axis ranges must be read when comparing absolute magnitudes between different events. Color intensity remains independently normalized per event.
