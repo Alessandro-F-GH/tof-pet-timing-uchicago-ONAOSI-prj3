@@ -297,7 +297,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 6
+LOCAL_PLOT_VERSION = 7
 
 
 def _detector_difference(values):
