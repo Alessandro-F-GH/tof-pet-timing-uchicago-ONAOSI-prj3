@@ -30,7 +30,8 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 1
+TSHAP_METHOD_VERSION = 2
+GLOBAL_PLOT_VERSION = 3
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -152,13 +153,12 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
                         interpolation=True, roi=roi)
 
 
-def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_reference):
-    """Plot attribution scores and normalized control waveforms on separate axes.
+def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_waveform_mv):
+    """Plot physical waveform amplitude and unnormalized global TSHAP importance.
 
-    Model outputs are timing corrections in ps, so the TSHAP scores inherit ps.
-    The prepared waveform inputs are min-max normalized and clipped to [0, 1],
-    so their amplitude is dimensionless; keep it on a separate row rather than
-    a twin axis to prevent the waveform from visually obscuring attribution.
+    Attributions retain the model-output unit (ps) redistributed over temporal
+    samples (ps/sample). Absolute and signed summaries are averaged over the
+    explained blind events; neither importance curve is normalized.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -168,20 +168,25 @@ def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_referenc
     time_ns = time_ps / 1000.0
     mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
     mean_signed = np.asarray(mean_signed, dtype=np.float64)
-    mean_reference = np.asarray(mean_reference, dtype=np.float64)
+    mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
     expected_shape = (2, time_ps.size)
-    if any(a.shape != expected_shape for a in (mean_absolute, mean_signed, mean_reference)):
+    if any(a.shape != expected_shape for a in (
+        mean_absolute, mean_signed, mean_waveform_mv
+    )):
         raise ValueError("Global TSHAP summaries must have shape [2 detectors, samples]")
+    if not all(np.all(np.isfinite(a)) for a in (
+        mean_absolute, mean_signed, mean_waveform_mv
+    )):
+        raise ValueError("Global TSHAP plot arrays must be finite")
 
-    # One quantity per row: no twin y-axes and no attribution/waveform overlap.
     fig, axes = plt.subplots(
         3, 2, figsize=(13, 8), sharex=True, constrained_layout=True,
-        gridspec_kw={"height_ratios": [1.15, 1.15, 1.0]},
+        gridspec_kw={"height_ratios": [1.0, 1.15, 1.0]},
     )
     row_labels = (
+        ("Mean blind waveform amplitude (mV)", mean_waveform_mv, "0.35"),
         ("Mean absolute TSHAP attribution (ps/sample)", mean_absolute, "tab:blue"),
         ("Mean signed TSHAP attribution (ps/sample)", mean_signed, "tab:orange"),
-        ("Mean control baseline amplitude (0–1)", mean_reference, "0.35"),
     )
     for channel in range(2):
         axes[0, channel].set_title(f"Detector {channel + 1}")
@@ -191,14 +196,13 @@ def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_referenc
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.22, linewidth=0.6)
             ax.margins(x=0.005)
-            if row < 2:
-                ax.axhline(0.0, color="0.45", linewidth=0.75, linestyle=":")
-            else:
-                ax.set_ylim(-0.03, 1.03)
+            if row == 2:
+                ax.axhline(0.0, color="0.4", linewidth=0.75, linestyle=":")
         axes[2, channel].set_xlabel("Waveform time (ns)")
 
     fig.savefig(destination / "global_importance.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
+
 
 
 def _publish_directory(temporary, destination, overwrite):
@@ -637,33 +641,49 @@ def _complete_local(destination, fingerprint, expected_events):
 
 
 def _refresh_presentation(destination):
-    """Regenerate plots/tables from saved attributions without rerunning TSHAP."""
+    """Regenerate global summaries from saved attributions without rerunning TSHAP."""
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    if summary.get("plot_version", 0) >= 2:
+    if summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION:
         return
     with np.load(destination / "attributions.npz") as saved:
         time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
         window_maps = np.asarray(saved["window_attribution_ps"], dtype=np.float64)
-        reference = np.asarray(saved["reference_mean_normalized"], dtype=np.float64)
-        roi_maps = np.asarray(saved["roi_attribution_ps"], dtype=np.float64) if "roi_attribution_ps" in saved else None
+        mean_waveform_mv = np.asarray(saved["mean_waveform_mv"], dtype=np.float64)
+        roi_maps = (
+            np.asarray(saved["roi_attribution_ps"], dtype=np.float64)
+            if "roi_attribution_ps" in saved else None
+        )
     mean_absolute = np.mean(np.abs(window_maps), axis=0)
     mean_signed = np.mean(window_maps, axis=0)
     with (destination / "global_importance.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["channel", "time_ps", "window_mean_abs_ps_per_sample",
-                         "window_mean_signed_ps_per_sample", "roi_mean_abs_ps_per_sample",
-                         "roi_mean_signed_ps_per_sample"])
+        writer.writerow([
+            "channel", "time_ps", "window_mean_abs_ps_per_sample",
+            "window_mean_signed_ps_per_sample", "roi_mean_abs_ps_per_sample",
+            "roi_mean_signed_ps_per_sample",
+        ])
         for channel in range(2):
-            for j, t in enumerate(time_ps):
-                writer.writerow([channel + 1, float(t), float(mean_absolute[channel, j]),
-                                 float(mean_signed[channel, j]),
-                                 float(np.mean(np.abs(roi_maps[:, channel, j])) ) if roi_maps is not None else "",
-                                 float(np.mean(roi_maps[:, channel, j])) if roi_maps is not None else ""])
-    _plot_global(destination, time_ps, mean_absolute, mean_signed, reference)
-    summary["plot_version"] = 2
+            for j, time_value in enumerate(time_ps):
+                writer.writerow([
+                    channel + 1, float(time_value), float(mean_absolute[channel, j]),
+                    float(mean_signed[channel, j]),
+                    float(np.mean(np.abs(roi_maps[:, channel, j]))) if roi_maps is not None else "",
+                    float(np.mean(roi_maps[:, channel, j])) if roi_maps is not None else "",
+                ])
+    _plot_global(
+        destination, time_ps, mean_absolute, mean_signed, mean_waveform_mv
+    )
+    summary["plot_version"] = GLOBAL_PLOT_VERSION
     summary["attribution_units"] = "ps/sample (upstream window score redistributed across temporal samples)"
+    summary["input_units"] = "mV (inverse of frozen prepared waveform normalization)"
+    summary["global_importance_aggregation"] = {
+        "absolute": "mean(abs(attribution)) across explained blind events at each sample",
+        "signed": "mean(attribution) across explained blind events at each sample",
+        "normalization": "none",
+    }
     atomic_json(summary_path, summary)
+
 
 
 def _explanation_destination(output_root, run_directory):
@@ -856,11 +876,23 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     raise ValueError("Non-finite TSHAP attribution")
                 win_abs = np.mean(np.abs(window_maps), axis=0)
                 win_signed = np.mean(window_maps, axis=0)
-                payload = dict(event_id=np.asarray(blind.event_index[event_ids], np.int64),
-                               control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
-                               time_ps=time_ps, window_attribution_ps=window_maps,
-                               reference_mean_normalized=np.mean(baselines, axis=0),
-                               original_prediction_ps=original)
+                waveform_transform = getattr(
+                    blind, f"{mode_family(config['mode'])}_transform"
+                )
+                if waveform_transform is None:
+                    raise ValueError("Missing frozen waveform normalization for mV plotting")
+                waveform_mv = np.asarray(waveform_transform.inverse(waves), dtype=np.float64)
+                if waveform_mv.shape != waves.shape or not np.all(np.isfinite(waveform_mv)):
+                    raise ValueError("Inverse-transformed blind waveforms must be finite and match TSHAP inputs")
+                mean_waveform_mv = np.mean(waveform_mv, axis=0)
+                payload = dict(
+                    event_id=np.asarray(blind.event_index[event_ids], np.int64),
+                    control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
+                    time_ps=time_ps,
+                    window_attribution_ps=window_maps,
+                    mean_waveform_mv=mean_waveform_mv,
+                    original_prediction_ps=original,
+                )
                 if roi:
                     payload["roi_attribution_ps"] = roi_maps
                 np.savez_compressed(temporary / "attributions.npz", **payload)
@@ -874,16 +906,21 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                                              float(win_signed[ch, j]),
                                              float(np.mean(np.abs(roi_maps[:, ch, j]))) if roi else "",
                                              float(np.mean(roi_maps[:, ch, j])) if roi else ""])
-                _plot_global(temporary, time_ps, win_abs, win_signed, payload["reference_mean_normalized"])
+                _plot_global(temporary, time_ps, win_abs, win_signed, payload["mean_waveform_mv"])
                 atomic_json(temporary / "summary.json", {
-                    **identity, "identity_sha256": fingerprint, "plot_version": 2,
+                    **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
                     "n_explained_events": len(event_ids),
                     "n_control_baselines": len(baseline_ids), "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
                     "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
                     "interpretation": "Two-player window/complement SHAP with reference substitution; "
                                       "overlapping-window maps are not exact sample-level Shapley values.",
-                    "cohort": "blind", "input_units": "frozen normalized waveform",
+                    "cohort": "blind", "input_units": "mV (inverse of frozen prepared waveform normalization)",
+                    "global_importance_aggregation": {
+                        "absolute": "mean(abs(attribution)) across explained blind events at each sample",
+                        "signed": "mean(attribution) across explained blind events at each sample",
+                        "normalization": "none",
+                    },
                     "prediction_equivalence_max_error_ps": float(np.max(np.abs(original - replay))),
                     "reference": "https://github.com/mlgig/tshap",
                 })
