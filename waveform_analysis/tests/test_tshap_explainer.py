@@ -312,6 +312,9 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
 
     assert output.is_file()
     assert output.stat().st_size > 0
+    pdf_output = tmp_path / "global_importance.pdf"
+    assert pdf_output.is_file()
+    assert pdf_output.stat().st_size > 0
 
 
 
@@ -447,8 +450,11 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 8
+    assert summary["plot_version"] == 9
     assert summary["global_plot"]["layout"] == "two side-by-side detector waveforms above one shared histogram spanning both columns"
+    assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=0.5)")
+    assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
+    assert summary["global_plot"]["output_formats"] == ["PNG (240 dpi)", "PDF (vector)"]
     assert (tmp_path / "global_importance.png").is_file()
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
