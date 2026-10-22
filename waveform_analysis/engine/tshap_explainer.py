@@ -334,7 +334,8 @@ def _plot_global(
         shared = str(formulation).lower() == "shared"
         saliency = np.mean(mean_absolute, axis=0) if shared else mean_absolute
         # Direct models use the maximum across BOTH detectors, preserving a common
-        # quantitative colour scale while PowerNorm makes small values more visible.
+        # quantitative colour scale while PowerNorm(gamma > 1) suppresses weak
+        # attribution colours and improves separation of low and moderate importance.
         vmax = float(np.max(saliency) if shared else np.max(mean_absolute))
         if not np.isfinite(vmax) or vmax <= 0.0:
             vmax = 1.0
