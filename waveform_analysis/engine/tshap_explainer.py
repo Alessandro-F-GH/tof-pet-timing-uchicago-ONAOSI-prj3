@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 10
+GLOBAL_PLOT_VERSION = 11
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -410,7 +410,12 @@ def _plot_global(
                 ax, time_ns, mean_waveform_mv[channel], importance,
                 norm=norm, cmap=cmap, linestyle="solid",
             )
-            ax.set_title(f"Detector {channel + 1}", loc="left", fontsize=9.5, pad=2)
+            ax.text(
+                0.018, 0.965, f"Detector {channel + 1}",
+                transform=ax.transAxes, ha="left", va="top",
+                fontsize=9.0, zorder=5,
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.6},
+            )
             ax.set_ylabel("Amplitude (mV)")
             ax.set_ylim(low - y_margin, high + y_margin)
             ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
@@ -435,12 +440,18 @@ def _plot_global(
                 (ax_detector1_hist, detector_window_importance[0]),
                 (ax_detector2_hist, detector_window_importance[1]),
             )
+            # One absolute y-scale keeps detector histograms directly comparable.
+            histogram_ymax = float(np.max(detector_window_importance))
+            if not np.isfinite(histogram_ymax) or histogram_ymax <= 0.0:
+                histogram_ymax = 1.0
+            histogram_ymax *= 1.05
             for ax, values in hist_specs:
                 ax.bar(
                     bin_centers_ns, values, width=window_width_ns,
                     align="center", color=histogram_color, edgecolor="0.25",
                     linewidth=0.35, zorder=2,
                 )
+                ax.set_ylim(0.0, histogram_ymax)
                 ax.set_ylabel("Importance (ps)")
                 ax.grid(True, axis="y", alpha=0.18, linewidth=0.5)
 
@@ -983,6 +994,8 @@ def _refresh_presentation(destination):
         "onishi_interval_ns": [-1.5, 2.0],
         "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
         "histogram_colour": "#4c78a8",
+        "histogram_y_scale": "direct models use a common upper limit based on the maximum bin importance across both detectors",
+        "detector_label_placement": "inside the upper-left corner of each waveform panel",
         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
         "importance_histogram": {
             "bin_width_samples": context["window_samples"],
@@ -995,7 +1008,7 @@ def _refresh_presentation(destination):
             if context["formulation"] == "shared"
             else "detector-specific absolute-importance curves and histograms"
         ),
-        "legend": "omitted; detector identity is indicated by panel titles",
+        "legend": "omitted; detector labels are placed inside waveform panels",
     }
     atomic_json(summary_path, summary)
 
@@ -1253,6 +1266,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         "onishi_interval_ns": [-1.5, 2.0],
                         "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
                         "histogram_colour": "#4c78a8",
+        "histogram_y_scale": "direct models use a common upper limit based on the maximum bin importance across both detectors",
+        "detector_label_placement": "inside the upper-left corner of each waveform panel",
                         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
                         "importance_histogram": {
                             "bin_width_samples": int(window_samples),
@@ -1265,7 +1280,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                             if spec.estimator_formulation == "shared"
                             else "detector-specific absolute-importance curves and histograms"
                         ),
-                        "legend": "omitted; detector identity is indicated by panel titles",
+                        "legend": "omitted; detector labels are placed inside waveform panels",
                     },
                     "prediction_equivalence_max_error_ps": float(np.max(np.abs(original - replay))),
                     "reference": "https://github.com/mlgig/tshap",
