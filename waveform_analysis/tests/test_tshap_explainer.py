@@ -447,8 +447,8 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 7
-    assert summary["global_plot"]["layout"] == "two detector waveform panels plus one shared importance histogram"
+    assert summary["plot_version"] == 8
+    assert summary["global_plot"]["layout"] == "two side-by-side detector waveforms above one shared histogram spanning both columns"
     assert (tmp_path / "global_importance.png").is_file()
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
