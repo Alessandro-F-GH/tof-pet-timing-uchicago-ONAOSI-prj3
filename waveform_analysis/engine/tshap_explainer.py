@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 5
+GLOBAL_PLOT_VERSION = 6
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -199,6 +199,12 @@ def _global_plot_context(destination, summary):
         "shared" if model_name.lower().startswith("shared_") else "direct"
     )).lower()
     board_name = str(summary.get("board") or _find_board_label(destination))
+    settings = summary.get("settings", {})
+    window_samples = int(
+        summary.get("tshap_window_samples", settings.get("window_samples", 1))
+    )
+    if window_samples < 1:
+        window_samples = 1
     return {
         "model_name": model_name,
         "formulation": formulation,
@@ -206,6 +212,7 @@ def _global_plot_context(destination, summary):
         "window_name": window_name,
         "board_name": board_name,
         "n_events": int(summary.get("n_explained_events", 0)),
+        "window_samples": window_samples,
     }
 
 
@@ -279,13 +286,14 @@ def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, line
 def _plot_global(
     destination, time_ps, mean_absolute, mean_waveform_mv, *,
     model_name, formulation, mode, window_name, board_name, n_events,
+    window_samples,
 ):
-    """Plot mean physical waveforms coloured by unnormalized absolute TSHAP saliency.
+    """Plot saliency-coloured physical waveforms and window-width importance bars.
 
-    Direct models use a detector-specific saliency curve. Shared models pool the
-    absolute attributions across events and detectors, then use that same curve
-    to colour both detector waveforms. Stored attribution values are never scaled;
-    the colourbar maps their original ps/sample values to the colormap.
+    Absolute sample attributions colour the waveform in ps/sample. The lower
+    panels aggregate those saved sample attributions over non-overlapping
+    window-length bins; bar heights are summed absolute importance in ps.
+    No TSHAP inference is performed by this plotting function.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -302,8 +310,15 @@ def _plot_global(
     expected_shape = (2, time_ps.size)
     if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
         raise ValueError("Global TSHAP time grid must contain at least two finite samples")
-    if np.any(np.diff(time_ps) <= 0):
+    time_steps = np.diff(time_ps)
+    if np.any(time_steps <= 0):
         raise ValueError("Global TSHAP time grid must be strictly increasing")
+    dt_ps = float(np.median(time_steps))
+    if not np.allclose(time_steps, dt_ps, rtol=1e-5, atol=1e-3):
+        raise ValueError("Global TSHAP histogram requires a uniformly sampled time grid")
+    if isinstance(window_samples, bool) or int(window_samples) < 1:
+        raise ValueError("window_samples must be an integer >= 1")
+    window_samples = int(window_samples)
     if mean_absolute.shape != expected_shape or mean_waveform_mv.shape != expected_shape:
         raise ValueError("Global TSHAP arrays must have shape [2 detectors, samples]")
     if not np.all(np.isfinite(mean_absolute)) or np.any(mean_absolute < 0):
@@ -312,10 +327,7 @@ def _plot_global(
         raise ValueError("Global physical waveforms must be finite")
 
     shared = str(formulation).lower() == "shared"
-    saliency = (
-        np.mean(mean_absolute, axis=0)
-        if shared else mean_absolute
-    )
+    saliency = np.mean(mean_absolute, axis=0) if shared else mean_absolute
     vmax = float(np.max(saliency))
     if not np.isfinite(vmax) or vmax <= 0.0:
         vmax = 1.0
@@ -326,50 +338,73 @@ def _plot_global(
         N=256,
     )
 
-    fig, ax = plt.subplots(figsize=(12.5, 5.8), constrained_layout=True)
-    ax.axvspan(
-        -1.5, 2.0, color="0.75", alpha=0.28, linewidth=0, zorder=0,
+    mode_lower = str(mode).lower()
+    task = "Energy" if mode_lower.startswith("energy") else (
+        "Timing" if mode_lower.startswith("timing") else str(mode or "Unknown task")
     )
+    title_model = _format_global_model_name(model_name)
+
+    # Bar heights are sums of mean absolute sample attributions within
+    # non-overlapping window-length bins (ps); bar widths equal the TSHAP window.
+    window_width_ns = window_samples * dt_ps / 1000.0
+    bin_starts = list(range(0, time_ps.size, window_samples))
+    bin_centers_ns = np.asarray([
+        np.mean(time_ns[start:min(start + window_samples, time_ps.size)])
+        for start in bin_starts
+    ], dtype=np.float64)
+    detector_window_importance = np.asarray([
+        [
+            np.sum(mean_absolute[channel, start:min(start + window_samples, time_ps.size)])
+            for start in bin_starts
+        ]
+        for channel in range(2)
+    ], dtype=np.float64)
+    shared_window_importance = np.asarray([
+        np.sum(saliency[start:min(start + window_samples, time_ps.size)])
+        for start in bin_starts
+    ], dtype=np.float64)
+
+    if shared:
+        fig, axes = plt.subplots(
+            2, 1, figsize=(12.5, 7.4), sharex=True, constrained_layout=True,
+            gridspec_kw={"height_ratios": [3.0, 1.25]},
+        )
+        ax_signal, ax_shared_hist = axes
+        hist_axes = [ax_shared_hist]
+    else:
+        fig, axes = plt.subplots(
+            3, 1, figsize=(12.5, 8.8), sharex=True, constrained_layout=True,
+            gridspec_kw={"height_ratios": [3.0, 1.2, 1.2]},
+        )
+        ax_signal, ax_detector1_hist, ax_detector2_hist = axes
+        hist_axes = [ax_detector1_hist, ax_detector2_hist]
+
+    fig.suptitle(f"Global TSHAP Saliency — {title_model}", fontsize=14)
+
+    for ax in [ax_signal, *hist_axes]:
+        ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.28, linewidth=0, zorder=0)
 
     line_styles = ("solid", "dashed")
     for channel in range(2):
         importance = saliency if shared else saliency[channel]
-        # Keep the physical waveform silhouette legible beneath the saliency colours.
-        ax.plot(
-            time_ns,
-            mean_waveform_mv[channel],
-            color="0.78",
-            linewidth=3.8,
-            linestyle=line_styles[channel],
-            zorder=2,
+        ax_signal.plot(
+            time_ns, mean_waveform_mv[channel],
+            color="0.78", linewidth=3.8, linestyle=line_styles[channel], zorder=2,
         )
         _add_saliency_line(
-            ax, time_ns, mean_waveform_mv[channel], importance,
+            ax_signal, time_ns, mean_waveform_mv[channel], importance,
             norm=norm, cmap=cmap, linestyle=line_styles[channel],
         )
 
-    ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
     low = float(np.min(mean_waveform_mv))
     high = float(np.max(mean_waveform_mv))
     span = high - low
     margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
-    ax.set_ylim(low - margin, high + margin)
-    ax.set_xlabel("Waveform time (ns)")
-    ax.set_ylabel("Mean waveform amplitude (mV)")
-    ax.set_axisbelow(True)
-    ax.grid(True, alpha=0.22, linewidth=0.6)
-
-    mode_lower = str(mode).lower()
-    task = "Timing" if mode_lower.startswith("timing") else (
-        "Energy" if mode_lower.startswith("energy") else str(mode or "Unknown task")
-    )
-    title_model = _format_global_model_name(model_name)
-    fig.suptitle(f"Global TSHAP Saliency — {title_model}", fontsize=14, y=1.02)
-    ax.set_title(
-        f"{board_name} | {task} | {window_name.title()} window | "
-        f"{int(n_events)} blind events",
-        fontsize=10, pad=10,
-    )
+    ax_signal.set_ylim(low - margin, high + margin)
+    ax_signal.set_xlim(float(time_ns[0]), float(time_ns[-1]))
+    ax_signal.set_ylabel("Mean waveform amplitude (mV)")
+    ax_signal.set_axisbelow(True)
+    ax_signal.grid(True, alpha=0.22, linewidth=0.6)
 
     legend_handles = [
         Line2D([0], [0], color="0.25", linewidth=2.0, linestyle="solid", label="Detector 1"),
@@ -379,10 +414,36 @@ def _plot_global(
             label="Onishi interval (−1.5 to 2 ns)",
         ),
     ]
-    ax.legend(handles=legend_handles, loc="best", frameon=True, framealpha=0.9, fontsize=9)
+    legend_loc = "upper left" if task == "Energy" else "upper right"
+    ax_signal.legend(
+        handles=legend_handles, loc=legend_loc, frameon=True, framealpha=0.9, fontsize=9,
+    )
 
+    if shared:
+        ax_shared_hist.bar(
+            bin_centers_ns, shared_window_importance, width=window_width_ns,
+            align="center", color="#4c78a8", edgecolor="0.25", linewidth=0.4,
+            zorder=2,
+        )
+        ax_shared_hist.set_ylabel("Shared absolute\nimportance per window (ps)")
+        ax_shared_hist.grid(True, axis="y", alpha=0.22, linewidth=0.6)
+    else:
+        hist_specs = (
+            (ax_detector1_hist, detector_window_importance[0], "#4c78a8", "Detector 1\nabsolute importance (ps)"),
+            (ax_detector2_hist, detector_window_importance[1], "#e28a3b", "Detector 2\nabsolute importance (ps)"),
+        )
+        for ax, values, color, ylabel in hist_specs:
+            ax.bar(
+                bin_centers_ns, values, width=window_width_ns,
+                align="center", color=color, edgecolor="0.25", linewidth=0.4,
+                zorder=2,
+            )
+            ax.set_ylabel(ylabel)
+            ax.grid(True, axis="y", alpha=0.22, linewidth=0.6)
+
+    hist_axes[-1].set_xlabel("Waveform time (ns)")
     colorbar = fig.colorbar(
-        ScalarMappable(norm=norm, cmap=cmap), ax=ax, pad=0.025, fraction=0.045,
+        ScalarMappable(norm=norm, cmap=cmap), ax=ax_signal, pad=0.025, fraction=0.045,
     )
     colorbar.set_label(
         "Shared mean absolute TSHAP importance (ps/sample)"
@@ -865,6 +926,7 @@ def _refresh_presentation(destination):
         window_name=context["window_name"],
         board_name=context["board_name"],
         n_events=context["n_events"] or len(window_maps),
+        window_samples=context["window_samples"],
     )
 
     summary["plot_version"] = GLOBAL_PLOT_VERSION
@@ -879,16 +941,29 @@ def _refresh_presentation(destination):
         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
         "normalization": "none; colour encodes original ps/sample values",
     }
+    summary["tshap_window_samples"] = context["window_samples"]
     summary["global_plot"] = {
-        "style": "mean physical waveform coloured by absolute TSHAP saliency",
-        "layout": "single panel",
+        "style": "mean physical waveform coloured by absolute TSHAP saliency with window-width importance bars",
+        "layout": (
+            "signal plus one shared importance histogram"
+            if context["formulation"] == "shared"
+            else "signal plus separate detector importance histograms"
+        ),
         "onishi_interval_ns": [-1.5, 2.0],
         "importance_colour_scale": "linear, displayed in original ps/sample units",
+        "importance_histogram": {
+            "bin_width_samples": context["window_samples"],
+            "bar_width_ns": float(context["window_samples"] * np.median(np.diff(time_ps)) / 1000.0),
+            "bar_height": "sum of mean absolute sample attributions within each non-overlapping window-length bin",
+            "unit": "ps",
+        },
         "detector_identity": (
-            "shared absolute-importance curve for both signals"
+            "shared absolute-importance curve and pooled histogram for both signals"
             if context["formulation"] == "shared"
-            else "detector-specific absolute-importance curves"
+            else "detector-specific absolute-importance curves and histograms"
         ),
+        "subtitle": "removed",
+        "legend_location": "upper left for energy; upper right for timing",
     }
     atomic_json(summary_path, summary)
 
@@ -1117,10 +1192,13 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     window_name=window_name,
                     board_name=board_name,
                     n_events=len(event_ids),
+                    window_samples=window_samples,
                 )
                 atomic_json(temporary / "summary.json", {
                     **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name, "window_name": window_name,
+                    "tshap_window_samples": int(window_samples),
+                    "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
                     "n_control_baselines": len(baseline_ids), "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
@@ -1134,15 +1212,27 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         "normalization": "none; colour encodes original ps/sample values",
                     },
                     "global_plot": {
-                        "style": "mean physical waveform coloured by absolute TSHAP saliency",
-                        "layout": "single panel",
+                        "style": "mean physical waveform coloured by absolute TSHAP saliency with window-width importance bars",
+                        "layout": (
+                            "signal plus one shared importance histogram"
+                            if spec.estimator_formulation == "shared"
+                            else "signal plus separate detector importance histograms"
+                        ),
                         "onishi_interval_ns": [-1.5, 2.0],
                         "importance_colour_scale": "linear, displayed in original ps/sample units",
+                        "importance_histogram": {
+                            "bin_width_samples": int(window_samples),
+                            "bar_width_ns": float(window_samples * np.median(np.diff(time_ps)) / 1000.0),
+                            "bar_height": "sum of mean absolute sample attributions within each non-overlapping window-length bin",
+                            "unit": "ps",
+                        },
                         "detector_identity": (
-                            "shared absolute-importance curve for both signals"
+                            "shared absolute-importance curve and pooled histogram for both signals"
                             if spec.estimator_formulation == "shared"
-                            else "detector-specific absolute-importance curves"
+                            else "detector-specific absolute-importance curves and histograms"
                         ),
+                        "subtitle": "removed",
+                        "legend_location": "upper left for energy; upper right for timing",
                     },
                     "prediction_equivalence_max_error_ps": float(np.max(np.abs(original - replay))),
                     "reference": "https://github.com/mlgig/tshap",
