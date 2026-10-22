@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 8
+GLOBAL_PLOT_VERSION = 9
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -288,144 +288,181 @@ def _plot_global(
     model_name, formulation, mode, window_name, board_name, n_events,
     window_samples,
 ):
-    """Plot detector waveforms and their corresponding TSHAP importance histograms."""
+    """Plot physical waveforms with common-scale TSHAP saliency and aligned histograms."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap, Normalize
+    from matplotlib.colors import LinearSegmentedColormap, PowerNorm
     from matplotlib.cm import ScalarMappable
 
-    time_ps = np.asarray(time_ps, dtype=np.float64)
-    time_ns = time_ps / 1000.0
-    mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
-    mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
-    expected_shape = (2, time_ps.size)
-    if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
-        raise ValueError("Global TSHAP time grid must contain at least two finite samples")
-    time_steps = np.diff(time_ps)
-    if np.any(time_steps <= 0):
-        raise ValueError("Global TSHAP time grid must be strictly increasing")
-    dt_ps = float(np.median(time_steps))
-    if not np.allclose(time_steps, dt_ps, rtol=1e-5, atol=1e-3):
-        raise ValueError("Global TSHAP histogram requires a uniformly sampled time grid")
-    if isinstance(window_samples, bool) or int(window_samples) < 1:
-        raise ValueError("window_samples must be an integer >= 1")
-    window_samples = int(window_samples)
-    if mean_absolute.shape != expected_shape or mean_waveform_mv.shape != expected_shape:
-        raise ValueError("Global TSHAP arrays must have shape [2 detectors, samples]")
-    if not np.all(np.isfinite(mean_absolute)) or np.any(mean_absolute < 0):
-        raise ValueError("Global absolute importance must be finite and non-negative")
-    if not np.all(np.isfinite(mean_waveform_mv)):
-        raise ValueError("Global physical waveforms must be finite")
+    with plt.rc_context({
+        "font.family": "serif",
+        "font.size": 8.5,
+        "axes.labelsize": 9,
+        "axes.titlesize": 9.5,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "axes.linewidth": 0.7,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }):
+        time_ps = np.asarray(time_ps, dtype=np.float64)
+        time_ns = time_ps / 1000.0
+        mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
+        mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
+        expected_shape = (2, time_ps.size)
+        if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
+            raise ValueError("Global TSHAP time grid must contain at least two finite samples")
+        time_steps = np.diff(time_ps)
+        if np.any(time_steps <= 0):
+            raise ValueError("Global TSHAP time grid must be strictly increasing")
+        dt_ps = float(np.median(time_steps))
+        if not np.allclose(time_steps, dt_ps, rtol=1e-5, atol=1e-3):
+            raise ValueError("Global TSHAP histogram requires a uniformly sampled time grid")
+        if isinstance(window_samples, bool) or int(window_samples) < 1:
+            raise ValueError("window_samples must be an integer >= 1")
+        window_samples = int(window_samples)
+        if mean_absolute.shape != expected_shape or mean_waveform_mv.shape != expected_shape:
+            raise ValueError("Global TSHAP arrays must have shape [2 detectors, samples]")
+        if not np.all(np.isfinite(mean_absolute)) or np.any(mean_absolute < 0):
+            raise ValueError("Global absolute importance must be finite and non-negative")
+        if not np.all(np.isfinite(mean_waveform_mv)):
+            raise ValueError("Global physical waveforms must be finite")
 
-    shared = str(formulation).lower() == "shared"
-    saliency = np.mean(mean_absolute, axis=0) if shared else mean_absolute
-    vmax = float(np.max(saliency))
-    if not np.isfinite(vmax) or vmax <= 0.0:
-        vmax = 1.0
-    norm = Normalize(vmin=0.0, vmax=vmax)
-    cmap = LinearSegmentedColormap.from_list(
-        "neutral_to_saliency",
-        ["#b8b8b8", "#7299b8", "#2867a8", "#f2d94e"],
-        N=256,
-    )
+        shared = str(formulation).lower() == "shared"
+        saliency = np.mean(mean_absolute, axis=0) if shared else mean_absolute
+        # Direct models use the maximum across BOTH detectors, preserving a common
+        # quantitative colour scale while PowerNorm makes small values more visible.
+        vmax = float(np.max(mean_absolute))
+        if not np.isfinite(vmax) or vmax <= 0.0:
+            vmax = 1.0
+        norm = PowerNorm(gamma=0.5, vmin=0.0, vmax=vmax, clip=True)
+        cmap = LinearSegmentedColormap.from_list(
+            "neutral_to_saliency",
+            [
+                (0.00, "#b8b8b8"),
+                (0.06, "#4c78a8"),
+                (0.52, "#1f5f99"),
+                (1.00, "#f2d94e"),
+            ],
+            N=256,
+        )
 
-    window_width_ns = window_samples * dt_ps / 1000.0
-    bin_starts = list(range(0, time_ps.size, window_samples))
-    bin_centers_ns = np.asarray([
-        np.mean(time_ns[start:min(start + window_samples, time_ps.size)])
-        for start in bin_starts
-    ], dtype=np.float64)
-    detector_window_importance = np.asarray([
-        [
-            np.sum(mean_absolute[channel, start:min(start + window_samples, time_ps.size)])
+        window_width_ns = window_samples * dt_ps / 1000.0
+        bin_starts = list(range(0, time_ps.size, window_samples))
+        bin_centers_ns = np.asarray([
+            np.mean(time_ns[start:min(start + window_samples, time_ps.size)])
             for start in bin_starts
-        ]
-        for channel in range(2)
-    ], dtype=np.float64)
-    shared_window_importance = np.asarray([
-        np.sum(saliency[start:min(start + window_samples, time_ps.size)])
-        for start in bin_starts
-    ], dtype=np.float64)
+        ], dtype=np.float64)
+        detector_window_importance = np.asarray([
+            [
+                np.sum(mean_absolute[channel, start:min(start + window_samples, time_ps.size)])
+                for start in bin_starts
+            ]
+            for channel in range(2)
+        ], dtype=np.float64)
+        shared_window_importance = np.asarray([
+            np.sum(saliency[start:min(start + window_samples, time_ps.size)])
+            for start in bin_starts
+        ], dtype=np.float64)
 
-    fig = plt.figure(figsize=(13.0, 8.0 if shared else 8.6), constrained_layout=True)
-    gs = fig.add_gridspec(
-        2, 2,
-        height_ratios=[2.15, 1.0],
-        hspace=0.025,
-        wspace=0.12,
-    )
-    ax_signal1 = fig.add_subplot(gs[0, 0])
-    ax_signal2 = fig.add_subplot(gs[0, 1])
-    if shared:
-        ax_shared_hist = fig.add_subplot(gs[1, :], sharex=ax_signal1)
-        hist_axes = [ax_shared_hist]
-    else:
-        ax_detector1_hist = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
-        ax_detector2_hist = fig.add_subplot(gs[1, 1], sharex=ax_signal2)
-        hist_axes = [ax_detector1_hist, ax_detector2_hist]
-    signal_axes = [ax_signal1, ax_signal2]
-
-    fig.suptitle(f"Global TSHAP Saliency — {_format_global_model_name(model_name)}", fontsize=14)
-
-    for ax in [*signal_axes, *hist_axes]:
-        ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.28, linewidth=0, zorder=0)
-
-    low = float(np.min(mean_waveform_mv))
-    high = float(np.max(mean_waveform_mv))
-    span = high - low
-    y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
-    for channel, ax in enumerate(signal_axes):
-        importance = saliency if shared else saliency[channel]
-        ax.plot(
-            time_ns, mean_waveform_mv[channel],
-            color="0.78", linewidth=3.8, linestyle="solid", zorder=2,
+        fig = plt.figure(
+            figsize=(13.2, 5.9 if shared else 6.3),
+            constrained_layout=True,
         )
-        _add_saliency_line(
-            ax, time_ns, mean_waveform_mv[channel], importance,
-            norm=norm, cmap=cmap, linestyle="solid",
+        gs = fig.add_gridspec(
+            2, 2,
+            height_ratios=[2.35, 1.0],
+            hspace=0.025,
+            wspace=0.12,
         )
-        ax.set_title(f"Detector {channel + 1}", loc="left", fontsize=10, pad=3)
-        ax.set_ylabel("Amplitude (mV)")
-        ax.set_ylim(low - y_margin, high + y_margin)
-        ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
-        ax.set_axisbelow(True)
-        ax.grid(True, alpha=0.22, linewidth=0.6)
-        ax.tick_params(axis="x", labelbottom=False)
-        ax.spines["bottom"].set_linewidth(0.8)
+        ax_signal1 = fig.add_subplot(gs[0, 0])
+        ax_signal2 = fig.add_subplot(gs[0, 1])
+        if shared:
+            ax_shared_hist = fig.add_subplot(gs[1, :], sharex=ax_signal1)
+            hist_axes = [ax_shared_hist]
+        else:
+            ax_detector1_hist = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
+            ax_detector2_hist = fig.add_subplot(gs[1, 1], sharex=ax_signal2)
+            hist_axes = [ax_detector1_hist, ax_detector2_hist]
+        signal_axes = [ax_signal1, ax_signal2]
 
-    if shared:
-        ax_shared_hist.bar(
-            bin_centers_ns, shared_window_importance, width=window_width_ns,
-            align="center", color="#4c78a8", edgecolor="0.25", linewidth=0.4, zorder=2,
-        )
-        ax_shared_hist.set_ylabel("Importance (ps)")
-        ax_shared_hist.set_title("Shared importance", loc="left", fontsize=10, pad=3)
-        ax_shared_hist.grid(True, axis="y", alpha=0.22, linewidth=0.6)
-    else:
-        hist_specs = (
-            (ax_detector1_hist, detector_window_importance[0], "#4c78a8"),
-            (ax_detector2_hist, detector_window_importance[1], "#e28a3b"),
-        )
-        for ax, values, color in hist_specs:
-            ax.bar(
-                bin_centers_ns, values, width=window_width_ns,
-                align="center", color=color, edgecolor="0.25", linewidth=0.4, zorder=2,
+        title = f"Global TSHAP Saliency — {_format_global_model_name(model_name)}"
+        fig.suptitle(title, fontsize=12.5, y=1.015)
+
+        for ax in [*signal_axes, *hist_axes]:
+            ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.25, linewidth=0, zorder=0)
+
+        low = float(np.min(mean_waveform_mv))
+        high = float(np.max(mean_waveform_mv))
+        span = high - low
+        y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
+        for channel, ax in enumerate(signal_axes):
+            importance = saliency if shared else saliency[channel]
+            ax.plot(
+                time_ns, mean_waveform_mv[channel],
+                color="#d8dadd", linewidth=4.0, linestyle="solid", zorder=2,
             )
-            ax.set_ylabel("Importance (ps)")
-            ax.grid(True, axis="y", alpha=0.22, linewidth=0.6)
+            _add_saliency_line(
+                ax, time_ns, mean_waveform_mv[channel], importance,
+                norm=norm, cmap=cmap, linestyle="solid",
+            )
+            ax.set_title(f"Detector {channel + 1}", loc="left", fontsize=9.5, pad=2)
+            ax.set_ylabel("Amplitude (mV)")
+            ax.set_ylim(low - y_margin, high + y_margin)
+            ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
+            ax.set_axisbelow(True)
+            ax.grid(True, alpha=0.18, linewidth=0.5)
+            ax.tick_params(axis="x", labelbottom=False, length=3, width=0.6)
+            for spine in ax.spines.values():
+                spine.set_linewidth(0.7)
 
-    for ax in hist_axes:
-        ax.set_xlabel("Waveform time (ns)")
-        ax.spines["top"].set_linewidth(0.8)
+        histogram_color = "#4c78a8"
+        if shared:
+            ax_shared_hist.bar(
+                bin_centers_ns, shared_window_importance, width=window_width_ns,
+                align="center", color=histogram_color, edgecolor="0.25",
+                linewidth=0.35, zorder=2,
+            )
+            ax_shared_hist.set_ylabel("Importance (ps)")
+            ax_shared_hist.set_title("Shared importance", loc="left", fontsize=9.5, pad=2)
+            ax_shared_hist.grid(True, axis="y", alpha=0.18, linewidth=0.5)
+        else:
+            hist_specs = (
+                (ax_detector1_hist, detector_window_importance[0]),
+                (ax_detector2_hist, detector_window_importance[1]),
+            )
+            for ax, values in hist_specs:
+                ax.bar(
+                    bin_centers_ns, values, width=window_width_ns,
+                    align="center", color=histogram_color, edgecolor="0.25",
+                    linewidth=0.35, zorder=2,
+                )
+                ax.set_ylabel("Importance (ps)")
+                ax.grid(True, axis="y", alpha=0.18, linewidth=0.5)
 
-    colorbar = fig.colorbar(
-        ScalarMappable(norm=norm, cmap=cmap),
-        ax=signal_axes, pad=0.015, fraction=0.025, location="right",
-    )
-    colorbar.set_label("Absolute TSHAP importance (ps/sample)")
-    fig.savefig(Path(destination) / "global_importance.png", dpi=200, bbox_inches="tight")
-    plt.close(fig)
+        for ax in hist_axes:
+            ax.set_xlabel("Waveform time (ns)")
+            ax.tick_params(axis="both", length=3, width=0.6)
+            for spine in ax.spines.values():
+                spine.set_linewidth(0.7)
+
+        colorbar = fig.colorbar(
+            ScalarMappable(norm=norm, cmap=cmap),
+            ax=signal_axes, pad=0.015, fraction=0.025, location="right",
+        )
+        colorbar.set_label("Absolute TSHAP importance (ps/sample)", fontsize=9)
+        colorbar.ax.tick_params(labelsize=8, width=0.6, length=3)
+
+        destination = Path(destination)
+        fig.savefig(destination / "global_importance.png", dpi=240, bbox_inches="tight")
+        fig.savefig(
+            destination / "global_importance.pdf",
+            bbox_inches="tight",
+            metadata={"Title": title, "Creator": "Matplotlib"},
+        )
+        plt.close(fig)
+
 
 
 
@@ -869,7 +906,13 @@ def _refresh_presentation(destination):
     destination = Path(destination)
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    if summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION:
+    current_plot_files = (
+        "global_importance.png", "global_importance.pdf", "global_importance.csv"
+    )
+    if (
+        summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION
+        and all((destination / name).is_file() for name in current_plot_files)
+    ):
         return
 
     with np.load(destination / "attributions.npz") as saved:
@@ -914,7 +957,7 @@ def _refresh_presentation(destination):
     summary["global_importance_aggregation"] = {
         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-        "normalization": "none; colour encodes original ps/sample values",
+        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=0.5) scale and the colourbar retains original ps/sample units",
     }
     summary["tshap_window_samples"] = context["window_samples"]
     summary["global_plot"] = {
@@ -925,7 +968,9 @@ def _refresh_presentation(destination):
             else "two-column grid with each detector waveform directly above its importance histogram"
         ),
         "onishi_interval_ns": [-1.5, 2.0],
-        "importance_colour_scale": "linear, displayed in original ps/sample units",
+        "importance_colour_scale": "shared PowerNorm(gamma=0.5) across both detectors; colourbar ticks in original ps/sample units",
+        "histogram_colour": "#4c78a8",
+        "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
         "importance_histogram": {
             "bin_width_samples": context["window_samples"],
             "bar_width_ns": float(context["window_samples"] * np.median(np.diff(time_ps)) / 1000.0),
@@ -1183,7 +1228,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     "global_importance_aggregation": {
                         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
                         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-                        "normalization": "none; colour encodes original ps/sample values",
+                        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=0.5) scale and the colourbar retains original ps/sample units",
                     },
                     "global_plot": {
                         "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
@@ -1193,7 +1238,9 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                             else "two-column grid with each detector waveform directly above its importance histogram"
                         ),
                         "onishi_interval_ns": [-1.5, 2.0],
-                        "importance_colour_scale": "linear, displayed in original ps/sample units",
+                        "importance_colour_scale": "shared PowerNorm(gamma=0.5) across both detectors; colourbar ticks in original ps/sample units",
+                        "histogram_colour": "#4c78a8",
+                        "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
                         "importance_histogram": {
                             "bin_width_samples": int(window_samples),
                             "bar_width_ns": float(window_samples * np.median(np.diff(time_ps)) / 1000.0),
