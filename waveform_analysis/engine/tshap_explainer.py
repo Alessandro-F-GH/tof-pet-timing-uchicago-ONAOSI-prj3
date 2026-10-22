@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 11
+GLOBAL_PLOT_VERSION = 12
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -410,9 +410,12 @@ def _plot_global(
                 ax, time_ns, mean_waveform_mv[channel], importance,
                 norm=norm, cmap=cmap, linestyle="solid",
             )
+            timing_channel = "timing" in str(mode).lower()
+            label_x = 0.982 if timing_channel else 0.018
+            label_ha = "right" if timing_channel else "left"
             ax.text(
-                0.018, 0.965, f"Detector {channel + 1}",
-                transform=ax.transAxes, ha="left", va="top",
+                label_x, 0.965, f"Detector {channel + 1}",
+                transform=ax.transAxes, ha=label_ha, va="top",
                 fontsize=9.0, zorder=5,
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.6},
             )
@@ -995,7 +998,7 @@ def _refresh_presentation(destination):
         "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
         "histogram_colour": "#4c78a8",
         "histogram_y_scale": "direct models use a common upper limit based on the maximum bin importance across both detectors",
-        "detector_label_placement": "inside the upper-left corner of each waveform panel",
+        "detector_label_placement": "inside upper-right corner for timing channels and upper-left corner otherwise",
         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
         "importance_histogram": {
             "bin_width_samples": context["window_samples"],
@@ -1008,7 +1011,7 @@ def _refresh_presentation(destination):
             if context["formulation"] == "shared"
             else "detector-specific absolute-importance curves and histograms"
         ),
-        "legend": "omitted; detector labels are placed inside waveform panels",
+        "legend": "omitted; detector labels are placed inside waveform panels according to channel type",
     }
     atomic_json(summary_path, summary)
 
