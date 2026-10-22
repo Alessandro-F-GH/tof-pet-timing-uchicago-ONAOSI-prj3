@@ -56,7 +56,7 @@ def test_complete_identity_and_replace(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     (scratch / "summary.json").write_text(json.dumps({"identity_sha256": "123"}))
-    for file in ("attributions.npz", "global_importance.csv", "global_importance.png"):
+    for file in ("attributions.npz", "global_importance.csv", "global_importance.png", "global_importance.pdf"):
         (scratch / file).touch()
     _publish_directory(scratch, target, overwrite=False)
     assert _complete(target, "123")
@@ -64,7 +64,7 @@ def test_complete_identity_and_replace(tmp_path):
     newer = tmp_path / "replacement"
     newer.mkdir()
     (newer / "summary.json").write_text(json.dumps({"identity_sha256": "456"}))
-    for file in ("attributions.npz", "global_importance.csv", "global_importance.png"):
+    for file in ("attributions.npz", "global_importance.csv", "global_importance.png", "global_importance.pdf"):
         (newer / file).touch()
     _publish_directory(newer, target, overwrite=True)
     assert _complete(target, "456")
