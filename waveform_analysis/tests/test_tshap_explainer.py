@@ -9,8 +9,9 @@ from waveform_analysis.engine.tshap_explainer import (
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
-    _is_excluded_tshap_window, _new_explainer, _plot_local_event, _publish_directory,
-    _select_local_events, _selection_seed,
+    _is_excluded_tshap_window, _new_explainer, _plot_global, _plot_local_event,
+    _publish_directory, _refresh_presentation, _select_local_events,
+    _selection_seed, _write_global_importance_csv,
 )
 
 
@@ -369,3 +370,88 @@ def test_tshap_excludes_onishi_window(window_name):
 @pytest.mark.parametrize("window_name", ["wide", "default", ""])
 def test_tshap_keeps_non_onishi_windows(window_name):
     assert not _is_excluded_tshap_window({"window_name": window_name})
+
+
+
+@pytest.mark.parametrize("formulation", ["direct", "shared"])
+def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_path, formulation):
+    pytest.importorskip("matplotlib")
+    time_ps = np.linspace(-2000.0, 60000.0, 125, dtype=np.float64)
+    waveform_mv = np.vstack([
+        20.0 * np.exp(-((time_ps / 1000.0 - 2.0) / 3.0) ** 2),
+        18.0 * np.exp(-((time_ps / 1000.0 - 2.2) / 3.5) ** 2),
+    ])
+    importance = np.vstack([
+        np.linspace(0.0, 2.0, time_ps.size),
+        np.linspace(1.0, 3.0, time_ps.size),
+    ])
+    _plot_global(
+        tmp_path, time_ps, importance, waveform_mv,
+        model_name="direct_multirocket" if formulation == "direct" else "shared_linear_ridge",
+        formulation=formulation,
+        mode="timing_to_timing",
+        window_name="wide",
+        board_name="FBK",
+        n_events=64,
+    )
+    output = tmp_path / "global_importance.png"
+    assert output.is_file()
+    assert output.stat().st_size > 0
+
+
+def test_shared_global_importance_csv_pools_detector_curves(tmp_path):
+    time_ps = np.asarray([-1000.0, 0.0, 1000.0])
+    importance = np.asarray([
+        [1.0, 2.0, 3.0],
+        [5.0, 6.0, 7.0],
+    ])
+    _write_global_importance_csv(tmp_path, time_ps, importance, "shared")
+    import csv
+    with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 3
+    assert {row["detector_or_shared"] for row in rows} == {"shared"}
+    np.testing.assert_allclose(
+        [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
+        [3.0, 4.0, 5.0],
+    )
+
+
+def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
+    pytest.importorskip("matplotlib")
+    time_ps = np.asarray([-2000.0, -1000.0, 0.0, 1000.0, 2000.0])
+    maps = np.asarray([
+        [[1.0, -2.0, 3.0, -4.0, 5.0], [2.0, -3.0, 4.0, -5.0, 6.0]],
+        [[-3.0, 4.0, -5.0, 6.0, -7.0], [-4.0, 5.0, -6.0, 7.0, -8.0]],
+    ])
+    waveform_mv = np.asarray([
+        [-2.0, 1.0, 8.0, 3.0, -1.0],
+        [-1.0, 2.0, 7.0, 2.0, -2.0],
+    ])
+    np.savez_compressed(
+        tmp_path / "attributions.npz",
+        time_ps=time_ps,
+        window_attribution_ps=maps,
+        mean_waveform_mv=waveform_mv,
+    )
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "plot_version": 3,
+        "model": "shared_linear_ridge",
+        "mode": "timing_to_timing",
+        "window_name": "wide",
+        "board": "UC",
+        "formulation": "shared",
+        "n_explained_events": 2,
+    }), encoding="utf-8")
+    _refresh_presentation(tmp_path)
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["plot_version"] == 4
+    assert summary["global_plot"]["layout"] == "single panel"
+    assert (tmp_path / "global_importance.png").is_file()
+    with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == len(time_ps)
+    np.testing.assert_allclose(
+        [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
+        np.mean(np.mean(np.abs(maps), axis=0), axis=0),
+    )
