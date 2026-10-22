@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 12
+GLOBAL_PLOT_VERSION = 13
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -369,25 +369,36 @@ def _plot_global(
             for start in bin_starts
         ], dtype=np.float64)
 
-        fig = plt.figure(
-            figsize=(13.2, 5.9 if shared else 6.3),
-            constrained_layout=True,
-        )
-        gs = fig.add_gridspec(
-            2, 2,
-            height_ratios=[2.35, 1.0],
-            hspace=0.025,
-            wspace=0.12,
-        )
-        ax_signal1 = fig.add_subplot(gs[0, 0])
-        ax_signal2 = fig.add_subplot(gs[0, 1])
         if shared:
-            ax_shared_hist = fig.add_subplot(gs[1, :], sharex=ax_signal1)
+            # Stack both waveforms and the pooled importance histogram in one
+            # column so every time axis has exactly the same horizontal extent.
+            fig = plt.figure(figsize=(12.2, 7.8), constrained_layout=True)
+            gs = fig.add_gridspec(
+                3, 2,
+                height_ratios=[1.0, 1.0, 0.62],
+                width_ratios=[1.0, 0.035],
+                hspace=0.025,
+                wspace=0.08,
+            )
+            ax_signal1 = fig.add_subplot(gs[0, 0])
+            ax_signal2 = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
+            ax_shared_hist = fig.add_subplot(gs[2, 0], sharex=ax_signal1)
+            colorbar_ax = fig.add_subplot(gs[0:2, 1])
             hist_axes = [ax_shared_hist]
         else:
+            fig = plt.figure(figsize=(13.2, 6.3), constrained_layout=True)
+            gs = fig.add_gridspec(
+                2, 2,
+                height_ratios=[2.35, 1.0],
+                hspace=0.025,
+                wspace=0.12,
+            )
+            ax_signal1 = fig.add_subplot(gs[0, 0])
+            ax_signal2 = fig.add_subplot(gs[0, 1])
             ax_detector1_hist = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
             ax_detector2_hist = fig.add_subplot(gs[1, 1], sharex=ax_signal2)
             hist_axes = [ax_detector1_hist, ax_detector2_hist]
+            colorbar_ax = None
         signal_axes = [ax_signal1, ax_signal2]
 
         title = f"Global TSHAP Saliency — {_format_global_model_name(model_name)}"
@@ -464,10 +475,16 @@ def _plot_global(
             for spine in ax.spines.values():
                 spine.set_linewidth(0.7)
 
-        colorbar = fig.colorbar(
-            ScalarMappable(norm=norm, cmap=cmap),
-            ax=signal_axes, pad=0.015, fraction=0.025, location="right",
-        )
+        if shared:
+            colorbar = fig.colorbar(
+                ScalarMappable(norm=norm, cmap=cmap),
+                cax=colorbar_ax,
+            )
+        else:
+            colorbar = fig.colorbar(
+                ScalarMappable(norm=norm, cmap=cmap),
+                ax=signal_axes, pad=0.015, fraction=0.025, location="right",
+            )
         from matplotlib.ticker import MaxNLocator
 
         tick_locator = MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10])
@@ -990,7 +1007,7 @@ def _refresh_presentation(destination):
     summary["global_plot"] = {
         "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
         "layout": (
-            "two side-by-side detector waveforms above one shared histogram spanning both columns"
+            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
             if context["formulation"] == "shared"
             else "two-column grid with each detector waveform directly above its importance histogram"
         ),
@@ -1262,7 +1279,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     "global_plot": {
                         "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
                         "layout": (
-                            "two side-by-side detector waveforms above one shared histogram spanning both columns"
+                            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
                             if spec.estimator_formulation == "shared"
                             else "two-column grid with each detector waveform directly above its importance histogram"
                         ),
