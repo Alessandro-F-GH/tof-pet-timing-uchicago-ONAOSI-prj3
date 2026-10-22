@@ -1,4 +1,5 @@
 """Numerical and persistence checks for the bounded upstream TSHAP adapter."""
+import csv
 import json
 
 import numpy as np
