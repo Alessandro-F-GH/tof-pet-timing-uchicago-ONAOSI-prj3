@@ -394,6 +394,7 @@ def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_pa
         window_name="wide",
         board_name="FBK",
         n_events=64,
+        window_samples=80,
     )
     output = tmp_path / "global_importance.png"
     assert output.is_file()
@@ -446,8 +447,8 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 4
-    assert summary["global_plot"]["layout"] == "single panel"
+    assert summary["plot_version"] == 6
+    assert summary["global_plot"]["layout"] == "signal plus one shared importance histogram"
     assert (tmp_path / "global_importance.png").is_file()
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
