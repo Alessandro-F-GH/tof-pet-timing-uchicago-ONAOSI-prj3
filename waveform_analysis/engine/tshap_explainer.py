@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 7
+GLOBAL_PLOT_VERSION = 8
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -288,12 +288,7 @@ def _plot_global(
     model_name, formulation, mode, window_name, board_name, n_events,
     window_samples,
 ):
-    """Plot separate physical detector waveforms with aligned importance histograms.
-
-    Waveform colours encode mean absolute TSHAP saliency in ps/sample. Histograms
-    sum the saved absolute sample attributions over non-overlapping bins whose
-    width matches the configured TSHAP window. No SHAP inference is performed.
-    """
+    """Plot detector waveforms and their corresponding TSHAP importance histograms."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -335,8 +330,6 @@ def _plot_global(
         N=256,
     )
 
-    # Each bar spans one configured TSHAP window. Heights are summed absolute
-    # attributions in ps, aggregated over that window's samples.
     window_width_ns = window_samples * dt_ps / 1000.0
     bin_starts = list(range(0, time_ps.size, window_samples))
     bin_centers_ns = np.asarray([
@@ -355,50 +348,51 @@ def _plot_global(
         for start in bin_starts
     ], dtype=np.float64)
 
+    fig = plt.figure(figsize=(13.0, 8.0 if shared else 8.6), constrained_layout=True)
+    gs = fig.add_gridspec(
+        2, 2,
+        height_ratios=[2.15, 1.0],
+        hspace=0.025,
+        wspace=0.12,
+    )
+    ax_signal1 = fig.add_subplot(gs[0, 0])
+    ax_signal2 = fig.add_subplot(gs[0, 1])
     if shared:
-        fig, axes = plt.subplots(
-            3, 1, figsize=(12.5, 9.0), sharex=True, constrained_layout=True,
-            gridspec_kw={"height_ratios": [2.0, 2.0, 1.25]},
-        )
-        ax_signal1, ax_signal2, ax_shared_hist = axes
-        signal_axes = [ax_signal1, ax_signal2]
+        ax_shared_hist = fig.add_subplot(gs[1, :], sharex=ax_signal1)
         hist_axes = [ax_shared_hist]
     else:
-        fig, axes = plt.subplots(
-            4, 1, figsize=(12.5, 10.5), sharex=True, constrained_layout=True,
-            gridspec_kw={"height_ratios": [2.0, 2.0, 1.15, 1.15]},
-        )
-        ax_signal1, ax_signal2, ax_detector1_hist, ax_detector2_hist = axes
-        signal_axes = [ax_signal1, ax_signal2]
+        ax_detector1_hist = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
+        ax_detector2_hist = fig.add_subplot(gs[1, 1], sharex=ax_signal2)
         hist_axes = [ax_detector1_hist, ax_detector2_hist]
+    signal_axes = [ax_signal1, ax_signal2]
 
     fig.suptitle(f"Global TSHAP Saliency — {_format_global_model_name(model_name)}", fontsize=14)
 
     for ax in [*signal_axes, *hist_axes]:
         ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.28, linewidth=0, zorder=0)
 
-    line_styles = ("solid", "dashed")
-    combined_low = float(np.min(mean_waveform_mv))
-    combined_high = float(np.max(mean_waveform_mv))
-    combined_span = combined_high - combined_low
-    y_margin = 0.06 * combined_span if combined_span > 0 else max(abs(combined_high) * 0.06, 1.0)
-
+    low = float(np.min(mean_waveform_mv))
+    high = float(np.max(mean_waveform_mv))
+    span = high - low
+    y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
     for channel, ax in enumerate(signal_axes):
         importance = saliency if shared else saliency[channel]
         ax.plot(
             time_ns, mean_waveform_mv[channel],
-            color="0.78", linewidth=3.8, linestyle=line_styles[channel], zorder=2,
+            color="0.78", linewidth=3.8, linestyle="solid", zorder=2,
         )
         _add_saliency_line(
             ax, time_ns, mean_waveform_mv[channel], importance,
-            norm=norm, cmap=cmap, linestyle=line_styles[channel],
+            norm=norm, cmap=cmap, linestyle="solid",
         )
         ax.set_title(f"Detector {channel + 1}", loc="left", fontsize=10, pad=3)
         ax.set_ylabel("Amplitude (mV)")
-        ax.set_ylim(combined_low - y_margin, combined_high + y_margin)
+        ax.set_ylim(low - y_margin, high + y_margin)
         ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
         ax.set_axisbelow(True)
         ax.grid(True, alpha=0.22, linewidth=0.6)
+        ax.tick_params(axis="x", labelbottom=False)
+        ax.spines["bottom"].set_linewidth(0.8)
 
     if shared:
         ax_shared_hist.bar(
@@ -410,26 +404,26 @@ def _plot_global(
         ax_shared_hist.grid(True, axis="y", alpha=0.22, linewidth=0.6)
     else:
         hist_specs = (
-            (ax_detector1_hist, detector_window_importance[0], "#4c78a8", "Detector 1 importance"),
-            (ax_detector2_hist, detector_window_importance[1], "#e28a3b", "Detector 2 importance"),
+            (ax_detector1_hist, detector_window_importance[0], "#4c78a8"),
+            (ax_detector2_hist, detector_window_importance[1], "#e28a3b"),
         )
-        for ax, values, color, panel_title in hist_specs:
+        for ax, values, color in hist_specs:
             ax.bar(
                 bin_centers_ns, values, width=window_width_ns,
                 align="center", color=color, edgecolor="0.25", linewidth=0.4, zorder=2,
             )
             ax.set_ylabel("Importance (ps)")
-            ax.set_title(panel_title, loc="left", fontsize=10, pad=3)
             ax.grid(True, axis="y", alpha=0.22, linewidth=0.6)
 
-    hist_axes[-1].set_xlabel("Waveform time (ns)")
+    for ax in hist_axes:
+        ax.set_xlabel("Waveform time (ns)")
+        ax.spines["top"].set_linewidth(0.8)
+
     colorbar = fig.colorbar(
         ScalarMappable(norm=norm, cmap=cmap),
         ax=signal_axes, pad=0.015, fraction=0.025, location="right",
     )
-    colorbar.set_label(
-        "Absolute TSHAP importance (ps/sample)"
-    )
+    colorbar.set_label("Absolute TSHAP importance (ps/sample)")
     fig.savefig(Path(destination) / "global_importance.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
@@ -924,11 +918,11 @@ def _refresh_presentation(destination):
     }
     summary["tshap_window_samples"] = context["window_samples"]
     summary["global_plot"] = {
-        "style": "separate physical detector waveforms coloured by absolute TSHAP saliency, with window-width importance histograms",
+        "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
         "layout": (
-            "two detector waveform panels plus one shared importance histogram"
+            "two side-by-side detector waveforms above one shared histogram spanning both columns"
             if context["formulation"] == "shared"
-            else "two detector waveform panels plus two detector importance histograms"
+            else "two-column grid with each detector waveform directly above its importance histogram"
         ),
         "onishi_interval_ns": [-1.5, 2.0],
         "importance_colour_scale": "linear, displayed in original ps/sample units",
@@ -1192,11 +1186,11 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         "normalization": "none; colour encodes original ps/sample values",
                     },
                     "global_plot": {
-                        "style": "separate physical detector waveforms coloured by absolute TSHAP saliency, with window-width importance histograms",
+                        "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
                         "layout": (
-                            "two detector waveform panels plus one shared importance histogram"
+                            "two side-by-side detector waveforms above one shared histogram spanning both columns"
                             if spec.estimator_formulation == "shared"
-                            else "two detector waveform panels plus two detector importance histograms"
+                            else "two-column grid with each detector waveform directly above its importance histogram"
                         ),
                         "onishi_interval_ns": [-1.5, 2.0],
                         "importance_colour_scale": "linear, displayed in original ps/sample units",
