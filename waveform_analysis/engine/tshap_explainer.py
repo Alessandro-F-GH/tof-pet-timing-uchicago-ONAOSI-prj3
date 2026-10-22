@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 4
+GLOBAL_PLOT_VERSION = 5
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -267,7 +267,7 @@ def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, line
         segments,
         cmap=cmap,
         norm=norm,
-        linewidths=2.0,
+        linewidths=3.2,
         linestyles=linestyle,
         zorder=3,
     )
@@ -290,7 +290,7 @@ def _plot_global(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import Normalize
+    from matplotlib.colors import LinearSegmentedColormap, Normalize
     from matplotlib.lines import Line2D
     from matplotlib.cm import ScalarMappable
     from matplotlib.patches import Patch
@@ -320,7 +320,11 @@ def _plot_global(
     if not np.isfinite(vmax) or vmax <= 0.0:
         vmax = 1.0
     norm = Normalize(vmin=0.0, vmax=vmax)
-    cmap = plt.get_cmap("viridis")
+    cmap = LinearSegmentedColormap.from_list(
+        "neutral_to_saliency",
+        ["#b8b8b8", "#7299b8", "#2867a8", "#f2d94e"],
+        N=256,
+    )
 
     fig, ax = plt.subplots(figsize=(12.5, 5.8), constrained_layout=True)
     ax.axvspan(
@@ -330,6 +334,15 @@ def _plot_global(
     line_styles = ("solid", "dashed")
     for channel in range(2):
         importance = saliency if shared else saliency[channel]
+        # Keep the physical waveform silhouette legible beneath the saliency colours.
+        ax.plot(
+            time_ns,
+            mean_waveform_mv[channel],
+            color="0.78",
+            linewidth=3.8,
+            linestyle=line_styles[channel],
+            zorder=2,
+        )
         _add_saliency_line(
             ax, time_ns, mean_waveform_mv[channel], importance,
             norm=norm, cmap=cmap, linestyle=line_styles[channel],
