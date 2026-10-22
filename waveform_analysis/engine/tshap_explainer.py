@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 3
+GLOBAL_PLOT_VERSION = 4
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -153,54 +153,229 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
                         interpolation=True, roi=roi)
 
 
-def _plot_global(destination, time_ps, mean_absolute, mean_signed, mean_waveform_mv):
-    """Plot physical waveform amplitude and unnormalized global TSHAP importance.
+def _format_global_model_name(model_name):
+    """Return publication-friendly model labels while preserving common acronyms."""
+    known = {
+        "direct_linear_ridge": "Direct Linear Ridge",
+        "shared_linear_ridge": "Shared Linear Ridge",
+        "direct_minirocket": "Direct MiniRocket",
+        "shared_minirocket": "Shared MiniRocket",
+        "direct_rdst": "Direct RDST",
+        "shared_rdst": "Shared RDST",
+        "direct_hydra": "Direct Hydra",
+        "shared_hydra": "Shared Hydra",
+        "direct_multirocket": "Direct MultiRocket",
+        "shared_multirocket": "Shared MultiRocket",
+        "direct_multirocket_rdst": "Direct MultiRocket + RDST",
+        "shared_multirocket_rdst": "Shared MultiRocket + RDST",
+        "direct_mlp": "Direct MLP",
+        "antisymmetric_mlp": "Antisymmetric MLP",
+        "independent_cnn1d": "Independent CNN",
+        "shared_cnn1d": "Shared CNN",
+        "onishi_cnn": "Onishi CNN",
+        "locally_connected_mlp": "Locally Connected MLP",
+    }
+    return known.get(str(model_name).lower(), str(model_name).replace("_", " ").title())
 
-    Attributions retain the model-output unit (ps) redistributed over temporal
-    samples (ps/sample). Absolute and signed summaries are averaged over the
-    explained blind events; neither importance curve is normalized.
+
+def _find_board_label(*paths):
+    """Find a known detector-board label from result or XAI paths."""
+    for path in paths:
+        if path is None:
+            continue
+        for part in reversed(Path(path).expanduser().parts):
+            if part.upper() in {"UC", "FBK"}:
+                return part.upper()
+    return "Unknown board"
+
+
+def _global_plot_context(destination, summary):
+    """Recover plot labels from saved metadata and the stable XAI path."""
+    identity = summary.get("identity", {})
+    model_name = str(identity.get("model") or summary.get("model_name") or destination.parent.name)
+    mode = str(identity.get("mode") or summary.get("mode") or "")
+    window_name = str(summary.get("window_name") or destination.parent.parent.name)
+    formulation = str(summary.get("formulation") or (
+        "shared" if model_name.lower().startswith("shared_") else "direct"
+    )).lower()
+    board_name = str(summary.get("board") or _find_board_label(destination))
+    return {
+        "model_name": model_name,
+        "formulation": formulation,
+        "mode": mode,
+        "window_name": window_name,
+        "board_name": board_name,
+        "n_events": int(summary.get("n_explained_events", 0)),
+    }
+
+
+def _write_global_importance_csv(destination, time_ps, mean_absolute, formulation, roi_maps=None):
+    """Write only unnormalized absolute-importance summaries to the global CSV."""
+    time_ps = np.asarray(time_ps, dtype=np.float64)
+    mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
+    if mean_absolute.shape != (2, time_ps.size):
+        raise ValueError("Global absolute importance must have shape [2 detectors, samples]")
+    roi_abs = None
+    if roi_maps is not None:
+        roi_maps = np.asarray(roi_maps, dtype=np.float64)
+        if roi_maps.ndim != 3 or roi_maps.shape[1:] != mean_absolute.shape:
+            raise ValueError("Global ROI attributions must have shape [events, 2 detectors, samples]")
+        roi_abs = np.mean(np.abs(roi_maps), axis=0)
+
+    shared = str(formulation).lower() == "shared"
+    if shared:
+        curves = [(
+            "shared",
+            np.mean(mean_absolute, axis=0),
+            np.mean(roi_abs, axis=0) if roi_abs is not None else None,
+        )]
+    else:
+        curves = [
+            (f"detector_{channel + 1}", mean_absolute[channel],
+             roi_abs[channel] if roi_abs is not None else None)
+            for channel in range(2)
+        ]
+
+    with (Path(destination) / "global_importance.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as stream:
+        writer = csv.writer(stream)
+        writer.writerow([
+            "detector_or_shared",
+            "time_ps",
+            "mean_absolute_tshap_importance_ps_per_sample",
+            "roi_mean_absolute_tshap_importance_ps",
+        ])
+        for label, values, roi_values in curves:
+            for index, time_value in enumerate(time_ps):
+                writer.writerow([
+                    label,
+                    float(time_value),
+                    float(values[index]),
+                    float(roi_values[index]) if roi_values is not None else "",
+                ])
+
+
+def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, linestyle):
+    """Draw a physical waveform whose segment colours encode absolute importance."""
+    from matplotlib.collections import LineCollection
+
+    points = np.column_stack((time_ns, waveform_mv))
+    segments = np.stack((points[:-1], points[1:]), axis=1)
+    segment_importance = 0.5 * (importance[:-1] + importance[1:])
+    line = LineCollection(
+        segments,
+        cmap=cmap,
+        norm=norm,
+        linewidths=2.0,
+        linestyles=linestyle,
+        zorder=3,
+    )
+    line.set_array(segment_importance)
+    ax.add_collection(line)
+    return line
+
+
+def _plot_global(
+    destination, time_ps, mean_absolute, mean_waveform_mv, *,
+    model_name, formulation, mode, window_name, board_name, n_events,
+):
+    """Plot mean physical waveforms coloured by unnormalized absolute TSHAP saliency.
+
+    Direct models use a detector-specific saliency curve. Shared models pool the
+    absolute attributions across events and detectors, then use that same curve
+    to colour both detector waveforms. Stored attribution values are never scaled;
+    the colourbar maps their original ps/sample values to the colormap.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize
+    from matplotlib.lines import Line2D
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.patches import Patch
 
     time_ps = np.asarray(time_ps, dtype=np.float64)
     time_ns = time_ps / 1000.0
     mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
-    mean_signed = np.asarray(mean_signed, dtype=np.float64)
     mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
     expected_shape = (2, time_ps.size)
-    if any(a.shape != expected_shape for a in (
-        mean_absolute, mean_signed, mean_waveform_mv
-    )):
-        raise ValueError("Global TSHAP summaries must have shape [2 detectors, samples]")
-    if not all(np.all(np.isfinite(a)) for a in (
-        mean_absolute, mean_signed, mean_waveform_mv
-    )):
-        raise ValueError("Global TSHAP plot arrays must be finite")
+    if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
+        raise ValueError("Global TSHAP time grid must contain at least two finite samples")
+    if np.any(np.diff(time_ps) <= 0):
+        raise ValueError("Global TSHAP time grid must be strictly increasing")
+    if mean_absolute.shape != expected_shape or mean_waveform_mv.shape != expected_shape:
+        raise ValueError("Global TSHAP arrays must have shape [2 detectors, samples]")
+    if not np.all(np.isfinite(mean_absolute)) or np.any(mean_absolute < 0):
+        raise ValueError("Global absolute importance must be finite and non-negative")
+    if not np.all(np.isfinite(mean_waveform_mv)):
+        raise ValueError("Global physical waveforms must be finite")
 
-    fig, axes = plt.subplots(
-        3, 2, figsize=(13, 8), sharex=True, constrained_layout=True,
-        gridspec_kw={"height_ratios": [1.0, 1.15, 1.0]},
+    shared = str(formulation).lower() == "shared"
+    saliency = (
+        np.mean(mean_absolute, axis=0)
+        if shared else mean_absolute
     )
-    row_labels = (
-        ("Mean blind waveform amplitude (mV)", mean_waveform_mv, "0.35"),
-        ("Mean absolute TSHAP attribution (ps/sample)", mean_absolute, "tab:blue"),
-        ("Mean signed TSHAP attribution (ps/sample)", mean_signed, "tab:orange"),
+    vmax = float(np.max(saliency))
+    if not np.isfinite(vmax) or vmax <= 0.0:
+        vmax = 1.0
+    norm = Normalize(vmin=0.0, vmax=vmax)
+    cmap = plt.get_cmap("viridis")
+
+    fig, ax = plt.subplots(figsize=(12.5, 5.8), constrained_layout=True)
+    ax.axvspan(
+        -1.5, 2.0, color="0.75", alpha=0.28, linewidth=0, zorder=0,
     )
+
+    line_styles = ("solid", "dashed")
     for channel in range(2):
-        axes[0, channel].set_title(f"Detector {channel + 1}")
-        for row, (ylabel, values, color) in enumerate(row_labels):
-            ax = axes[row, channel]
-            ax.plot(time_ns, values[channel], color=color, linewidth=1.15)
-            ax.set_ylabel(ylabel)
-            ax.grid(True, alpha=0.22, linewidth=0.6)
-            ax.margins(x=0.005)
-            if row == 2:
-                ax.axhline(0.0, color="0.4", linewidth=0.75, linestyle=":")
-        axes[2, channel].set_xlabel("Waveform time (ns)")
+        importance = saliency if shared else saliency[channel]
+        _add_saliency_line(
+            ax, time_ns, mean_waveform_mv[channel], importance,
+            norm=norm, cmap=cmap, linestyle=line_styles[channel],
+        )
 
-    fig.savefig(destination / "global_importance.png", dpi=180, bbox_inches="tight")
+    ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
+    low = float(np.min(mean_waveform_mv))
+    high = float(np.max(mean_waveform_mv))
+    span = high - low
+    margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
+    ax.set_ylim(low - margin, high + margin)
+    ax.set_xlabel("Waveform time (ns)")
+    ax.set_ylabel("Mean waveform amplitude (mV)")
+    ax.set_axisbelow(True)
+    ax.grid(True, alpha=0.22, linewidth=0.6)
+
+    mode_lower = str(mode).lower()
+    task = "Timing" if mode_lower.startswith("timing") else (
+        "Energy" if mode_lower.startswith("energy") else str(mode or "Unknown task")
+    )
+    title_model = _format_global_model_name(model_name)
+    fig.suptitle(f"Global TSHAP Saliency — {title_model}", fontsize=14, y=1.02)
+    ax.set_title(
+        f"{board_name} | {task} | {window_name.title()} window | "
+        f"{int(n_events)} blind events",
+        fontsize=10, pad=10,
+    )
+
+    legend_handles = [
+        Line2D([0], [0], color="0.25", linewidth=2.0, linestyle="solid", label="Detector 1"),
+        Line2D([0], [0], color="0.25", linewidth=2.0, linestyle="dashed", label="Detector 2"),
+        Patch(
+            facecolor="0.75", edgecolor="none", alpha=0.28,
+            label="Onishi interval (−1.5 to 2 ns)",
+        ),
+    ]
+    ax.legend(handles=legend_handles, loc="best", frameon=True, framealpha=0.9, fontsize=9)
+
+    colorbar = fig.colorbar(
+        ScalarMappable(norm=norm, cmap=cmap), ax=ax, pad=0.025, fraction=0.045,
+    )
+    colorbar.set_label(
+        "Shared mean absolute TSHAP importance (ps/sample)"
+        if shared else "Mean absolute TSHAP importance (ps/sample)"
+    )
+    fig.savefig(Path(destination) / "global_importance.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -641,48 +816,69 @@ def _complete_local(destination, fingerprint, expected_events):
 
 
 def _refresh_presentation(destination):
-    """Regenerate global summaries from saved attributions without rerunning TSHAP."""
+    """Regenerate global CSV and plot from cached attributions, without SHAP inference."""
+    destination = Path(destination)
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     if summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION:
         return
+
     with np.load(destination / "attributions.npz") as saved:
         time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
         window_maps = np.asarray(saved["window_attribution_ps"], dtype=np.float64)
+        if "mean_waveform_mv" not in saved:
+            raise ValueError(
+                "Cannot refresh global TSHAP saliency plot: cached attributions.npz "
+                "does not contain mean_waveform_mv. TSHAP values were not recalculated."
+            )
         mean_waveform_mv = np.asarray(saved["mean_waveform_mv"], dtype=np.float64)
         roi_maps = (
             np.asarray(saved["roi_attribution_ps"], dtype=np.float64)
             if "roi_attribution_ps" in saved else None
         )
+
+    if window_maps.ndim != 3 or window_maps.shape[1:] != (2, time_ps.size):
+        raise ValueError("Cached TSHAP attribution array must have shape [events, 2 detectors, samples]")
     mean_absolute = np.mean(np.abs(window_maps), axis=0)
-    mean_signed = np.mean(window_maps, axis=0)
-    with (destination / "global_importance.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
-        writer.writerow([
-            "channel", "time_ps", "window_mean_abs_ps_per_sample",
-            "window_mean_signed_ps_per_sample", "roi_mean_abs_ps_per_sample",
-            "roi_mean_signed_ps_per_sample",
-        ])
-        for channel in range(2):
-            for j, time_value in enumerate(time_ps):
-                writer.writerow([
-                    channel + 1, float(time_value), float(mean_absolute[channel, j]),
-                    float(mean_signed[channel, j]),
-                    float(np.mean(np.abs(roi_maps[:, channel, j]))) if roi_maps is not None else "",
-                    float(np.mean(roi_maps[:, channel, j])) if roi_maps is not None else "",
-                ])
-    _plot_global(
-        destination, time_ps, mean_absolute, mean_signed, mean_waveform_mv
+    context = _global_plot_context(destination, summary)
+    _write_global_importance_csv(
+        destination, time_ps, mean_absolute, context["formulation"], roi_maps
     )
+    _plot_global(
+        destination, time_ps, mean_absolute, mean_waveform_mv,
+        model_name=context["model_name"],
+        formulation=context["formulation"],
+        mode=context["mode"],
+        window_name=context["window_name"],
+        board_name=context["board_name"],
+        n_events=context["n_events"] or len(window_maps),
+    )
+
     summary["plot_version"] = GLOBAL_PLOT_VERSION
-    summary["attribution_units"] = "ps/sample (upstream window score redistributed across temporal samples)"
+    summary["board"] = context["board_name"]
+    summary["window_name"] = context["window_name"]
+    summary["attribution_units"] = (
+        "ps/sample (upstream window score redistributed across temporal samples)"
+    )
     summary["input_units"] = "mV (inverse of frozen prepared waveform normalization)"
     summary["global_importance_aggregation"] = {
-        "absolute": "mean(abs(attribution)) across explained blind events at each sample",
-        "signed": "mean(attribution) across explained blind events at each sample",
-        "normalization": "none",
+        "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
+        "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
+        "normalization": "none; colour encodes original ps/sample values",
+    }
+    summary["global_plot"] = {
+        "style": "mean physical waveform coloured by absolute TSHAP saliency",
+        "layout": "single panel",
+        "onishi_interval_ns": [-1.5, 2.0],
+        "importance_colour_scale": "linear, displayed in original ps/sample units",
+        "detector_identity": (
+            "shared absolute-importance curve for both signals"
+            if context["formulation"] == "shared"
+            else "detector-specific absolute-importance curves"
+        ),
     }
     atomic_json(summary_path, summary)
+
 
 
 
@@ -875,7 +1071,6 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 if not np.all(np.isfinite(window_maps)) or (roi and not np.all(np.isfinite(roi_maps))):
                     raise ValueError("Non-finite TSHAP attribution")
                 win_abs = np.mean(np.abs(window_maps), axis=0)
-                win_signed = np.mean(window_maps, axis=0)
                 waveform_transform = getattr(
                     blind, f"{mode_family(config['mode'])}_transform"
                 )
@@ -896,19 +1091,23 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 if roi:
                     payload["roi_attribution_ps"] = roi_maps
                 np.savez_compressed(temporary / "attributions.npz", **payload)
-                with (temporary / "global_importance.csv").open("w", newline="", encoding="utf-8") as stream:
-                    writer = csv.writer(stream)
-                    writer.writerow(["channel", "time_ps", "window_mean_abs_ps_per_sample", "window_mean_signed_ps_per_sample",
-                                     "roi_mean_abs_ps", "roi_mean_signed_ps"])
-                    for ch in range(2):
-                        for j, t in enumerate(time_ps):
-                            writer.writerow([ch + 1, float(t), float(win_abs[ch, j]),
-                                             float(win_signed[ch, j]),
-                                             float(np.mean(np.abs(roi_maps[:, ch, j]))) if roi else "",
-                                             float(np.mean(roi_maps[:, ch, j])) if roi else ""])
-                _plot_global(temporary, time_ps, win_abs, win_signed, payload["mean_waveform_mv"])
+                board_name = _find_board_label(directory, output_root)
+                window_name = str(config.get("window_name", directory.parent.name))
+                _write_global_importance_csv(
+                    temporary, time_ps, win_abs, spec.estimator_formulation, roi_maps
+                )
+                _plot_global(
+                    temporary, time_ps, win_abs, payload["mean_waveform_mv"],
+                    model_name=spec.name,
+                    formulation=spec.estimator_formulation,
+                    mode=config["mode"],
+                    window_name=window_name,
+                    board_name=board_name,
+                    n_events=len(event_ids),
+                )
                 atomic_json(temporary / "summary.json", {
                     **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
+                    "board": board_name, "window_name": window_name,
                     "n_explained_events": len(event_ids),
                     "n_control_baselines": len(baseline_ids), "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
@@ -917,9 +1116,20 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                                       "overlapping-window maps are not exact sample-level Shapley values.",
                     "cohort": "blind", "input_units": "mV (inverse of frozen prepared waveform normalization)",
                     "global_importance_aggregation": {
-                        "absolute": "mean(abs(attribution)) across explained blind events at each sample",
-                        "signed": "mean(attribution) across explained blind events at each sample",
-                        "normalization": "none",
+                        "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
+                        "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
+                        "normalization": "none; colour encodes original ps/sample values",
+                    },
+                    "global_plot": {
+                        "style": "mean physical waveform coloured by absolute TSHAP saliency",
+                        "layout": "single panel",
+                        "onishi_interval_ns": [-1.5, 2.0],
+                        "importance_colour_scale": "linear, displayed in original ps/sample units",
+                        "detector_identity": (
+                            "shared absolute-importance curve for both signals"
+                            if spec.estimator_formulation == "shared"
+                            else "detector-specific absolute-importance curves"
+                        ),
                     },
                     "prediction_equivalence_max_error_ps": float(np.max(np.abs(original - replay))),
                     "reference": "https://github.com/mlgig/tshap",
