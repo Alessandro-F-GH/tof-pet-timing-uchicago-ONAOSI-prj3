@@ -35,7 +35,7 @@ GLOBAL_PLOT_VERSION = 9
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
-    "summary.json", "attributions.npz", "global_importance.csv", "global_importance.png",
+    "summary.json", "attributions.npz", "global_importance.csv", "global_importance.png", "global_importance.pdf",
 )
 
 
