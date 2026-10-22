@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 2
-GLOBAL_PLOT_VERSION = 9
+GLOBAL_PLOT_VERSION = 10
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -274,9 +274,11 @@ def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, line
         segments,
         cmap=cmap,
         norm=norm,
-        linewidths=3.2,
+        linewidths=3.5,
         linestyles=linestyle,
         zorder=3,
+        capstyle="round",
+        joinstyle="round",
     )
     line.set_array(segment_importance)
     ax.add_collection(line)
@@ -336,7 +338,7 @@ def _plot_global(
         vmax = float(np.max(saliency) if shared else np.max(mean_absolute))
         if not np.isfinite(vmax) or vmax <= 0.0:
             vmax = 1.0
-        norm = PowerNorm(gamma=0.5, vmin=0.0, vmax=vmax, clip=True)
+        norm = PowerNorm(gamma=1.6, vmin=0.0, vmax=vmax, clip=True)
         cmap = LinearSegmentedColormap.from_list(
             "neutral_to_saliency",
             [
@@ -401,7 +403,7 @@ def _plot_global(
             importance = saliency if shared else saliency[channel]
             ax.plot(
                 time_ns, mean_waveform_mv[channel],
-                color="#d8dadd", linewidth=4.0, linestyle="solid", zorder=2,
+                color="#d8dadd", linewidth=3.8, linestyle="solid", zorder=2,
             )
             _add_saliency_line(
                 ax, time_ns, mean_waveform_mv[channel], importance,
@@ -451,6 +453,16 @@ def _plot_global(
             ScalarMappable(norm=norm, cmap=cmap),
             ax=signal_axes, pad=0.015, fraction=0.025, location="right",
         )
+        from matplotlib.ticker import MaxNLocator
+
+        tick_locator = MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10])
+        colorbar_ticks = tick_locator.tick_values(0.0, vmax)
+        colorbar_ticks = colorbar_ticks[
+            (colorbar_ticks >= 0.0) & (colorbar_ticks <= vmax + 1e-12)
+        ]
+        if colorbar_ticks.size == 0 or not np.isclose(colorbar_ticks[0], 0.0):
+            colorbar_ticks = np.insert(colorbar_ticks, 0, 0.0)
+        colorbar.set_ticks(colorbar_ticks)
         colorbar.set_label("Absolute TSHAP importance (ps/sample)", fontsize=9)
         colorbar.ax.tick_params(labelsize=8, width=0.6, length=3)
 
@@ -957,7 +969,7 @@ def _refresh_presentation(destination):
     summary["global_importance_aggregation"] = {
         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=0.5) scale and the colourbar retains original ps/sample units",
+        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
     }
     summary["tshap_window_samples"] = context["window_samples"]
     summary["global_plot"] = {
@@ -968,7 +980,7 @@ def _refresh_presentation(destination):
             else "two-column grid with each detector waveform directly above its importance histogram"
         ),
         "onishi_interval_ns": [-1.5, 2.0],
-        "importance_colour_scale": "shared PowerNorm(gamma=0.5) across both detectors; colourbar ticks in original ps/sample units",
+        "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
         "histogram_colour": "#4c78a8",
         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
         "importance_histogram": {
@@ -1228,7 +1240,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     "global_importance_aggregation": {
                         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
                         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-                        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=0.5) scale and the colourbar retains original ps/sample units",
+                        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
                     },
                     "global_plot": {
                         "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
@@ -1238,7 +1250,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                             else "two-column grid with each detector waveform directly above its importance histogram"
                         ),
                         "onishi_interval_ns": [-1.5, 2.0],
-                        "importance_colour_scale": "shared PowerNorm(gamma=0.5) across both detectors; colourbar ticks in original ps/sample units",
+                        "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
                         "histogram_colour": "#4c78a8",
                         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
                         "importance_histogram": {
