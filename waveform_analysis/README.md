@@ -56,6 +56,82 @@ reads raw acquisitions. Original saved masks, scalers/transforms and prediction
 limits are retained. RDST coefficient XAI uses persisted shapelets and model
 coefficients; temporal occlusion uses the frozen per-detector control mean.
 
+## Global waveform FFT (read-only)
+
+Compute the full-window, population-average **event-wise** power spectral density
+for detector 1, detector 2, and their event-wise difference. Uses the verified
+prepared waveform cache and saved sample mask; no model predictions, model
+inference, new feature transformations, synthetic signals or tail windows.
+Event-wise mean subtraction and a Hann window precede each FFT. Requires a
+uniformly sampled time grid after the model's sample mask.
+
+```powershell
+python -m waveform_analysis.scripts.global_fft --results PATH_TO_BATCH --models direct_rdst --role blind
+```
+
+Outputs under `<run>/explanations/global_fft/<identity>/`:
+`spectra.png` (three overlaid PSDs), `spectra.npz` (frequency bins in Hz,
+three spectra and time grid), and `summary.json` (sampling and provenance).
+The PSDs are averaged over all events, not FFTs of mean waveforms.
+
+## Correction-quantile waveform examples (read-only)
+
+Select **real paired waveforms** nearest to the 10th, 30th, 50th, 70th and
+90th percentiles of the **original model's saved timing corrections**. This is
+output-space selection only: no clustering, feature weighting, Ridge reload,
+new RDST/MultiRocket transforms, surrogate, or synthetic waveforms.
+
+```powershell
+python -m waveform_analysis.scripts.correction_examples --results PATH_TO_BATCH --models direct_rdst shared_rdst
+```
+
+The default population is `blind` and reads `artifacts/pred.npz`. For
+already-saved full-development diagnostic predictions, add
+`--role development` to use `artifacts/development_pred.npz`. Generate that
+optional artifact first using the existing `diagnostics` CLI command if absent.
+Use `--quantiles 0.1 0.3 0.5 0.7 0.9` to customize fractions and
+`--cache-root PATH` to locate the original prepared data if moved. Predictions
+are aligned to prepared waveforms by exact event ID; mismatches fail rather
+than silently pairing unrelated events. The original universal timing sample
+mask is honored in the plotted signal/time grid.
+
+Outputs live under `<model_run>/explanations/correction_examples/<identity>/`:
+`correction_distribution.png` shows saved predictions and selected examples;
+`waveforms.png` shows the five normalized two-detector waveform pairs on common
+axes; `examples.csv`, `examples.npz` and `summary.json` preserve event IDs,
+quantiles, timing corrections and provenance. These examples represent different
+**predicted correction levels**, not necessarily different pulse-morphology groups.
+In addition to individual real-event examples, `--half-width 0.05` groups
+all events in 5th–15th, 25th–35th, 45th–55th, 65th–75th and 85th–95th
+**empirical prediction-percentile bands**. The band boundaries are based on
+prediction rank (ties broken by event ID), so groups have comparable sizes even
+if predictions repeat. Per-sample means and sample standard deviations (±1 SD)
+are computed on the original prepared normalized signals, without synthetic
+waveforms. Channel difference is computed **event by event**, retaining the
+covariance of the two channels in its SD. Computation streams waveform batches
+instead of loading all event waveforms into RAM.
+
+```powershell
+python -m waveform_analysis.scripts.correction_examples --results PATH_TO_BATCH --models direct_rdst --half-width 0.05 --zoom-max-ps 10000
+```
+
+New outputs are `groups_full.png` and `groups_zoom.png`, each with paired
+waveforms on the left and detector-1-minus-detector-2 on the right for **every**
+quantile band. The right-hand curve is centered by subtracting the **mean D1−D2 waveform across the entire selected population** (not just the plotted quantile bands), leaving the within-group ±1 SD unchanged. `groups.npz` retains the original difference means as `difference_mean`, the centered curves as `difference_centered_mean`, and the reference as `global_difference_mean`. `groups.csv` reports group sizes and correction distributions;
+`groups.npz` contains numerical means/SDs, time grid, and member event IDs.
+Existing individual example outputs remain available. Increasing
+`--half-width` gives smoother group averages but mixes a wider range of
+predicted corrections. The zoom uses the saved time grid up through
+`--zoom-max-ps` (default 10000 ps).
+
+The script also saves `temporal_association.png` and `temporal_association_zoom.png`: sample-wise Pearson correlation between the real event-level detector difference (D1−D2) and the original model prediction, using the **entire** selected population, not only the quantile groups. `groups.npz` stores `temporal_difference_correlation`, the corresponding difference mean/std, and prediction mean/std. Constant-difference time samples are marked NaN; association is descriptive and should not be interpreted as model attribution.
+
+Derivative-based association is also exported as `temporal_association_derivative.png` and `temporal_association_derivative_zoom.png`: Pearson r of `np.gradient(D1-D2, time_ps)` with original predictions. Derivatives use the actual saved masked time grid and no smoothing. `groups.npz` contains the derivative correlation, mean and sample SD; constant derivative samples are NaN. Differentiation highlights local slope variations but can amplify noise.
+
+Temporal association plots accept `--group-samples 1` (default), `2`, `3`, etc. For values above one, consecutive **nonoverlapping** samples of the real detector difference are averaged, with the incomplete final group discarded; the effective time coordinates are the means of the original time coordinates. Both raw-difference and derivative correlation are recalculated on these grouped event-level signals. Grouping does not alter the original model predictions, the group waveform plots, or saved spectra. The effective time grid and grouping factor are stored in `groups.npz` as `association_time_ps` and `group_samples`.
+
+Nothing in the original run is modified.
+
 Global continuous-output explanations can be generated from saved models:
 
 ```bash
