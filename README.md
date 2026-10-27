@@ -1,38 +1,48 @@
-# PET detector timing analysis
+# TOF-PET detector timing analysis
 
-Analysis software for the ONAOSI/UChicago TOF-PET project.
+Python analysis software developed for the ONAOSI / University of Chicago TOF-PET project. The waveform study investigates whether machine-learning corrections based on digitized detector pulses can improve coincidence timing resolution beyond a conventional leading-edge discriminator (LED) reference.
 
-- `waveform_analysis/`: oscilloscope event selection, control-fitted preprocessing and waveform ML.
-- `janus_data_analysis/`: Pico-TDC / Janus timing analysis.
-- `utils_fit/`: shared timing-resolution utilities.
-- `report/` and `update_report/`: scientific manuscripts and study-specific figures/tables.
+The experiments compare linear regression, neural networks, and time-series feature transformations (MiniROCKET, MultiROCKET and random dilated shapelets). They examine direct models of detector pairs, shared detector-level models, short and extended observation windows, and time-series SHAP (TSHAP) explanations.
 
-The waveform pipeline uses three independent dataset roles:
+## Repository contents
 
-1. **Control:** fit event-selection, preprocessing and LED-threshold rules once.
-2. **Development:** apply the frozen rules, select model parameters and fit the final model.
-3. **Blind:** evaluate the final model and estimate event-bootstrap uncertainty.
+| Directory | Purpose |
+| --- | --- |
+| [`waveform_analysis/`](waveform_analysis/) | Waveform preprocessing, model training, evaluation, reporting and interpretability |
+| [`janus_data_analysis/`](janus_data_analysis/) | Pico-TDC / Janus timing studies |
+| [`utils_fit/`](utils_fit/) | Shared timing-resolution and fitting utilities |
+| [`trc_converter/`](trc_converter/) | Oscilloscope waveform conversion tools |
+| [`report/`](report/), [`update_report/`](update_report/) | Research reports and associated figures/tables |
+| [`presentation/`](presentation/) | Presentation materials |
 
-The blind dataset never participates in selection or training. Most models use
-common deterministic development CV folds and fixed/grid/Optuna parameter
-selection. The two linear Ridge models use sklearn RidgeCV on all development
-events with a configurable logarithmic lambda grid and MSE scoring; they bypass
-outer CV and pruning. MiniRocket retains the outer development-CV pipeline.
+The main thesis-related workflow is in **[`waveform_analysis/`](waveform_analysis/README.md)**.
 
-Batches sweep models, waveform modes and windows. Modes are `energy_to_energy`
-and `timing_to_timing`; each resolved run has one model and one window. Reports
-compare predictions on matched blind event identities and provide paired
-bootstrap uncertainty. Figure styling is configured in JSON.
+## Data availability
 
-Run from the repository root:
+**The experimental waveform datasets are not publicly available in this repository because of their size and GitHub hosting limits.** The benchmark configurations reference local ROOT acquisition files, which must be supplied separately to execute the experiments. The published code and configurations document the analysis workflow, but cloning the repository alone will not reproduce the numerical results.
+
+## Getting started
+
+Use a Python environment with the dependencies in `waveform_analysis/requirements.txt`:
 
 ```bash
-python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/test_ridge.json
-python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/test_ridge.json
-python -m waveform_analysis.cli plots --results waveform_analysis/results/FBK/test_ridge_48V_R1_R2
+python -m pip install -r waveform_analysis/requirements.txt
 ```
 
-See [waveform_analysis/README.md](waveform_analysis/README.md) for configuration,
-result layout, resume behavior, scientific invariants and plot customization.
-Manuscript methods describe their specific experiments; executable pipeline
-instructions are maintained in these software READMEs.
+From the repository root, inspect a supplied batch configuration:
+
+```bash
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/benchmark_UC.json
+```
+
+To run a batch **after providing the referenced acquisition files and configuring their paths**:
+
+```bash
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/benchmark_UC.json
+```
+
+See the [waveform analysis guide](waveform_analysis/README.md) for models, configuration files, saved-result reporting and TSHAP commands. [`ARCHITECTURE.md`](waveform_analysis/ARCHITECTURE.md) describes the software internals for maintainers.
+
+## Reproducibility scope
+
+The pipeline separates **control**, **development**, and **blind/test** data: control data determine preprocessing and timing-calibration rules, development data are used for model selection and fitting, and blind data are used for final evaluation. The repository provides source code, model configurations and tests, but not the large experimental acquisitions or an exact lockfile for every software dependency. Only the configuration and environment actually used for a particular experiment should be treated as its reproducibility record.
