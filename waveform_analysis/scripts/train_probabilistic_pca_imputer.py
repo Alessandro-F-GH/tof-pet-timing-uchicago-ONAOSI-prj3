@@ -471,7 +471,7 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
             repeated_batch = np.repeat(batch, n_draws, axis=0)
             corrected_samples = boundary_correct_batch(
                 samples.reshape(-1, width), repeated_batch, start, width,
-                boundary_strength, boundary_slope_points
+                strength, boundary_slope_points
             ).reshape(samples.shape)
             for j, event_id in enumerate(chosen):
                 fig, axes = plt.subplots(2, 1, figsize=(11, 7), height_ratios=(1, 1.2))
