@@ -114,6 +114,8 @@ def main():
     parser.add_argument("--comparison-metrics", type=Path,
                         help="Optional position_metrics.csv from the PPCA/interpolation blend experiment")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--normalization", choices=("scale_only", "zscore"), default="scale_only",
+                        help="scale_only preserves the positive signal baseline so zero-filled missing blocks are distinguishable")
     parser.add_argument("--val-fraction", type=float, default=0.15)
     args = parser.parse_args()
 
@@ -215,7 +217,7 @@ def main():
         f"selected={len(selected)} train={len(training_ids)} "
         f"validation={len(validation_ids)} evaluation={len(evaluation_ids)}; "
         f"original length={length}; coarse length={coarse_length}; "
-        f"downsample factor={args.downsample_factor}; mask={mask_width} samples "
+        f"normalization={args.normalization}; downsample factor={args.downsample_factor}; mask={mask_width} samples "
         f"({coarse_width} GP-VAE steps); aligned positions={len(aligned_positions)}; "
         f"evaluated positions={len(eval_positions)}; skipped unaligned positions={skipped}",
         flush=True,
@@ -226,10 +228,14 @@ def main():
     for det in range(2):
         print(f"\nDetector {det + 1}: preparing data", flush=True)
         coarse = coarse_all[:, det, :]
-        center = float(coarse[training_ids].mean())
+        # PyPOTS GP-VAE encodes X but does not pass missing_mask into the encoder.
+        # NaNs are replaced internally with zero, so z-scoring makes the missing
+        # marker coincide with the signal mean. By default preserve the positive
+        # waveform baseline and scale only, leaving zero as an out-of-range marker.
         scale = float(coarse[training_ids].std())
         if not np.isfinite(scale) or scale < 1e-8:
             raise ValueError(f"Invalid normalization scale for detector {det + 1}")
+        center = float(coarse[training_ids].mean()) if args.normalization == "zscore" else 0.0
         normalized = ((coarse - center) / scale).astype(np.float32)
 
         train_rng = np.random.default_rng(args.seed + 100 + det)
@@ -470,15 +476,18 @@ def main():
         epochs=args.epochs,
         patience=args.patience,
         device=device,
-        normalization=model_configs,
+        normalization_method=args.normalization,
+        normalization_parameters=model_configs,
         comparison_metrics=str(root_relative(args.comparison_metrics)) if args.comparison_metrics else None,
         note=(
             "Standard PyPOTS GP-VAE. Full temporal span retained after block averaging; "
-            "fine-scale fluctuations are not represented at model resolution. Training and "
-            "validation use randomly positioned contiguous masks. GP-VAE validation stopping "
-            "uses the package's native validation criterion, not masked RMSE. Original-grid "
-            "RMSE is computed after linear upsampling and should be interpreted as a coarse-model "
-            "reconstruction test, not a like-for-like full-resolution architecture comparison."
+            "fine-scale fluctuations are not represented at model resolution. PyPOTS GP-VAE "
+            "encoder consumes X without an explicit missing-mask input; NaNs are internally "
+            "zero-filled, so scale_only normalization preserves a positive waveform baseline "
+            "and makes zero-filled gaps more distinguishable. Training and validation use "
+            "randomly positioned contiguous masks. Native validation criterion is not masked "
+            "RMSE. Original-grid RMSE is computed after linear upsampling and is not a like-for-like "
+            "full-resolution architecture comparison."
         ),
     )
     (destination / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
