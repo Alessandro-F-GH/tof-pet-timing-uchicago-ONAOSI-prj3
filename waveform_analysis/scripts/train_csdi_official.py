@@ -150,7 +150,7 @@ def evaluate(model, waves, event_ids, positions, width, crop_len, samples, devic
                     code[all_starts.index(start)] = 1.
                     features = np.concatenate((context,code)).astype(np.float32)
                     predicted = mlp_models[det](torch.from_numpy(features[None]).to(device))
-                    sums[det,3] += np.square(predicted[0].cpu().numpy()-target[det]).sum()
+                    sums[det,3] += np.square(predicted[0].detach().cpu().numpy()-target[det]).sum()
                 interpolation = np.interp(np.arange(start,start+width),
                                           np.flatnonzero(known), waveform[det,known])
                 sums[det,2] += np.square(interpolation - target[det]).sum()
