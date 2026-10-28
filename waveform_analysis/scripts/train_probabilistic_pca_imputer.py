@@ -471,7 +471,7 @@ def main():
         parser.error("--components must be below the number of training events and samples")
     destination = (root_relative(args.output) if args.output else
                    ROOT / "waveform_analysis/imputation_experiments" /
-                   results.name / args.channel / "ppca_detector_specific")
+                   results.name / args.channel / "ppca_boundary_corrected")
     destination.mkdir(parents=True, exist_ok=True)
     print(f"Fitting PPCA on {len(training)} events per detector; "
           f"components={args.components}; full length={length}", flush=True)
@@ -503,7 +503,7 @@ def main():
         noise_variance=np.asarray([m.sigma2 for m in models]),
     )
     summary = dict(
-        method="probabilistic_pca_isotropic_factor_model",
+        method="ppca_with_cubic_boundary_correction_comparison",
         dataset_identity=manifest.get("analysis_protocol_identity"),
         source_run=str(source), channel=args.channel,
         selected_events=len(selected), training_events=len(training),
@@ -517,7 +517,7 @@ def main():
         detector_noise_variances=[float(m.sigma2) for m in models],
         detector_explained_variance_ratios=[m.explained_variance_ratio for m in models],
         mlp_status=status,
-        note="Marginal predictive coverage from finite draws. Isotropic PPCA residual noise.",
+        note="Compares raw PPCA with cubic Hermite boundary correction; coverage uses finite conditional draws. Isotropic PPCA residual noise.",
     )
     (destination / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Finished: {destination}", flush=True)
