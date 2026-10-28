@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train detector-specific 1D U-Nets with systematic wide-window masking.
+"""Train detector-specific fully-connected ReLU MLPs with systematic wide-window masking (128, 128 hidden units).
 
 From repository root:
     python -m waveform_analysis.scripts.train_wide_unet_imputer_detector_specific \
@@ -93,43 +93,24 @@ class MaskedWaveformDataset(Dataset):
         return torch.from_numpy(signal), torch.from_numpy(observed)
 
 
-class ConvBlock(nn.Module):
-    def __init__(self, cin, cout):
+class MaskedMLP(nn.Module):
+    """Fully connected 2*T -> 128 -> 128 -> T masked reconstruction."""
+    def __init__(self, length):
         super().__init__()
+        self.length = int(length)
         self.net = nn.Sequential(
-            nn.Conv1d(cin, cout, 7, padding=3), nn.GroupNorm(8, cout), nn.SiLU(),
-            nn.Conv1d(cout, cout, 7, padding=3), nn.GroupNorm(8, cout), nn.SiLU(),
+            nn.Linear(2 * self.length, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, self.length),
         )
 
-    def forward(self, x):
-        return self.net(x)
-
-
-class UNet1D(nn.Module):
-    def __init__(self, base=32):
-        super().__init__()
-        self.enc1 = ConvBlock(2, base)
-        self.enc2 = ConvBlock(base, 2 * base)
-        self.enc3 = ConvBlock(2 * base, 4 * base)
-        self.mid = ConvBlock(4 * base, 4 * base)
-        self.dec2 = ConvBlock(8 * base, 2 * base)
-        self.dec1 = ConvBlock(4 * base, base)
-        self.dec0 = ConvBlock(2 * base, base)
-        self.head = nn.Conv1d(base, 1, 1)
-        self.pool = nn.AvgPool1d(2)
-
     def forward(self, signal, observed):
-        z = torch.stack([signal * observed, observed], dim=1)
-        a = self.enc1(z)
-        b = self.enc2(self.pool(a))
-        c = self.enc3(self.pool(b))
-        h = self.mid(self.pool(c))
-        def up(x, ref):
-            return nn.functional.interpolate(x, size=ref.shape[-1], mode="linear", align_corners=False)
-        h = self.dec2(torch.cat([up(h, c), c], dim=1))
-        h = self.dec1(torch.cat([up(h, b), b], dim=1))
-        h = self.dec0(torch.cat([up(h, a), a], dim=1))
-        guess = self.head(h).squeeze(1)
+        if signal.shape != observed.shape or signal.shape[-1] != self.length:
+            raise ValueError("Unexpected waveform/mask shape")
+        z = torch.cat((signal * observed, observed), dim=-1)
+        guess = self.net(z)
         return signal * observed + guess * (1 - observed)
 
 
@@ -212,7 +193,7 @@ def train(args):
     val_events, train_events = selected[:val_size], selected[val_size:]
     destination = (root_relative(args.output) if args.output else
                    ROOT / "waveform_analysis" / "imputation_experiments" /
-                   results.name / args.channel / "detector_specific")
+                   results.name / args.channel / "detector_specific_mlp")
     destination.mkdir(parents=True, exist_ok=True)
     positions = len(MaskedWaveformDataset(waves, [train_events[0]], 0, mask_len, stride).starts)
     print(f"Device: {device} | {num_events:,} development events | samples={samples:,}", flush=True)
@@ -241,7 +222,7 @@ def train(args):
                                   num_workers=0, pin_memory=device.type == "cuda")
         val_loader = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False,
                                 num_workers=0, pin_memory=device.type == "cuda")
-        model = UNet1D(args.base).to(device)
+        model = MaskedMLP(samples).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         best, remaining, history = float("inf"), args.patience, []
         print(f"\n=== {label} | {len(train_loader)} train / {len(val_loader)} validation batches ===", flush=True)
@@ -273,7 +254,7 @@ def train(args):
                   f"| val={val_error:.6f} | elapsed={time.perf_counter()-start:.1f}s", flush=True)
             if val_error < best - 1e-6:
                 best, remaining = val_error, args.patience
-                torch.save(dict(state_dict=model.state_dict(), base=args.base,
+                torch.save(dict(state_dict=model.state_dict(), architecture='mlp_relu_128_128',
                                 channel=args.channel, detector=detector + 1,
                                 length=samples, mask_samples=mask_len, dt_ps=dt_ps,
                                 dataset_identity=manifest.get("analysis_protocol_identity")),
@@ -316,7 +297,6 @@ def main():
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--log-every", type=int, default=50)
-    parser.add_argument("--base", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-fraction", type=float, default=.15)
     parser.add_argument("--seed", type=int, default=42)
@@ -324,8 +304,6 @@ def main():
     args = parser.parse_args()
     if args.max_events is not None and args.max_events < 10:
         parser.error("--max-events must be at least 10")
-    if args.base < 8 or args.base % 8:
-        parser.error("--base must be a multiple of 8")
     if args.mask_stride_samples is not None and args.mask_stride_samples < 1:
         parser.error("--mask-stride-samples must be positive")
     if args.mask_ns <= 0 or args.lr <= 0 or not 0 < args.val_fraction < 1:
