@@ -118,11 +118,12 @@ def config_from_args(args):
     )
 
 
-def evaluate(model, waves, event_ids, positions, width, crop_len, samples, device, outdir):
+def evaluate(model, waves, event_ids, positions, width, crop_len, samples, device, outdir, mlp_models=None, all_starts=None):
     """Evaluate original-resolution masked samples; average generated draws before RMSE."""
     rows = []
+    mlp_models = mlp_models or {}
     for label, start in positions:
-        sums = np.zeros((2, 3), dtype=np.float64)
+        sums = np.zeros((2, 4), dtype=np.float64)
         cover = np.zeros((2, 2), dtype=np.float64)
         n = 0
         for event_id in event_ids:
@@ -143,6 +144,13 @@ def evaluate(model, waves, event_ids, positions, width, crop_len, samples, devic
             known = np.ones(len(waveform[0]), dtype=bool)
             known[start:start+width] = False
             for det in range(2):
+                if det in mlp_models:
+                    context = np.concatenate((waveform[det,:start], waveform[det,start+width:]))
+                    code = np.zeros(len(all_starts),dtype=np.float32)
+                    code[all_starts.index(start)] = 1.
+                    features = np.concatenate((context,code)).astype(np.float32)
+                    predicted = mlp_models[det](torch.from_numpy(features[None]).to(device))
+                    sums[det,3] += np.square(predicted[0].cpu().numpy()-target[det]).sum()
                 interpolation = np.interp(np.arange(start,start+width),
                                           np.flatnonzero(known), waveform[det,known])
                 sums[det,2] += np.square(interpolation - target[det]).sum()
@@ -157,6 +165,7 @@ def evaluate(model, waves, event_ids, positions, width, crop_len, samples, devic
                              csdi_mean_rmse=float(np.sqrt(sums[det,0]/n)),
                              csdi_draw_rmse=float(np.sqrt(sums[det,1]/n)),
                              interpolation_rmse=float(np.sqrt(sums[det,2]/n)),
+                             mlp_rmse=(float(np.sqrt(sums[det,3]/n)) if det in mlp_models else None),
                              coverage_50=float(cover[det,0]/n),
                              coverage_90=float(cover[det,1]/n)))
     with (outdir/"evaluation.csv").open("w",newline="",encoding="utf-8") as f:
@@ -281,8 +290,35 @@ def main():
                          ("final_window",float(time_ps[-1]))):
         desired=max(0,min(int(np.argmin(abs(time_ps-center)))-width//2,length-width))
         regions.append((label,int(indices[np.argmin(abs(indices-desired))])))
+    default_mlp = (
+        ROOT/"waveform_analysis"/"imputation_experiments"/results.name/
+        args.channel/"detector_specific_mlp"
+    )
+    mlp_models = {}
+    mlp_status = {}
+    for det in range(2):
+        p = default_mlp/f"detector_{det+1}"/"best.pt"
+        if not p.is_file():
+            mlp_status[f"detector_{det+1}"] = "checkpoint not found"
+            continue
+        saved = torch.load(p,map_location="cpu",weights_only=True)
+        compatible = (
+            saved.get("architecture") == "mlp_relu_128_128_masked_output"
+            and saved.get("length") == length
+            and saved.get("mask_samples") == width
+            and saved.get("mask_positions") == len(starts)
+            and saved.get("dataset_identity") == manifest.get("analysis_protocol_identity")
+        )
+        if not compatible:
+            mlp_status[f"detector_{det+1}"] = "incompatible checkpoint; skipped"
+            continue
+        mlp = MaskedMLP(length-width,width,len(starts)).to(device)
+        mlp.load_state_dict(saved["state_dict"])
+        mlp.eval()
+        mlp_models[det] = mlp
+        mlp_status[f"detector_{det+1}"] = "loaded"
     rows=evaluate(model,waves,val_ids[:args.eval_events],regions,width,args.crop_samples,
-                  args.eval_samples,device,outdir)
+                  args.eval_samples,device,outdir,mlp_models,starts)
     summary=dict(architecture="official_CSDI_Transformer",upstream="ermongroup/CSDI",
                  adaptation="local waveform crops and fixed contiguous paired mask",
                  tshap_integration=False,source_run=str(source),channel=args.channel,
@@ -290,7 +326,7 @@ def main():
                  train_events=len(train_ids),validation_events=len(val_ids),
                  eval_events=min(args.eval_events,len(val_ids)),
                  eval_samples=args.eval_samples,checkpoint=str(best_file),
-                 metrics=rows)
+                 mlp_baseline_status=mlp_status,metrics=rows)
     (outdir/"summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
     print(f"Finished; outputs: {outdir}",flush=True)
 
