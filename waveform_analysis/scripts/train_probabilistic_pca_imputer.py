@@ -107,6 +107,79 @@ class ProbabilisticPCA:
         )
         return mean[0], draws[0]
 
+
+def estimate_boundary_slopes(signals, start, stop, points):
+    """Estimate boundary slopes by least-squares fits to nearby observed samples."""
+    signals = np.asarray(signals, dtype=np.float64)
+    length = signals.shape[1]
+    left_slope = right_slope = None
+    if start >= 2:
+        idx = np.arange(max(0, start - points), start)
+        if len(idx) >= 2:
+            centered = idx.astype(np.float64) - idx.mean()
+            left_slope = (signals[:, idx] @ centered) / np.dot(centered, centered)
+    if stop + 1 < length:
+        idx = np.arange(stop, min(length, stop + points))
+        if len(idx) >= 2:
+            centered = idx.astype(np.float64) - idx.mean()
+            right_slope = (signals[:, idx] @ centered) / np.dot(centered, centered)
+    return left_slope, right_slope
+
+
+def boundary_correct_batch(predictions, signals, start, width,
+                           strength=1.0, slope_points=5):
+    """Apply cubic Hermite correction matching extrapolated boundary values/slopes."""
+    pred = np.asarray(predictions, dtype=np.float64)
+    signals = np.asarray(signals, dtype=np.float64)
+    if strength <= 0 or width < 3:
+        return pred.copy()
+    stop = start + width
+    left_slope, right_slope = estimate_boundary_slopes(
+        signals, start, stop, slope_points
+    )
+    d0 = np.zeros(len(pred), dtype=np.float64)
+    d1 = np.zeros(len(pred), dtype=np.float64)
+    m0 = np.zeros(len(pred), dtype=np.float64)
+    m1 = np.zeros(len(pred), dtype=np.float64)
+    if left_slope is not None:
+        d0 = signals[:, start - 1] + left_slope - pred[:, 0]
+        m0 = (width - 1) * (left_slope - (pred[:, 1] - pred[:, 0]))
+    if right_slope is not None:
+        d1 = signals[:, stop] - right_slope - pred[:, -1]
+        m1 = (width - 1) * (right_slope - (pred[:, -1] - pred[:, -2]))
+
+    u = np.linspace(0.0, 1.0, width, dtype=np.float64)[None, :]
+    h00 = 2 * u**3 - 3 * u**2 + 1
+    h10 = u**3 - 2 * u**2 + u
+    h01 = -2 * u**3 + 3 * u**2
+    h11 = u**3 - u**2
+    correction = (
+        d0[:, None] * h00 + m0[:, None] * h10
+        + d1[:, None] * h01 + m1[:, None] * h11
+    )
+    return pred + float(strength) * correction
+
+
+def boundary_slope_error(predictions, signals, start, width, slope_points=5):
+    """Squared mismatch of imputed boundary-crossing slopes, and count."""
+    pred = np.asarray(predictions, dtype=np.float64)
+    signals = np.asarray(signals, dtype=np.float64)
+    stop = start + width
+    left_slope, right_slope = estimate_boundary_slopes(
+        signals, start, stop, slope_points
+    )
+    sse = 0.0
+    count = 0
+    if left_slope is not None:
+        error = (pred[:, 0] - signals[:, start - 1]) - left_slope
+        sse += float(np.square(error).sum())
+        count += len(pred)
+    if right_slope is not None:
+        error = (signals[:, stop] - pred[:, -1]) - right_slope
+        sse += float(np.square(error).sum())
+        count += len(pred)
+    return sse, count
+
 def load_mlp_models(results, channel, length, width, starts, identity):
     root = (ROOT / "waveform_analysis/imputation_experiments" /
             results.name / channel / "detector_specific_mlp")
