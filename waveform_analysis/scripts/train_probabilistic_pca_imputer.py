@@ -208,7 +208,8 @@ def load_mlp_models(results, channel, length, width, starts, identity):
 
 @torch.no_grad()
 def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_models,
-             destination, seed, batch_size=128):
+             destination, seed, batch_size=128, boundary_strength=1.0,
+             boundary_slope_points=5):
     rows = []
     rng = np.random.default_rng(seed + 567)
     validation = np.asarray(validation, dtype=np.int64)
@@ -217,12 +218,14 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
         raise ValueError("batch_size must be positive")
     for position_idx, start in enumerate(starts):
         stop = start + width
-        totals = np.zeros((2, 4), dtype=np.float64)
-        coverage = np.zeros((2, 2), dtype=np.float64)
+        # raw mean, raw draws, interpolation, MLP, corrected mean, corrected draws
+        totals = np.zeros((2, 6), dtype=np.float64)
+        coverage = np.zeros((2, 2, 2), dtype=np.float64)
+        slope_sse = np.zeros((2, 2), dtype=np.float64)
+        slope_count = np.zeros((2, 2), dtype=np.float64)
         for det in range(2):
             model = models[det]
             prepared = model.prepare_mask(start, width)
-            observed = prepared[0]
             code = np.zeros(len(starts), dtype=np.float32)
             code[position_idx] = 1.
             for offset in range(0, len(validation), batch_size):
@@ -232,20 +235,29 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
                 mu, generated = model.condition_batch(
                     signals, start, width, draws, rng, prepared=prepared
                 )
+                corrected_mu = boundary_correct_batch(
+                    mu, signals, start, width, boundary_strength, boundary_slope_points
+                )
+                repeated_signals = np.repeat(signals, draws, axis=0)
+                corrected_generated = boundary_correct_batch(
+                    generated.reshape(-1, width), repeated_signals, start, width,
+                    boundary_strength, boundary_slope_points
+                ).reshape(generated.shape)
+
                 totals[det, 0] += np.square(mu - truth).sum()
                 totals[det, 1] += np.square(generated - truth[:, None, :]).sum() / draws
-                # The gap is contiguous. np.interp uses constant extrapolation
-                # for intervals at either boundary.
-                sample_positions = np.arange(start, stop)[None, :]
+                totals[det, 4] += np.square(corrected_mu - truth).sum()
+                totals[det, 5] += np.square(corrected_generated - truth[:, None, :]).sum() / draws
+
                 if start == 0:
                     interpolated = np.broadcast_to(signals[:, stop, None], truth.shape)
                 elif stop == length:
                     interpolated = np.broadcast_to(signals[:, start - 1, None], truth.shape)
                 else:
-                    alpha = (sample_positions - (start - 1)) / (width + 1.)
+                    alpha = (np.arange(start, stop) - (start - 1)) / (width + 1.)
                     interpolated = (
-                        signals[:, start - 1, None] * (1. - alpha)
-                        + signals[:, stop, None] * alpha
+                        signals[:, start - 1, None] * (1. - alpha[None, :])
+                        + signals[:, stop, None] * alpha[None, :]
                     )
                 totals[det, 2] += np.square(interpolated - truth).sum()
                 if det in mlp_models:
@@ -256,17 +268,23 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
                         (context, np.broadcast_to(code[None], (len(ids), len(starts)))),
                         axis=1
                     )
-                    prediction = mlp_models[det](
-                        torch.from_numpy(features)
-                    ).numpy()
+                    prediction = mlp_models[det](torch.from_numpy(features)).numpy()
                     totals[det, 3] += np.square(prediction - truth).sum()
-                # Same empirical quantile definition as the previous evaluator.
-                for j, level in enumerate((.5, .9)):
-                    lower = np.quantile(generated, (1. - level) / 2., axis=1)
-                    upper = np.quantile(generated, (1. + level) / 2., axis=1)
-                    coverage[det, j] += np.count_nonzero(
-                        (truth >= lower) & (truth <= upper)
+
+                for variant, samples_array in enumerate((generated, corrected_generated)):
+                    for j, level in enumerate((.5, .9)):
+                        lower = np.quantile(samples_array, (1. - level) / 2., axis=1)
+                        upper = np.quantile(samples_array, (1. + level) / 2., axis=1)
+                        coverage[det, variant, j] += np.count_nonzero(
+                            (truth >= lower) & (truth <= upper)
+                        )
+                for variant, prediction in enumerate((mu, corrected_mu)):
+                    sse, count = boundary_slope_error(
+                        prediction, signals, start, width, boundary_slope_points
                     )
+                    slope_sse[det, variant] += sse
+                    slope_count[det, variant] += count
+
         n = len(validation) * width
         for det in range(2):
             rows.append(dict(
@@ -275,12 +293,19 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
                 evaluation_events=len(validation), conditional_samples=draws,
                 ppca_mean_rmse=float(np.sqrt(totals[det, 0] / n)),
                 ppca_draw_rmse=float(np.sqrt(totals[det, 1] / n)),
+                boundary_corrected_mean_rmse=float(np.sqrt(totals[det, 4] / n)),
+                boundary_corrected_draw_rmse=float(np.sqrt(totals[det, 5] / n)),
                 interpolation_rmse=float(np.sqrt(totals[det, 2] / n)),
                 mlp_rmse=float(np.sqrt(totals[det, 3] / n)) if det in mlp_models else None,
-                coverage_50=float(coverage[det, 0] / n),
-                coverage_90=float(coverage[det, 1] / n),
+                ppca_slope_mismatch_rmse=float(np.sqrt(slope_sse[det, 0] / max(slope_count[det, 0], 1))),
+                boundary_corrected_slope_mismatch_rmse=float(np.sqrt(slope_sse[det, 1] / max(slope_count[det, 1], 1))),
+                coverage_50=float(coverage[det, 0, 0] / n),
+                coverage_90=float(coverage[det, 0, 1] / n),
+                boundary_coverage_50=float(coverage[det, 1, 0] / n),
+                boundary_coverage_90=float(coverage[det, 1, 1] / n),
             ))
         print(f"Position {position_idx+1}/{len(starts)} evaluated", flush=True)
+
     with (destination / "position_metrics.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -292,6 +317,7 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
         times = [r["start_ns"] for r in matching]
         for key, label in (
             ("ppca_mean_rmse", "PPCA conditional mean"),
+            ("boundary_corrected_mean_rmse", "Boundary-corrected PPCA"),
             ("interpolation_rmse", "Interpolation"),
             ("mlp_rmse", "MLP"),
         ):
