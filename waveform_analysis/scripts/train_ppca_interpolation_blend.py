@@ -278,7 +278,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--max-events", type=int, default=5000)
     parser.add_argument("--components", type=int, default=32)
-    parser.add_argument("--mask-ns", type=float, default=1.0)
+    parser.add_argument("--mask-ns", type=float, default=0.25)
     parser.add_argument("--mask-stride-samples", type=int)
     parser.add_argument("--eval-events", type=int, default=100)
     parser.add_argument("--tuning-events", type=int, default=500)
