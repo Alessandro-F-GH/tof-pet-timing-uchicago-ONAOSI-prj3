@@ -558,6 +558,129 @@ def evaluate_reconstructions(
     return all_metrics
 
 
+
+@torch.no_grad()
+def evaluate_position_scan(model, waves, eval_events, time_ps, starts, mask_len,
+                           device, n_samples, eval_batch_size, mlp_models, output_dir):
+    """Complete mask-position comparison with bounded memory use.
+
+    All methods use identical events and masks. Aggregate over events and
+    masked time samples; coverage is an empirical marginal predictive-interval
+    diagnostic and is not a guarantee of joint waveform calibration.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model.eval()
+    eval_events = np.asarray(eval_events, dtype=np.int64)
+    results = []
+    for index, start in enumerate(starts):
+        stop = start + mask_len
+        errors = np.zeros((2, 4), dtype=np.float64)  # mean, draw, MLP, interpolation
+        coverage = np.zeros((2, 2), dtype=np.float64)  # 50%, 90%
+        widths = np.zeros((2, 2), dtype=np.float64)
+        mlp_count = np.zeros(2, dtype=np.int64)
+        num_points = len(eval_events) * mask_len
+        for offset in range(0, len(eval_events), eval_batch_size):
+            event_ids = eval_events[offset:offset + eval_batch_size]
+            data = np.stack([
+                np.asarray(waves[int(e)], dtype=np.float32) for e in event_ids
+            ])
+            batch = torch.from_numpy(data.copy()).to(device)
+            condition = torch.ones_like(batch)
+            condition[:, :, start:stop] = 0.0
+            samples = model.sample(batch, condition, n_samples)
+            truth = data[:, :, start:stop]
+            draws = samples[:, :, :, start:stop].cpu().numpy()
+            mean = draws.mean(axis=1)
+            errors[:, 0] += ((mean - truth) ** 2).sum(axis=(0, 2))
+            errors[:, 1] += ((draws - truth[:, None, :, :]) ** 2).sum(axis=(0, 1, 3)) / n_samples
+            for j, q in enumerate((0.5, 0.9)):
+                low = np.quantile(draws, (1 - q) / 2, axis=1)
+                high = np.quantile(draws, (1 + q) / 2, axis=1)
+                coverage[:, j] += ((truth >= low) & (truth <= high)).sum(axis=(0, 2))
+                widths[:, j] += (high - low).sum(axis=(0, 2))
+            # np.interp uses constant endpoint extension for boundary masks.
+            known = np.ones(data.shape[-1], dtype=bool)
+            known[start:stop] = False
+            for detector in range(2):
+                for b in range(len(data)):
+                    signal = data[b, detector]
+                    interp = np.interp(
+                        np.arange(len(signal)), np.flatnonzero(known), signal[known]
+                    )[start:stop]
+                    errors[detector, 3] += np.square(interp - truth[b, detector]).sum()
+                if detector in mlp_models:
+                    context = np.concatenate(
+                        (data[:, detector, :start], data[:, detector, stop:]), axis=-1
+                    )
+                    one_hot = np.zeros((len(data), len(starts)), dtype=np.float32)
+                    one_hot[:, index] = 1.0
+                    model_input = torch.from_numpy(
+                        np.concatenate((context, one_hot), axis=-1)
+                    ).to(device)
+                    prediction = mlp_models[detector](model_input).cpu().numpy()
+                    errors[detector, 2] += np.square(prediction - truth[:, detector]).sum()
+                    mlp_count[detector] += len(data) * mask_len
+        for detector in range(2):
+            results.append(dict(
+                detector=detector + 1, mask_position=index,
+                mask_start_sample=int(start),
+                mask_start_ns=float(time_ps[start] / 1000),
+                n_events=len(eval_events), n_samples=n_samples,
+                csdi_mean_rmse=float(np.sqrt(errors[detector, 0] / num_points)),
+                csdi_draw_rmse=float(np.sqrt(errors[detector, 1] / num_points)),
+                mlp_rmse=(float(np.sqrt(errors[detector, 2] / mlp_count[detector]))
+                          if mlp_count[detector] else None),
+                interpolation_rmse=float(np.sqrt(errors[detector, 3] / num_points)),
+                coverage_50=float(coverage[detector, 0] / num_points),
+                coverage_90=float(coverage[detector, 1] / num_points),
+                interval_width_50=float(widths[detector, 0] / num_points),
+                interval_width_90=float(widths[detector, 1] / num_points),
+            ))
+        print(
+            f"Position {index + 1}/{len(starts)} at {float(time_ps[start] / 1000):.2f} ns done",
+            flush=True,
+        )
+
+    fieldnames = list(results[0])
+    with (output_dir / "position_metrics.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+    for detector in range(2):
+        ax = axes[detector]
+        rows = [r for r in results if r["detector"] == detector + 1]
+        x = [r["mask_start_ns"] for r in rows]
+        for key, label in (
+            ("csdi_mean_rmse", "CSDI conditional mean"),
+            ("mlp_rmse", "MLP"),
+            ("interpolation_rmse", "Interpolation"),
+        ):
+            if all(r[key] is not None for r in rows):
+                ax.plot(x, [r[key] for r in rows], label=label, linewidth=1.2)
+        ax.set_ylabel(f"Detector {detector + 1} RMSE")
+        ax.grid(alpha=0.25)
+        ax.legend()
+    axes[1].set_xlabel("Mask start time (ns)")
+    fig.tight_layout()
+    fig.savefig(output_dir / "rmse_by_position.png", dpi=180)
+    fig.savefig(output_dir / "rmse_by_position.pdf")
+    plt.close(fig)
+    summary = dict(
+        n_events=len(eval_events), n_positions=len(starts), n_samples=n_samples,
+        metric_note="RMSE averaged over held-out events and masked samples at each position",
+        calibration_note="50%/90% marginal quantile coverage estimated from finite diffusion samples",
+        baseline_note="Interpolation has constant endpoint extension at boundary masks",
+        position_metrics=results,
+    )
+    (output_dir / "evaluation_summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+    return results
+
+
 def train(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -608,6 +731,62 @@ def train(args):
         f"validation examples={len(val_events):,}", flush=True
     )
     print(f"Output: {destination}", flush=True)
+
+    if args.evaluate_only:
+        checkpoint_path = root_relative(args.checkpoint) if args.checkpoint else destination / "best.pt"
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        if checkpoint.get("architecture") != "csdi_conditional_ddpm_dilated_depthwise_conv":
+            raise ValueError("Unsupported checkpoint architecture")
+        if checkpoint.get("dataset_identity") != manifest.get("analysis_protocol_identity"):
+            raise ValueError("Prepared dataset identity differs from checkpoint")
+        if int(checkpoint["length"]) != length or int(checkpoint["mask_samples"]) != mask_len:
+            raise ValueError("Waveform length or mask width differs from checkpoint")
+        if int(checkpoint["mask_stride_samples"]) != (args.mask_stride_samples or mask_len):
+            raise ValueError("Mask stride differs from checkpoint")
+        if int(checkpoint["mask_positions"]) != len(starts):
+            raise ValueError("Mask positions differ from checkpoint")
+        if "seed" in checkpoint and int(checkpoint["seed"]) != args.seed:
+            raise ValueError("Split seed differs from checkpoint; pass the training --seed")
+        # A different event cap would change the original event-level split.
+        existing_summary_path = destination / "summary.json"
+        if existing_summary_path.is_file():
+            existing_summary = json.loads(existing_summary_path.read_text(encoding="utf-8"))
+            if (int(existing_summary.get("selected_events", -1)) != len(selected)
+                    or int(existing_summary.get("validation_events", -1)) != len(val_events)):
+                raise ValueError("Event selection differs from the original training split")
+        model = CSDIImputer(
+            length=length,
+            hidden_channels=int(checkpoint["hidden_channels"]),
+            residual_layers=int(checkpoint["residual_layers"]),
+            diffusion_steps=int(checkpoint["diffusion_steps"]),
+            beta_start=float(checkpoint["beta_start"]),
+            beta_end=float(checkpoint["beta_end"]),
+            beta_schedule=checkpoint["beta_schedule"],
+            diffusion_dim=int(checkpoint["diffusion_embedding_dim"]),
+            time_dim=int(checkpoint["time_embedding_dim"]),
+        ).to(device)
+        model.load_state_dict(checkpoint["state_dict"])
+        model.eval()
+        default_mlp_root = (
+            ROOT / "waveform_analysis" / "imputation_experiments"
+            / results.name / args.channel / "detector_specific_mlp"
+        )
+        mlp_root = root_relative(args.mlp_root) if args.mlp_root else default_mlp_root
+        mlp_models, statuses = load_mlp_baselines(
+            mlp_root, length, mask_len, starts,
+            manifest.get("analysis_protocol_identity"), device
+        )
+        print(f"MLP status: {statuses}", flush=True)
+        # Separate output keeps existing training files and examples untouched.
+        evaluation_dir = root_relative(args.eval_output) if args.eval_output else destination / "evaluation"
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+        eval_events = val_events[:min(args.eval_events, len(val_events))]
+        evaluate_position_scan(
+            model, waves, eval_events, time_ps, starts, mask_len, device,
+            args.eval_samples, args.eval_batch_size, mlp_models, evaluation_dir
+        )
+        print(f"Evaluation finished: {evaluation_dir}", flush=True)
+        return
 
     train_ds = EventMaskDataset(
         waves, train_events, starts, random_masks=True,
@@ -832,7 +1011,10 @@ def main():
     parser.add_argument("--beta-end", type=float, default=0.5)
     parser.add_argument("--beta-schedule", choices=("quad", "linear"), default="quad")
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--eval-events", type=int, default=12)
+    parser.add_argument("--evaluate-only", action="store_true")
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--eval-output", type=Path)
+    parser.add_argument("--eval-events", type=int, default=100)
     parser.add_argument("--eval-samples", type=int, default=4)
     parser.add_argument("--eval-batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
