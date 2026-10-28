@@ -236,7 +236,8 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
 
 
 def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
-                             destination, seed, n_events=3, n_draws=5):
+                             destination, seed, n_events=3, n_draws=5,
+                             boundary_strength=1.0, boundary_slope_points=5):
     """Show true, masked and PPCA-imputed waveforms at informative mask positions.
 
     Choose masks nearest 0 ns, 20 ns and a smoother late region. A reproducible
@@ -264,6 +265,14 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
             mean, samples = model.condition_batch(
                 batch, start, width, n_draws, rng, prepared=prepared
             )
+            corrected_mean = boundary_correct_batch(
+                mean, batch, start, width, boundary_strength, boundary_slope_points
+            )
+            repeated_batch = np.repeat(batch, n_draws, axis=0)
+            corrected_samples = boundary_correct_batch(
+                samples.reshape(-1, width), repeated_batch, start, width,
+                boundary_strength, boundary_slope_points
+            ).reshape(samples.shape)
             for j, event_id in enumerate(chosen):
                 fig, axes = plt.subplots(2, 1, figsize=(11, 7), height_ratios=(1, 1.2))
                 original = batch[j]
@@ -271,6 +280,8 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
                 masked[start:stop] = np.nan
                 reconstructed = original.copy()
                 reconstructed[start:stop] = mean[j]
+                boundary_reconstructed = original.copy()
+                boundary_reconstructed[start:stop] = corrected_mean[j]
                 for ax, zoom in zip(axes, (False, True)):
                     if zoom:
                         left = max(0, start - 2 * width)
@@ -283,13 +294,20 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
                     ax.plot(times[segment], masked[segment], color="tab:gray",
                             lw=1, ls="--", label="Observed (masked)")
                     ax.plot(times[segment], reconstructed[segment], color="tab:blue",
-                            lw=1.5, label="PPCA conditional mean")
+                            lw=1.4, label="PPCA conditional mean")
+                    ax.plot(times[segment], boundary_reconstructed[segment], color="tab:green",
+                            lw=1.5, label="Boundary-corrected mean")
                     for k in range(n_draws):
                         imputed = original.copy()
                         imputed[start:stop] = samples[j, k]
                         ax.plot(times[segment], imputed[segment], color="tab:orange",
-                                lw=.8, alpha=.3,
-                                label="Conditional samples" if k == 0 else None)
+                                lw=.7, alpha=.22,
+                                label="Raw conditional samples" if k == 0 else None)
+                        imputed_corrected = original.copy()
+                        imputed_corrected[start:stop] = corrected_samples[j, k]
+                        ax.plot(times[segment], imputed_corrected[segment], color="tab:purple",
+                                lw=.7, alpha=.22,
+                                label="Corrected samples" if k == 0 else None)
                     ax.axvspan(times[start], times[stop - 1],
                                color="tab:red", alpha=.08, label="1 ns mask")
                     ax.set_ylabel("Normalized signal")
@@ -324,12 +342,18 @@ def main():
     parser.add_argument("--plot-examples", type=int, default=3,
                         help="Held-out events to plot for each detector/region (0 disables)")
     parser.add_argument("--example-draws", type=int, default=5)
+    parser.add_argument("--boundary-correction-strength", type=float, default=1.0,
+                        help="Cubic boundary correction strength in [0, 1]; 0 disables")
+    parser.add_argument("--boundary-slope-points", type=int, default=5,
+                        help="Observed samples per side for local linear slope estimates")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-fraction", type=float, default=.15)
     args = parser.parse_args()
     if (args.max_events < 10 or args.components < 1 or args.eval_events < 1
         or args.draws < 1 or args.eval_batch_size < 1 or args.plot_examples < 0
         or args.example_draws < 1 or args.mask_ns <= 0 or not 0 < args.val_fraction < 1
+        or not 0 <= args.boundary_correction_strength <= 1
+        or args.boundary_slope_points < 2
         or args.mask_stride_samples is not None and args.mask_stride_samples < 1):
         parser.error("Invalid parameter")
     results = root_relative(args.results)
@@ -365,11 +389,14 @@ def main():
     )
     evaluation = validation[:min(len(validation), args.eval_events)]
     rows = evaluate(models, waves, evaluation, starts, width, np.asarray(time_ps),
-                    args.draws, mlp, destination, args.seed, args.eval_batch_size)
+                    args.draws, mlp, destination, args.seed, args.eval_batch_size,
+                    args.boundary_correction_strength, args.boundary_slope_points)
     if args.plot_examples:
         plot_imputation_examples(models, waves, evaluation, starts, width,
                                  time_ps, destination, args.seed,
-                                 args.plot_examples, args.example_draws)
+                                 args.plot_examples, args.example_draws,
+                                 args.boundary_correction_strength,
+                                 args.boundary_slope_points)
     np.savez_compressed(
         destination / "model.npz",
         mean=np.stack([m.mean for m in models]),
@@ -386,6 +413,8 @@ def main():
         components=args.components, draws=args.draws, seed=args.seed,
         evaluation_batch_size=args.eval_batch_size,
         plot_examples=args.plot_examples, example_draws=args.example_draws,
+        boundary_correction_strength=args.boundary_correction_strength,
+        boundary_slope_points=args.boundary_slope_points,
         detector_noise_variances=[float(m.sigma2) for m in models],
         detector_explained_variance_ratios=[m.explained_variance_ratio for m in models],
         mlp_status=status,
