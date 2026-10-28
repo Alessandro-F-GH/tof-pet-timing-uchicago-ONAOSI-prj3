@@ -81,16 +81,16 @@
   },
   "sweep": {
     "models": [
-      "direct_linear_ridge",
-      "shared_linear_ridge"
-    ],
+      "direct_linear_ridge"
+        ],
     "modes": [
+      "energy_to_energy",
       "timing_to_timing"
     ],
     "windows": {
-      "onishi": {
-        "start": -1.5,
-        "end": 2.0
+      "wide": {
+        "start": -2,
+        "end": 60.0
       }
     }
   }
