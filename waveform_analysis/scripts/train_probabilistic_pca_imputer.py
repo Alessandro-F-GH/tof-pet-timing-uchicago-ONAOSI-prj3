@@ -64,33 +64,48 @@ class ProbabilisticPCA:
         self.explained_variance_ratio = float(pca.explained_variance_ratio_.sum())
         return self
 
-    def condition(self, waveform, start, width, samples, rng):
-        """Return posterior mean and draws for the missing interval."""
-        if samples < 1:
-            raise ValueError("samples must be >= 1")
+    def prepare_mask(self, start, width):
+        """Cache the mask-specific posterior and predictive covariance factors."""
         stop = start + width
         if start < 0 or stop > len(self.mean):
-            raise ValueError("Invalid interval")
-        obs = np.ones(len(self.mean), dtype=bool)
-        obs[start:stop] = False
-        W_o, W_m = self.W[obs], self.W[start:stop]
-        observed = np.asarray(waveform, dtype=np.float64)[obs] - self.mean[obs]
-        # Posterior precision: I + W_O^T W_O/sigma^2
+            raise ValueError("Invalid mask")
+        observed = np.ones(len(self.mean), dtype=bool)
+        observed[start:stop] = False
+        W_o, W_m = self.W[observed], self.W[start:stop]
         precision = np.eye(self.components) + W_o.T @ W_o / self.sigma2
         factor = np.linalg.cholesky(precision)
-        rhs = W_o.T @ observed / self.sigma2
-        posterior_mean = np.linalg.solve(factor.T, np.linalg.solve(factor, rhs))
-        missing_mean = self.mean[start:stop] + W_m @ posterior_mean
-        # Sigma_z = L^{-T} L^{-1}; draw z using L^{-T} standard_normal.
-        latent_noise = np.linalg.solve(
-            factor.T, rng.standard_normal((self.components, samples))
-        ).T
-        predicted = (
-            missing_mean[None, :] + latent_noise @ W_m.T
-            + rng.normal(0., np.sqrt(self.sigma2), size=(samples, width))
-        )
-        return missing_mean, predicted
+        # Missing mean = mu_M + (x_O - mu_O) @ coefficient_map
+        # Solve with multiple RHS once, not once per event.
+        coefficient_map = np.linalg.solve(
+            factor.T, np.linalg.solve(factor, W_o.T / self.sigma2)
+        ).T @ W_m.T
+        # Integrate out z: x_M|x_O ~ N(mean_M, W_M Cov(z|x_O) W_M^T + sigma²I)
+        latent_to_missing = np.linalg.solve(factor, W_m.T)
+        covariance = latent_to_missing.T @ latent_to_missing
+        covariance.flat[::width + 1] += self.sigma2
+        sampling_factor = np.linalg.cholesky(covariance)
+        return observed, coefficient_map, sampling_factor
 
+    def condition_batch(self, waveforms, start, width, samples, rng, prepared=None):
+        """Batch means and exact Gaussian conditional draws, shape [events, draws, width]."""
+        if samples < 1:
+            raise ValueError("samples must be >= 1")
+        observed, coefficient_map, sampling_factor = (
+            prepared if prepared is not None else self.prepare_mask(start, width)
+        )
+        batch = np.asarray(waveforms, dtype=np.float64)
+        mean = self.mean[start:start + width] + (
+            batch[:, observed] - self.mean[observed]
+        ) @ coefficient_map
+        random = rng.standard_normal((len(batch), samples, width))
+        draws = mean[:, None, :] + random @ sampling_factor.T
+        return mean, draws
+
+    def condition(self, waveform, start, width, samples, rng):
+        mean, draws = self.condition_batch(
+            np.asarray(waveform)[None], start, width, samples, rng
+        )
+        return mean[0], draws[0]
 
 def load_mlp_models(results, channel, length, width, starts, identity):
     root = (ROOT / "waveform_analysis/imputation_experiments" /
@@ -120,40 +135,65 @@ def load_mlp_models(results, channel, length, width, starts, identity):
 
 @torch.no_grad()
 def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_models,
-             destination, seed):
+             destination, seed, batch_size=128):
     rows = []
     rng = np.random.default_rng(seed + 567)
+    validation = np.asarray(validation, dtype=np.int64)
     length = len(time_ps)
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     for position_idx, start in enumerate(starts):
         stop = start + width
-        observed = np.ones(length, dtype=bool)
-        observed[start:stop] = False
         totals = np.zeros((2, 4), dtype=np.float64)
         coverage = np.zeros((2, 2), dtype=np.float64)
-        for event_id in validation:
-            for det in range(2):
-                signal = np.asarray(waves[int(event_id), det], dtype=np.float64)
-                truth = signal[start:stop]
-                mu, generated = models[det].condition(signal, start, width, draws, rng)
-                totals[det, 0] += np.square(mu - truth).sum()
-                totals[det, 1] += np.square(generated - truth[None]).sum() / draws
-                interpolated = np.interp(
-                    np.arange(start, stop), np.flatnonzero(observed), signal[observed]
+        for det in range(2):
+            model = models[det]
+            prepared = model.prepare_mask(start, width)
+            observed = prepared[0]
+            code = np.zeros(len(starts), dtype=np.float32)
+            code[position_idx] = 1.
+            for offset in range(0, len(validation), batch_size):
+                ids = validation[offset:offset + batch_size]
+                signals = np.asarray(waves[ids, det, :], dtype=np.float64)
+                truth = signals[:, start:stop]
+                mu, generated = model.condition_batch(
+                    signals, start, width, draws, rng, prepared=prepared
                 )
+                totals[det, 0] += np.square(mu - truth).sum()
+                totals[det, 1] += np.square(generated - truth[:, None, :]).sum() / draws
+                # The gap is contiguous. np.interp uses constant extrapolation
+                # for intervals at either boundary.
+                sample_positions = np.arange(start, stop)[None, :]
+                if start == 0:
+                    interpolated = np.broadcast_to(signals[:, stop, None], truth.shape)
+                elif stop == length:
+                    interpolated = np.broadcast_to(signals[:, start - 1, None], truth.shape)
+                else:
+                    alpha = (sample_positions - (start - 1)) / (width + 1.)
+                    interpolated = (
+                        signals[:, start - 1, None] * (1. - alpha)
+                        + signals[:, stop, None] * alpha
+                    )
                 totals[det, 2] += np.square(interpolated - truth).sum()
                 if det in mlp_models:
-                    context = np.concatenate((signal[:start], signal[stop:]))
-                    code = np.zeros(len(starts), dtype=np.float32)
-                    code[position_idx] = 1.
-                    features = torch.from_numpy(
-                        np.concatenate((context, code)).astype(np.float32)[None]
+                    context = np.concatenate(
+                        (signals[:, :start], signals[:, stop:]), axis=1
+                    ).astype(np.float32)
+                    features = np.concatenate(
+                        (context, np.broadcast_to(code[None], (len(ids), len(starts)))),
+                        axis=1
                     )
-                    predicted = mlp_models[det](features)[0].numpy()
-                    totals[det, 3] += np.square(predicted - truth).sum()
-                for j, level in enumerate((0.5, .9)):
-                    lower = np.quantile(generated, (1. - level) / 2, axis=0)
-                    upper = np.quantile(generated, (1. + level) / 2, axis=0)
-                    coverage[det, j] += np.count_nonzero((truth >= lower) & (truth <= upper))
+                    prediction = mlp_models[det](
+                        torch.from_numpy(features)
+                    ).numpy()
+                    totals[det, 3] += np.square(prediction - truth).sum()
+                # Same empirical quantile definition as the previous evaluator.
+                for j, level in enumerate((.5, .9)):
+                    lower = np.quantile(generated, (1. - level) / 2., axis=1)
+                    upper = np.quantile(generated, (1. + level) / 2., axis=1)
+                    coverage[det, j] += np.count_nonzero(
+                        (truth >= lower) & (truth <= upper)
+                    )
         n = len(validation) * width
         for det in range(2):
             rows.append(dict(
@@ -194,7 +234,6 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
     plt.close(fig)
     return rows
 
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, required=True)
@@ -207,11 +246,12 @@ def main():
     parser.add_argument("--mask-stride-samples", type=int)
     parser.add_argument("--eval-events", type=int, default=100)
     parser.add_argument("--draws", type=int, default=16)
+    parser.add_argument("--eval-batch-size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-fraction", type=float, default=.15)
     args = parser.parse_args()
     if (args.max_events < 10 or args.components < 1 or args.eval_events < 1
-        or args.draws < 1 or args.mask_ns <= 0 or not 0 < args.val_fraction < 1
+        or args.draws < 1 or args.eval_batch_size < 1 or args.mask_ns <= 0 or not 0 < args.val_fraction < 1
         or args.mask_stride_samples is not None and args.mask_stride_samples < 1):
         parser.error("Invalid parameter")
     results = root_relative(args.results)
@@ -247,7 +287,7 @@ def main():
     )
     evaluation = validation[:min(len(validation), args.eval_events)]
     rows = evaluate(models, waves, evaluation, starts, width, np.asarray(time_ps),
-                    args.draws, mlp, destination, args.seed)
+                    args.draws, mlp, destination, args.seed, args.eval_batch_size)
     np.savez_compressed(
         destination / "model.npz",
         mean=np.stack([m.mean for m in models]),
@@ -262,6 +302,7 @@ def main():
         validation_events=len(validation), evaluation_events=len(evaluation),
         mask_samples=width, mask_positions=len(starts),
         components=args.components, draws=args.draws, seed=args.seed,
+        evaluation_batch_size=args.eval_batch_size,
         detector_noise_variances=[float(m.sigma2) for m in models],
         detector_explained_variance_ratios=[m.explained_variance_ratio for m in models],
         mlp_status=status,
