@@ -86,17 +86,24 @@ class ProbabilisticPCA:
         sampling_factor = np.linalg.cholesky(covariance)
         return observed, coefficient_map, sampling_factor
 
+    def conditional_mean_batch(self, waveforms, start, width, prepared=None):
+        """Compute conditional means without generating stochastic draws."""
+        observed, coefficient_map, _ = (
+            prepared if prepared is not None else self.prepare_mask(start, width)
+        )
+        batch = np.asarray(waveforms, dtype=np.float64)
+        return self.mean[start:start + width] + (
+            batch[:, observed] - self.mean[observed]
+        ) @ coefficient_map
+
     def condition_batch(self, waveforms, start, width, samples, rng, prepared=None):
         """Batch means and exact Gaussian conditional draws, shape [events, draws, width]."""
         if samples < 1:
             raise ValueError("samples must be >= 1")
-        observed, coefficient_map, sampling_factor = (
-            prepared if prepared is not None else self.prepare_mask(start, width)
-        )
+        prepared = prepared if prepared is not None else self.prepare_mask(start, width)
+        _, _, sampling_factor = prepared
         batch = np.asarray(waveforms, dtype=np.float64)
-        mean = self.mean[start:start + width] + (
-            batch[:, observed] - self.mean[observed]
-        ) @ coefficient_map
+        mean = self.conditional_mean_batch(batch, start, width, prepared=prepared)
         random = rng.standard_normal((len(batch), samples, width))
         draws = mean[:, None, :] + random @ sampling_factor.T
         return mean, draws
@@ -179,6 +186,91 @@ def boundary_slope_error(predictions, signals, start, width, slope_points=5):
         sse += float(np.square(error).sum())
         count += len(pred)
     return sse, count
+
+
+def optimize_boundary_strengths(models, waves, tuning, starts, width,
+                                continuity_weight, slope_points, batch_size):
+    """Analytically optimize continuous correction strength per detector/mask.
+
+    The objective is masked MSE plus a weighted mean squared boundary-slope
+    mismatch. Both terms are quadratic in strength, so the constrained optimum
+    on [0, 1] is available in closed form without grid search.
+    """
+    tuning = np.asarray(tuning, dtype=np.int64)
+    strengths = np.zeros((2, len(starts)), dtype=np.float64)
+    rows = []
+    for det, model in enumerate(models):
+        print(f"Optimizing boundary strengths: detector {det + 1}", flush=True)
+        for position_idx, start in enumerate(starts):
+            stop = start + width
+            prepared = model.prepare_mask(start, width)
+            sse_base = correction_sq = correction_cross = 0.0
+            slope_base_sq = slope_correction_sq = slope_correction_cross = 0.0
+            slope_count = 0
+            for offset in range(0, len(tuning), batch_size):
+                ids = tuning[offset:offset + batch_size]
+                signals = np.asarray(waves[ids, det, :], dtype=np.float64)
+                truth = signals[:, start:stop]
+                mean = model.conditional_mean_batch(signals, start, width, prepared)
+                corrected_at_one = boundary_correct_batch(
+                    mean, signals, start, width, 1.0, slope_points
+                )
+                correction = corrected_at_one - mean
+                error = mean - truth
+                sse_base += float(np.square(error).sum())
+                correction_sq += float(np.square(correction).sum())
+                correction_cross += float((error * correction).sum())
+                left_slope, right_slope = estimate_boundary_slopes(
+                    signals, start, stop, slope_points
+                )
+                if left_slope is not None:
+                    base_error = (mean[:, 0] - signals[:, start - 1]) - left_slope
+                    delta = correction[:, 0]
+                    slope_base_sq += float(np.square(base_error).sum())
+                    slope_correction_sq += float(np.square(delta).sum())
+                    slope_correction_cross += float((base_error * delta).sum())
+                    slope_count += len(signals)
+                if right_slope is not None:
+                    base_error = (signals[:, stop] - mean[:, -1]) - right_slope
+                    delta = -correction[:, -1]
+                    slope_base_sq += float(np.square(base_error).sum())
+                    slope_correction_sq += float(np.square(delta).sum())
+                    slope_correction_cross += float((base_error * delta).sum())
+                    slope_count += len(signals)
+
+            n_values = max(len(tuning) * width, 1)
+            base_mse = sse_base / n_values
+            a_mse = correction_sq / n_values
+            b_mse = correction_cross / n_values
+            n_slopes = max(slope_count, 1)
+            base_slope_mse = slope_base_sq / n_slopes
+            a_slope = slope_correction_sq / n_slopes
+            b_slope = slope_correction_cross / n_slopes
+            denominator = a_mse + continuity_weight * a_slope
+            numerator = b_mse + continuity_weight * b_slope
+            strength = 0.0 if denominator <= 1e-18 else float(
+                np.clip(-numerator / denominator, 0.0, 1.0)
+            )
+            strengths[det, position_idx] = strength
+            corrected_mse = max(base_mse + 2 * strength * b_mse + strength**2 * a_mse, 0.0)
+            corrected_slope_mse = max(
+                base_slope_mse + 2 * strength * b_slope + strength**2 * a_slope, 0.0
+            )
+            rows.append(dict(
+                detector=det + 1, mask_position=position_idx, start_sample=start,
+                tuning_events=len(tuning), correction_strength=strength,
+                tuning_ppca_rmse=float(np.sqrt(max(base_mse, 0.0))),
+                tuning_corrected_rmse=float(np.sqrt(corrected_mse)),
+                tuning_ppca_slope_mismatch_rmse=float(np.sqrt(max(base_slope_mse, 0.0))),
+                tuning_corrected_slope_mismatch_rmse=float(np.sqrt(corrected_slope_mse)),
+                continuity_weight=continuity_weight,
+                objective_before=float(base_mse + continuity_weight * base_slope_mse),
+                objective_after=float(corrected_mse + continuity_weight * corrected_slope_mse),
+            ))
+            if position_idx % 10 == 0 or position_idx == len(starts) - 1:
+                print(f"Detector {det + 1}: section {position_idx + 1}/{len(starts)} "
+                      f"lambda={strength:.3f}", flush=True)
+    return strengths, rows
 
 def load_mlp_models(results, channel, length, width, starts, identity):
     root = (ROOT / "waveform_analysis/imputation_experiments" /
