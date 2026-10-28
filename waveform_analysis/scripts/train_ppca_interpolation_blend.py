@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from waveform_analysis.scripts.train_probabilistic_pca_imputer import ProbabilisticPCA, positions
+from waveform_analysis.models.ppca_imputer import ProbabilisticPCA, positions
 from waveform_analysis.data.imputation import load_wide_development, root_relative
 
 
