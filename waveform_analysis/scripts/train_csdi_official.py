@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Official CSDI Transformer architecture on local wide-waveform crops.
+"""Train official CSDI Transformer on complete wide-waveform pairs.
 
 Uses the original Tashiro et al. CSDI_base and diff_CSDI modules vendored in
 waveform_analysis/vendor/csdi (upstream: https://github.com/ermongroup/CSDI).
-Training loss and sampling are upstream CSDI; this adapter only supplies our
-paired-detector waveform data, a fixed 1-ns contiguous target mask, and a
-crop to bound the full-attention computation. No TSHAP integration.
+The original conditional diffusion training objective and sampling are retained.
+The *entire* waveform [2, T] is provided; only a fixed-width contiguous interval
+is hidden in BOTH detectors. Every remaining sample is observed and can condition
+the reconstruction. There are no temporal crops or window-context hyperparameters.
+No TSHAP integration.
 
-Important: the crop is a deliberate experimental adaptation. MLP receives the
-whole waveform, while this CSDI receives only the crop, so this is not a
-controlled architecture-only comparison.
+Caution: original full-sequence attention has quadratic time/memory scaling with
+waveform length. Start with --batch-size 1 and consider monitoring GPU memory.
+The official CSDI and MLP do not have identical conditioning: CSDI jointly sees
+both detectors, whereas the two MLP checkpoints each see one detector.
 
-Run from repository root:
-python -m waveform_analysis.scripts.train_csdi_official --results waveform_analysis/results/UC/test_ridge_48V_R1_R2 --channel energy --max-events 5000
+From repository root:
+python -m waveform_analysis.scripts.train_csdi_official --results waveform_analysis/results/UC/test_ridge_48V_R1_R2 --channel energy --max-events 5000 --batch-size 1
 """
 from __future__ import annotations
 
@@ -46,15 +49,13 @@ def mask_starts(length, width, stride):
     return result
 
 
-def crop_start(start, mask_width, full_length, crop_length):
-    return max(0, min(start + mask_width // 2 - crop_length // 2, full_length - crop_length))
+class FullWaveformMasks(Dataset):
+    """One full waveform pair per item, with one 1-ns target region per detector."""
 
-
-class WaveformCrops(Dataset):
-    def __init__(self, waves, events, starts, mask_width, crop_length, random_position):
+    def __init__(self, waves, events, starts, mask_width, random_position):
         self.waves, self.events = waves, np.asarray(events, dtype=np.int64)
         self.starts = starts
-        self.mask_width, self.crop_length = mask_width, crop_length
+        self.mask_width = mask_width
         self.random_position = random_position
 
     def __len__(self):
@@ -62,16 +63,14 @@ class WaveformCrops(Dataset):
 
     def __getitem__(self, index):
         event = int(self.events[index])
-        full = np.asarray(self.waves[event], dtype=np.float32)
+        data = np.array(self.waves[event], dtype=np.float32, copy=True)
+        if data.ndim != 2 or data.shape[0] != 2 or not np.isfinite(data).all():
+            raise ValueError("Expected finite full waveforms [2, T]")
         position = (np.random.randint(len(self.starts)) if self.random_position
                     else index % len(self.starts))
         start = self.starts[position]
-        left = crop_start(start, self.mask_width, full.shape[-1], self.crop_length)
-        data = np.array(full[:, left:left + self.crop_length], copy=True)
-        if not np.isfinite(data).all():
-            raise ValueError("Non-finite waveform")
         observed = np.ones_like(data, dtype=np.float32)
-        observed[:, start-left:start-left+self.mask_width] = 0.
+        observed[:, start:start+self.mask_width] = 0.
         return torch.from_numpy(data), torch.from_numpy(observed)
 
 
@@ -118,7 +117,7 @@ def config_from_args(args):
     )
 
 
-def evaluate(model, waves, event_ids, positions, width, crop_len, samples, device, outdir, mlp_models=None, all_starts=None):
+def evaluate(model, waves, event_ids, positions, width, samples, device, outdir, mlp_models=None, all_starts=None):
     """Evaluate original-resolution masked samples; average generated draws before RMSE."""
     rows = []
     mlp_models = mlp_models or {}
@@ -128,16 +127,13 @@ def evaluate(model, waves, event_ids, positions, width, crop_len, samples, devic
         n = 0
         for event_id in event_ids:
             waveform = np.asarray(waves[int(event_id)], dtype=np.float32)
-            left = crop_start(start, width, waveform.shape[-1], crop_len)
-            segment = np.array(waveform[:,left:left+crop_len], copy=True)
-            relative = start - left
-            target = segment[:,relative:relative+width]
-            cond = np.ones_like(segment)
-            cond[:,relative:relative+width] = 0
-            torch_data = torch.from_numpy(segment[None]).to(device)
+            target = waveform[:,start:start+width]
+            cond = np.ones_like(waveform, dtype=np.float32)
+            cond[:,start:start+width] = 0.
+            torch_data = torch.from_numpy(np.array(waveform[None], copy=True)).to(device)
             torch_cond = torch.from_numpy(cond[None]).to(device)
             generated = model.draw(torch_data, torch_cond, samples)[0].cpu().numpy()
-            block = generated[:,:,relative:relative+width]
+            block = generated[:,:,start:start+width]
             mean = block.mean(axis=0)
             sums[:,0] += np.square(mean - target).sum(axis=-1)
             sums[:,1] += np.square(block - target[None]).sum(axis=(0,2))/samples
@@ -185,10 +181,9 @@ def main():
     parser.add_argument("--seed",type=int,default=42)
     parser.add_argument("--val-fraction",type=float,default=0.15)
     parser.add_argument("--mask-ns",type=float,default=1.0)
-    parser.add_argument("--crop-samples",type=int,default=256)
     parser.add_argument("--epochs",type=int,default=30)
     parser.add_argument("--patience",type=int,default=7)
-    parser.add_argument("--batch-size",type=int,default=16)
+    parser.add_argument("--batch-size",type=int,default=1)
     parser.add_argument("--lr",type=float,default=1e-3)
     parser.add_argument("--weight-decay",type=float,default=1e-4)
     parser.add_argument("--layers",type=int,default=4)
@@ -215,24 +210,26 @@ def main():
     length=waves.shape[-1]
     delta=float(np.median(np.diff(time_ps)))
     width=max(1,round(args.mask_ns*1000/delta))
-    if not width < args.crop_samples <= length:
-        parser.error("Require mask_samples < crop-samples <= waveform samples")
+    if not 0 < width < length:
+        parser.error("Require 0 < masked samples < full waveform samples")
     starts=mask_starts(length,width,width)
     selected=np.random.default_rng(args.seed).permutation(len(waves))[:args.max_events]
     size=max(1,round(len(selected)*args.val_fraction))
     val_ids,train_ids=selected[:size],selected[size:]
     outdir=root_relative(args.output) if args.output else (
         ROOT/"waveform_analysis"/"imputation_experiments"/results.name/
-        args.channel/"csdi_official"
+        args.channel/"csdi_official_full"
     )
     outdir.mkdir(parents=True,exist_ok=True)
+    print(f"Using full-waveform conditioning: 2 detectors x {length} samples; "
+          f"{width} samples masked per detector; device={device}", flush=True)
     cfg=config_from_args(args)
     model=WaveformCSDI(cfg,device).to(device)
     best_file=outdir/"best.pt"
     history=[]
     if not args.evaluate_only:
-        training=WaveformCrops(waves,train_ids,starts,width,args.crop_samples,True)
-        validation=WaveformCrops(waves,val_ids,starts,width,args.crop_samples,False)
+        training=FullWaveformMasks(waves,train_ids,starts,width,True)
+        validation=FullWaveformMasks(waves,val_ids,starts,width,False)
         train_loader=DataLoader(training,batch_size=args.batch_size,shuffle=True)
         val_loader=DataLoader(validation,batch_size=args.batch_size)
         opt=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=args.weight_decay)
@@ -260,7 +257,7 @@ def main():
                 stale=0
                 torch.save(dict(state_dict=model.state_dict(),config=cfg,seed=args.seed,
                                 selected_events=len(selected),val_fraction=args.val_fraction,
-                                length=length,mask_samples=width,crop_samples=args.crop_samples,
+                                length=length,mask_samples=width,input_scope="full_waveform_pair",
                                 dataset_identity=manifest.get("analysis_protocol_identity")),
                            best_file)
             else:
@@ -274,11 +271,11 @@ def main():
     checkpoint=torch.load(best_file,map_location="cpu",weights_only=True)
     if (checkpoint["dataset_identity"]!=manifest.get("analysis_protocol_identity")
         or checkpoint["length"]!=length or checkpoint["mask_samples"]!=width
-        or checkpoint["crop_samples"]!=args.crop_samples
+        or checkpoint.get("input_scope")!="full_waveform_pair"
         or checkpoint["seed"]!=args.seed
         or checkpoint["selected_events"]!=len(selected)
         or checkpoint["val_fraction"]!=args.val_fraction):
-        raise ValueError("Checkpoint preprocessing, mask, crop or split settings mismatch")
+        raise ValueError("Checkpoint preprocessing, full-waveform scope, mask or split settings mismatch")
     if args.evaluate_only:
         model=WaveformCSDI(checkpoint["config"],device).to(device)
     model.load_state_dict(checkpoint["state_dict"])
@@ -317,12 +314,13 @@ def main():
         mlp.eval()
         mlp_models[det] = mlp
         mlp_status[f"detector_{det+1}"] = "loaded"
-    rows=evaluate(model,waves,val_ids[:args.eval_events],regions,width,args.crop_samples,
+    rows=evaluate(model,waves,val_ids[:args.eval_events],regions,width,
                   args.eval_samples,device,outdir,mlp_models,starts)
     summary=dict(architecture="official_CSDI_Transformer",upstream="ermongroup/CSDI",
-                 adaptation="local waveform crops and fixed contiguous paired mask",
+                 adaptation="full-waveform conditioning with fixed contiguous paired mask",
                  tshap_integration=False,source_run=str(source),channel=args.channel,
-                 crop_samples=args.crop_samples,mask_samples=width,
+                 waveform_samples=length,conditioning_scope="full_waveform_pair",
+                 mask_samples=width,
                  train_events=len(train_ids),validation_events=len(val_ids),
                  eval_events=min(args.eval_events,len(val_ids)),
                  eval_samples=args.eval_samples,checkpoint=str(best_file),
