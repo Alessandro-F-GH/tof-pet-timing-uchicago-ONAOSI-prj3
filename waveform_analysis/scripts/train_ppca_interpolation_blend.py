@@ -196,45 +196,145 @@ def evaluate_blend(models, waves, evaluation, starts, width, time_ps,
 
 
 def plot_examples(models, waves, evaluation, starts, width, time_ps, alphas,
-                  prepared_masks, destination, seed, n_events=3, slope_points=5):
-    """Plot held-out examples for all four reconstruction methods."""
-    if n_events <= 0: return
-    out=destination/"imputation_examples"; out.mkdir(parents=True,exist_ok=True)
-    rng=np.random.default_rng(seed+2028); evaluation=np.asarray(evaluation,dtype=np.int64)
-    chosen=rng.choice(evaluation,size=min(n_events,len(evaluation)),replace=False)
-    times=np.asarray(time_ps,dtype=np.float64)/1000.0
-    targets_ns=(0.0,20.0,40.0)
-    mask_indices=list(dict.fromkeys(min(range(len(starts)),key=lambda i:abs(times[starts[i]]-t)) for t in targets_ns))
-    margin=max(1,int(round(3000.0/float(np.median(np.diff(time_ps)))))
-    for det,model in enumerate(models):
+                  prepared_masks, destination, seed, n_events=3, slope_points=5,
+                  context_ns=0.15):
+    """Plot clean full-waveform context and tightly zoomed masked-interval comparisons."""
+    if n_events <= 0:
+        return
+    out = destination / "imputation_examples"
+    out.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed + 2028)
+    evaluation = np.asarray(evaluation, dtype=np.int64)
+    chosen = rng.choice(evaluation, size=min(n_events, len(evaluation)), replace=False)
+    times = np.asarray(time_ps, dtype=np.float64) / 1000.0
+
+    # Select representative mask positions near the rising edge and later waveform.
+    targets_ns = (0.0, 20.0, 40.0)
+    mask_indices = list(dict.fromkeys(
+        min(range(len(starts)), key=lambda i: abs(times[starts[i]] - target))
+        for target in targets_ns
+    ))
+
+    for det, model in enumerate(models):
         for pos_idx in mask_indices:
-            start=starts[pos_idx]; stop=start+width; alpha=float(alphas[det,pos_idx])
-            envelope=smooth_blend_envelope(start,width,waves.shape[-1])
-            signals=np.asarray(waves[chosen,det,:],dtype=np.float64)
-            ppca=model.conditional_mean_batch(signals,start,width,prepared=prepared_masks[det][pos_idx])
-            linear=linear_interpolation_batch(signals,start,width)
-            hermite=hermite_interpolation_batch(signals,start,width,slope_points)
-            blend=hermite+alpha*envelope[None,:]*(ppca-hermite)
-            for event_i,event_id in enumerate(chosen):
-                original=signals[event_i]; observed=original.copy(); observed[start:stop]=np.nan
-                reconstructions=[]
-                for imputed in (linear[event_i],hermite[event_i],ppca[event_i],blend[event_i]):
-                    rec=original.copy(); rec[start:stop]=imputed; reconstructions.append(rec)
-                fig,axes=plt.subplots(2,1,figsize=(11,7),height_ratios=(1.0,1.2))
-                for ax,zoom in zip(axes,(False,True)):
-                    ax.plot(times,original,color="black",lw=1.2,label="Ground truth")
-                    ax.plot(times,observed,color="gray",lw=1.0,ls="--",label="Observed (masked)")
-                    for arr,label in zip(reconstructions,("Linear interpolation","Cubic Hermite","Standard PPCA",f"Hermite-PPCA (alpha={alpha:.2f})")):
-                        ax.plot(times,arr,lw=1.2,label=label)
-                    ax.axvspan(times[start],times[min(stop,len(times)-1)],color="tab:red",alpha=0.08)
-                    ax.grid(alpha=0.25)
-                    if zoom:
-                        ax.set_xlim(times[max(0,start-margin)],times[min(len(times)-1,stop+margin)])
-                        ax.set_xlabel("Time (ns)")
-                    ax.set_ylabel("Signal"); ax.legend(loc="best",fontsize="small",ncol=2)
-                fig.suptitle(f"Detector {det+1}, held-out event {event_id}, mask at {times[start]:.2f} ns")
+            start = int(starts[pos_idx])
+            stop = start + width  # masked samples are [start, stop)
+            alpha = float(alphas[det, pos_idx])
+            envelope = smooth_blend_envelope(start, width, waves.shape[-1])
+            signals = np.asarray(waves[chosen, det, :], dtype=np.float64)
+            ppca = model.conditional_mean_batch(
+                signals, start, width, prepared=prepared_masks[det][pos_idx]
+            )
+            linear = linear_interpolation_batch(signals, start, width)
+            hermite = hermite_interpolation_batch(
+                signals, start, width, slope_points
+            )
+            blend = hermite + alpha * envelope[None, :] * (ppca - hermite)
+
+            # Only show the imputed values inside the gap; don't redraw each method
+            # over the entire waveform, where all curves obscure one another.
+            for event_i, event_id in enumerate(chosen):
+                original = signals[event_i]
+                observed = original.copy()
+                observed[start:stop] = np.nan
+
+                fig, axes = plt.subplots(
+                    2, 1, figsize=(11, 7.5), height_ratios=(0.8, 1.4)
+                )
+                overview_ax, zoom_ax = axes
+
+                # Overview: observed waveform and location of the missing interval.
+                overview_ax.plot(
+                    times, original, color="0.75", lw=0.9, ls="--",
+                    label="Ground truth (reference)"
+                )
+                overview_ax.plot(
+                    times, observed, color="0.20", lw=1.0,
+                    label="Observed waveform"
+                )
+                left_idx = max(0, start - 1)
+                right_idx = min(len(times) - 1, stop)
+                overview_ax.axvspan(
+                    times[left_idx], times[right_idx],
+                    color="tab:red", alpha=0.12, label="Masked interval"
+                )
+                overview_ax.set_ylabel("Signal")
+                overview_ax.set_title("Full waveform")
+                overview_ax.grid(alpha=0.22)
+                overview_ax.legend(loc="best", fontsize="small", ncol=3)
+
+                # Zoom: tightly focus on the gap plus a small amount of context.
+                # Ground truth is shown only in this local view; predictions are
+                # drawn only from the left observed boundary to the right boundary.
+                zoom_left = max(0, start - 1)
+                zoom_right = min(len(times) - 1, stop)
+                gap_span_ns = max(times[zoom_right] - times[zoom_left], 0.0)
+                left_time = max(times[0], times[zoom_left] - context_ns)
+                right_time = min(times[-1], times[zoom_right] + context_ns)
+                local = (times >= left_time) & (times <= right_time)
+
+                zoom_ax.plot(
+                    times[local], observed[local], color="0.25", lw=1.0,
+                    label="Observed samples"
+                )
+                boundary_slice = slice(zoom_left, zoom_right + 1)
+                zoom_ax.plot(
+                    times[boundary_slice], original[boundary_slice],
+                    color="black", lw=1.5, ls="--", label="Ground truth in gap"
+                )
+                zoom_ax.axvspan(
+                    times[zoom_left], times[zoom_right],
+                    color="tab:red", alpha=0.10, label="Masked interval"
+                )
+
+                x_gap = times[zoom_left:zoom_right + 1]
+                for imputed, label, color, style, line_width in (
+                    (linear[event_i], "Linear", "tab:blue", "-", 1.2),
+                    (hermite[event_i], "Hermite", "tab:orange", "-", 1.4),
+                    (ppca[event_i], "PPCA", "tab:green", ":", 1.2),
+                    (blend[event_i], f"Hermite–PPCA (α={alpha:.2f})",
+                     "tab:purple", "-", 1.8),
+                ):
+                    # Include the observed boundary samples so the join is visible,
+                    # but do not plot any reconstructed values outside the gap.
+                    y_gap = np.concatenate((
+                        original[zoom_left:zoom_left + 1],
+                        np.asarray(imputed, dtype=np.float64),
+                        original[stop:stop + 1],
+                    ))
+                    x_curve = times[start - 1:stop + 1] if start > 0 and stop < len(times) else None
+                    if x_curve is not None and len(x_curve) == len(y_gap):
+                        zoom_ax.plot(
+                            x_curve, y_gap, color=color, ls=style, lw=line_width,
+                            label=label, zorder=4
+                        )
+                    else:
+                        # Edge masks have no two-sided Hermite boundary; draw the
+                        # imputed samples only, avoiding invalid endpoint indexing.
+                        zoom_ax.plot(
+                            times[start:stop], imputed, color=color, ls=style,
+                            lw=line_width, label=label, zorder=4
+                        )
+
+                zoom_ax.set_xlim(left_time, right_time)
+                zoom_ax.set_xlabel("Time (ns)")
+                zoom_ax.set_ylabel("Signal")
+                zoom_ax.set_title(
+                    f"Masked interval: {times[start]:.3f}–{times[min(stop - 1, len(times)-1)]:.3f} ns "
+                    f"({width} samples; context ±{context_ns:g} ns)"
+                )
+                zoom_ax.grid(alpha=0.22)
+                zoom_ax.legend(loc="best", fontsize="small", ncol=2)
+
+                fig.suptitle(
+                    f"Detector {det + 1} · held-out event {event_id} · "
+                    f"mask position {times[start]:.2f} ns"
+                )
                 fig.tight_layout()
-                fig.savefig(out/f"detector_{det+1}_position_{pos_idx:03d}_event_{event_id}.png",dpi=160)
+                fig.savefig(
+                    out / f"detector_{det + 1}_position_{pos_idx:03d}_event_{event_id}.png",
+                    dpi=180, bbox_inches="tight",
+                )
                 plt.close(fig)
 
 
@@ -255,6 +355,8 @@ def main():
                         help="Held-out events to plot per detector/selected mask (0 disables)")
     parser.add_argument("--slope-points", type=int, default=5,
                         help="Observed samples per side used to estimate Hermite boundary slopes")
+    parser.add_argument("--plot-context-ns", type=float, default=0.15,
+                        help="Time context on each side of the masked interval in example zooms (ns)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-fraction", type=float, default=0.15)
     args = parser.parse_args()
@@ -267,6 +369,7 @@ def main():
         or args.eval_batch_size < 1
         or args.plot_examples < 0
         or args.slope_points < 2
+        or args.plot_context_ns < 0
         or args.mask_ns <= 0
         or not 0 < args.val_fraction < 1
         or (args.mask_stride_samples is not None and args.mask_stride_samples < 1)
@@ -370,6 +473,7 @@ def main():
             models, waves, evaluation, starts, width, time_ps, alphas,
             prepared_masks, destination, args.seed, args.plot_examples,
             slope_points=args.slope_points,
+            context_ns=args.plot_context_ns,
         )
 
     np.savez_compressed(
