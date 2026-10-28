@@ -1,8 +1,8 @@
 {
   "name": "test_ridge_48V_R1_R2",
-  "control_dataset": "../datasets/control_FBK.json",
+  "control_dataset": "../datasets/control.json",
   "development_dataset": {
-    "root_file": "processed_data/10-05/48V-R1.root",
+    "root_file": "processed_data/10-03/48V-R1.root",
     "true_tof_ps": 0.0,
     "channels": {
       "energy": [
@@ -24,7 +24,7 @@
     }
   },
   "blind_dataset": {
-    "root_file": "processed_data/10-05/48V-R2.root",
+    "root_file": "processed_data/10-03/48V-R2.root",
     "true_tof_ps": 0.0,
     "channels": {
       "energy": [
@@ -47,12 +47,12 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/test_ridge_48V_R1_R2"
+    "folder": "UC/test_ridge_48V_R1_R2"
   },
   "save_model": true,
   "protocol": {
     "seed": 1001,
-    "preprocessing_config": "../preprocessing/FBK.json",
+    "preprocessing_config": "../preprocessing/UC.json",
     "bootstrap": {
       "n_resamples": 200
     },
@@ -90,7 +90,7 @@
     "windows": {
       "wide": {
         "start": -2,
-        "end": 60.0
+        "end": 50.0
       }
     }
   }
