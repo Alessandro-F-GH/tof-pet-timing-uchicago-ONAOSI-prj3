@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Train detector-specific fully-connected ReLU MLPs with systematic wide-window masking (128, 128 hidden units).
+"""Train detector-specific ReLU MLP imputers with systematic fixed-width masking.
+The network receives observed waveform samples plus a one-hot mask-position code,
+and predicts only the missing interval.
 
 From repository root:
     python -m waveform_analysis.scripts.train_wide_unet_imputer_detector_specific \
@@ -66,7 +68,11 @@ def load_wide_development(results, channel, cache_root):
 
 
 class MaskedWaveformDataset(Dataset):
-    """Lazy exhaustive Cartesian product of events and temporal mask positions."""
+    """Lazy exhaustive event x mask-position dataset for fixed-width imputation.
+
+    Each item contains observed samples plus a one-hot mask position; the target
+    is only the missing interval.
+    """
     def __init__(self, waves, events, detector, mask_len, stride):
         self.waves = waves
         self.events = np.asarray(events, dtype=np.int64)
@@ -76,89 +82,123 @@ class MaskedWaveformDataset(Dataset):
         if not (0 < mask_len < total and stride > 0):
             raise ValueError("Invalid mask length/stride")
         self.starts = list(range(0, total - mask_len + 1, stride))
-        if self.starts[-1] != total - mask_len:
-            self.starts.append(total - mask_len)
+        final_start = total - mask_len
+        if self.starts[-1] != final_start:
+            self.starts.append(final_start)
 
     def __len__(self):
         return len(self.events) * len(self.starts)
 
-    def __getitem__(self, idx):
-        event = int(self.events[idx // len(self.starts)])
-        start = self.starts[idx % len(self.starts)]
+    def get_waveform(self, item_index):
+        """Return the full waveform for the event associated with an item."""
+        event = int(self.events[item_index // len(self.starts)])
         signal = np.asarray(self.waves[event, self.detector], dtype=np.float32).copy()
         if not np.isfinite(signal).all():
             raise ValueError(f"Non-finite samples in event {event}")
-        observed = np.ones(signal.size, dtype=np.float32)
-        observed[start:start + self.mask_len] = 0
-        return torch.from_numpy(signal), torch.from_numpy(observed)
+        return signal
+
+    def __getitem__(self, idx):
+        position_index = int(idx % len(self.starts))
+        start = self.starts[position_index]
+        signal = self.get_waveform(idx)
+        end = start + self.mask_len
+        context = np.concatenate((signal[:start], signal[end:]))
+        position_code = np.zeros(len(self.starts), dtype=np.float32)
+        position_code[position_index] = 1.0
+        model_input = np.concatenate((context, position_code))
+        target = signal[start:end]
+        return torch.from_numpy(model_input), torch.from_numpy(target)
 
 
 class MaskedMLP(nn.Module):
-    """Fully connected 2*T -> 128 -> 128 -> T masked reconstruction."""
-    def __init__(self, length):
+    """MLP: [observed samples + one-hot mask position] -> missing samples."""
+    def __init__(self, context_length, mask_len, n_positions):
         super().__init__()
-        self.length = int(length)
+        self.context_length = int(context_length)
+        self.mask_len = int(mask_len)
+        self.n_positions = int(n_positions)
+        self.input_length = self.context_length + self.n_positions
         self.net = nn.Sequential(
-            nn.Linear(2 * self.length, 128),
+            nn.Linear(self.input_length, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, self.length),
+            nn.Linear(128, self.mask_len),
         )
 
-    def forward(self, signal, observed):
-        if signal.shape != observed.shape or signal.shape[-1] != self.length:
-            raise ValueError("Unexpected waveform/mask shape")
-        z = torch.cat((signal * observed, observed), dim=-1)
-        guess = self.net(z)
-        return signal * observed + guess * (1 - observed)
-
-
-def masked_mse(pred, truth, observed):
-    absent = 1 - observed
-    return ((pred - truth).square() * absent).sum() / absent.sum().clamp_min(1)
+    def forward(self, model_input):
+        if model_input.shape[-1] != self.input_length:
+            raise ValueError(
+                f"Expected {self.input_length} input features, "
+                f"received {model_input.shape[-1]}"
+            )
+        return self.net(model_input)
 
 
 @torch.no_grad()
 def validation_rmse(model, loader, device):
     model.eval()
-    error, count = 0.0, 0.0
-    for signal, observed in loader:
-        signal, observed = signal.to(device), observed.to(device)
-        prediction = model(signal, observed)
-        absent = 1 - observed
-        error += ((prediction - signal).square() * absent).sum().item()
-        count += absent.sum().item()
-    return (error / count) ** 0.5
+    error, count = 0.0, 0
+    for model_input, target in loader:
+        model_input, target = model_input.to(device), target.to(device)
+        prediction = model(model_input)
+        error += (prediction - target).square().sum().item()
+        count += target.numel()
+    return (error / max(count, 1)) ** 0.5
+
+
+@torch.no_grad()
+def reconstruct_interval(model, signal, start, starts, mask_len, device):
+    """Reconstruct one interval from observed samples and its one-hot position."""
+    end = start + mask_len
+    context = np.concatenate((signal[:start], signal[end:])).astype(np.float32, copy=False)
+    position_code = np.zeros(len(starts), dtype=np.float32)
+    position_code[starts.index(start)] = 1.0
+    model_input = np.concatenate((context, position_code))
+    model_input = torch.from_numpy(model_input[None]).to(device)
+    missing_prediction = model(model_input)[0].detach().cpu().numpy()
+    reconstructed = signal.copy()
+    reconstructed[start:end] = missing_prediction
+    return reconstructed
 
 
 @torch.no_grad()
 def save_examples(model, dataset, time_ps, device, destination, mask_len):
-    """Fixed leading-edge, 20 ns and final-region examples, with local zoom."""
+    """Plot selected mask locations for the same held-out waveform."""
     fig, axes = plt.subplots(3, 1, figsize=(10, 8))
-    regions = [("leading_edge", 0.), ("late_20ns", 20000.), ("final_window", float(time_ps[-1]))]
+    regions = [
+        ("leading_edge", 0.0),
+        ("late_20ns", 20000.0),
+        ("final_window", float(time_ps[-1])),
+    ]
     metrics = []
     length = len(time_ps)
-    for idx, ((name, center), ax) in enumerate(zip(regions, axes)):
-        signal, _ = dataset[idx % len(dataset)]
-        original = signal.numpy()
-        start = int(np.clip(np.argmin(abs(time_ps - center)) - mask_len // 2, 0, length - mask_len))
-        obs = np.ones(length, dtype=np.float32)
-        obs[start:start + mask_len] = 0
-        model_signal = model(signal[None].to(device), torch.from_numpy(obs[None]).to(device))[0].cpu().numpy()
-        missing = obs == 0
-        interpolated = np.interp(np.arange(length), np.flatnonzero(~missing), original[~missing])
-        err = float(np.sqrt(np.mean((model_signal[missing] - original[missing]) ** 2)))
+    for (name, center), ax in zip(regions, axes):
+        desired_start = int(np.clip(
+            np.argmin(abs(time_ps - center)) - mask_len // 2,
+            0, length - mask_len
+        ))
+        position_index = int(np.argmin(np.abs(np.asarray(dataset.starts) - desired_start)))
+        start = dataset.starts[position_index]
+        original = dataset.get_waveform(position_index)
+        reconstructed = reconstruct_interval(
+            model, original, start, dataset.starts, mask_len, device
+        )
+        missing = np.zeros(length, dtype=bool)
+        missing[start:start + mask_len] = True
+        known = ~missing
+        interpolated = np.interp(np.arange(length), np.flatnonzero(known), original[known])
+        err = float(np.sqrt(np.mean((reconstructed[missing] - original[missing]) ** 2)))
         err_interp = float(np.sqrt(np.mean((interpolated[missing] - original[missing]) ** 2)))
-        metrics.append(dict(region=name, unet_rmse=err, linear_interp_rmse=err_interp))
+        metrics.append(dict(region=name, mlp_rmse=err, linear_interp_rmse=err_interp))
         t = time_ps / 1000
         ax.plot(t, original, label="True", lw=1)
-        ax.plot(t, model_signal, label="U-Net", lw=1)
-        ax.plot(t, interpolated, "--", label="Linear interp.", lw=1)
+        ax.plot(t, reconstructed, label="MLP reconstruction", lw=1)
+        ax.plot(t, interpolated, "--", label="Linear interpolation", lw=1)
         ax.axvspan(t[start], t[start + mask_len - 1], color="gray", alpha=.2)
         ax.set_xlim(t[max(0, start - 2 * mask_len)], t[min(length - 1, start + 3 * mask_len)])
         ax.set_ylabel("Normalized signal")
-        ax.set_title(f"{name}: U-Net RMSE={err:.4g}; interpolation RMSE={err_interp:.4g}")
+        ax.set_title(f"{name}: MLP RMSE={err:.4g}; interpolation RMSE={err_interp:.4g}")
         ax.legend(fontsize=8)
     axes[-1].set_xlabel("Time (ns)")
     fig.tight_layout()
@@ -203,6 +243,10 @@ def train(args):
           f"validation cases={len(val_events)*positions:,}", flush=True)
     print(f"Output: {destination}", flush=True)
     summary = dict(source_run=str(source_run), channel=args.channel,
+                   architecture="mlp_relu_128_128_masked_output",
+                   input_formulation="observed_samples_concatenated_with_one_hot_mask_position",
+                   output_formulation="masked_interval_only",
+                   weight_decay=args.weight_decay,
                    dataset_identity=manifest.get("analysis_protocol_identity"),
                    development_events=num_events, selected_events=len(selected),
                    train_events=len(train_events), validation_events=len(val_events),
@@ -222,8 +266,10 @@ def train(args):
                                   num_workers=0, pin_memory=device.type == "cuda")
         val_loader = DataLoader(ds_val, batch_size=args.batch_size, shuffle=False,
                                 num_workers=0, pin_memory=device.type == "cuda")
-        model = MaskedMLP(samples).to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        model = MaskedMLP(samples - mask_len, mask_len, positions).to(device)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        )
         best, remaining, history = float("inf"), args.patience, []
         print(f"\n=== {label} | {len(train_loader)} train / {len(val_loader)} validation batches ===", flush=True)
         for epoch in range(1, args.epochs + 1):
@@ -231,17 +277,17 @@ def train(args):
             running, points = 0.0, 0.0
             model.train()
             print(f"{label}: epoch {epoch}/{args.epochs} started", flush=True)
-            for batch_idx, (signal, observed) in enumerate(train_loader, start=1):
-                signal, observed = signal.to(device), observed.to(device)
+            for batch_idx, (model_input, target) in enumerate(train_loader, start=1):
+                model_input, target = model_input.to(device), target.to(device)
                 optimizer.zero_grad(set_to_none=True)
-                pred = model(signal, observed)
-                loss = masked_mse(pred, signal, observed)
+                pred = model(model_input)
+                loss = nn.functional.mse_loss(pred, target)
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 1.)
                 optimizer.step()
-                missing = (1 - observed).sum().item()
-                running += loss.item() * missing
-                points += missing
+                points_in_batch = target.numel()
+                running += loss.item() * points_in_batch
+                points += points_in_batch
                 if batch_idx == 1 or batch_idx % args.log_every == 0 or batch_idx == len(train_loader):
                     print(f"{label} epoch {epoch:03d} | {batch_idx}/{len(train_loader)} "
                           f"| train RMSE={(running/points)**.5:.6f} | elapsed={time.perf_counter()-start:.1f}s",
@@ -254,11 +300,16 @@ def train(args):
                   f"| val={val_error:.6f} | elapsed={time.perf_counter()-start:.1f}s", flush=True)
             if val_error < best - 1e-6:
                 best, remaining = val_error, args.patience
-                torch.save(dict(state_dict=model.state_dict(), architecture='mlp_relu_128_128',
-                                channel=args.channel, detector=detector + 1,
-                                length=samples, mask_samples=mask_len, dt_ps=dt_ps,
-                                dataset_identity=manifest.get("analysis_protocol_identity")),
-                           folder / "best.pt")
+                torch.save(dict(
+                    state_dict=model.state_dict(),
+                    architecture="mlp_relu_128_128_masked_output",
+                    channel=args.channel, detector=detector + 1,
+                    length=samples, context_samples=samples - mask_len,
+                    mask_samples=mask_len, mask_positions=positions,
+                    position_encoding="one_hot", weight_decay=args.weight_decay,
+                    dt_ps=dt_ps,
+                    dataset_identity=manifest.get("analysis_protocol_identity")
+                ), folder / "best.pt")
             else:
                 remaining -= 1
                 if remaining <= 0:
@@ -298,6 +349,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--val-fraction", type=float, default=.15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cpu", action="store_true")
@@ -306,8 +358,8 @@ def main():
         parser.error("--max-events must be at least 10")
     if args.mask_stride_samples is not None and args.mask_stride_samples < 1:
         parser.error("--mask-stride-samples must be positive")
-    if args.mask_ns <= 0 or args.lr <= 0 or not 0 < args.val_fraction < 1:
-        parser.error("Invalid mask-ns, lr or val-fraction")
+    if args.mask_ns <= 0 or args.lr <= 0 or args.weight_decay < 0 or not 0 < args.val_fraction < 1:
+        parser.error("Invalid mask-ns, lr, weight-decay or val-fraction")
     if min(args.epochs, args.patience, args.batch_size, args.log_every) < 1:
         parser.error("Epochs, patience, batch-size and log-every must be positive")
     train(args)
