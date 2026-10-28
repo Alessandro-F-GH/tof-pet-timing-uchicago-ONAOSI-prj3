@@ -24,14 +24,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from waveform_analysis.scripts.train_probabilistic_pca_imputer import (
-    ProbabilisticPCA,
-    positions,
-)
-from waveform_analysis.scripts.train_wide_unet_imputer_detector_specific import (
-    load_wide_development,
-    root_relative,
-)
+from waveform_analysis.scripts.train_probabilistic_pca_imputer import ProbabilisticPCA, positions
+from waveform_analysis.data.imputation import load_wide_development, root_relative
 
 
 def linear_interpolation_batch(signals, start, width):
