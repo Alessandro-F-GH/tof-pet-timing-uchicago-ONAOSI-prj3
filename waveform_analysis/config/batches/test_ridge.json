@@ -52,7 +52,7 @@
   "save_model": true,
   "protocol": {
     "seed": 1001,
-    "preprocessing_config": "../preprocessing/default_ctr.json",
+    "preprocessing_config": "../preprocessing/FBK.json",
     "bootstrap": {
       "n_resamples": 200
     },
