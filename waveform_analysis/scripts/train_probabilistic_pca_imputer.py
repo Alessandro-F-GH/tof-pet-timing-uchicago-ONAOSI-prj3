@@ -300,7 +300,7 @@ def load_mlp_models(results, channel, length, width, starts, identity):
 
 @torch.no_grad()
 def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_models,
-             destination, seed, batch_size=128, boundary_strength=1.0,
+             destination, seed, batch_size=128, boundary_strengths=None,
              boundary_slope_points=5):
     rows = []
     rng = np.random.default_rng(seed + 567)
@@ -308,6 +308,10 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
     length = len(time_ps)
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    if boundary_strengths is None:
+        boundary_strengths = np.ones((2, len(starts)), dtype=np.float64)
+    if np.shape(boundary_strengths) != (2, len(starts)):
+        raise ValueError("boundary_strengths must have shape [2, mask_positions]")
     for position_idx, start in enumerate(starts):
         stop = start + width
         # raw mean, raw draws, interpolation, MLP, corrected mean, corrected draws
@@ -318,6 +322,7 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
         for det in range(2):
             model = models[det]
             prepared = model.prepare_mask(start, width)
+            strength = float(boundary_strengths[det, position_idx])
             code = np.zeros(len(starts), dtype=np.float32)
             code[position_idx] = 1.
             for offset in range(0, len(validation), batch_size):
@@ -328,12 +333,12 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
                     signals, start, width, draws, rng, prepared=prepared
                 )
                 corrected_mu = boundary_correct_batch(
-                    mu, signals, start, width, boundary_strength, boundary_slope_points
+                    mu, signals, start, width, strength, boundary_slope_points
                 )
                 repeated_signals = np.repeat(signals, draws, axis=0)
                 corrected_generated = boundary_correct_batch(
                     generated.reshape(-1, width), repeated_signals, start, width,
-                    boundary_strength, boundary_slope_points
+                    strength, boundary_slope_points
                 ).reshape(generated.shape)
 
                 totals[det, 0] += np.square(mu - truth).sum()
@@ -383,6 +388,7 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
                 detector=det + 1, mask_position=position_idx,
                 start_sample=start, start_ns=float(time_ps[start] / 1000.),
                 evaluation_events=len(validation), conditional_samples=draws,
+                boundary_correction_strength=float(boundary_strengths[det, position_idx]),
                 ppca_mean_rmse=float(np.sqrt(totals[det, 0] / n)),
                 ppca_draw_rmse=float(np.sqrt(totals[det, 1] / n)),
                 boundary_corrected_mean_rmse=float(np.sqrt(totals[det, 4] / n)),
@@ -428,7 +434,7 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
 
 def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
                              destination, seed, n_events=3, n_draws=5,
-                             boundary_strength=1.0, boundary_slope_points=5):
+                             boundary_strengths=None, boundary_slope_points=5):
     """Show true, masked and PPCA-imputed waveforms at informative mask positions.
 
     Choose masks nearest 0 ns, 20 ns and a smoother late region. A reproducible
@@ -444,6 +450,8 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
         min(range(len(starts)), key=lambda i: abs(times[starts[i]] - t))
         for t in targets
     ))
+    if boundary_strengths is None:
+        boundary_strengths = np.ones((2, len(starts)), dtype=np.float64)
     out = destination / "imputation_examples"
     out.mkdir(parents=True, exist_ok=True)
     for det in range(2):
@@ -452,12 +460,13 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
             start = starts[index]
             stop = start + width
             prepared = model.prepare_mask(start, width)
+            strength = float(boundary_strengths[det, index])
             batch = np.asarray(waves[chosen, det, :], dtype=np.float64)
             mean, samples = model.condition_batch(
                 batch, start, width, n_draws, rng, prepared=prepared
             )
             corrected_mean = boundary_correct_batch(
-                mean, batch, start, width, boundary_strength, boundary_slope_points
+                mean, batch, start, width, strength, boundary_slope_points
             )
             repeated_batch = np.repeat(batch, n_draws, axis=0)
             corrected_samples = boundary_correct_batch(
@@ -505,7 +514,7 @@ def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
                     ax.grid(alpha=.2)
                 axes[0].set_title(
                     f"Detector {det + 1}, held-out event {event_id}, "
-                    f"mask at {times[start]:.2f} ns"
+                    f"mask at {times[start]:.2f} ns, lambda={strength:.2f}"
                 )
                 axes[0].legend(ncol=3, fontsize=8, loc="best")
                 axes[1].set_xlabel("Time (ns)")
@@ -533,8 +542,10 @@ def main():
     parser.add_argument("--plot-examples", type=int, default=3,
                         help="Held-out events to plot for each detector/region (0 disables)")
     parser.add_argument("--example-draws", type=int, default=5)
-    parser.add_argument("--boundary-correction-strength", type=float, default=1.0,
-                        help="Cubic boundary correction strength in [0, 1]; 0 disables")
+    parser.add_argument("--tuning-events", type=int, default=500,
+                        help="Calibration events used to optimize correction strengths")
+    parser.add_argument("--continuity-weight", type=float, default=1.0,
+                        help="Weight of boundary-slope mismatch in the analytic objective")
     parser.add_argument("--boundary-slope-points", type=int, default=5,
                         help="Observed samples per side for local linear slope estimates")
     parser.add_argument("--seed", type=int, default=42)
@@ -543,7 +554,7 @@ def main():
     if (args.max_events < 10 or args.components < 1 or args.eval_events < 1
         or args.draws < 1 or args.eval_batch_size < 1 or args.plot_examples < 0
         or args.example_draws < 1 or args.mask_ns <= 0 or not 0 < args.val_fraction < 1
-        or not 0 <= args.boundary_correction_strength <= 1
+        or args.tuning_events < 1 or args.continuity_weight < 0
         or args.boundary_slope_points < 2
         or args.mask_stride_samples is not None and args.mask_stride_samples < 1):
         parser.error("Invalid parameter")
@@ -563,7 +574,7 @@ def main():
         parser.error("--components must be below the number of training events and samples")
     destination = (root_relative(args.output) if args.output else
                    ROOT / "waveform_analysis/imputation_experiments" /
-                   results.name / args.channel / "ppca_boundary_corrected")
+                   results.name / args.channel / "ppca_adaptive_boundary")
     destination.mkdir(parents=True, exist_ok=True)
     print(f"Fitting PPCA on {len(training)} events per detector; "
           f"components={args.components}; full length={length}", flush=True)
@@ -578,16 +589,48 @@ def main():
         results, args.channel, length, width, starts,
         manifest.get("analysis_protocol_identity")
     )
-    evaluation = validation[:min(len(validation), args.eval_events)]
+    if len(validation) < 2:
+        parser.error("Need at least two validation events for separate tuning and evaluation")
+    n_tuning = min(args.tuning_events, max(1, len(validation) // 2))
+    tuning = validation[:n_tuning]
+    evaluation = validation[n_tuning:n_tuning + args.eval_events]
+    if len(evaluation) == 0:
+        parser.error("No held-out evaluation events remain after strength tuning")
+    print(f"Correction tuning: {len(tuning)} events; independent evaluation: "
+          f"{len(evaluation)} events; continuity weight={args.continuity_weight}", flush=True)
+    strengths, tuning_rows = optimize_boundary_strengths(
+        models, waves, tuning, starts, width, args.continuity_weight,
+        args.boundary_slope_points, args.eval_batch_size
+    )
+    for row in tuning_rows:
+        row["start_ns"] = float(time_ps[row["start_sample"]] / 1000.0)
+    with (destination / "optimized_boundary_strengths.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as f:
+        writer = csv.DictWriter(f, fieldnames=list(tuning_rows[0]))
+        writer.writeheader()
+        writer.writerows(tuning_rows)
+    strength_fig, strength_ax = plt.subplots(figsize=(10, 4))
+    for det in range(2):
+        strength_ax.plot(np.asarray(time_ps)[starts] / 1000.0, strengths[det],
+                         marker=".", ms=4, label=f"Detector {det + 1}")
+    strength_ax.set_xlabel("Masked region start (ns)")
+    strength_ax.set_ylabel("Optimized correction strength")
+    strength_ax.set_ylim(-0.03, 1.03)
+    strength_ax.grid(alpha=.25)
+    strength_ax.legend()
+    strength_fig.tight_layout()
+    strength_fig.savefig(destination / "optimized_boundary_strengths.png", dpi=180)
+    plt.close(strength_fig)
+
     rows = evaluate(models, waves, evaluation, starts, width, np.asarray(time_ps),
                     args.draws, mlp, destination, args.seed, args.eval_batch_size,
-                    args.boundary_correction_strength, args.boundary_slope_points)
+                    strengths, args.boundary_slope_points)
     if args.plot_examples:
         plot_imputation_examples(models, waves, evaluation, starts, width,
                                  time_ps, destination, args.seed,
                                  args.plot_examples, args.example_draws,
-                                 args.boundary_correction_strength,
-                                 args.boundary_slope_points)
+                                 strengths, args.boundary_slope_points)
     np.savez_compressed(
         destination / "model.npz",
         mean=np.stack([m.mean for m in models]),
@@ -595,21 +638,23 @@ def main():
         noise_variance=np.asarray([m.sigma2 for m in models]),
     )
     summary = dict(
-        method="ppca_with_cubic_boundary_correction_comparison",
+        method="ppca_analytic_position_specific_boundary_correction",
         dataset_identity=manifest.get("analysis_protocol_identity"),
         source_run=str(source), channel=args.channel,
         selected_events=len(selected), training_events=len(training),
-        validation_events=len(validation), evaluation_events=len(evaluation),
+        validation_events=len(validation), tuning_events=len(tuning),
+        evaluation_events=len(evaluation),
         mask_samples=width, mask_positions=len(starts),
         components=args.components, draws=args.draws, seed=args.seed,
         evaluation_batch_size=args.eval_batch_size,
         plot_examples=args.plot_examples, example_draws=args.example_draws,
-        boundary_correction_strength=args.boundary_correction_strength,
+        continuity_weight=args.continuity_weight,
         boundary_slope_points=args.boundary_slope_points,
+        optimized_boundary_strengths=strengths.tolist(),
         detector_noise_variances=[float(m.sigma2) for m in models],
         detector_explained_variance_ratios=[m.explained_variance_ratio for m in models],
         mlp_status=status,
-        note="Compares raw PPCA with cubic Hermite boundary correction; coverage uses finite conditional draws. Isotropic PPCA residual noise.",
+        note="Correction strengths optimized continuously and independently per detector/mask on calibration events using masked MSE plus weighted boundary-slope mismatch; final metrics use disjoint evaluation events. Isotropic PPCA residual noise.",
     )
     (destination / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Finished: {destination}", flush=True)
