@@ -240,7 +240,7 @@ def write_latex(path, rows):
         r"\begin{table}[t]", r"\centering",
         r"\caption{Held-out waveform reconstruction RMSE. Confidence intervals are event-bootstrap 95\% intervals.}",
         r"\label{tab:imputation-reconstruction-rmse}",
-        r"\begin{tabular}{llrrrr}", r"\toprule",
+        r"\begin{tabular}{lllrrr}", r"\toprule",
         r"Dataset & Channel & Method & RMSE & 95\% CI & $\Delta$ vs.\ Hermite (\%) \\",
         r"\midrule",
     ]
@@ -259,6 +259,32 @@ def write_latex(path, rows):
         lines.pop()
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def save_overall_plot(rows, output):
+    """Compact pooled-RMSE comparison with event-bootstrap confidence intervals."""
+    configs = list(dict.fromkeys((r["dataset"], r["channel"]) for r in rows))
+    fig, axes = plt.subplots(1, len(configs), figsize=(5.2 * len(configs), 4.4), squeeze=False)
+    for ax, (dataset, channel) in zip(axes.flat, configs):
+        subset = [r for r in rows if r["dataset"] == dataset and r["channel"] == channel]
+        by_method = {r["method"]: r for r in subset}
+        values = np.array([by_method[m]["rmse"] for m in METHODS])
+        low = np.array([by_method[m]["ci95_low"] for m in METHODS])
+        high = np.array([by_method[m]["ci95_high"] for m in METHODS])
+        yerr = np.vstack((values - low, high - values))
+        ax.bar(np.arange(len(METHODS)), values, yerr=yerr, capsize=3)
+        ax.set_xticks(np.arange(len(METHODS)))
+        ax.set_xticklabels([{"linear": "Linear", "hermite": "Hermite", "ppca": "PPCA",
+                             "hermite_ppca_blend": "Hermite-PPCA"}[m] for m in METHODS],
+                           rotation=25, ha="right")
+        ax.set_title(f"{dataset} — {channel.capitalize()}")
+        ax.set_ylabel("Pooled held-out RMSE")
+        ax.grid(axis="y", alpha=0.25)
+    fig.suptitle("Overall imputation reconstruction error")
+    fig.tight_layout()
+    fig.savefig(output / "overall_rmse.pdf", bbox_inches="tight")
+    fig.savefig(output / "overall_rmse.png", dpi=180, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
@@ -305,6 +331,7 @@ def main():
     write_csv(output / "position_metrics.csv", all_positions)
     write_csv(output / "overall_metrics.csv", all_overall)
     write_latex(output / "reconstruction_metrics.tex", all_overall)
+    save_overall_plot(all_overall, output)
     summary = {
         "description": "Held-out reconstruction benchmark; event-level bootstrap CIs.",
         "configurations": configurations,
