@@ -234,6 +234,80 @@ def evaluate(models, waves, validation, starts, width, time_ps, draws, mlp_model
     plt.close(fig)
     return rows
 
+
+def plot_imputation_examples(models, waves, validation, starts, width, time_ps,
+                             destination, seed, n_events=3, n_draws=5):
+    """Show true, masked and PPCA-imputed waveforms at informative mask positions.
+
+    Choose masks nearest 0 ns, 20 ns and a smoother late region. A reproducible
+    subset of held-out events is used; only missing regions are sampled.
+    """
+    if n_events <= 0:
+        return
+    rng = np.random.default_rng(seed + 2027)
+    chosen = np.asarray(validation[:min(n_events, len(validation))], dtype=np.int64)
+    times = np.asarray(time_ps, dtype=np.float64) / 1000.0
+    targets = (0.0, 20.0, 40.0)
+    mask_indices = list(dict.fromkeys(
+        min(range(len(starts)), key=lambda i: abs(times[starts[i]] - t))
+        for t in targets
+    ))
+    out = destination / "imputation_examples"
+    out.mkdir(parents=True, exist_ok=True)
+    for det in range(2):
+        model = models[det]
+        for index in mask_indices:
+            start = starts[index]
+            stop = start + width
+            prepared = model.prepare_mask(start, width)
+            batch = np.asarray(waves[chosen, det, :], dtype=np.float64)
+            mean, samples = model.condition_batch(
+                batch, start, width, n_draws, rng, prepared=prepared
+            )
+            for j, event_id in enumerate(chosen):
+                fig, axes = plt.subplots(2, 1, figsize=(11, 7), height_ratios=(1, 1.2))
+                original = batch[j]
+                masked = original.copy()
+                masked[start:stop] = np.nan
+                reconstructed = original.copy()
+                reconstructed[start:stop] = mean[j]
+                for ax, zoom in zip(axes, (False, True)):
+                    if zoom:
+                        left = max(0, start - 2 * width)
+                        right = min(len(original), stop + 2 * width)
+                    else:
+                        left, right = 0, len(original)
+                    segment = slice(left, right)
+                    ax.plot(times[segment], original[segment], color="black",
+                            lw=1.3, label="Ground truth")
+                    ax.plot(times[segment], masked[segment], color="tab:gray",
+                            lw=1, ls="--", label="Observed (masked)")
+                    ax.plot(times[segment], reconstructed[segment], color="tab:blue",
+                            lw=1.5, label="PPCA conditional mean")
+                    for k in range(n_draws):
+                        imputed = original.copy()
+                        imputed[start:stop] = samples[j, k]
+                        ax.plot(times[segment], imputed[segment], color="tab:orange",
+                                lw=.8, alpha=.3,
+                                label="Conditional samples" if k == 0 else None)
+                    ax.axvspan(times[start], times[stop - 1],
+                               color="tab:red", alpha=.08, label="1 ns mask")
+                    ax.set_ylabel("Normalized signal")
+                    ax.grid(alpha=.2)
+                axes[0].set_title(
+                    f"Detector {det + 1}, held-out event {event_id}, "
+                    f"mask at {times[start]:.2f} ns"
+                )
+                axes[0].legend(ncol=3, fontsize=8, loc="best")
+                axes[1].set_xlabel("Time (ns)")
+                fig.tight_layout()
+                fig.savefig(
+                    out / f"detector_{det+1}_event_{event_id}_position_{index:02d}.png",
+                    dpi=160
+                )
+                plt.close(fig)
+    print(f"Imputation examples: {out}", flush=True)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, required=True)
@@ -247,11 +321,15 @@ def main():
     parser.add_argument("--eval-events", type=int, default=100)
     parser.add_argument("--draws", type=int, default=16)
     parser.add_argument("--eval-batch-size", type=int, default=128)
+    parser.add_argument("--plot-examples", type=int, default=3,
+                        help="Held-out events to plot for each detector/region (0 disables)")
+    parser.add_argument("--example-draws", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-fraction", type=float, default=.15)
     args = parser.parse_args()
     if (args.max_events < 10 or args.components < 1 or args.eval_events < 1
-        or args.draws < 1 or args.eval_batch_size < 1 or args.mask_ns <= 0 or not 0 < args.val_fraction < 1
+        or args.draws < 1 or args.eval_batch_size < 1 or args.plot_examples < 0
+        or args.example_draws < 1 or args.mask_ns <= 0 or not 0 < args.val_fraction < 1
         or args.mask_stride_samples is not None and args.mask_stride_samples < 1):
         parser.error("Invalid parameter")
     results = root_relative(args.results)
@@ -288,6 +366,10 @@ def main():
     evaluation = validation[:min(len(validation), args.eval_events)]
     rows = evaluate(models, waves, evaluation, starts, width, np.asarray(time_ps),
                     args.draws, mlp, destination, args.seed, args.eval_batch_size)
+    if args.plot_examples:
+        plot_imputation_examples(models, waves, evaluation, starts, width,
+                                 time_ps, destination, args.seed,
+                                 args.plot_examples, args.example_draws)
     np.savez_compressed(
         destination / "model.npz",
         mean=np.stack([m.mean for m in models]),
@@ -303,6 +385,7 @@ def main():
         mask_samples=width, mask_positions=len(starts),
         components=args.components, draws=args.draws, seed=args.seed,
         evaluation_batch_size=args.eval_batch_size,
+        plot_examples=args.plot_examples, example_draws=args.example_draws,
         detector_noise_variances=[float(m.sigma2) for m in models],
         detector_explained_variance_ratios=[m.explained_variance_ratio for m in models],
         mlp_status=status,
