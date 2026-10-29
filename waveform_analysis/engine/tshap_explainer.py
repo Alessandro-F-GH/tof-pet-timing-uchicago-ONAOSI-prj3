@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 4
-GLOBAL_PLOT_VERSION = 14
+GLOBAL_PLOT_VERSION = 15
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -494,10 +494,12 @@ def _signed_means(scores):
 def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *, label=True):
     dt = float(np.median(np.diff(time_ps)))
     centers = (time_ps[starts] + window_samples * dt / 2) / 1000
-    width = 0.5 * window_samples * dt / 1000
-    ax.bar(centers - width / 2, positive, width=width, color="#2585bd",
+    # Each sign bar spans the complete temporal window. Since positive and
+    # negative values extend on opposite sides of zero, they can share a center.
+    width = window_samples * dt / 1000
+    ax.bar(centers, positive, width=width, color="#2585bd",
            label="Positive" if label else None)
-    ax.bar(centers + width / 2, negative, width=width, color="#de8546",
+    ax.bar(centers, negative, width=width, color="#de8546",
            label="Negative" if label else None)
     ax.axhline(0, color="0.4", linewidth=0.7)
     if label:
@@ -904,7 +906,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 10
+LOCAL_PLOT_VERSION = 11
 
 
 def _detector_difference(values):
@@ -1109,15 +1111,14 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     starts = np.asarray(window_starts, dtype=np.int64)
     if scores.shape != (2, len(starts)):
         raise ValueError("Local window scores have invalid shape")
-    # Overlay detectors with different transparency; both preserve score sign.
+    # Each detector's signed bar spans the full window. Bars share the window
+    # center and use transparency so detector contributions remain comparable.
     dt = float(np.median(np.diff(time_ps)))
     centers = (time_ps[starts] + window_samples * dt / 2) / 1000
-    width = 0.5 * window_samples * dt / 1000
-    for d, alpha in ((0, 0.95), (1, 0.45)):
-        offset = (-0.5 if d == 0 else 0.5) * width
-        ax.bar(centers + offset, scores[d], width=width,
-               color=np.where(scores[d] >= 0, "#2585bd", "#de8546").tolist(),
-               alpha=alpha, label=f"Detector {d + 1}")
+    width = window_samples * dt / 1000
+    for d, color, alpha in ((0, "#2585bd", 0.75), (1, "#de8546", 0.55)):
+        ax.bar(centers, scores[d], width=width, color=color, alpha=alpha,
+               edgecolor=color, linewidth=0.5, label=f"Detector {d + 1}")
     ax.axhline(0, color="0.4", linewidth=0.7)
     ax.set_title("Signed local TSHAP window contributions")
     ax.set_ylabel("Contribution (ps)")
