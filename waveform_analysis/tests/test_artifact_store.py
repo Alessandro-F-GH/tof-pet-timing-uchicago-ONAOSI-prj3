@@ -89,3 +89,15 @@ def test_parallel_builders_serialize_and_compute_once(tmp_path):
         process.join(timeout=20)
         assert process.exitcode == 0
     assert Path(counter).read_text(encoding="utf-8").splitlines() == ["build"]
+
+
+def test_domain_manifest_is_payload_not_store_completion_record(tmp_path):
+    store = ArtifactStore(tmp_path / "store")
+    recipe = ProductRecipe("prepared", {"source": "control-001"})
+    def builder(directory):
+        np.save(directory / "values.npy", np.asarray([1, 2], dtype=np.int16), allow_pickle=False)
+        (directory / "manifest.json").write_text('{"scientific": "metadata"}', encoding="utf-8")
+    reference = store.get_or_build(recipe, builder)
+    assert reference.payload_path("manifest.json").is_file()
+    assert (reference.path / ".artifact.json").is_file()
+    assert store.lookup(recipe).status == "hit"
