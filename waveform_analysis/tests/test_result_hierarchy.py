@@ -97,7 +97,7 @@ def test_old_layout_rejected_without_side_effects(tmp_path):
     (directory / 'config.json').write_text('{"control": {}}')
     (directory / 'manifest.json').write_text('{"status":"complete"}')
     before = contents(tmp_path)
-    with pytest.raises(ValueError, match='convert_results.py'):
+    with pytest.raises(ValueError, match='historical result compatibility'):
         read_run(directory)
     assert contents(tmp_path) == before
 

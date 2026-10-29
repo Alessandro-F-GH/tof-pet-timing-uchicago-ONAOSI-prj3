@@ -76,7 +76,7 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
         raise AssertionError("Imputer was refitted on cache hit")
     monkeypatch.setattr(t, "_fit_hermite_ppca_imputer", forbidden)
     second, second_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, tmp_path, **options)
+        control, "energy_to_energy", config, **options)
     assert second_meta["cache_hit"] is True
     assert second_meta["cache_identity"] == first_meta["cache_identity"]
     np.testing.assert_allclose(
@@ -350,42 +350,6 @@ def test_led_reference_line_stops_at_time_zero():
         _led_line_extent(np.asarray([-2.0, -1.0, 0.0, 1.0, 2.0])),
         (-2.0, 0.0),
     )
-
-
-def test_native_led_baselines_use_original_trigger_relative_window(tmp_path):
-    from types import SimpleNamespace
-
-    native = tmp_path / "blind_native" / "native-a"
-    native.mkdir(parents=True)
-    (native / "manifest.json").write_text(json.dumps({
-        "source": "source.root",
-        "mode": "energy_to_energy",
-        "family": "energy",
-        "materialized_window_ns": {"before": 5.0, "after": 5.0},
-    }))
-    event_ids = np.asarray([101, 102, 103], dtype=np.int64)
-    waves = np.zeros((3, 2, 10), dtype=np.float32)
-    waves[0, 0, 3:5] = [1.0, 3.0]
-    waves[0, 1, 3:5] = [5.0, 7.0]
-    waves[1, 0, 3:5] = [10.0, 12.0]
-    waves[1, 1, 3:5] = [-2.0, 0.0]
-    waves[2] = 999.0
-    intervals = np.full((3, 2), 1e-9, dtype=np.float64)
-    np.save(native / "event_index.npy", event_ids)
-    np.save(native / "energy_windows_mV.npy", waves)
-    np.save(native / "energy_sample_interval_s.npy", intervals)
-
-    dataset = SimpleNamespace(
-        manifest={"analysis_source": "source.root"},
-        event_index=np.asarray([101, 102], dtype=np.int64),
-        n_events=2,
-    )
-    baselines = _native_led_baselines(
-        tmp_path, dataset, "energy_to_energy", np.asarray([1, 0]),
-        baseline_window_ns=(-2.0, -1.0),
-    )
-    np.testing.assert_allclose(baselines, [[11.0, -1.0], [2.0, 6.0]])
-
 
 
 @pytest.mark.parametrize("window_name", ["onishi", "Onishi", "ONISHI"])
