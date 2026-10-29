@@ -14,6 +14,7 @@ ModelExplain = Callable[[Any, np.ndarray], np.ndarray]
 TransformParameterSelector = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 TransformFit = Callable[..., tuple[Any, np.ndarray]]
 TransformApply = Callable[[Any, np.ndarray], np.ndarray]
+TransformBlockApply = Callable[[Any, np.ndarray, str], np.ndarray]
 TransformSave = Callable[[Any, Path], None]
 
 
@@ -33,6 +34,8 @@ class FeatureTransformSpec:
     save: TransformSave | None = None
     log_fit: bool = True
     fit_role: str = "control"
+    block_names: tuple[str, ...] = ()
+    transform_block: TransformBlockApply | None = None
 
     def __post_init__(self) -> None:
         name = str(self.name).strip()
