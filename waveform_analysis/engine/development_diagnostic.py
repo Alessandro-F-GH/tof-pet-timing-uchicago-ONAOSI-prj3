@@ -24,7 +24,7 @@ from waveform_analysis.engine.train import (
 from waveform_analysis.models import get_model
 
 
-def ensure_development_predictions(run: dict[str, Any], *, logger=None) -> Path | None:
+def ensure_development_predictions(run: dict[str, Any], *, logger=None, artifact_root=None) -> Path | None:
     """Use saved predictions or a saved model and uniquely matching cache.
 
     Never fit a model, transform or preprocessing rule, or load raw acquisitions.
@@ -32,6 +32,8 @@ def ensure_development_predictions(run: dict[str, Any], *, logger=None) -> Path 
     """
     manifest = run["manifest"]
     config = resolve_run_config(run["directory"])
+    if artifact_root is not None:
+        config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
     store = RunStore(
         run["directory"],
         artifact_root=config["preprocessing"]["artifact_root"],

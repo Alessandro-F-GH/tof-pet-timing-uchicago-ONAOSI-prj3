@@ -26,7 +26,7 @@ from waveform_analysis.engine.train import (
     load_fitted_model, predict_indices, release_training_memory, saved_model_complete,
 )
 from waveform_analysis.signal.sample_mask import apply_sample_mask
-from waveform_analysis.data.prepared_cache import PreparedCacheLookup, _cache_root
+from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.models import get_model
@@ -255,7 +255,7 @@ def _fit_hermite_ppca_imputer(control, mode, baseline_ids, *, components,
 
 
 def _cached_hermite_ppca_imputer(
-    control, mode, config, output_root, *, window_samples, stride_samples,
+    control, mode, config, *, window_samples, stride_samples,
     components, fit_events, tuning_events, slope_points, batch_size, seed,
 ):
     """Fit or resolve one immutable conditional Hermite-PPCA imputer product."""
@@ -915,76 +915,54 @@ def _dataset_mean_difference_mv(
 
 
 def _native_led_baselines(
-    cache_root, dataset, mode, dataset_indices, baseline_window_ns
+    artifact_root, dataset, mode, dataset_indices, baseline_window_ns
 ):
-    """Read detector baselines from the original trigger-relative native waveforms."""
-    cache_root = Path(cache_root).expanduser().resolve()
+    """Read trigger-relative baselines from the exact referenced native product."""
+    from waveform_analysis.data.artifact_store import ArtifactStore
+
     dataset_indices = np.asarray(dataset_indices, dtype=np.int64).reshape(-1)
     if dataset_indices.size == 0:
         return np.empty((0, 2), dtype=np.float64)
     if np.any(dataset_indices < 0) or np.any(dataset_indices >= dataset.n_events):
         raise ValueError("LED baseline dataset indices are out of range")
-
-    source_event_ids = np.asarray(dataset.event_index, dtype=np.int64)[dataset_indices]
-    source = str(dataset.manifest.get("analysis_source", ""))
+    native_ref = dataset.manifest.get("native_artifact_ref")
+    if not native_ref or not native_ref.get("product_id"):
+        raise ValueError("Prepared dataset has no native waveform artifact reference")
+    reference = ArtifactStore(artifact_root).resolve(
+        str(native_ref["product_type"]), str(native_ref["product_id"])
+    )
+    native_manifest = json.loads((reference.path / "manifest.json").read_text(encoding="utf-8"))
     family = mode_family(mode)
-    native_root = cache_root / "blind_native"
-    candidates = []
-    for manifest_path in native_root.glob("*/manifest.json"):
-        try:
-            native_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if (
-            native_manifest.get("source") != source
-            or native_manifest.get("mode") != mode
-            or native_manifest.get("family") != family
-        ):
-            continue
-        directory = manifest_path.parent
-        event_path = directory / "event_index.npy"
-        waveform_path = directory / f"{family}_windows_mV.npy"
-        interval_path = directory / f"{family}_sample_interval_s.npy"
-        if not all(path.is_file() for path in (event_path, waveform_path, interval_path)):
-            continue
-        native_event_ids = np.asarray(np.load(event_path, mmap_mode="r"), dtype=np.int64)
-        row_lookup = {int(event_id): row for row, event_id in enumerate(native_event_ids)}
-        if all(int(event_id) in row_lookup for event_id in source_event_ids):
-            candidates.append(
-                (directory, native_manifest, row_lookup, waveform_path, interval_path)
-            )
-
-    if len(candidates) != 1:
-        raise ValueError(
-            "Expected exactly one matching original blind-native waveform cache "
-            f"for LED baselines, found {len(candidates)} in {native_root}"
-        )
-
-    directory, native_manifest, row_lookup, waveform_path, interval_path = candidates[0]
-    waves = np.load(waveform_path, mmap_mode="r")
-    intervals = np.load(interval_path, mmap_mode="r")
-    try:
-        before_ns = float(native_manifest["materialized_window_ns"]["before"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("Blind-native cache is missing materialized_window_ns.before") from exc
-
-    baselines = np.empty((dataset_indices.size, 2), dtype=np.float64)
-    for output_row, event_id in enumerate(source_event_ids):
-        native_row = row_lookup[int(event_id)]
+    if (
+        native_manifest.get("source") != dataset.manifest.get("analysis_source")
+        or native_manifest.get("mode") != mode
+        or native_manifest.get("family") != family
+    ):
+        raise ValueError("Native waveform artifact does not match prepared dataset provenance")
+    source_event_ids = np.asarray(dataset.event_index, dtype=np.int64)[dataset_indices]
+    native_event_ids = np.asarray(
+        np.load(reference.payload_path("event_index.npy"), mmap_mode="r"), dtype=np.int64
+    )
+    row_lookup = {int(event_id): row for row, event_id in enumerate(native_event_ids)}
+    missing = [int(event_id) for event_id in source_event_ids if int(event_id) not in row_lookup]
+    if missing:
+        raise ValueError(f"Native waveform artifact is missing prepared events: {missing[:5]}")
+    rows = np.asarray([row_lookup[int(event_id)] for event_id in source_event_ids], dtype=np.int64)
+    waves = np.load(reference.payload_path(f"{family}_windows_mV.npy"), mmap_mode="r")
+    intervals = np.load(reference.payload_path(f"{family}_sample_interval_s.npy"), mmap_mode="r")
+    from waveform_analysis.signal.baseline import baseline_level_mV
+    baseline = np.empty((len(rows), 2), dtype=np.float64)
+    for output_row, native_row in enumerate(rows):
         for detector in range(2):
-            baselines[output_row, detector] = baseline_level_mV(
+            baseline[output_row, detector] = baseline_level_mV(
                 waves[native_row, detector],
                 float(intervals[native_row, detector]),
-                before_ns,
+                float(native_manifest["materialized_window_ns"]["before"]),
                 baseline_window_ns,
             )
-    if not np.all(np.isfinite(baselines)):
-        raise ValueError(
-            "Could not calculate a finite LED baseline from the original "
-            "preprocessed blind waveform"
-        )
-    return baselines
-
+    if not np.all(np.isfinite(baseline)):
+        raise ValueError("Native LED baselines contain non-finite values")
+    return baseline
 
 def _led_reference_levels(baseline_mv, threshold_mv):
     """Convert the calibrated baseline-relative LED threshold to absolute mV."""
@@ -1085,7 +1063,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
 
 def _refresh_local_presentation(
     destination, *, waveform_transform, led_threshold_mv, baseline_window_ns,
-    dataset, mode, seed, cache_root
+    dataset, mode, seed, artifact_root
 ):
     """Refresh plots from cached attributions and a cached dataset-mean waveform."""
     summary_path = destination / "summary.json"
@@ -1123,7 +1101,7 @@ def _refresh_local_presentation(
     if "dataset_index" not in arrays:
         raise ValueError("Cached local explanations are missing dataset indices")
     led_baselines_mv = _native_led_baselines(
-        cache_root, dataset, mode, arrays["dataset_index"], baseline_window_ns
+        artifact_root, dataset, mode, arrays["dataset_index"], baseline_window_ns
     )
 
     if "dataset_mean_difference_mv" in arrays:
@@ -1299,42 +1277,7 @@ def _explanation_destination(output_root, run_directory):
     return Path(output_root).resolve() / batch.name / relative_run / "tshap"
 
 
-def _copy_cached_explanation(source, destination, *, remove_source=False, logger=None):
-    """Migrate a complete legacy cache into the stable directory without inference."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix=".tshap-migrate-", dir=destination.parent))
-    shutil.rmtree(temporary)
-    try:
-        shutil.copytree(source, temporary)
-        _refresh_presentation(temporary)
-        _publish_directory(temporary, destination, overwrite=True)
-    finally:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-    if remove_source:
-        shutil.rmtree(source)
-        # Remove now-empty legacy containers only; never remove the run itself.
-        for parent in (source.parent, source.parent.parent):
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-    if logger:
-        logger.info("TSHAP | migrated cached explanation | %s -> %s", source, destination)
-
-def _cleanup_legacy_result_tshap(run_directory):
-    """Remove superseded hash-named TSHAP artifacts after a verified cache exists."""
-    legacy_root = Path(run_directory) / "explanations" / "tshap"
-    if legacy_root.exists():
-        shutil.rmtree(legacy_root)
-    for parent in (legacy_root.parent,):
-        try:
-            parent.rmdir()
-        except OSError:
-            pass
-
-
-def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
+def explain_tshap(results, *, models=None, artifact_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
                   roi=False, overwrite=False, imputation="hermite_ppca",
                   imputer_components=32, imputer_fit_events=2000,
@@ -1387,6 +1330,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
+            if artifact_root is not None:
+                config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
             if _is_excluded_tshap_window(config):
                 if logger:
                     logger.info(
@@ -1421,37 +1366,18 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             }
             fingerprint = canonical_hash(identity)
             destination = _explanation_destination(output_root, directory)
-            legacy_results = directory / "explanations" / "tshap" / fingerprint[:16]
-            legacy_xai = destination / fingerprint[:16]
-
             # A matching flat cache is the canonical hit: no model inference.
             if _complete(destination, fingerprint) and not overwrite:
                 _refresh_presentation(destination)
-                _cleanup_legacy_result_tshap(directory)
-                if logger:
+                    if logger:
                     logger.info("TSHAP | cache hit | %s", destination)
-                outputs.append(destination)
-                continue
-
-            # Migrate old hash-folder layouts rather than creating another copy.
-            if not overwrite and _complete(legacy_xai, fingerprint):
-                _copy_cached_explanation(legacy_xai, destination, logger=logger)
-                _cleanup_legacy_result_tshap(directory)
-                outputs.append(destination)
-                continue
-            if not overwrite and _complete(legacy_results, fingerprint):
-                _copy_cached_explanation(
-                    legacy_results, destination, remove_source=True, logger=logger
-                )
-                _cleanup_legacy_result_tshap(directory)
                 outputs.append(destination)
                 continue
 
             # No matching cache: compute in a temporary directory and replace the
             # stable tshap directory only after all artifacts have been written.
-            cache = _cache_root(config, directory, cache_root)
-            control = lookup.find(cache, "control", config, manifest)
-            blind = lookup.find(cache, "blind", config, manifest)
+            control = lookup.find("control", config, manifest)
+            blind = lookup.find("blind", config, manifest)
             time_ps = _check_prepared_grids(control, blind, config["mode"])
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
@@ -1465,7 +1391,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             imputer_metadata = None
             if imputation == "hermite_ppca":
                 imputer, imputer_metadata = _cached_hermite_ppca_imputer(
-                    control, config["mode"], config, output_root,
+                    control, config["mode"], config,
                     window_samples=window_samples, stride_samples=stride_samples,
                     components=imputer_components, fit_events=imputer_fit_events,
                     tuning_events=imputer_tuning_events,
@@ -1609,8 +1535,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 # Replace stale settings/incomplete artifacts in-place. The cache
                 # check above prevents recalculation when the fingerprint matches.
                 _publish_directory(temporary, destination, overwrite=True)
-                _cleanup_legacy_result_tshap(directory)
-            finally:
+                finally:
                 if temporary.exists():
                     shutil.rmtree(temporary)
             outputs.append(destination)
@@ -1625,7 +1550,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
 
 
 def explain_tshap_local(
-    results, *, models=None, cache_root=None, output_root=None, events_per_group=2,
+    results, *, models=None, artifact_root=None, output_root=None, events_per_group=2,
     extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
@@ -1677,6 +1602,8 @@ def explain_tshap_local(
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
+            if artifact_root is not None:
+                config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
             if _is_excluded_tshap_window(config):
                 if logger:
                     logger.info(
@@ -1721,8 +1648,7 @@ def explain_tshap_local(
             fingerprint = canonical_hash(identity)
             destination = _local_explanation_destination(output_root, directory)
             if _complete_local(destination, fingerprint, len(LOCAL_GROUP_LABELS) * events_per_group) and not overwrite:
-                cache = _cache_root(config, directory, cache_root)
-                blind = lookup.find(cache, "blind", config, manifest)
+                blind = lookup.find("blind", config, manifest)
                 family = mode_family(config["mode"])
                 waveform_transform = getattr(blind, f"{family}_transform")
                 if waveform_transform is None:
@@ -1742,16 +1668,15 @@ def explain_tshap_local(
                     dataset=blind,
                     mode=config["mode"],
                     seed=int(seed),
-                    cache_root=cache,
+                    artifact_root=Path(config["preprocessing"]["artifact_root"]),
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
                 outputs.append(destination)
                 continue
 
-            cache = _cache_root(config, directory, cache_root)
-            control = lookup.find(cache, "control", config, manifest)
-            blind = lookup.find(cache, "blind", config, manifest)
+            control = lookup.find("control", config, manifest)
+            blind = lookup.find("blind", config, manifest)
             time_ps = _check_prepared_grids(control, blind, config["mode"])
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
@@ -1760,7 +1685,7 @@ def explain_tshap_local(
                 raise ValueError("Blind targets must be finite and match the event population")
 
             imputer, imputer_metadata = _cached_hermite_ppca_imputer(
-                control, config["mode"], config, output_root,
+                control, config["mode"], config,
                 window_samples=window_samples, stride_samples=stride_samples,
                 components=imputer_components, fit_events=imputer_fit_events,
                 tuning_events=imputer_tuning_events, slope_points=imputer_slope_points,
@@ -1811,7 +1736,7 @@ def explain_tshap_local(
                         selected_led_times_ps = np.asarray(led_times[dataset_indices], dtype=np.float64)
                         baseline_window_ns = config["preprocessing"]["selection"]["baseline_window_ns"]
                         led_baselines_mv = _native_led_baselines(
-                            cache, blind, config["mode"], dataset_indices, baseline_window_ns
+                            config["preprocessing"]["artifact_root"], blind, config["mode"], dataset_indices, baseline_window_ns
                         )
                         if not np.isfinite(led_threshold_mv) or not np.all(np.isfinite(selected_led_times_ps)):
                             raise ValueError("LED threshold and crossing times must be finite")

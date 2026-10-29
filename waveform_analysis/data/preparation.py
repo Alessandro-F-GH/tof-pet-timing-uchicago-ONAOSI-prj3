@@ -196,6 +196,10 @@ def prepare_ml_dataset(
             "analysis_protocol_identity": analysis_protocol_identity,
             "analysis_population_identity": analysis_protocol_identity,
             "control_fingerprint": control_artifact["fingerprint"],
+            "native_artifact_ref": {
+                "product_type": "native-waveforms",
+                "product_id": str(preprocessed.manifest.get("artifact_product_id", "")),
+            },
             "control_mode_fingerprint": _control_mode_fingerprint(
                 control_artifact, config["mode"]
             ),
