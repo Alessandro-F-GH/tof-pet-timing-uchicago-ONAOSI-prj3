@@ -511,14 +511,34 @@ def _loaded_metadata(artifact, config):
     return metadata
 
 
+def _shared_transform_complete(spec, directory) -> bool:
+    manifest_path = Path(directory) / ".artifact.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        identity = manifest["recipe"]["parameters"].get("feature_transform_identity")
+        if not identity:
+            return False
+        from waveform_analysis.data.artifact_store import ArtifactStore
+        store_root = Path(directory).parents[2]
+        reference = ArtifactStore(store_root).resolve("feature-transforms", str(identity))
+        return reference.payload_path("transform.pkl").is_file()
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+        return False
+
+
 def saved_model_complete(spec, directory) -> bool:
     directory = Path(directory)
     if not directory.is_dir() or not (directory / "sample_mask.npy").is_file():
         return False
     if spec.artifact_format == "pickle":
-        return (directory / "model.pkl").is_file() and (
-            spec.feature_transform.save is None or
-            (directory / "feature_transform/transform.pkl").is_file())
+        transform_ok = (
+            spec.feature_transform.save is None
+            or (directory / "feature_transform/transform.pkl").is_file()
+            or _shared_transform_complete(spec, directory)
+        )
+        return (directory / "model.pkl").is_file() and transform_ok
     return (directory / "model.pt").is_file()
 
 

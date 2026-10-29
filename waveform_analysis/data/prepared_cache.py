@@ -76,8 +76,22 @@ class PreparedCacheLookup:
             )
         path = matches[0]
         if path not in self.datasets:
-            # Read legacy full-grid arrays without changing their input policy;
-            # saved models supply their original masks and fitted transforms.
             self.datasets[path] = load_prepared_dataset(path)
+            from waveform_analysis.data.sample_mask import attach_control_sample_mask
+            mode = str(config["mode"])
+            if role == "control":
+                control_dataset = (
+                    self.datasets[path] if mode == "timing_to_timing" else None
+                )
+            elif mode == "timing_to_timing":
+                control_dataset = self.find(root, "control", config, manifest)
+            else:
+                control_dataset = None
+            self.datasets[path] = attach_control_sample_mask(
+                self.datasets[path],
+                control_dataset,
+                cache_root=Path(config["preprocessing"]["cache_dir"]),
+                artifact_root=Path(config["preprocessing"]["artifact_root"]),
+            )
         return self.datasets[path]
 

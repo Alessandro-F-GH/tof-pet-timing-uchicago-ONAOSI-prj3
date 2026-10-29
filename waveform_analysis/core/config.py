@@ -94,6 +94,9 @@ def _preprocessing(
     if "cache_dir" not in preprocessing:
         preprocessing["cache_dir"] = "processed_data/ml_protocol_v3"
     preprocessing["cache_dir"] = _project(root, preprocessing["cache_dir"])
+    preprocessing["artifact_root"] = _project(
+        root, preprocessing.get("artifact_root", "artifact_store")
+    )
     return preprocessing
 
 

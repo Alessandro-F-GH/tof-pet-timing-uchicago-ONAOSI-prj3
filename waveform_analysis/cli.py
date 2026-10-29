@@ -27,8 +27,12 @@ def _parser() -> argparse.ArgumentParser:
         "check-batch", help="Resolve and validate a batch configuration"
     )
     check.add_argument("--config", type=Path, required=True)
+    check.add_argument("--artifact-root", type=Path,
+                       help="Override the shared scientific artifact store location")
     batch = sub.add_parser("batch", help="Run or resume a dependency-aware batch")
     batch.add_argument("--config", type=Path, required=True)
+    batch.add_argument("--artifact-root", type=Path,
+                       help="Override the shared scientific artifact store location")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -96,6 +100,10 @@ def main() -> None:
     args = _parser().parse_args()
     if args.command == "check-batch":
         batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
+        if args.artifact_root is not None:
+            artifact_root = str(args.artifact_root.expanduser().resolve())
+            for run in batch.runs:
+                run["preprocessing"]["artifact_root"] = artifact_root
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
@@ -140,6 +148,10 @@ def main() -> None:
             print(ensure_development_predictions(run, logger=logger))
         return
     batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
+    if args.artifact_root is not None:
+        artifact_root = str(args.artifact_root.expanduser().resolve())
+        for run in batch.runs:
+            run["preprocessing"]["artifact_root"] = artifact_root
     for output in run_batch(batch, logger=logger):
         print(output)
 

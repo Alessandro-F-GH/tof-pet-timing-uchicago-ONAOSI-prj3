@@ -109,7 +109,10 @@ def prepare_role_dataset(
                 rebuild=rebuild,
             )
     prepared = attach_control_sample_mask(
-        prepared, control_prepared, cache_root=Path(config["preprocessing"]["cache_dir"]), logger=logger
+        prepared, control_prepared,
+        cache_root=Path(config["preprocessing"]["cache_dir"]),
+        artifact_root=Path(config["preprocessing"]["artifact_root"]),
+        logger=logger
     )
     result = selection, native, prepared
     if cache is not None:

@@ -3,6 +3,8 @@ import csv, json, os, shutil, tempfile
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
+from waveform_analysis.core.artifact_identity import ProductRecipe
+from waveform_analysis.data.artifact_store import ArtifactStore
 
 
 
@@ -29,9 +31,13 @@ def _atomic_npz(path, **arrays):
 
 
 class RunStore:
-    def __init__(self, root):
+    def __init__(self, root, *, artifact_root=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.artifact_root = (
+            Path(artifact_root).expanduser().resolve()
+            if artifact_root is not None else None
+        )
     @property
     def metadata_dir(self):
         return self.root / "metadata"
@@ -97,8 +103,71 @@ class RunStore:
         return self.artifacts_dir / "xai.npz"
 
     @property
+    def model_reference_path(self):
+        return self.metadata_dir / "model_reference.json"
+
+    @property
     def model_dir(self):
+        """Resolve the immutable model artifact, or return the absent local staging path."""
+        if self.model_reference_path.is_file() and self.artifact_root is not None:
+            reference = self.read_json(self.model_reference_path, {})
+            try:
+                return ArtifactStore(self.artifact_root).resolve(
+                    reference["product_type"], reference["product_id"]
+                ).path
+            except (KeyError, ValueError, RuntimeError):
+                return self.root / "model"
         return self.root / "model"
+
+    def save_model_artifact(self, spec, fitted, parameters, *, final_fit_fingerprint):
+        """Persist fitted weights once outside result views and record a stable reference."""
+        if self.artifact_root is None:
+            raise RuntimeError("An artifact_root is required to persist model artifacts")
+        from waveform_analysis.engine.train import save_model
+        compatibility = {
+            "python_major_minor": f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}",
+            "numpy_version": np.__version__,
+            "artifact_format": spec.artifact_format,
+        }
+        transform_identity = (
+            getattr(fitted.feature_transform, "identity", None)
+            if fitted.feature_transform is not None else None
+        )
+        recipe = ProductRecipe(
+            "final-models",
+            {
+                "model": spec.name,
+                "parameters": dict(parameters or {}),
+                "final_fit_fingerprint": str(final_fit_fingerprint),
+                "sample_mask": np.asarray(fitted.sample_mask, dtype=bool).tolist()
+                    if fitted.sample_mask is not None else None,
+                "feature_transform_identity": transform_identity,
+                "output_max_abs_ps": fitted.output_max_abs_ps,
+                "training_events": fitted.metadata.get("training_events"),
+            },
+            parents=(str(final_fit_fingerprint),) + (
+                (str(transform_identity),) if transform_identity else ()
+            ),
+            implementation=f"{spec.name}:{spec.artifact_format}:model-v1",
+            compatibility=compatibility,
+        )
+        store = ArtifactStore(self.artifact_root)
+        reference = store.get_or_build(
+            recipe,
+            lambda directory: save_model(
+                spec, fitted, directory, parameters, include_feature_transform=False
+            ),
+            metadata={
+                "model": spec.name,
+                "final_fit_fingerprint": str(final_fit_fingerprint),
+                "pinned": True,
+            },
+        )
+        atomic_json(self.model_reference_path, {
+            "product_type": reference.product_type,
+            "product_id": reference.product_id,
+        })
+        return reference
 
     @property
     def plots_dir(self):
@@ -168,7 +237,7 @@ class RunStore:
                 self.root / "optuna_sampler.pkl",
             ],
             "selection": [self.best_path],
-            "final_fit": [self.final_fit_path, self.model_dir, self.development_predictions_path],
+            "final_fit": [self.final_fit_path, self.model_reference_path, self.development_predictions_path],
             "blind": [self.blind_path, self.predictions_path],
             "bootstrap": [self.bootstrap_path, self.bootstrap_draws_path],
             "xai": [self.xai_path],

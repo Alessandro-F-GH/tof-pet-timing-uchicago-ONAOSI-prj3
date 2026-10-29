@@ -524,9 +524,9 @@ def _model(
         spec, space, config, development, best, logger, frozen_development
     )
     if config["save_model"]:
-        if store.model_dir.exists():
-            shutil.rmtree(store.model_dir)
-        save_model(spec, fitted, store.model_dir, best["parameters"])
+        store.save_model_artifact(
+            spec, fitted, best["parameters"], final_fit_fingerprint=fp
+        )
     store.write_final_fit(
         {
             "candidate_id": best["candidate_id"],
@@ -623,9 +623,9 @@ def _ridge_cv_selection_and_fit(
             "validation_rmse_std_ps": None,
         }
         if config["save_model"]:
-            if store.model_dir.exists():
-                shutil.rmtree(store.model_dir)
-            save_model(spec, fitted, store.model_dir, parameters)
+            store.save_model_artifact(
+                spec, fitted, parameters, final_fit_fingerprint=final_fp
+            )
         store.write_best(best)
         store.write_final_fit(
             {
@@ -983,7 +983,8 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
 
 def run_study(config, *, logger=None):
     run_dir = Path(config["output_dir"]).resolve()
-    store = RunStore(run_dir)
+    artifact_root = Path(config["preprocessing"]["artifact_root"]).expanduser().resolve()
+    store = RunStore(run_dir, artifact_root=artifact_root)
     logger = logger or _logger(run_dir)
     spec = get_model(config["model"]["name"])
     space = config["model"]["space"]

@@ -16,7 +16,7 @@ SAMPLE_MASK_VERSION = 1
 
 def attach_control_sample_mask(
     dataset: PreparedDataset, control: PreparedDataset | None, *, cache_root: Path,
-    logger=None,
+    artifact_root: Path | None = None, logger=None,
 ) -> PreparedDataset:
     """Attach/persist the frozen mask without modifying stored full-grid waveforms.
 
