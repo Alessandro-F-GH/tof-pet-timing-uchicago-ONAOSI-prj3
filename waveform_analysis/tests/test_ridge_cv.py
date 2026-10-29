@@ -188,7 +188,10 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     if mixed:
         c = deepcopy(runs[0])
         c["run_id"] = c["run_id"].replace("direct_linear_ridge", "direct_mlp")
-        c["output_dir"] = str(tmp_path / c["run_id"])
+        mode_tag = "energy" if c["mode"] == "energy_to_energy" else "timing"
+        c["output_dir"] = str(
+            tmp_path / mode_tag / c["window_name"] / c["model"]["name"]
+        )
         c["cross_validation"] = deepcopy(
             load_batch_config(source.parent / "benchmark_FBK.json").protocol[
                 "cross_validation"
@@ -279,9 +282,13 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         ["direct_linear_ridge", "shared_linear_ridge"]
         + (["direct_mlp"] if mixed else [])
     )
-    for output in outputs:
+    for output, run_config in zip(outputs, runs):
         manifest = read_run_manifest(output)
         best = json.loads((output / "metadata/best.json").read_text())
+        run_store = RunStore(
+            output,
+            artifact_root=run_config["preprocessing"]["artifact_root"],
+        )
         assert manifest["blind_used_in_selection"] is False
         assert set(manifest["dataset_populations"]) == {
             "control",
@@ -297,9 +304,9 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
             assert not (output / "tables/cv.csv").exists()
         else:
             assert (output / "tables/cv.csv").exists()
-        assert (output / "artifacts/pred.npz").exists()
-        development_path = output / "artifacts/development_pred.npz"
-        assert development_path.exists()
+        assert run_store.predictions_path.is_file()
+        development_path = run_store.development_predictions_path
+        assert development_path.is_file()
         with np.load(development_path) as diagnostic:
             assert diagnostic["dataset_role"].item() == "development"
             np.testing.assert_array_equal(diagnostic["event_id"], datasets["development"].event_index)
@@ -315,14 +322,25 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     assert (tmp_path / "report/tables/validation.csv").exists() == mixed
     assert batch_engine.run_batch(resolved) == outputs
     assert len(fit_calls) == (3 if mixed else 2)
-    # Missing predictions recover through the persisted model, without fitting.
-    (outputs[0] / "artifacts/pred.npz").unlink()
+    # Missing artifact references trigger inference from the persisted model,
+    # without retraining or assuming that payloads live inside the run folder.
+    reference_path = outputs[0] / "metadata/artifact_references.json"
+    references = json.loads(reference_path.read_text())
+    references.pop("blind_predictions")
+    reference_path.write_text(json.dumps(references))
     study.run_study(runs[0])
     assert len(fit_calls) == (3 if mixed else 2)
-    # Missing development predictions also recover by inference, never another fit.
-    (outputs[0] / "artifacts/development_pred.npz").unlink()
+    assert RunStore(
+        outputs[0], artifact_root=runs[0]["preprocessing"]["artifact_root"]
+    ).predictions_path.is_file()
+    # Missing development prediction references recover through inference too.
+    references = json.loads(reference_path.read_text())
+    references.pop("development_predictions")
+    reference_path.write_text(json.dumps(references))
     study.run_study(runs[0])
-    assert (outputs[0] / "artifacts/development_pred.npz").exists()
+    assert RunStore(
+        outputs[0], artifact_root=runs[0]["preprocessing"]["artifact_root"]
+    ).development_predictions_path.is_file()
     assert len(fit_calls) == (3 if mixed else 2)
 
 

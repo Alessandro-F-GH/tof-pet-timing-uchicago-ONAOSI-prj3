@@ -22,6 +22,7 @@ from waveform_analysis.reporting.stats import (
     pearson_r,
 )
 from waveform_analysis.data.results import discover_runs, resolve_run_config
+from waveform_analysis.data.storage import RunStore
 from waveform_analysis.reporting.latex_tables import (
     DATASET_TABLE_VERSION,
     export_dataset_tables,
@@ -115,8 +116,14 @@ def _groups(runs):
 
 
 def _payload(run):
-    with np.load(run["directory"] / "artifacts" / "pred.npz") as d:
-        return {k: np.asarray(d[k]) for k in d.files}
+    """Load blind predictions from the artifact store, with legacy local fallback."""
+    directory = Path(run["directory"])
+    config = resolve_run_config(directory)
+    store = RunStore(
+        directory,
+        artifact_root=config["preprocessing"].get("artifact_root"),
+    )
+    return store.load_predictions()
 
 
 def _correlation(group):

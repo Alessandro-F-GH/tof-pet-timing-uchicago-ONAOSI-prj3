@@ -9,7 +9,7 @@ from waveform_analysis.data.results import (
     resolve_run_config,
     read_run_manifest,
 )
-from waveform_analysis.data.prepared_cache import PreparedCacheLookup, _cache_root
+from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,6 +29,8 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
     diagnostics can be expressed in the original configured signal units.
     ``include_sample_mask`` additionally returns the retained-sample mask from
     preprocessing (all samples are valid for energy-channel inputs).
+    ``cache_root`` is retained for caller compatibility; canonical prepared
+    datasets are resolved from artifact references stored in the run manifest.
     """
     matches = []
     for run in discover_runs(results):
@@ -43,11 +45,11 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
         raise ValueError(f"No wide {channel} runs found under {results}")
     directory, cfg = matches[0]
     manifest = read_run_manifest(directory)
-    roles = ("development", "control") if include_control else ("development",)
-    cache = _cache_root(cfg, directory, cache_root, roles=roles)
+    # Keep cache_root in the public signature for older callers, but canonical
+    # prepared datasets are resolved through immutable manifest references.
     lookup = PreparedCacheLookup()
-    dataset = lookup.find(cache, "development", cfg, manifest)
-    control_dataset = lookup.find(cache, "control", cfg, manifest) if include_control else None
+    dataset = lookup.find("development", cfg, manifest)
+    control_dataset = lookup.find("control", cfg, manifest) if include_control else None
     waves = dataset.energy_windows if channel == "energy" else dataset.timing_windows
     times = dataset.energy_time_ps if channel == "energy" else dataset.timing_time_ps
     transform = dataset.energy_transform if channel == "energy" else dataset.timing_transform
