@@ -237,6 +237,8 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
     except ImportError as exc:
         raise ImportError("TSHAP requires the upstream dependency: pip install tshap==0.0.1") from exc
 
+    baseline_imputation_cache = {}
+
     class BoundedTSHAP(TSHAPExplainer):
         """Keep upstream TSHAP aggregation/ROI while bounding perturbation allocation."""
 
@@ -278,9 +280,12 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                             sample_fill = imputer.impute_segment_batch(
                                 sample[None, ...], channel, start, stop - start
                             )[0]
-                            baseline_fill = imputer.impute_segment_batch(
-                                backgrounds, channel, start, stop - start
-                            )
+                            cache_key = (channel, start, stop - start)
+                            if cache_key not in baseline_imputation_cache:
+                                baseline_imputation_cache[cache_key] = imputer.impute_segment_batch(
+                                    backgrounds, channel, start, stop - start
+                                )
+                            baseline_fill = baseline_imputation_cache[cache_key]
                             block[0::2, channel, start:stop] = sample_fill[None, :]
                             block[1::2, channel, start:stop] = baseline_fill
                 predicted = np.asarray(fnc(candidates), dtype=np.float64)
