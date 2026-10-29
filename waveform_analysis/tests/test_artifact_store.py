@@ -35,11 +35,13 @@ def test_recipe_identity_is_canonical_but_parent_order_matters():
     assert canonical_digest({"x": np.int64(3)}) == canonical_digest({"x": 3})
 
 
-def test_recipe_rejects_paths_and_nonfinite_values(tmp_path):
+def test_recipe_rejects_paths_nonfinite_values_and_unsafe_product_types(tmp_path):
     with pytest.raises(TypeError):
         ProductRecipe("x", {"root": tmp_path})
     with pytest.raises(ValueError):
         ProductRecipe("x", {"alpha": float("nan")})
+    with pytest.raises(ValueError):
+        ProductRecipe("../outside", {"seed": 1})
 
 
 def test_store_builds_once_and_opens_arrays_read_only(tmp_path):

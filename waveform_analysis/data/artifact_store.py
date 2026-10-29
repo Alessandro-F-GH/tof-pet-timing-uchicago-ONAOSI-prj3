@@ -111,6 +111,17 @@ def _fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
+def _fsync_tree(root: Path) -> None:
+    """Flush payload bytes and directory entries before publishing the product."""
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            with path.open("rb") as stream:
+                os.fsync(stream.fileno())
+    directories = [root, *(path for path in root.rglob("*") if path.is_dir() and not path.is_symlink())]
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        _fsync_directory(directory)
+
+
 def _payload_inventory(root: Path) -> dict[str, dict[str, Any]]:
     inventory: dict[str, dict[str, Any]] = {}
     for path in sorted(root.rglob("*")):
@@ -265,7 +276,7 @@ class ArtifactStore:
                     stream.write(json.dumps(manifest, sort_keys=True, indent=2, ensure_ascii=False) + "\n")
                     stream.flush()
                     os.fsync(stream.fileno())
-                _fsync_directory(temporary)
+                _fsync_tree(temporary)
                 if final_path.exists():
                     raise ArtifactError(f"Refusing to replace existing artifact path: {final_path}")
                 os.replace(temporary, final_path)
