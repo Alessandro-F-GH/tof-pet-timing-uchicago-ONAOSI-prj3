@@ -96,7 +96,10 @@ def test_control_only_transform_reuse_block_reference_and_reload(name, tmp_path,
         rdst_common.transform(artifact.rdst, development.energy_windows),
     ], axis=1)
     np.testing.assert_array_equal(features.features, expected)
-    assert isinstance(features.features, np.memmap) and features.features.dtype == np.float32
+    assert features.features.dtype == np.float32
+    assert features.block_names == ("multirocket", "rdst")
+    assert all(isinstance(block, np.memmap) for block in features.feature_blocks)
+    assert all(block.dtype == np.float32 for block in features.feature_blocks)
     candidates = spec.candidates(model_space)
     assert candidates
     assert all({"multirocket_alpha", "rdst_alpha"} <= set(candidate) for candidate in candidates)
