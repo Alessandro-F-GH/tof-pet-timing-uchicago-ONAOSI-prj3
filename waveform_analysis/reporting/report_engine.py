@@ -121,7 +121,7 @@ def _payload(run):
     config = resolve_run_config(directory)
     store = RunStore(
         directory,
-        artifact_root=config["preprocessing"].get("artifact_root"),
+        artifact_root=config.get("preprocessing", {}).get("artifact_root"),
     )
     return store.load_predictions()
 
