@@ -81,6 +81,15 @@ def ensure_development_predictions(run: dict[str, Any], *, logger=None) -> Path 
             cache_root=Path(config["preprocessing"]["cache_dir"]),
             artifact_root=Path(config["preprocessing"]["artifact_root"]),
         )
+        expected_protocol = (
+            manifest.get("dataset_populations", {}).get("development", {})
+            .get("analysis_protocol_identity")
+        )
+        if (
+            expected_protocol is not None
+            and dataset.manifest.get("analysis_protocol_identity") != expected_protocol
+        ):
+            return unavailable("prepared development artifact protocol does not match the run")
     except (KeyError, OSError, ValueError, RuntimeError) as exc:
         return unavailable(f"cannot resolve prepared artifact references: {exc}")
     if logger:

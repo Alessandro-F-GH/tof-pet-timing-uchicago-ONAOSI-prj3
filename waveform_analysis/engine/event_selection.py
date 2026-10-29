@@ -9,7 +9,7 @@ from waveform_analysis.signal.pulses import (
 from waveform_analysis.signal.baseline import (
     baseline_quality_metrics as _baseline_quality_metrics,
 )
-import csv, json, shutil
+import csv, json
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any

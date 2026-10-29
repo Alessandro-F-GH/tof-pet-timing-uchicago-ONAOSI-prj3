@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import pickle
 from dataclasses import dataclass
@@ -8,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from waveform_analysis.core.io import atomic_json, canonical_hash
+from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.splits import semantic_seed
@@ -71,31 +70,6 @@ def _pair(dataset, mode, indices=None) -> np.ndarray:
     return apply_sample_mask(
         waveform_view(dataset, mode, np.asarray(indices, dtype=np.int64)).materialize(),
         model_sample_mask(dataset, mode),
-    )
-
-
-def _atomic_pickle(path: Path, value) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    try:
-        with tmp.open("wb") as stream:
-            pickle.dump(value, stream, protocol=pickle.HIGHEST_PROTOCOL)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
-
-
-def _transform_root(cache_root, mode, window, model_name, identity):
-    return (
-        Path(cache_root).resolve()
-        / "model_inputs"
-        / ("energy" if mode == "energy_to_energy" else "timing")
-        / str(window)
-        / str(model_name)
-        / identity[:16]
     )
 
 

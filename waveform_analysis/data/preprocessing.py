@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, shutil
+import json, os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any

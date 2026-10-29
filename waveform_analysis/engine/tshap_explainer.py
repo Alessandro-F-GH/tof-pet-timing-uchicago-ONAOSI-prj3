@@ -17,6 +17,8 @@ from importlib.metadata import version
 import numpy as np
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
+from waveform_analysis.core.artifact_identity import ProductRecipe
+from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.results import batch_root, discover_runs, resolve_run_config
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, model_target, waveform_view
@@ -256,12 +258,7 @@ def _cached_hermite_ppca_imputer(
     control, mode, config, output_root, *, window_samples, stride_samples,
     components, fit_events, tuning_events, slope_points, batch_size, seed,
 ):
-    """Reuse frozen detector PPCA parameters and all position-specific weights.
-
-    Cache identity includes the control cohort, board, channel/mode, full time
-    grid, window geometry and fitting parameters. A new cache is fitted only
-    for a genuinely different imputation configuration.
-    """
+    """Fit or resolve one immutable conditional Hermite-PPCA imputer product."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 
     family = mode_family(mode)
@@ -272,7 +269,7 @@ def _cached_hermite_ppca_imputer(
     if board == "Unknown board":
         board = str(control.manifest.get("board") or "unknown_board")
     settings = dict(
-        cache_schema=1, board=board, channel=family, mode=mode,
+        cache_schema=2, board=board, channel=family, mode=mode,
         window_ns=config["window_ns"],
         control_identity=control.manifest.get("analysis_protocol_identity"),
         control_population=control.manifest.get("event_population_identity"),
@@ -280,73 +277,41 @@ def _cached_hermite_ppca_imputer(
         window_samples=int(window_samples), stride_samples=int(stride_samples),
         components=int(components), fit_events=int(fit_events),
         tuning_events=int(tuning_events), slope_points=int(slope_points),
-        seed=int(seed),
+        batch_size=int(batch_size), seed=int(seed),
     )
-    identity = canonical_hash(settings)
-    cache_dir = Path(output_root).resolve() / "imputer_cache" / board / mode
-    cache_file = cache_dir / (identity[:24] + ".npz")
-    if cache_file.is_file():
-        with np.load(cache_file, allow_pickle=False) as saved:
-            if str(saved["identity"].item()) != identity:
-                raise ValueError(f"Imputer cache identity mismatch: {cache_file}")
-            models = []
-            for detector in range(2):
-                model = ProbabilisticPCA(components)
-                model.mean = np.asarray(saved[f"mean_{detector}"], np.float64)
-                model.W = np.asarray(saved[f"loadings_{detector}"], np.float64)
-                model.sigma2 = float(saved[f"noise_{detector}"])
-                model.explained_variance_ratio = float(saved[f"variance_{detector}"])
-                if model.mean.shape != (len(times),) or model.W.shape != (len(times), components):
-                    raise ValueError(f"Imputer cache shape mismatch: {cache_file}")
-                models.append(model)
-            imputer = _HermitePPCAImputer(
-                models, np.empty((0, 2, len(times))), slope_points=slope_points,
-                batch_size=batch_size,
-            )
-            starts = np.asarray(saved["starts"], np.int64)
-            widths = np.asarray(saved["widths"], np.int64)
-            alphas = np.asarray(saved["alphas"], np.float64)
-            if alphas.shape != (2, len(starts)) or not np.all(np.isfinite(alphas)):
-                raise ValueError(f"Imputer cache weights invalid: {cache_file}")
-            for i, (start, width) in enumerate(zip(starts, widths)):
-                for detector in range(2):
-                    key = (detector, int(start), int(width))
-                    imputer._alphas[key] = float(alphas[detector, i])
-                    imputer._prepared[key] = models[detector].prepare_mask(int(start), int(width))
-                    imputer._envelopes[key] = imputer._envelope(int(start), int(width), len(times))
-            metadata = json.loads(str(saved["metadata_json"].item()))
-        return imputer, {**metadata, "cache_file": str(cache_file), "cache_hit": True,
-                         "cache_identity": identity}
+    recipe = ProductRecipe(
+        "tshap-imputers",
+        settings,
+        parents=(str(control.directory.name),),
+        implementation="conditional-hermite-ppca-v1",
+    )
+    store = ArtifactStore(config["preprocessing"]["artifact_root"])
+    prior = store.lookup(recipe)
 
-    # Use every available control event in the fit/tuning split, with no reference
-    # baselines: the occlusion score is conditional on the waveform itself.
-    imputer, fit_meta = _fit_hermite_ppca_imputer(
-        control, mode, np.empty(0, np.int64), components=components,
-        fit_events=fit_events, tuning_events=tuning_events, slope_points=slope_points,
-        batch_size=batch_size, seed=seed,
-    )
-    starts = np.arange(0, len(times), int(stride_samples), dtype=np.int64)
-    widths = np.minimum(int(window_samples), len(times) - starts).astype(np.int64)
-    for start, width in zip(starts, widths):
-        for detector in range(2):
-            imputer._prepare(detector, int(start), int(width))
-    alphas = np.asarray([
-        [imputer._alphas[(detector, int(start), int(width))]
-         for start, width in zip(starts, widths)]
-        for detector in range(2)
-    ], dtype=np.float64)
-    metadata = dict(
-        n_training_events=int(fit_meta["n_training_events"]),
-        n_tuning_events=int(fit_meta["n_tuning_events"]),
-        explained_variance_ratio_by_detector=fit_meta["explained_variance_ratio_by_detector"],
-        training_and_tuning_exclude_reference_baselines=True,
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    handle, temporary_name = tempfile.mkstemp(dir=cache_dir, suffix=".npz")
-    os.close(handle)
-    try:
+    def build(directory):
+        imputer, fit_meta = _fit_hermite_ppca_imputer(
+            control, mode, np.empty(0, np.int64), components=components,
+            fit_events=fit_events, tuning_events=tuning_events,
+            slope_points=slope_points, batch_size=batch_size, seed=seed,
+        )
+        starts = np.arange(0, len(times), int(stride_samples), dtype=np.int64)
+        widths = np.minimum(int(window_samples), len(times) - starts).astype(np.int64)
+        for start, width in zip(starts, widths):
+            for detector in range(2):
+                imputer._prepare(detector, int(start), int(width))
+        alphas = np.asarray([
+            [imputer._alphas[(detector, int(start), int(width))]
+             for start, width in zip(starts, widths)]
+            for detector in range(2)
+        ], dtype=np.float64)
+        metadata = dict(
+            n_training_events=int(fit_meta["n_training_events"]),
+            n_tuning_events=int(fit_meta["n_tuning_events"]),
+            explained_variance_ratio_by_detector=fit_meta["explained_variance_ratio_by_detector"],
+            training_and_tuning_exclude_reference_baselines=True,
+        )
         np.savez_compressed(
-            temporary_name, identity=np.asarray(identity),
+            directory / "imputer.npz",
             metadata_json=np.asarray(json.dumps(metadata)),
             starts=starts, widths=widths, alphas=alphas,
             **{f"mean_{d}": model.mean for d, model in enumerate(imputer.models)},
@@ -355,13 +320,51 @@ def _cached_hermite_ppca_imputer(
             **{f"variance_{d}": np.asarray(model.explained_variance_ratio)
                for d, model in enumerate(imputer.models)},
         )
-        os.replace(temporary_name, cache_file)
-    finally:
-        if os.path.exists(temporary_name):
-            os.unlink(temporary_name)
-    return imputer, {**metadata, "cache_file": str(cache_file), "cache_hit": False,
-                     "cache_identity": identity}
 
+    reference = store.get_or_build(
+        recipe,
+        build,
+        metadata={
+            "control_identity": settings["control_identity"],
+            "control_population": settings["control_population"],
+            "fit_events": int(fit_events),
+            "tuning_events": int(tuning_events),
+        },
+    )
+    cache_file = reference.payload_path("imputer.npz")
+    with np.load(cache_file, allow_pickle=False) as saved:
+        models = []
+        for detector in range(2):
+            model = ProbabilisticPCA(components)
+            model.mean = np.asarray(saved[f"mean_{detector}"], np.float64)
+            model.W = np.asarray(saved[f"loadings_{detector}"], np.float64)
+            model.sigma2 = float(saved[f"noise_{detector}"])
+            model.explained_variance_ratio = float(saved[f"variance_{detector}"])
+            if model.mean.shape != (len(times),) or model.W.shape != (len(times), components):
+                raise ValueError(f"Imputer artifact shape mismatch: {cache_file}")
+            models.append(model)
+        imputer = _HermitePPCAImputer(
+            models, np.empty((0, 2, len(times))), slope_points=slope_points,
+            batch_size=batch_size,
+        )
+        starts = np.asarray(saved["starts"], np.int64)
+        widths = np.asarray(saved["widths"], np.int64)
+        alphas = np.asarray(saved["alphas"], np.float64)
+        if alphas.shape != (2, len(starts)) or not np.all(np.isfinite(alphas)):
+            raise ValueError(f"Imputer artifact weights invalid: {cache_file}")
+        for i, (start, width) in enumerate(zip(starts, widths)):
+            for detector in range(2):
+                key = (detector, int(start), int(width))
+                imputer._alphas[key] = float(alphas[detector, i])
+                imputer._prepared[key] = models[detector].prepare_mask(int(start), int(width))
+                imputer._envelopes[key] = imputer._envelope(int(start), int(width), len(times))
+        metadata = json.loads(str(saved["metadata_json"].item()))
+    return imputer, {
+        **metadata,
+        "cache_file": str(cache_file),
+        "cache_hit": prior.status == "hit",
+        "cache_identity": reference.product_id,
+    }
 
 
 def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None):

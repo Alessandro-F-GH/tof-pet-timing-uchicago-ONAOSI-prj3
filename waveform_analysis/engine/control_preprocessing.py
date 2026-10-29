@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, shutil
+import json
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature

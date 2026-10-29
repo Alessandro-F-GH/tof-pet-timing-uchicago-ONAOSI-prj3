@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from waveform_analysis.models import get_model
+from waveform_analysis.data.storage import RunStore
 from waveform_analysis.engine.train import (
     FittedModel,
     FittedFeatureTransform,
@@ -56,3 +57,36 @@ def test_incomplete_model_is_detected(tmp_path):
     directory.mkdir()
     np.save(directory / "sample_mask.npy", np.ones(3, dtype=bool))
     assert not saved_model_complete(spec, directory)
+
+
+
+def test_run_store_pins_model_outside_result_tree(tmp_path):
+    spec = get_model("direct_linear_ridge")
+    rng = np.random.default_rng(19)
+    artifact = spec.fit(
+        {"ridge_alpha": 0.1},
+        rng.normal(size=(24, 6)),
+        rng.normal(size=24),
+        seed=5,
+        config={},
+    )
+    fitted = FittedModel(
+        artifact=artifact,
+        metadata={"training_events": 24},
+        output_max_abs_ps=2000.0,
+        sample_mask=np.ones(3, dtype=bool),
+        feature_transform=None,
+    )
+    run = RunStore(
+        tmp_path / "results" / "run",
+        artifact_root=tmp_path / "artifact_store",
+    )
+    reference = run.save_model_artifact(
+        spec, fitted, {"ridge_alpha": 0.1},
+        final_fit_fingerprint="a" * 64,
+    )
+    assert run.model_dir == reference.path
+    assert reference.path.is_dir()
+    assert not (run.root / "model").exists()
+    assert run.model_reference_path.is_file()
+    assert (reference.path / "model.pkl").is_file()

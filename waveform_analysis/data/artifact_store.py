@@ -115,7 +115,7 @@ def _fsync_tree(root: Path) -> None:
     """Flush payload bytes and directory entries before publishing the product."""
     for path in root.rglob("*"):
         if path.is_file() and not path.is_symlink():
-            with path.open("rb") as stream:
+            with path.open("rb+") as stream:
                 os.fsync(stream.fileno())
     directories = [root, *(path for path in root.rglob("*") if path.is_dir() and not path.is_symlink())]
     for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
