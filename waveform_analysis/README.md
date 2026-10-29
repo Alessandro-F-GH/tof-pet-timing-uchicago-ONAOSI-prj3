@@ -66,43 +66,40 @@ python -m waveform_analysis.cli plots --results waveform_analysis/results/UC/ben
 
 The paths above are examples: the corresponding results directory must already exist locally. Reporting reads saved results; it does not recreate missing trained models or original predictions. Commands for additional saved-model diagnostics and grouped reporting are available in the CLI and `scripts/`.
 
-## TSHAP explanations
+## Post-training TSHAP
 
-The repository supports global and local TSHAP explanations of saved, frozen models. The explanations require the relevant saved model artifacts and prepared data caches; they do not retrain a model or re-read the original ROOT files.
-
-For the global settings used in the thesis (64 blind events, 32 control baselines, 80-sample non-overlapping windows), run:
+The maintained interpretability workflow is TSHAP on frozen saved models, using
+verified control/blind caches. Model training and blind evaluation do not run
+any alternative XAI procedure.
 
 ```bash
 python -m waveform_analysis.cli explain-tshap \
   --results waveform_analysis/results/UC/benchmark_48V_final \
   --models direct_multirocket direct_rdst shared_linear_ridge \
-  --max-events 64 \
-  --n-baselines 32 \
-  --window-samples 80 \
-  --stride-samples 80
+  --imputation hermite_ppca \
+  --window-samples 20 \
+  --stride-samples 20
 ```
 
-Adjust the results path and model list to the experiment. The command processes eligible wide-window runs; it skips runs configured with the Onishi window. Use `--cache-root` if prepared caches were moved, or `--output-root` to choose where explanations are written. The default output is a separate `xai/` directory. See `python -m waveform_analysis.cli --help` and `python -m waveform_analysis.cli explain-tshap --help` for options.
+TSHAP retains signed values in ps. Window scores distributed over samples are
+densities in ps/sample, not exact individual-sample Shapley values. The
+existing absolute-importance plots are provisional, pending the final
+signed local, response-conditioned and global analyses. Use
+`explain-tshap-local` for the current local diagnostic.
 
-TSHAP attributions indicate model sensitivity to temporal-segment replacement, not independent physical timing information or causal effects.
+## Imputation diagnostics
+
+`scripts/train_ppca_interpolation_blend.py` and
+`scripts/evaluate_imputation_benchmark.py` are retained for quality checks.
+The benchmark compares reference substitution, interpolation, PPCA, and the
+position-specific blend, with RMSE measured in mV. These diagnostics are not
+part of the fitted timing-correction model.
 
 ## Other commands
 
-```bash
-# Saved-model diagnostic predictions
-python -m waveform_analysis.cli diagnostics --results waveform_analysis/results/UC/benchmark_48V_final
-
-# Input-level occlusion explanations
-python -m waveform_analysis.cli xai --results waveform_analysis/results/UC/benchmark_48V_final --models direct_rdst
-
-# Frozen-feature regression explanations
-python -m waveform_analysis.cli explain-regression --results waveform_analysis/results/UC/benchmark_48V_final --models direct_rdst
-
-# Local temporal explanations
-python -m waveform_analysis.cli explain-tshap-local --results waveform_analysis/results/UC/benchmark_48V_final --models direct_multirocket
-```
-
-These commands require the corresponding saved artifacts and, where applicable, verified prepared caches. They are not substitutes for the unavailable acquisition files when starting an experiment from scratch.
+The CLI retains `diagnostics`, `explain-tshap` and
+`explain-tshap-local`. Old grouped-occlusion, shapelet-coefficient ranking,
+and regression-surrogate XAI commands have been removed.
 
 ## Development and technical details
 

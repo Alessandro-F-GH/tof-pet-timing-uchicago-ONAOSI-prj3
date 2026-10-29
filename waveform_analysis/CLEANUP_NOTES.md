@@ -31,3 +31,10 @@ External candidates to review separately (no external files removed):
 `janus_data_analysis`, `trc_converter`, `comparison_pico_scope` and `utils_fit`
 have independent or shared responsibilities. Do not delete them based on their
 age or filenames. Validate actual external usage before archiving scripts.
+
+## October 2026 XAI consolidation
+
+Removed alternative grouped temporal occlusion, coefficient-based shapelet
+rankings, regression surrogate explanations and their command interfaces.
+The TSHAP adapter and separate imputation training/benchmark scripts remain.
+No model-training dependency was identified as exclusive to legacy XAI.

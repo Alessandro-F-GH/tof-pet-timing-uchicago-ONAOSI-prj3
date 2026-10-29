@@ -23,8 +23,8 @@ from waveform_analysis.data.view import mode_family, model_target, waveform_view
 from waveform_analysis.engine.train import (
     load_fitted_model, predict_indices, release_training_memory, saved_model_complete,
 )
-from waveform_analysis.engine.xai import _predict_array
-from waveform_analysis.engine.xai_replay import PreparedCacheLookup, _cache_root
+from waveform_analysis.signal.sample_mask import apply_sample_mask
+from waveform_analysis.data.prepared_cache import PreparedCacheLookup, _cache_root
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
@@ -77,6 +77,25 @@ def _check_prepared_grids(control, blind, mode):
            for name in ("minimum", "maximum")):
         raise ValueError("Control and blind waveform normalization differs")
     return np.asarray(ctime, dtype=np.float64)
+
+
+def _predict_array(spec, fitted, pair):
+    # Match train._model_input exactly: feature transforms such as MultiRocket
+    # may rely on contiguous [event, detector, sample] arrays after masking.
+    values = np.ascontiguousarray(
+        apply_sample_mask(np.asarray(pair, dtype=np.float32), fitted.sample_mask),
+        dtype=np.float32,
+    )
+    if fitted.feature_transform is not None:
+        values = fitted.feature_transform.apply(values)
+    prediction = np.asarray(
+        spec.predict(fitted.artifact, values), dtype=np.float64
+    ).reshape(-1)
+    if fitted.output_max_abs_ps is not None:
+        prediction = np.clip(
+            prediction, -fitted.output_max_abs_ps, fitted.output_max_abs_ps
+        )
+    return prediction
 
 
 def _predict_bounded(spec, fitted, values, batch_size):

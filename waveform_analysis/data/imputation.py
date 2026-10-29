@@ -9,7 +9,7 @@ from waveform_analysis.data.results import (
     resolve_run_config,
     read_run_manifest,
 )
-from waveform_analysis.engine.xai_replay import PreparedCacheLookup, _cache_root
+from waveform_analysis.data.prepared_cache import PreparedCacheLookup, _cache_root
 
 ROOT = Path(__file__).resolve().parents[2]
 

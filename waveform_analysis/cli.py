@@ -39,19 +39,6 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("results", type=Path)
     diagnostic = sub.add_parser("diagnostics", help="Explicitly generate missing development predictions from saved models")
     diagnostic.add_argument("--results", type=Path, required=True)
-    xai = sub.add_parser("xai", help="Repeat control-mean XAI from saved batch models without retraining")
-    xai.add_argument("--results", type=Path, required=True)
-    xai.add_argument("--models", nargs="+", metavar="MODEL")
-    xai.add_argument("--cache-root", type=Path, help="Location of original prepared control/blind caches")
-    xai.add_argument("--group-size-samples", type=int)
-    xai.add_argument("--max-events", type=int)
-    explain = sub.add_parser("explain-regression", help="Original frozen-feature explanations and tree performance comparison")
-    explain.add_argument("--results", type=Path, required=True)
-    explain.add_argument("--models", nargs="+", metavar="MODEL")
-    explain.add_argument("--cache-root", type=Path, help="Original prepared development/blind caches")
-    explain.add_argument("--depths", nargs="+", type=int, default=[2, 3, 4, 5])
-    explain.add_argument("--min-samples-leaf", type=int, default=20)
-    explain.add_argument("--max-events", type=int, help="Optional reproducible event cap per role; default: all events")
     tshap = sub.add_parser("explain-tshap", help="TSHAP temporal explanations from frozen saved models")
     tshap.add_argument("--results", type=Path, required=True)
     tshap.add_argument("--models", nargs="+", metavar="MODEL")
@@ -132,12 +119,6 @@ def main() -> None:
                 overwrite=args.overwrite, logger=logger):
             print(output)
         return
-    if args.command == "explain-regression":
-        from .engine.regression_explainer import explain_regression
-        for output in explain_regression(args.results, models=args.models, cache_root=args.cache_root,
-                depths=args.depths, min_samples_leaf=args.min_samples_leaf, max_events=args.max_events, logger=logger):
-            print(output)
-        return
     if args.command in {"plots", "report"}:
         print(remake_plots(
             Path(args.results), logger=logger, exclude_models=args.exclude_models,
@@ -148,13 +129,6 @@ def main() -> None:
         from .engine.development_diagnostic import ensure_development_predictions
         for run in discover_runs(args.results):
             print(ensure_development_predictions(run, logger=logger))
-        return
-    if args.command == "xai":
-        from .engine.xai_replay import rerun_xai
-        for output in rerun_xai(args.results, models=args.models, cache_root=args.cache_root,
-                                group_size_samples=args.group_size_samples,
-                                max_events=args.max_events, logger=logger):
-            print(output)
         return
     batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
     for output in run_batch(batch, logger=logger):

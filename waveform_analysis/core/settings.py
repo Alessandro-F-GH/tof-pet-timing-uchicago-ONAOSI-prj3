@@ -20,9 +20,9 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class XAIConfig:
-    """Existing grouped-occlusion defaults, separate from gradient attribution."""
+    """Legacy batch-stage settings, disabled; use post-training TSHAP."""
 
-    enabled: bool = True
+    enabled: bool = False
     group_size_samples: int = 8
     max_events: int = 512
 

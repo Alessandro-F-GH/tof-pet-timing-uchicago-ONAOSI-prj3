@@ -3,7 +3,6 @@ from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
 from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
 from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
-from waveform_analysis.engine.xai import model_xai_version
 
 # Preserve existing identity payloads so moving code does not change seeds/caches.
 RUN_IDENTITY_VERSION = 53
@@ -77,7 +76,7 @@ def planner_fingerprints(config):
             "blind": blind,
             "xai": config["xai"],
             "seed": config["seed"],
-            "method_version": model_xai_version(config["model"]["name"]),
+            "method_version": None,
         }
     )
     plots = canonical_hash({"plot_config": config["plot_config"]})

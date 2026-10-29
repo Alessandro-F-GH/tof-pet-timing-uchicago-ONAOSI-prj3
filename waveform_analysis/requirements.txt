@@ -9,8 +9,8 @@ optuna>=4.0
 uproot>=5.2
 awkward>=2.6
 
-# Pin the shapelet representation used for portable XAI exports.
+# Aeon provides RDST and MultiROCKET model transformations.
 aeon==1.6.0
 
-# Reference implementation of window/ROI time-series SHAP.
+# Post-training TSHAP dependency.
 tshap==0.0.1

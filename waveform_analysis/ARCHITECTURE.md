@@ -12,7 +12,7 @@ import aliases and pickle-name rewrites are confined to the disposable
 | `signal` | Numerical waveform and timing kernels |
 | `data` | Acquisition/prepared inputs, masks, frozen features, shared splits and result persistence |
 | `models` | Estimator definitions, capabilities, feature transforms and model serialization |
-| `engine` | Control preprocessing, model selection, final fit, evaluation and explicit diagnostics/XAI |
+| `engine` | Control preprocessing, model selection, final fit, evaluation and explicit diagnostics |
 | `reporting` | Saved-result readers, statistics, table exporters and plot renderers |
 | `scripts` | Grouped reporting, acquisition merging and the temporary converter |
 
@@ -41,7 +41,7 @@ configurations are expanded in memory. Persisted results have separate owners:
 `data.results.resolve_run_config()` reconstructs the effective configuration.
 `read_run_manifest()` joins inherited metadata and saved selection results in
 memory. `read_run()` and `discover_runs()` are side-effect-free and are shared by
-reporting, grouping and XAI. A changed owner cannot silently relabel retained
+reporting, grouping and post-training TSHAP. A changed owner cannot silently relabel retained
 models. Use a new experiment folder when changing shared scientific settings
 without rebuilding all of their owners.
 
@@ -52,13 +52,13 @@ payloads describe scientific algorithms, not alternate active pipelines.
 ## Execution and dependencies
 
 The study runner calls explicit stages for outer-CV selection/final fitting,
-blind evaluation, event-bootstrap uncertainty, XAI, and publication. Linear
+blind evaluation, event-bootstrap uncertainty and publication. Linear
 RidgeCV remains a separate selection/fitting procedure. Onishi's MSE/full-split
 training remains distinct from RMSE/internal-holdout neural training.
 
 `core.dependencies` defines planning fingerprints, stage identity payloads and
 invalidation edges. Invalidation preserves independent work: bootstrap changes
-do not invalidate model weights or XAI; plot changes do not retrain models.
+do not invalidate model weights; plot changes do not retrain models.
 
 Prepared datasets are reused within a batch with a key including dataset role,
 mode, window, subsampling, preprocessing, control artifact and empty-population
@@ -69,9 +69,8 @@ transform batches, float32 feature storage and its existing Ridge solver.
 
 Ordinary reporting uses saved arrays and metrics. It does not load models to
 backfill predictions, fit preprocessing, migrate files or alter scientific source
-artifacts. `cli diagnostics` explicitly requests missing development predictions;
-`cli xai` explicitly requests saved-model explanations. Both respect saved input
-masks and transforms. A converted historical model-specific mask is an explicit
+artifacts. `cli diagnostics` requests development predictions. Post-training TSHAP
+loads frozen models and verified caches without refitting. A converted historical model-specific mask is an explicit
 model-owned input-policy override, never relabelled as a modern shared mask.
 
 Grouped reports refer to original runs, copy requested saved figures/tables, and
@@ -96,3 +95,9 @@ arrays are compared exactly where supported on the same CPU/dependencies.
 Conversion tests additionally compare source hashes, persisted array bytes and
 predictions from recovered models. Production acquisition data and GPU runs
 require their own validation; synthetic tests are not a substitute for those.
+
+## Interpretability
+
+The only maintained interpretability procedure is post-training TSHAP.
+The legacy XAI stage is retained as a disabled metadata marker for saved
+run layouts. Cache loading lives in `data/prepared_cache.py`.

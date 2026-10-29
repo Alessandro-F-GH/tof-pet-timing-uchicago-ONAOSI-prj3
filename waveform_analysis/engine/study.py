@@ -46,11 +46,6 @@ from waveform_analysis.engine.validation import (
     evaluate_candidate,
 )
 from waveform_analysis.data.view import model_target
-from waveform_analysis.engine.xai import (
-    model_importance,
-    model_xai_method,
-    model_xai_version,
-)
 from waveform_analysis.engine.diagnostics import (
     development_predictions_current,
     diagnostic_random_state,
@@ -899,72 +894,11 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
     return bootstrap_fp
 
 
-def _explain_model(store, spec, space, config, control, development, best, final_fp,
-                   fitted, blind, control_prepared, logger, frozen_development):
-    if model_xai_method(spec) is None:
-        xai_fp = _stage("xai", {"final_fit": final_fp, "enabled": False, "method": None})
-        store.mark_stage("xai", xai_fp, metadata={"enabled": False, "reason": "unsupported_model"})
-        logger.info("XAI | skipped for %s", spec.name)
-        return xai_fp, fitted, control_prepared
-    if config["xai"]["enabled"] and control_prepared is None:
-        _, _, control_prepared = prepare_role_dataset(
-            config, "control", control, rebuild=False, logger=None
-        )
-    xai_fp = _stage(
-        "xai",
-        {
-            "final_fit": final_fp,
-            "blind": blind.manifest["analysis_protocol_identity"],
-            "xai": config["xai"],
-            "seed": config["seed"],
-            "method_version": model_xai_version(spec),
-            "control": (control_prepared.manifest["analysis_protocol_identity"]
-                        if config["xai"]["enabled"] else None),
-            "formulation": spec.estimator_formulation,
-        },
-    )
-    if config["xai"]["enabled"] and (
-        _sync(store, "xai", xai_fp) != "complete" or not store.xai_path.is_file()
-    ):
-        logger.info(
-            "XAI | %s | max_events=%d | group=%d samples",
-            model_xai_method(spec),
-            int(config["xai"]["max_events"]),
-            int(config["xai"]["group_size_samples"]),
-        )
-        if fitted is None:
-            fitted = _model(
-                store, spec, space, config, development, best, final_fp, logger, frozen_development
-            )
-        store.save_xai(
-            **model_importance(
-                spec,
-                fitted,
-                blind,
-                config["mode"],
-                control_dataset=control_prepared,
-                cache_root=config["preprocessing"]["cache_dir"],
-                group_size_samples=int(config["xai"]["group_size_samples"]),
-                max_events=int(config["xai"]["max_events"]),
-                seed=semantic_seed(config["seed"], spec.name, "xai"),
-            )
-        )
-        store.mark_stage(
-            "xai",
-            xai_fp,
-            metadata={
-                "method": model_xai_method(spec),
-                "replacement_method": ("none" if model_xai_method(spec) == "shapelet_coefficients" else "control_sample_mean"),
-                "formulation": spec.estimator_formulation,
-                "method_version": model_xai_version(spec),
-            },
-        )
-        logger.info("XAI complete")
-    elif not config["xai"]["enabled"]:
-        store.mark_stage("xai", xai_fp, metadata={"enabled": False})
-    else:
-        logger.info("XAI | reusing saved importance")
-    return xai_fp, fitted, control_prepared
+def _record_external_xai_stage(store, final_fp):
+    """Preserve legacy stage bookkeeping without running legacy XAI."""
+    fingerprint = _stage("xai", {"final_fit": final_fp, "enabled": False, "method": None})
+    store.mark_stage("xai", fingerprint, metadata={"enabled": False, "reason": "post_training_tshap_only"})
+    return fingerprint
 
 
 def _publish_run_metadata(store, spec, config, control, control_dir, development, blind,
@@ -1108,10 +1042,7 @@ def run_study(config, *, logger=None):
         logger, frozen_transform, frozen_development,
     )
     bootstrap_fp = _estimate_blind_uncertainty(store, spec, config, blind_fp, logger)
-    xai_fp, fitted, control_prepared = _explain_model(
-        store, spec, space, config, control, development, best, final_fp,
-        fitted, blind, control_prepared, logger, frozen_development,
-    )
+    xai_fp = _record_external_xai_stage(store, final_fp)
     _publish_run_metadata(
         store, spec, config, control, control_dir, development, blind, fitted, best,
         control_prepared, cv_fp, selection_fp, final_fp, blind_fp, bootstrap_fp, xai_fp,

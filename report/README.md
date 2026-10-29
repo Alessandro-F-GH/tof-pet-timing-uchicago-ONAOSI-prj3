@@ -5,7 +5,7 @@ For an LLM handoff covering the scientific protocol, experimental clarifications
 author's writing requirements, read [LLM_CONTEXT.md](LLM_CONTEXT.md).
 It describes the ten implemented estimators, detector-shared and direct formulations,
 control-fitted preprocessing, development validation, the linear RidgeCV exception,
-independent blind evaluation and temporal occlusion. Pico-TDC is outside its scope.
+independent blind evaluation and post-training TSHAP. Pico-TDC is outside its scope.
 
 The UC and FBK boards have separate dataset, result and figure placeholders.
 Results and conclusions contain no numerical results or performance claims.
@@ -102,7 +102,7 @@ models. Missing historical metadata is a dash, never an inferred count.
 
 CTR tables currently contain the completed model results for each board/mode/window from the frozen study. Regenerate them from the corresponding validation and blind exports when studies change;
 linear ridge outer-validation CTR remains not applicable. Distinguish CV fold
-dispersion from blind bootstrap uncertainty. Add XAI figures from the same frozen
+dispersion from blind bootstrap uncertainty. Add TSHAP figures from the same frozen
 experiments, keeping boards separate.
 
 From the repository root, `python report/generate_appendix.py` refreshes appendix
