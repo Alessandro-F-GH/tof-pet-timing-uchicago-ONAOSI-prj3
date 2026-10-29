@@ -23,4 +23,4 @@ jobs:
       - name: Test immutable artifact store
         env:
           PYTHONPATH: .
-        run: python -m pytest -q waveform_analysis/tests/test_artifact_store.py
+        run: python -m pytest -q waveform_analysis/tests/test_artifact_store.py waveform_analysis/tests/test_storage_resume.py
