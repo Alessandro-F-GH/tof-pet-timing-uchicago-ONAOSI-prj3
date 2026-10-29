@@ -1,8 +1,8 @@
 """Post-training TSHAP for frozen TOF-PET waveform regressors.
 
-Uses the upstream tshap library for window interpolation and ROI extraction.
-Only its perturbation scorer is overridden to avoid the upstream all-at-once
-allocation and repeated array stacking on long waveforms.
+Uses the upstream tshap library for ROI extraction, with mask-aware temporal
+window selection, gap-safe attribution interpolation, and conditional
+Hermite-PPCA occlusion. The perturbation scorer is batched to bound memory.
 """
 from __future__ import annotations
 
