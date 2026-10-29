@@ -175,7 +175,10 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     runs = []
     for original in resolved.runs:
         c = deepcopy(original)
-        c["output_dir"] = str(tmp_path / c["run_id"])
+        mode_tag = "energy" if c["mode"] == "energy_to_energy" else "timing"
+        c["output_dir"] = str(
+            tmp_path / mode_tag / c["window_name"] / c["model"]["name"]
+        )
         c["batch_output_dir"] = str(tmp_path)
         c["preprocessing"]["cache_dir"] = str(tmp_path / "cache")
         c["cross_validation"] = None
