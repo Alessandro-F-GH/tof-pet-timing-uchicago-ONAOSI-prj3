@@ -280,7 +280,7 @@ def write_latex(path, rows):
     configs = sorted({(r["dataset"], r["channel"]) for r in rows})
     lines = [
         r"\begin{table}[t]", r"\centering",
-        r"\caption{Held-out waveform reconstruction RMSE. Confidence intervals are event-bootstrap 95\% intervals.}",
+        r"\caption{Held-out waveform reconstruction RMSE in mV. Confidence intervals are event-bootstrap 95\% intervals.}",
         r"\label{tab:imputation-reconstruction-rmse}",
         r"\begin{tabular}{lllrrr}", r"\toprule",
         r"Dataset & Channel & Method & RMSE & 95\% CI & $\Delta$ vs.\ Hermite (\%) \\",
@@ -325,7 +325,7 @@ def save_overall_plot(rows, output):
         bars = ax.bar(xpos, values, width=bar_width, yerr=yerr, capsize=2.5,
                       label=LABELS[method])
         for bar, value in zip(bars, values):
-            ax.annotate(f"{value:.3g}", (bar.get_x() + bar.get_width()/2, bar.get_height()),
+            ax.annotate(f"{value:.3g} {unit}", (bar.get_x() + bar.get_width()/2, bar.get_height()),
                         xytext=(0, 3), textcoords="offset points", ha="center",
                         va="bottom", fontsize=7, rotation=90 if len(configs) > 3 else 0)
     ax.set_xticks(x)
