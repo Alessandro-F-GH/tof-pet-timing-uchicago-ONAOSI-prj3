@@ -494,7 +494,7 @@ def _signed_means(scores):
 def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *, label=True):
     dt = float(np.median(np.diff(time_ps)))
     centers = (time_ps[starts] + window_samples * dt / 2) / 1000
-    width = 0.42 * window_samples * dt / 1000
+    width = 0.5 * window_samples * dt / 1000
     ax.bar(centers - width / 2, positive, width=width, color="#2585bd",
            label="Positive" if label else None)
     ax.bar(centers + width / 2, negative, width=width, color="#de8546",
@@ -1112,7 +1112,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     # Overlay detectors with different transparency; both preserve score sign.
     dt = float(np.median(np.diff(time_ps)))
     centers = (time_ps[starts] + window_samples * dt / 2) / 1000
-    width = 0.4 * window_samples * dt / 1000
+    width = 0.5 * window_samples * dt / 1000
     for d, alpha in ((0, 0.95), (1, 0.45)):
         offset = (-0.5 if d == 0 else 0.5) * width
         ax.bar(centers + offset, scores[d], width=width,
