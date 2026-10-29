@@ -57,6 +57,7 @@ def prepare_batch_cache(
     batch: BatchConfig,
     *,
     cache_root: str | Path,
+    models: list[str] | tuple[str, ...] | None = None,
     logger=None,
 ) -> Path:
     """Populate the reusable cache dependencies for every run in a resolved batch.
@@ -75,6 +76,21 @@ def prepare_batch_cache(
     manifest_path = root / "cache_manifest.json"
 
     configs = _runtime_configs(batch)
+    if models:
+        selected = {str(name) for name in models}
+        available = {str(config["model"]["name"]) for config in configs}
+        unknown = selected - available
+        if unknown:
+            raise ValueError(
+                f"Unknown model(s) requested for cache preparation: {sorted(unknown)}. "
+                f"Available models: {sorted(available)}"
+            )
+        configs = [
+            config for config in configs
+            if str(config["model"]["name"]) in selected
+        ]
+    if not configs:
+        raise ValueError("Cache preparation selected no runs")
     for config in configs:
         config["preprocessing"]["cache_dir"] = str(preprocessing_root)
         config["preprocessing"]["artifact_root"] = str(artifact_root)
