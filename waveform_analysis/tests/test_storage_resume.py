@@ -13,3 +13,39 @@ def test_reading_does_not_implicitly_migrate(tmp_path):
     store.write_best({"candidate_id":"example"})
     assert store.best_path.is_file()
     assert not (tmp_path/"best.json").exists()
+
+
+
+def test_numeric_products_are_shared_and_invalidation_drops_only_references(tmp_path):
+    artifact_root = tmp_path / "artifact_store"
+    store = RunStore(tmp_path / "results" / "run", artifact_root=artifact_root)
+    predictions = store.save_predictions(
+        event_id=np.arange(5),
+        prediction_ps=np.arange(5, dtype=float),
+        corrected_ps=np.arange(5, dtype=float) + 1,
+        led_residual_ps=np.arange(5, dtype=float) + 2,
+        dataset_role="blind",
+        metadata={
+            "final_fit_fingerprint": np.asarray("a" * 64),
+            "analysis_protocol_identity": np.asarray("b" * 64),
+        },
+    )
+    assert predictions.is_file()
+    assert predictions.is_relative_to(artifact_root)
+    assert not (store.artifacts_dir / "pred.npz").exists()
+    np.testing.assert_array_equal(store.load_predictions()["event_id"], np.arange(5))
+
+    draws = store.save_bootstrap_draws(
+        {"ctr_ps": np.arange(4, dtype=float)},
+        fingerprint="c" * 64,
+        blind_fingerprint="d" * 64,
+    )
+    assert draws.is_file()
+    assert draws.is_relative_to(artifact_root)
+    assert not (store.artifacts_dir / "bootstrap.npz").exists()
+
+    store.invalidate_from("blind")
+    assert not store.predictions_path.exists()
+    assert not store.bootstrap_draws_path.exists()
+    assert predictions.is_file()
+    assert draws.is_file()

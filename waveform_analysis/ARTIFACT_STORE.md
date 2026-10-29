@@ -4,7 +4,7 @@
 
 Scientific products are immutable and identified by their effective scientific recipe, ordered parent artifact IDs, implementation identity, and compatibility contract. Report directory names and presentation settings do not belong in scientific identities.
 
-The implementation provides the shared store and integrates it with control preprocessing, event selection, native waveform materialization, prepared datasets, frozen sample masks, frozen feature transforms, feature matrices, and final fitted models. Results hold references to prepared products and model products rather than owning duplicate model weights.
+The implementation provides the shared store and integrates it with control preprocessing, event selection, native waveform materialization, prepared datasets, frozen sample masks, frozen feature transforms, feature matrices, final fitted models, blind/development prediction arrays, bootstrap draws, and conditional TSHAP imputer parameters. Result trees retain summaries and explicit references instead of duplicate prediction/model payloads.
 
 The core primitives are:
 

@@ -829,7 +829,13 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
             prediction_ps=prediction,
             corrected_ps=corrected,
             led_residual_ps=led,
-            metadata={"led_control_mean_ps": np.asarray(blind.manifest["led_control_mean_ps"])},
+            metadata={
+                "led_control_mean_ps": np.asarray(blind.manifest["led_control_mean_ps"]),
+                "final_fit_fingerprint": np.asarray(final_fp),
+                "analysis_protocol_identity": np.asarray(
+                    blind.manifest["analysis_protocol_identity"]
+                ),
+            },
         )
         store.write_blind(
             {
@@ -882,7 +888,9 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
             seed=semantic_seed(config["seed"], spec.name, "bootstrap"),
         )
         store.write_bootstrap(summary)
-        store.save_bootstrap_draws(draws)
+        store.save_bootstrap_draws(
+            draws, fingerprint=bootstrap_fp, blind_fingerprint=blind_fp
+        )
         store.mark_stage("bootstrap", bootstrap_fp)
         logger.info(
             "Blind uncertainty | CTR ± %.1f ps | RMSE ± %.1f ps",

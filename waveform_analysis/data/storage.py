@@ -2,7 +2,7 @@ from __future__ import annotations
 import csv, json, os, shutil, tempfile
 from pathlib import Path
 import numpy as np
-from waveform_analysis.core.io import atomic_json, write_csv
+from waveform_analysis.core.io import atomic_json, write_csv, canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
 
@@ -87,20 +87,61 @@ class RunStore:
         return self.metadata_dir / "bootstrap.json"
 
     @property
+    def artifact_references_path(self):
+        return self.metadata_dir / "artifact_references.json"
+
+    def _artifact_references(self):
+        return self.read_json(self.artifact_references_path, {}) or {}
+
+    def _write_artifact_reference(self, key, reference):
+        references = self._artifact_references()
+        references[key] = {
+            "product_type": reference.product_type,
+            "product_id": reference.product_id,
+        }
+        atomic_json(self.artifact_references_path, references)
+
+    def _clear_artifact_references(self, keys):
+        references = self._artifact_references()
+        for key in keys:
+            references.pop(key, None)
+        if references:
+            atomic_json(self.artifact_references_path, references)
+        elif self.artifact_references_path.exists():
+            self.artifact_references_path.unlink()
+
+    def _artifact_payload_path(self, key, filename, fallback):
+        if self.artifact_root is None:
+            return fallback
+        reference = self._artifact_references().get(key)
+        if not reference:
+            return fallback
+        return ArtifactStore(self.artifact_root).resolve(
+            reference["product_type"], reference["product_id"]
+        ).payload_path(filename)
+
+    @property
     def bootstrap_draws_path(self):
-        return self.artifacts_dir / "bootstrap.npz"
+        return self._artifact_payload_path(
+            "bootstrap_draws", "bootstrap.npz", self.artifacts_dir / "bootstrap.npz"
+        )
 
     @property
     def predictions_path(self):
-        return self.artifacts_dir / "pred.npz"
+        return self._artifact_payload_path(
+            "blind_predictions", "predictions.npz", self.artifacts_dir / "pred.npz"
+        )
 
     @property
     def development_predictions_path(self):
-        return self.artifacts_dir / "development_pred.npz"
+        return self._artifact_payload_path(
+            "development_predictions", "predictions.npz",
+            self.artifacts_dir / "development_pred.npz"
+        )
 
     @property
     def xai_path(self):
-        return self.artifacts_dir / "xai.npz"
+        return self._artifact_payload_path("xai", "xai.npz", self.artifacts_dir / "xai.npz")
 
     @property
     def model_reference_path(self):
@@ -237,12 +278,25 @@ class RunStore:
                 self.root / "optuna_sampler.pkl",
             ],
             "selection": [self.best_path],
-            "final_fit": [self.final_fit_path, self.model_reference_path, self.development_predictions_path],
-            "blind": [self.blind_path, self.predictions_path],
-            "bootstrap": [self.bootstrap_path, self.bootstrap_draws_path],
-            "xai": [self.xai_path],
+            "final_fit": [self.final_fit_path, self.model_reference_path]
+                + ([] if self.artifact_root is not None else [self.development_predictions_path]),
+            "blind": [self.blind_path]
+                + ([] if self.artifact_root is not None else [self.predictions_path]),
+            "bootstrap": [self.bootstrap_path]
+                + ([] if self.artifact_root is not None else [self.bootstrap_draws_path]),
+            "xai": [] if self.artifact_root is not None else [self.xai_path],
             "plots": [self.plots_dir],
         }
+        if self.artifact_root is not None:
+            reference_keys = set()
+            for current in INVALIDATES[stage]:
+                reference_keys.update({
+                    "final_fit": {"development_predictions"},
+                    "blind": {"blind_predictions"},
+                    "bootstrap": {"bootstrap_draws"},
+                    "xai": {"xai"},
+                }.get(current, set()))
+            self._clear_artifact_references(reference_keys)
         for current in INVALIDATES[stage]:
             for path in files[current]:
                 if path.is_dir():
@@ -304,27 +358,99 @@ class RunStore:
     ):
         if dataset_role not in {"blind", "development"}:
             raise ValueError(f"Unsupported prediction dataset role: {dataset_role}")
-        path = (self.predictions_path if dataset_role == "blind"
-                else self.development_predictions_path)
-        _atomic_npz(
-            path,
-            event_id=np.asarray(event_id, dtype=np.int64),
-            prediction_ps=np.asarray(prediction_ps, dtype=np.float64),
-            corrected_ps=np.asarray(corrected_ps, dtype=np.float64),
-            led_residual_ps=np.asarray(led_residual_ps, dtype=np.float64),
+        payload = {
+            "event_id": np.asarray(event_id, dtype=np.int64),
+            "prediction_ps": np.asarray(prediction_ps, dtype=np.float64),
+            "corrected_ps": np.asarray(corrected_ps, dtype=np.float64),
+            "led_residual_ps": np.asarray(led_residual_ps, dtype=np.float64),
             **(metadata or {}),
+        }
+        if self.artifact_root is None:
+            path = (self.predictions_path if dataset_role == "blind"
+                    else self.development_predictions_path)
+            _atomic_npz(path, **payload)
+            return path
+
+        metadata_identity = {}
+        for key, value in (metadata or {}).items():
+            array = np.asarray(value)
+            metadata_identity[str(key)] = (
+                array.item() if array.ndim == 0
+                else array.tolist() if array.size <= 128
+                else {"shape": list(array.shape), "dtype": array.dtype.str}
+            )
+        role = str(dataset_role)
+        final_fit_fingerprint = str(
+            metadata_identity.get("final_fit_fingerprint", "unspecified")
         )
-        return path
+        protocol_identity = str(
+            metadata_identity.get("analysis_protocol_identity", "unspecified")
+        )
+        model_reference = self.read_json(self.model_reference_path, {}) or {}
+        parents = tuple(
+            str(value) for value in (
+                model_reference.get("product_id"),
+                final_fit_fingerprint if final_fit_fingerprint != "unspecified" else None,
+            ) if value
+        )
+        recipe = ProductRecipe(
+            "predictions",
+            {
+                "dataset_role": role,
+                "final_fit_fingerprint": final_fit_fingerprint,
+                "analysis_protocol_identity": protocol_identity,
+                "event_count": int(payload["event_id"].size),
+                "event_ids_hash": canonical_hash(payload["event_id"].tolist()),
+                "metadata": metadata_identity,
+            },
+            parents=parents,
+            implementation="paired-tof-predictions-v1",
+        )
+        store = ArtifactStore(self.artifact_root)
+        reference = store.get_or_build(
+            recipe,
+            lambda directory: _atomic_npz(directory / "predictions.npz", **payload),
+            metadata={
+                "dataset_role": role,
+                "final_fit_fingerprint": final_fit_fingerprint,
+                "analysis_protocol_identity": protocol_identity,
+            },
+        )
+        key = "blind_predictions" if role == "blind" else "development_predictions"
+        self._write_artifact_reference(key, reference)
+        return reference.payload_path("predictions.npz")
 
     def load_predictions(self):
         with np.load(self.predictions_path) as data:
             return {k: np.asarray(data[k]) for k in data.files}
 
-    def save_bootstrap_draws(self, draws):
-        _atomic_npz(
-            self.bootstrap_draws_path,
-            **{k: np.asarray(v, dtype=np.float64) for k, v in draws.items()},
+    def save_bootstrap_draws(self, draws, *, fingerprint=None, blind_fingerprint=None):
+        arrays = {k: np.asarray(v, dtype=np.float64) for k, v in draws.items()}
+        if self.artifact_root is None:
+            _atomic_npz(self.bootstrap_draws_path, **arrays)
+            return self.bootstrap_draws_path
+        recipe = ProductRecipe(
+            "bootstrap-draws",
+            {
+                "bootstrap_fingerprint": str(fingerprint or "unspecified"),
+                "blind_fingerprint": str(blind_fingerprint or "unspecified"),
+                "draws": {
+                    key: {"shape": list(value.shape), "dtype": value.dtype.str}
+                    for key, value in sorted(arrays.items())
+                },
+            },
+            parents=tuple(
+                value for value in (fingerprint, blind_fingerprint) if value
+            ),
+            implementation="blind-event-bootstrap-v1",
         )
+        reference = ArtifactStore(self.artifact_root).get_or_build(
+            recipe,
+            lambda directory: _atomic_npz(directory / "bootstrap.npz", **arrays),
+            metadata={"bootstrap_fingerprint": str(fingerprint or "unspecified")},
+        )
+        self._write_artifact_reference("bootstrap_draws", reference)
+        return reference.payload_path("bootstrap.npz")
 
     def save_xai(self, **arrays):
         _atomic_npz(self.xai_path, **arrays)
