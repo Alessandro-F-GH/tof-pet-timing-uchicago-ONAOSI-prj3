@@ -267,16 +267,10 @@ class RunStore:
         }
         atomic_json(self.state_path, state)
 
-    def invalidate_from(self, stage):
-        from waveform_analysis.core.dependencies import INVALIDATES
-        files = {
-            "cv": [
-                self.folds_path,
-                self.cv_path,
-                self.candidates_path,
-                self.root / "optuna.db",
-                self.root / "optuna_sampler.pkl",
-            ],
+    def _stage_output_paths(self):
+        return {
+            "cv": [self.folds_path, self.cv_path, self.candidates_path,
+                   self.root / "optuna.db", self.root / "optuna_sampler.pkl"],
             "selection": [self.best_path],
             "final_fit": [self.final_fit_path, self.model_reference_path]
                 + ([] if self.artifact_root is not None else [self.development_predictions_path]),
@@ -287,22 +281,44 @@ class RunStore:
             "xai": [] if self.artifact_root is not None else [self.xai_path],
             "plots": [self.plots_dir],
         }
+
+    @staticmethod
+    def _stage_reference_keys(stage):
+        return {
+            "final_fit": {"development_predictions"},
+            "blind": {"blind_predictions"},
+            "bootstrap": {"bootstrap_draws"},
+            "xai": {"xai"},
+        }.get(stage, set())
+
+    def _remove_stage_outputs(self, stage):
         if self.artifact_root is not None:
-            reference_keys = set()
-            for current in INVALIDATES[stage]:
-                reference_keys.update({
-                    "final_fit": {"development_predictions"},
-                    "blind": {"blind_predictions"},
-                    "bootstrap": {"bootstrap_draws"},
-                    "xai": {"xai"},
-                }.get(current, set()))
-            self._clear_artifact_references(reference_keys)
+            self._clear_artifact_references(self._stage_reference_keys(stage))
+        for path in self._stage_output_paths()[stage]:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+
+    def invalidate_stage(self, stage):
+        """Invalidate one stage while retaining downstream records until parent checks."""
+        from waveform_analysis.core.dependencies import INVALIDATES
+
+        if stage not in INVALIDATES:
+            raise ValueError(f"Unknown pipeline stage: {stage}")
+        self._remove_stage_outputs(stage)
+        state = self.read_state()
+        state["stages"].pop(stage, None)
+        atomic_json(self.state_path, state)
+
+    def invalidate_from(self, stage):
+        """Explicitly invalidate a stage and all descendants in the dependency graph."""
+        from waveform_analysis.core.dependencies import INVALIDATES
+
+        if stage not in INVALIDATES:
+            raise ValueError(f"Unknown pipeline stage: {stage}")
         for current in INVALIDATES[stage]:
-            for path in files[current]:
-                if path.is_dir():
-                    shutil.rmtree(path, ignore_errors=True)
-                elif path.exists():
-                    path.unlink()
+            self._remove_stage_outputs(current)
         state = self.read_state()
         for current in INVALIDATES[stage]:
             state["stages"].pop(current, None)

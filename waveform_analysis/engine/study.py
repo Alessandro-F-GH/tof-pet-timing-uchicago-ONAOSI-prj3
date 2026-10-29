@@ -84,7 +84,7 @@ def _sync(store, stage, fp, logger=None):
                 previous.get("fingerprint"),
                 fp,
             )
-        store.invalidate_from(stage)
+        store.invalidate_stage(stage)
         return "missing"
     return status
 
@@ -527,7 +527,7 @@ def _model(
         logger.warning(
             "Saved final model is incomplete or incompatible | retraining on full development set"
         )
-        store.invalidate_from("final_fit")
+        store.invalidate_stage("final_fit")
     fitted, seed = _fit_final(
         spec, space, config, development, best, logger, frozen_development
     )
@@ -571,7 +571,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             else frozen_transform.identity,
         },
     )
-    if _sync(store, "cv", cv_fp) != "complete":
+    if _sync(store, "cv", cv_fp, logger) != "complete":
         candidates = _search(
             store,
             spec,
@@ -772,7 +772,7 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
         parents={"blind": blind_fp},
     )
     if (
-        _sync(store, "bootstrap", bootstrap_fp) != "complete"
+        _sync(store, "bootstrap", bootstrap_fp, logger) != "complete"
         or not store.bootstrap_path.is_file()
     ):
         logger.info(
