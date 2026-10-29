@@ -12,7 +12,7 @@ from waveform_analysis.engine.tshap_explainer import (
     _native_led_baselines,
     _is_excluded_tshap_window, _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
-    _selection_seed, _write_global_importance_csv,
+    _selection_seed, _write_global_importance_csv, _valid_window_starts,
 )
 
 
@@ -40,6 +40,31 @@ def test_conditional_window_occlusion_is_signed_and_baseline_independent(roi):
         predict, sample, rng.normal(size=(2, 2, 32)), positions)
     np.testing.assert_allclose(other, observed, rtol=0, atol=0)
 
+
+
+def test_tshap_excludes_windows_crossing_model_mask_and_does_not_bridge_gap():
+    keep = np.ones(16, dtype=bool)
+    keep[6:10] = False
+    starts, valid_at_start, _ = _valid_window_starts(16, 4, 2, keep)
+    assert starts == [0, 2, 10, 12]
+    assert not any(not np.all(keep[start:min(start + 4, len(keep))]) for start in starts)
+
+    sample = np.arange(32, dtype=np.float32).reshape(2, 16) / 32
+    explainer = _new_explainer(
+        4, 2, False, predict_batch_size=4,
+        imputer=_ZeroImputer(), sample_mask=keep,
+    )
+    window_map, _ = explainer.explain(
+        sample[None], sample[None],
+        lambda values: np.asarray(values)[:, 0].sum(axis=1)
+        - 2 * np.asarray(values)[:, 1].sum(axis=1),
+    )
+    positions = explainer.last_window_positions
+    assert {start for channel, start in positions if channel == 0} == set(starts)
+    assert {start for channel, start in positions if channel == 1} == set(starts)
+    np.testing.assert_allclose(window_map[0, :, 6:10], 0.0)
+    # Attribution interpolation must not connect the valid regions on either side.
+    assert explainer.last_window_scores.shape == (2 * len(starts),)
 
 def test_tshap_constant_prediction_is_zero():
     model = _new_explainer(6, 3, False, 4, imputer=_ZeroImputer())
