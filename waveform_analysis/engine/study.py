@@ -592,6 +592,16 @@ def _ridge_cv_selection_and_fit(
     model_available = not config["save_model"] or saved_model_complete(
         spec, store.model_dir
     )
+    logger.info(
+        "RidgeCV resume state | selection=%s final_fit=%s best_available=%s "
+        "model_available=%s save_model=%s model_dir=%s",
+        selection_status,
+        final_status,
+        isinstance(best, dict),
+        model_available,
+        bool(config["save_model"]),
+        store.model_dir,
+    )
     if not isinstance(best, dict) or final_status != "complete" or not model_available:
         store.invalidate_from("final_fit")
         logger.info(
