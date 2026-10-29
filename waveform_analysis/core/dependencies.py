@@ -51,14 +51,16 @@ def stage_fingerprint(stage, payload, *, parents=None):
 
 
 def planner_fingerprints(config):
+    """Build planning identities by propagating the declared stage dependency graph."""
     from waveform_analysis.data.sample_mask import SAMPLE_MASK_VERSION
     from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
     from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
+
     preprocessing_identity = {
         key: value for key, value in config["preprocessing"].items()
         if key not in {"cache_dir", "artifact_root"}
     }
-    pre = canonical_hash(
+    preprocessing = canonical_hash(
         {
             "control": config["control"],
             "control_artifact_version": CONTROL_ARTIFACT_VERSION,
@@ -67,9 +69,9 @@ def planner_fingerprints(config):
             "fit": config["fit"],
         }
     )
-    dev = canonical_hash(
+    development = canonical_hash(
         {
-            "preprocessing": pre,
+            "preprocessing": preprocessing,
             "development": config["development"],
             "dataset_format_version": DATASET_FORMAT_VERSION,
             "sample_mask_version": SAMPLE_MASK_VERSION,
@@ -77,46 +79,51 @@ def planner_fingerprints(config):
             "ml_input": config["ml_input"],
         }
     )
-    cv_dependencies = {
-        "development": dev,
-        "cross_validation": config["cross_validation"],
-        "model": config["model"],
-        "seed": config["seed"],
-    }
-    cv = canonical_hash(cv_dependencies)
-    final = canonical_hash(
-        {"cv": cv, "development": dev, "model": config["model"], "seed": config["seed"]}
-    )
-    blind = canonical_hash(
-        {
-            "final_fit": final,
-            "preprocessing": pre,
+
+    payloads = {
+        "cv": {
+            "development": development,
+            "cross_validation": config["cross_validation"],
+            "model": config["model"],
+            "seed": config["seed"],
+        },
+        "selection": {"metric": config["cross_validation"]["metric"]},
+        "final_fit": {
+            "development": development,
+            "model": config["model"],
+            "seed": config["seed"],
+        },
+        "blind": {
+            "preprocessing": preprocessing,
             "blind": config["blind"],
             "window": config["window_ns"],
             "ml_input": config["ml_input"],
             "fit": config["fit"],
-        }
-    )
-    bootstrap = canonical_hash(
-        {"blind": blind, "bootstrap": config["bootstrap"], "seed": config["seed"]}
-    )
-    xai = canonical_hash(
-        {
-            "final_fit": final,
-            "blind": blind,
+        },
+        "bootstrap": {
+            "bootstrap": config["bootstrap"],
+            "seed": config["seed"],
+        },
+        "xai": {
             "xai": config["xai"],
             "seed": config["seed"],
             "method_version": None,
+        },
+        "plots": {"plot_config": config["plot_config"]},
+    }
+
+    fingerprints = {}
+    for stage in STAGE_ORDER:
+        parents = {
+            parent: fingerprints[parent]
+            for parent in STAGE_DEPENDENCIES[stage]
         }
-    )
-    plots = canonical_hash({"plot_config": config["plot_config"]})
+        fingerprints[stage] = stage_fingerprint(
+            stage, payloads[stage], parents=parents
+        )
+
     return {
-        "preprocessing": pre,
-        "development": dev,
-        "cv": cv,
-        "final_fit": final,
-        "blind": blind,
-        "bootstrap": bootstrap,
-        "xai": xai,
-        "plots": plots,
+        "preprocessing": preprocessing,
+        "development": development,
+        **fingerprints,
     }
