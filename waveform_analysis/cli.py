@@ -33,6 +33,12 @@ def _parser() -> argparse.ArgumentParser:
     batch.add_argument("--config", type=Path, required=True)
     batch.add_argument("--artifact-root", type=Path,
                        help="Override the shared scientific artifact store location")
+    batch.add_argument("--cache-root", type=Path,
+                       help="Use a prepared cache bundle (overrides preprocessing and artifact roots)")
+    prepare = sub.add_parser("prepare-cache", help="Prepare reusable batch caches without model fitting")
+    prepare.add_argument("--config", type=Path, required=True)
+    prepare.add_argument("--cache-root", type=Path, required=True,
+                         help="Directory for the portable preprocessing and artifact cache bundle")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -152,7 +158,20 @@ def main() -> None:
             print(ensure_development_predictions(run, logger=logger, artifact_root=args.artifact_root))
         return
     batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
-    if args.artifact_root is not None:
+    if args.command == "prepare-cache":
+        from .engine.cache_preparation import prepare_batch_cache
+        root = args.cache_root.expanduser().resolve()
+        for run in batch.runs:
+            run["preprocessing"]["cache_dir"] = str(root / "preprocessing")
+            run["preprocessing"]["artifact_root"] = str(root / "artifact_store")
+        print(prepare_batch_cache(batch, cache_root=root, logger=logger))
+        return
+    if args.cache_root is not None:
+        root = args.cache_root.expanduser().resolve()
+        for run in batch.runs:
+            run["preprocessing"]["cache_dir"] = str(root / "preprocessing")
+            run["preprocessing"]["artifact_root"] = str(root / "artifact_store")
+    elif args.artifact_root is not None:
         artifact_root = str(args.artifact_root.expanduser().resolve())
         for run in batch.runs:
             run["preprocessing"]["artifact_root"] = artifact_root
