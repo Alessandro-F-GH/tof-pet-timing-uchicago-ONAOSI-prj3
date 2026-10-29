@@ -486,14 +486,25 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
 
         def _find_rois_v2(self, window_scores):
             rois = super()._find_rois_v2(window_scores)
-            if self.sample_mask is None:
-                return rois
-            keep = self.sample_mask
+            n_samples = len(window_scores)
+            candidates = _candidate_window_starts(
+                n_samples, self.window_length, self.stride
+            )
+            allowed_starts = set(candidates[1:-1] if len(candidates) > 2 else [])
+            keep = (
+                np.ones(n_samples, dtype=bool) if self.sample_mask is None
+                else self.sample_mask
+            )
             retained = []
             for roi in rois:
                 start, width = int(roi[1]), int(roi[2])
                 stop = min(start + width, keep.size)
-                if 0 <= start < stop and np.all(keep[start:stop]):
+                # ROI windows must not cross the excluded boundaries or masked samples.
+                if (
+                    start in allowed_starts
+                    and 0 <= start < stop
+                    and np.all(keep[start:stop])
+                ):
                     retained.append(roi)
             return retained
 
