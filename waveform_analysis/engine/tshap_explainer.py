@@ -30,7 +30,7 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 4
+TSHAP_METHOD_VERSION = 5
 GLOBAL_PLOT_VERSION = 16
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
@@ -363,7 +363,54 @@ def _cached_hermite_ppca_imputer(
 
 
 
-def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None):
+def _candidate_window_starts(series_length, window_samples, stride_samples):
+    """Match upstream TSHAP's candidate-window grid, including its final partial window."""
+    return list(range(
+        0,
+        min(series_length, series_length - window_samples + stride_samples),
+        stride_samples,
+    ))
+
+
+def _valid_window_starts(series_length, window_samples, stride_samples, sample_mask=None):
+    """Keep only candidate windows entirely inside samples retained by the model."""
+    if sample_mask is None:
+        keep = np.ones(series_length, dtype=bool)
+    else:
+        keep = np.asarray(sample_mask, dtype=bool).reshape(-1)
+        if keep.size != series_length:
+            raise ValueError(
+                f"TSHAP sample mask has {keep.size} entries but waveform has {series_length} samples"
+            )
+    valid_at_start = np.asarray([
+        bool(np.all(keep[start:min(start + window_samples, series_length)]))
+        for start in range(series_length)
+    ], dtype=bool)
+    candidates = _candidate_window_starts(series_length, window_samples, stride_samples)
+    return [start for start in candidates if valid_at_start[start]], valid_at_start, keep
+
+
+def _sample_mask_window_summary(sample_mask, series_length, window_samples, stride_samples, retained_starts):
+    candidates = _candidate_window_starts(series_length, window_samples, stride_samples)
+    keep = (
+        np.ones(series_length, dtype=bool) if sample_mask is None
+        else np.asarray(sample_mask, dtype=bool).reshape(-1)
+    )
+    retained = set(int(start) for start in np.asarray(retained_starts).reshape(-1))
+    return {
+        "mask_applied": sample_mask is not None,
+        "input_samples": int(series_length),
+        "retained_samples": int(np.count_nonzero(keep)),
+        "masked_samples": int(keep.size - np.count_nonzero(keep)),
+        "candidate_windows": int(len(candidates)),
+        "retained_windows": int(len(retained)),
+        "excluded_windows": int(len(candidates) - len(retained)),
+        "rule": "retain only windows whose covered samples are all retained by the frozen model sample mask; do not interpolate across masked gaps",
+    }
+
+
+def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None,
+                   sample_mask=None):
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
@@ -373,7 +420,74 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
         raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
 
     class BoundedTSHAP(TSHAPExplainer):
-        """Upstream temporal aggregation with conditional single-event occlusion."""
+        """Upstream temporal aggregation with mask-aware conditional occlusion."""
+
+        def __init__(self, *args, sample_mask=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.sample_mask = (
+                None if sample_mask is None
+                else np.asarray(sample_mask, dtype=bool).reshape(-1).copy()
+            )
+
+        def _explain_instance(self, fnc, input_sample, baselines):
+            """Explain only windows retained by the model mask, without bridging gaps."""
+            n_channels, series_length = input_sample.shape
+            valid_starts, valid_at_start, _ = _valid_window_starts(
+                series_length, self.window_length, self.stride, self.sample_mask
+            )
+            if not valid_starts:
+                raise ValueError(
+                    "The model sample mask leaves no valid TSHAP windows at this window size"
+                )
+            positions = [
+                (channel, start)
+                for channel in range(n_channels)
+                for start in valid_starts
+            ]
+            scores = self._calculate_window_attrib_scores(
+                fnc, input_sample, baselines, positions
+            )
+            reshaped = np.zeros(input_sample.shape, dtype=np.float64)
+            n_windows = len(valid_starts)
+            for channel in range(n_channels):
+                channel_scores = scores[channel * n_windows:(channel + 1) * n_windows]
+                for j, (start, score) in enumerate(zip(valid_starts, channel_scores)):
+                    reshaped[channel, start] = score
+                    if j + 1 >= n_windows:
+                        continue
+                    next_start = valid_starts[j + 1]
+                    if (
+                        next_start - start == self.stride
+                        and np.all(valid_at_start[start:next_start + 1])
+                    ):
+                        reshaped[channel, start:next_start + 1] = np.linspace(
+                            score, channel_scores[j + 1], next_start - start + 1
+                        )
+
+            window_exp = np.zeros(input_sample.shape, dtype=np.float64)
+            for channel in range(n_channels):
+                for start in range(series_length):
+                    if not valid_at_start[start] or reshaped[channel, start] == 0:
+                        continue
+                    stop = min(start + self.window_length, series_length)
+                    window_exp[channel, start:stop] += (
+                        reshaped[channel, start]
+                        / (self.window_length * min(start + 1, self.stride))
+                    )
+            return window_exp, reshaped
+
+        def _find_rois_v2(self, window_scores):
+            rois = super()._find_rois_v2(window_scores)
+            if self.sample_mask is None:
+                return rois
+            keep = self.sample_mask
+            retained = []
+            for roi in rois:
+                start, width = int(roi[1]), int(roi[2])
+                stop = min(start + width, keep.size)
+                if 0 <= start < stop and np.all(keep[start:stop]):
+                    retained.append(roi)
+            return retained
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
             sample = np.asarray(input_sample, np.float32)
@@ -406,7 +520,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
             return scores
 
     return BoundedTSHAP(window_length=window_samples, stride=stride_samples,
-                        interpolation=True, roi=roi)
+                        interpolation=True, roi=roi, sample_mask=sample_mask)
 
 
 def _format_global_model_name(model_name):
