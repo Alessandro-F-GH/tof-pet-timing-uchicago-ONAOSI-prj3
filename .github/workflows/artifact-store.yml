@@ -16,11 +16,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install minimal test dependencies
-        run: python -m pip install --upgrade pip numpy pytest
+      - name: Install pipeline and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r waveform_analysis/requirements.txt pytest
       - name: Compile Python sources
         run: python -m compileall -q waveform_analysis
-      - name: Test immutable artifact store
+      - name: Run full regression suite
         env:
           PYTHONPATH: .
-        run: python -m pytest -q waveform_analysis/tests/test_artifact_store.py waveform_analysis/tests/test_storage_resume.py
+        run: python -m pytest -q waveform_analysis/tests
