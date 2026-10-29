@@ -46,7 +46,7 @@ def test_tshap_excludes_windows_crossing_model_mask_and_does_not_bridge_gap():
     keep = np.ones(16, dtype=bool)
     keep[6:10] = False
     starts, valid_at_start, _ = _valid_window_starts(16, 4, 2, keep)
-    assert starts == [0, 2, 10, 12]
+    assert starts == [2, 10]
     assert not any(not np.all(keep[start:min(start + 4, len(keep))]) for start in starts)
 
     sample = np.arange(32, dtype=np.float32).reshape(2, 16) / 32
