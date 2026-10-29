@@ -278,10 +278,14 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         monkeypatch.setattr(ExperimentArtifactStore, "prepare_cv", forbidden)
     monkeypatch.setattr(study, "_search", search)
     outputs = batch_engine.run_batch(resolved)
-    assert sorted(fit_calls) == sorted(
-        ["direct_linear_ridge", "shared_linear_ridge"]
+    # Each Ridge model is run once per configured mode (energy and timing);
+    # the optional MLP clone adds one energy-mode run.
+    expected_fit_calls = (
+        ["direct_linear_ridge"] * 2
+        + ["shared_linear_ridge"] * 2
         + (["direct_mlp"] if mixed else [])
     )
+    assert sorted(fit_calls) == sorted(expected_fit_calls)
     for output, run_config in zip(outputs, runs):
         manifest = read_run_manifest(output)
         best = json.loads((output / "metadata/best.json").read_text())
