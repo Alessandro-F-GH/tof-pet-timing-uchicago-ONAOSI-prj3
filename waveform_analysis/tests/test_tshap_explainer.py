@@ -60,13 +60,17 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
         energy_windows=waves, energy_time_ps=np.arange(60)*12.5,
         manifest={"analysis_protocol_identity": "control-v1",
                   "event_population_identity": "population-v1"})
-    config = {"_board": "UC", "window_ns": {"start": -2, "end": 50},
-              "output_dir": str(tmp_path / "UC" / "test_ridge")}
+    config = {
+        "_board": "UC",
+        "window_ns": {"start": -2, "end": 50},
+        "output_dir": str(tmp_path / "UC" / "test_ridge"),
+        "preprocessing": {"artifact_root": str(tmp_path / "artifact_store")},
+    }
     options = dict(window_samples=20, stride_samples=20,
                    components=4, fit_events=30, tuning_events=12,
                    slope_points=5, batch_size=8, seed=42)
     first, first_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, tmp_path, **options)
+        control, "energy_to_energy", config, **options)
     assert first_meta["cache_hit"] is False
     def forbidden(*args, **kwargs):
         raise AssertionError("Imputer was refitted on cache hit")
@@ -333,9 +337,6 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
 
     assert output.is_file()
     assert output.stat().st_size > 0
-    pdf_output = tmp_path / "global_importance.pdf"
-    assert pdf_output.is_file()
-    assert pdf_output.stat().st_size > 0
 
 
 

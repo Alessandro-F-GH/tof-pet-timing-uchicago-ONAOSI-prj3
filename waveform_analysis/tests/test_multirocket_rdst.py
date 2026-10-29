@@ -131,11 +131,3 @@ def test_transform_settings_must_be_fixed(key, tmp_path):
     with pytest.raises(ValueError, match="must be fixed"):
         prepare_frozen_transform(get_model(NAMES[0]), model_space, _config(tmp_path),
                                  control_dataset=None, development_dataset=None, cache_root=tmp_path)
-
-
-def test_transform_settings_must_be_fixed(key, tmp_path):
-    model_space = space(NAMES[0])
-    model_space["parameters"][key] = {"type": "categorical", "choices": [84, 168]}
-    with pytest.raises(ValueError, match="must be fixed"):
-        prepare_frozen_transform(get_model(NAMES[0]), model_space, _config(tmp_path),
-                                 control_dataset=None, development_dataset=None, cache_root=tmp_path)

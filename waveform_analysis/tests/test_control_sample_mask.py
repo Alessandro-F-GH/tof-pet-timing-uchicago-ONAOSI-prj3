@@ -116,8 +116,14 @@ def test_frozen_transform_and_feature_cache_receive_masked_control_or_developmen
         return SimpleNamespace(metadata={}),apply(None,x)
     transform = FeatureTransformSpec('test_transform',lambda *a: {},fit,apply, fit_role=get_model(name).feature_transform.fit_role)
     spec = replace(get_model(name),feature_transform=transform)
-    cfg = {'mode':'timing_to_timing','window_name':'wide','seed':1,
-           'runtime':{'prediction_chunk_size':25}}
+    cfg = {
+        'mode': 'timing_to_timing',
+        'window_name': 'wide',
+        'window_ns': {'start': -2.0, 'end': 50.0},
+        'seed': 1,
+        'runtime': {'prediction_chunk_size': 25},
+        'preprocessing': {'artifact_root': str(tmp_path / 'artifact_store')},
+    }
     frozen = prepare_frozen_transform(spec,{},cfg,control_dataset=control,
                 development_dataset=dev,cache_root=tmp_path)
     fit_calls = len(received)

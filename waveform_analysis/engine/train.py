@@ -472,12 +472,13 @@ def detector_swap_rmse(
     return float(np.sqrt(np.mean(np.square(epsilon))))
 
 
-def save_model(spec, fitted, directory, parameters):
+def save_model(spec, fitted, directory, parameters, *, include_feature_transform=True):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     spec.save(fitted.artifact, directory)
     if (
-        fitted.feature_transform is not None
+        include_feature_transform
+        and fitted.feature_transform is not None
         and fitted.feature_transform.spec.save is not None
     ):
         fitted.feature_transform.spec.save(

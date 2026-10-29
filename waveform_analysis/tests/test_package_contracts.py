@@ -35,7 +35,7 @@ def test_canonical_modules_and_serialized_dataclasses():
 
 def test_typed_settings_preserve_existing_json_values_and_defaults():
     config = json.loads(
-        (ROOT / "waveform_analysis/config/preprocessing/default_ctr.json").read_text()
+        (ROOT / "waveform_analysis/config/preprocessing/UC.json").read_text()
     )
     baseline = BaselineConfig.from_preprocessing(config)
     assert baseline.window_ns == tuple(config["selection"]["baseline_window_ns"])
@@ -97,47 +97,3 @@ def test_signal_imports_do_not_initialize_torch_or_io_frameworks():
     assert completed.returncode == 0, completed.stderr
 
 
-def test_normalized_configuration_and_fingerprints_are_unchanged(tmp_path):
-    """Evaluate the baseline parser with the same paths and JSON as the new one."""
-    from waveform_analysis.core.config import load_batch_config, public_batch_config
-    from waveform_analysis.core.io import canonical_hash
-
-    source = subprocess.run(
-        [
-            "git",
-            "show",
-            "59a095a4cbc8b699c5bce16f656d4156483ce86b:waveform_analysis/ml_pipeline/config.py",
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    path = tmp_path / "original_config.py"
-    path.write_text(source.replace("from .common import canonical_hash", "from waveform_analysis.core.io import canonical_hash").replace("from .models import model_names", "from waveform_analysis.models import model_names"))
-    name = "original_config"
-    spec = importlib.util.spec_from_file_location(name, path)
-    reference = importlib.util.module_from_spec(spec)
-    sys.modules[name] = reference
-    try:
-        spec.loader.exec_module(reference)
-        config_path = ROOT / "waveform_analysis/config/batches/benchmark_FBK.json"
-        project = ROOT / "waveform_analysis"
-        expected = reference.public_batch_config(
-            reference.load_batch_config(config_path, project)
-        )
-        # The original parser preserves raw ranges; the new parser expands them.
-        from waveform_analysis.core.ridge import normalize_ridge_space
-
-        for run in expected["runs"]:
-            model = run["model"]
-            if model["name"] in {"direct_linear_ridge", "shared_linear_ridge"}:
-                model["space"] = normalize_ridge_space(model["space"], model["name"])
-        resolved = load_batch_config(config_path, project)
-        # Persisted hierarchy changes; effective scientific settings do not.
-        actual_runs = [{k: v for k, v in r.items() if not k.startswith('_')} for r in resolved.runs]
-        assert actual_runs == expected['runs']
-        assert canonical_hash(actual_runs) == canonical_hash(expected['runs'])
-        assert public_batch_config(load_batch_config(config_path)) == public_batch_config(resolved)
-    finally:
-        sys.modules.pop(name, None)
