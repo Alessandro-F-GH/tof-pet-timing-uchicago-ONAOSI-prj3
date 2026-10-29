@@ -34,11 +34,11 @@ from waveform_analysis.scripts.train_ppca_interpolation_blend import (
 
 METHODS = ("original_tshap", "linear", "hermite", "ppca", "hermite_ppca_blend")
 LABELS = {
-    "original_tshap": "Original TSHAP (multi-baseline)",
+    "original_tshap": "Multi-baseline",
     "linear": "Linear interpolation",
     "hermite": "Cubic Hermite",
     "ppca": "Standard PPCA",
-    "hermite_ppca_blend": "Hermite--PPCA blend",
+    "hermite_ppca_blend": "Hermite-PPCA blend",
 }
 
 
@@ -71,39 +71,42 @@ def bootstrap_rmse(event_sse, values_per_event, seed, replicates=500):
 
 
 def physical_unit_scale(values):
-    """Choose a readable signal unit; input values are in mV."""
+    """RMSE values are stored in mV; use nV for any scale below 1 mV."""
     finite = np.asarray(values, dtype=np.float64)
     finite = finite[np.isfinite(finite) & (finite > 0)]
     largest = float(np.max(finite)) if finite.size else 1.0
-    if largest >= 1.0:
-        return 1.0, "mV"
-    if largest >= 1e-3:
-        return 1e3, "µV"
-    if largest >= 1e-6:
-        return 1e6, "nV"
-    return 1e9, "pV"
+    return (1.0, "mV") if largest >= 1.0 else (1e6, "nV")
 
 
 def save_position_plot(rows, output, label, channel):
     scale, unit = physical_unit_scale([r["rmse"] for r in rows])
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.4), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
+    handles = []
     for detector, ax in enumerate(axes, start=1):
         selected = [r for r in rows if r["detector"] == detector]
         for method in METHODS:
-            series = [r for r in selected if r["method"] == method]
-            series.sort(key=lambda r: r["start_ns"])
-            values = np.asarray([r["rmse"] for r in series], dtype=np.float64) * scale
-            ax.plot([r["start_ns"] for r in series],
-                    np.maximum(values, np.finfo(float).tiny),
-                    label=LABELS[method], lw=1.5)
+            series = sorted(
+                (r for r in selected if r["method"] == method),
+                key=lambda r: r["start_ns"],
+            )
+            x = np.asarray([r["start_ns"] for r in series])
+            y = np.asarray([r["rmse"] for r in series]) * scale
+            # NaNs break the line over excluded timing masks; log axes cannot
+            # meaningfully display zero or negative reconstruction errors.
+            y[~np.isfinite(y) | (y <= 0)] = np.nan
+            (line,) = ax.plot(x, y, label=LABELS[method], lw=1.5)
+            if detector == 1:
+                handles.append(line)
         ax.set_title(f"Detector {detector}")
-        ax.set_xlabel("Masked interval start (ns)")
         ax.set_yscale("log")
-        ax.set_ylabel(f"Reconstruction RMSE ({unit})")
         ax.grid(alpha=0.25, which="both")
-        ax.legend(fontsize="small")
-    fig.suptitle(f"{label} — {channel} channel")
-    fig.tight_layout()
+    fig.suptitle(f"{label} - {channel.capitalize()} channel")
+    fig.supxlabel("Masked interval start (ns)")
+    fig.supylabel(f"Reconstruction RMSE ({unit})")
+    fig.legend(handles, [LABELS[m] for m in METHODS],
+               loc="lower center", bbox_to_anchor=(0.5, 0.01),
+               ncol=len(METHODS), fontsize="small", frameon=False)
+    fig.tight_layout(rect=(0.04, 0.15, 1.0, 0.94))
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{label}_{channel}")
     fig.savefig(output / f"rmse_by_position_{safe}.pdf", bbox_inches="tight")
     fig.savefig(output / f"rmse_by_position_{safe}.png", dpi=180, bbox_inches="tight")
@@ -111,9 +114,9 @@ def save_position_plot(rows, output, label, channel):
 
 
 def evaluate_configuration(label, results, channel, args, output):
-    waves, time_ps, source, manifest, transform, control_waves = load_wide_development(
+    waves, time_ps, source, manifest, transform, control_waves, sample_mask = load_wide_development(
         root_relative(results), channel, root_relative(args.cache_root),
-        return_transform=True, include_control=True
+        return_transform=True, include_control=True, include_sample_mask=True
     )
     # The prepared arrays are normalized/clipped for model training. Convert them
     # back through the frozen per-detector transform before fitting imputers or
@@ -130,6 +133,12 @@ def evaluate_configuration(label, results, channel, args, output):
     if width >= length:
         raise ValueError(f"{label}/{channel}: mask width {width} >= waveform length {length}")
     starts = positions(length, width, args.mask_stride_samples or width)
+    # Only fully retained timing intervals are eligible for plotted/pooled RMSE.
+    # Excluded waveform regions otherwise produce artificial near-zero errors.
+    if channel == "timing":
+        starts = [start for start in starts if np.all(sample_mask[start:start + width])]
+    if not starts:
+        raise ValueError(f"{label}/{channel}: no valid mask positions remain")
 
     selected = np.random.default_rng(args.seed).permutation(n_total)[:min(args.max_events, n_total)]
     if len(selected) < 20:
@@ -403,7 +412,7 @@ def main():
         "methods": list(METHODS), "method_labels": LABELS,
         "mask_width_ns": args.mask_ns, "seed": args.seed,
         "n_baselines": args.n_baselines,
-        "signal_units": "mV; plots automatically scale to mV, µV, nV, or pV",
+        "signal_units": "mV; plot values use nV if all RMSE values are below 1 mV",
         "bootstrap_replicates": args.bootstrap,
         "warning": "Results are valid only if each results path resolves to the intended development dataset and split.",
     }
