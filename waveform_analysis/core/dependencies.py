@@ -24,11 +24,15 @@ def stage_fingerprint(stage, payload):
 
 def planner_fingerprints(config):
     from waveform_analysis.data.sample_mask import SAMPLE_MASK_VERSION
+    preprocessing_identity = {
+        key: value for key, value in config["preprocessing"].items()
+        if key not in {"cache_dir", "artifact_root"}
+    }
     pre = canonical_hash(
         {
             "control": config["control"],
             "control_artifact_version": CONTROL_ARTIFACT_VERSION,
-            "preprocessing": config["preprocessing"],
+            "preprocessing": preprocessing_identity,
             "mode": config["mode"],
             "fit": config["fit"],
         }

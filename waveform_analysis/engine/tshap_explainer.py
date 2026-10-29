@@ -25,6 +25,7 @@ from waveform_analysis.engine.train import (
 )
 from waveform_analysis.signal.sample_mask import apply_sample_mask
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup, _cache_root
+from waveform_analysis.data.storage import RunStore
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
@@ -1391,7 +1392,10 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     )
                 continue
             spec = get_model(manifest["model"])
-            model_dir = directory / "model"
+            run_store = RunStore(
+                directory, artifact_root=config["preprocessing"]["artifact_root"]
+            )
+            model_dir = run_store.model_dir
             if not saved_model_complete(spec, model_dir):
                 raise FileNotFoundError(f"Saved model or frozen feature transform missing: {model_dir}")
             sampling_seed = int(seed)
@@ -1678,7 +1682,10 @@ def explain_tshap_local(
                     )
                 continue
             spec = get_model(manifest["model"])
-            model_dir = directory / "model"
+            run_store = RunStore(
+                directory, artifact_root=config["preprocessing"]["artifact_root"]
+            )
+            model_dir = run_store.model_dir
             if not saved_model_complete(spec, model_dir):
                 raise FileNotFoundError(
                     f"Saved model or frozen feature transform missing: {model_dir}"

@@ -1,9 +1,8 @@
 # Cleanup decisions and external archive candidates
 
 The supported runtime uses only the canonical hierarchy documented in
-ARCHITECTURE.md. The conversion script is removable after the desired historical
-results and optional caches have been recovered. It is not imported by runtime
-modules.
+ARCHITECTURE.md. Historical result conversion is out of scope: start new
+experiments in a fresh result root and use the shared artifact store.
 
 Removed from the active package:
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path, PureWindowsPath
-import re
+from pathlib import Path
 from typing import Any
 
 from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.data.dataset import load_prepared_dataset
+from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.sample_mask import attach_control_sample_mask
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.data.results import resolve_run_config
 from waveform_analysis.engine.diagnostics import (
@@ -24,50 +24,18 @@ from waveform_analysis.engine.train import (
 from waveform_analysis.models import get_model
 
 
-def _development_cache_root(config: dict[str, Any], run_directory: Path) -> Path:
-    """Resolve saved paths, including a checkout moved after training."""
-    configured = Path(config["preprocessing"]["cache_dir"]).expanduser()
-    candidates = [configured]
-    parts = PureWindowsPath(str(configured)).parts
-    anchors = [i for i, part in enumerate(parts) if part.lower() == "waveform_analysis"]
-    if anchors:
-        suffix = Path(*parts[anchors[-1] + 1:])
-        roots = [p for p in run_directory.parents if p.name.lower() == "waveform_analysis"]
-        roots.append(Path(__file__).resolve().parents[1])
-        candidates.extend(root / suffix for root in roots)
-    for candidate in candidates:
-        if (candidate / "development_ml" / "prepared").is_dir():
-            return candidate
-    return configured
-
-
-def _matches_training_identity(
-    cached: dict[str, Any], run: dict[str, Any], config: dict[str, Any], spec: Any,
-    control_fingerprint: str | None,
-) -> bool:
-    """Verify cached preprocessing without requiring the control JSON itself."""
-    manifest = run["manifest"]
-    population = manifest.get("dataset_populations", {}).get("development", {})
-    protocol = population.get("analysis_protocol_identity")
-    if protocol is not None:
-        return cached.get("analysis_protocol_identity") == protocol
-    if control_fingerprint is not None:
-        return cached.get("control_fingerprint") == control_fingerprint
-    # Control artifact directories are named by the first 16 hash characters.
-    prefix = PureWindowsPath(manifest.get("control_artifact", "")).name
-    if re.fullmatch(r"[0-9a-f]{16}", prefix):
-        return str(cached.get("control_fingerprint", "")).startswith(prefix)
-    return False
-
-
 def ensure_development_predictions(run: dict[str, Any], *, logger=None) -> Path | None:
     """Use saved predictions or a saved model and uniquely matching cache.
 
     Never fit a model, transform or preprocessing rule, or load raw acquisitions.
     Missing prerequisites leave the diagnostic unavailable and are logged.
     """
-    store = RunStore(run["directory"])
     manifest = run["manifest"]
+    config = resolve_run_config(run["directory"])
+    store = RunStore(
+        run["directory"],
+        artifact_root=config["preprocessing"]["artifact_root"],
+    )
     fingerprint = manifest.get("stage_fingerprints", {}).get("final_fit")
     if fingerprint and development_predictions_current(store, fingerprint):
         return store.development_predictions_path
@@ -81,38 +49,40 @@ def ensure_development_predictions(run: dict[str, Any], *, logger=None) -> Path 
     config_path = store.metadata_dir / "config.json"
     if not fingerprint or not config_path.is_file():
         return unavailable("missing final-fit identity or saved configuration")
-    config = resolve_run_config(store.root)
     spec = get_model(manifest["model"])
     if not saved_model_complete(spec, store.model_dir):
         return unavailable("saved final model is missing or incomplete")
-    control_path = Path(manifest.get("control_artifact", "")) / "manifest.json"
-    control_fingerprint = (
-        json.loads(control_path.read_text()).get("fingerprint") if control_path.is_file() else None
-    )
-    population = manifest.get("dataset_populations", {}).get("development", {})
-    expected_population = population.get("population_identity")
-    cache_root = _development_cache_root(config, store.root) / "development_ml" / "prepared"
-    matches = []
-    for path in cache_root.glob("*/manifest.json"):
-        cached = json.loads(path.read_text())
-        if (
-            cached.get("dataset_role") == "development"
-            and cached.get("dataset_source") == config["development"]["root_file"]
-            and cached.get("mode") == config["mode"]
-            and cached.get("window_ns") == config["window_ns"]
-            and cached.get("subsampling") == config["ml_input"]["subsampling"]
-            and cached.get("true_tof_ps") == config["development"]["true_tof_ps"]
-            and _matches_training_identity(cached, run, config, spec, control_fingerprint)
-            and (expected_population is None
-                 or cached.get("event_population_identity") == expected_population)
-        ):
-            matches.append(path.parent)
-    if len(matches) != 1:
-        return unavailable(
-            f"expected one matching prepared development cache, found {len(matches)} in {cache_root}; "
-            "retain the prepared train arrays to predict with the saved model"
+    references = manifest.get("prepared_artifact_refs", {})
+    development_ref = references.get("development")
+    if not development_ref:
+        return unavailable("the run manifest has no prepared development artifact reference")
+    artifact_store = ArtifactStore(config["preprocessing"]["artifact_root"])
+    try:
+        development_reference = artifact_store.resolve(
+            development_ref["product_type"], development_ref["product_id"]
         )
-    dataset = load_prepared_dataset(matches[0])
+        dataset = load_prepared_dataset(development_reference.path)
+        control_dataset = None
+        if config["mode"] == "timing_to_timing":
+            control_ref = references.get("control")
+            if not control_ref:
+                return unavailable("the run manifest has no prepared control artifact reference")
+            control_reference = artifact_store.resolve(
+                control_ref["product_type"], control_ref["product_id"]
+            )
+            control_dataset = load_prepared_dataset(control_reference.path)
+            control_dataset = attach_control_sample_mask(
+                control_dataset, control_dataset,
+                cache_root=Path(config["preprocessing"]["cache_dir"]),
+                artifact_root=Path(config["preprocessing"]["artifact_root"]),
+            )
+        dataset = attach_control_sample_mask(
+            dataset, control_dataset,
+            cache_root=Path(config["preprocessing"]["cache_dir"]),
+            artifact_root=Path(config["preprocessing"]["artifact_root"]),
+        )
+    except (KeyError, OSError, ValueError, RuntimeError) as exc:
+        return unavailable(f"cannot resolve prepared artifact references: {exc}")
     if logger:
         logger.info("Development distribution | saved-model inference | %s | n=%d",
                     spec.name, dataset.n_events)

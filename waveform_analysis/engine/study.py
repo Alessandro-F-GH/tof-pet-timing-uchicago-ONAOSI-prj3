@@ -935,6 +935,18 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
         "development_dataset": config["development"],
         "blind_dataset": config["blind"],
         "control_artifact": str(Path(control_dir).resolve()),
+        "prepared_artifact_refs": {
+            role: {
+                "product_type": "prepared-datasets",
+                "product_id": dataset.directory.name,
+            }
+            for role, dataset in (
+                ("control", control_prepared),
+                ("development", development),
+                ("blind", blind),
+            )
+            if dataset is not None
+        },
         "preprocessing_fit_role": "control",
         "led_control_mean_ps": development.manifest["led_control_mean_ps"],
         "led_centering_fit_role": "control",

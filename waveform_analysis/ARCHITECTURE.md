@@ -45,9 +45,11 @@ reporting, grouping and post-training TSHAP. A changed owner cannot silently rel
 models. Use a new experiment folder when changing shared scientific settings
 without rebuilding all of their owners.
 
-`RunStore` writes model artifacts and stage state. Its constructor never migrates
-files. Conversion is explicit. Identifiers retained in numerical caches and seed
-payloads describe scientific algorithms, not alternate active pipelines.
+`RunStore` writes stage state and lightweight model references. Model weights
+are immutable pinned products in the shared store. Its constructor never migrates
+files; historical results are not read by the active runtime. Identifiers retained
+in numerical caches and seed payloads describe scientific algorithms, not
+alternate active pipelines.
 
 ## Execution and dependencies
 
@@ -60,10 +62,17 @@ training remains distinct from RMSE/internal-holdout neural training.
 invalidation edges. Invalidation preserves independent work: bootstrap changes
 do not invalidate model weights; plot changes do not retrain models.
 
-Prepared datasets are reused within a batch with a key including dataset role,
-mode, window, subsampling, preprocessing, control artifact and empty-population
-policy. Frozen features remain memory mapped. MultiRocket retains bounded
+Prepared datasets, selected-event indices, native waveforms, frozen masks,
+feature transforms, and feature matrices are immutable products in the shared
+artifact store. Their recipes contain effective scientific dependencies and
+parent product IDs; cache roots and report names are not product payloads.
+Frozen feature matrices remain read-only memory maps. MultiRocket retains bounded
 transform batches, float32 feature storage and its existing Ridge solver.
+
+Final model weights and fitted transforms live outside result trees. A run stores
+explicit product references so diagnostics and TSHAP resolve the exact fitted
+model and prepared populations without scanning result folders or refitting
+missing predictors.
 
 ## Reporting and historical artifacts
 

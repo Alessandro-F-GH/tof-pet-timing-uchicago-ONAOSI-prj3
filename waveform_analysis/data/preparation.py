@@ -1,5 +1,6 @@
 from __future__ import annotations
 import shutil
+from dataclasses import replace
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.artifact_identity import ProductRecipe
@@ -83,8 +84,13 @@ def prepare_ml_dataset(
             "mode": str(config["mode"]),
             "window_ns": config["window_ns"],
             "subsampling": int(config["ml_input"]["subsampling"]),
-            "allow_empty": bool(allow_empty),
         },
+        parents=tuple(
+            str(value) for value in (
+                preprocessed.manifest.get("artifact_product_id"),
+                control_artifact.get("artifact_product_id"),
+            ) if value
+        ),
         implementation=f"prepared-dataset-format-{DATASET_FORMAT_VERSION}",
     )
     artifact_root = config["preprocessing"].get(
@@ -254,6 +260,9 @@ def prepare_ml_dataset(
     dataset = load_prepared_dataset(reference.path)
     if dataset.manifest.get("fingerprint") != fp:
         raise ValueError("Prepared artifact manifest fingerprint mismatch")
+    manifest = dict(dataset.manifest)
+    manifest["artifact_product_id"] = reference.product_id
+    dataset = replace(dataset, manifest=manifest)
     if not allow_empty and not dataset.n_events:
         raise RuntimeError("Prepared artifact contains no events")
     return dataset
