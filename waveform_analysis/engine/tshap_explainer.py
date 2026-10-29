@@ -30,7 +30,7 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 5
+TSHAP_METHOD_VERSION = 6
 GLOBAL_PLOT_VERSION = 16
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
@@ -373,7 +373,7 @@ def _candidate_window_starts(series_length, window_samples, stride_samples):
 
 
 def _valid_window_starts(series_length, window_samples, stride_samples, sample_mask=None):
-    """Keep only candidate windows entirely inside samples retained by the model."""
+    """Keep interior candidate windows wholly inside the model's retained samples."""
     if sample_mask is None:
         keep = np.ones(series_length, dtype=bool)
     else:
@@ -387,7 +387,10 @@ def _valid_window_starts(series_length, window_samples, stride_samples, sample_m
         for start in range(series_length)
     ], dtype=bool)
     candidates = _candidate_window_starts(series_length, window_samples, stride_samples)
-    return [start for start in candidates if valid_at_start[start]], valid_at_start, keep
+    # Boundary windows can be dominated by padding, incomplete context, or
+    # edge-specific imputation artifacts. Exclude them before applying the mask.
+    interior_candidates = candidates[1:-1] if len(candidates) > 2 else []
+    return [start for start in interior_candidates if valid_at_start[start]], valid_at_start, keep
 
 
 def _sample_mask_window_summary(sample_mask, series_length, window_samples, stride_samples, retained_starts):
@@ -397,6 +400,9 @@ def _sample_mask_window_summary(sample_mask, series_length, window_samples, stri
         else np.asarray(sample_mask, dtype=bool).reshape(-1)
     )
     retained = set(int(start) for start in np.asarray(retained_starts).reshape(-1))
+    interior = candidates[1:-1] if len(candidates) > 2 else []
+    boundary_excluded = len(candidates) - len(interior)
+    mask_excluded = len(set(interior) - retained)
     return {
         "mask_applied": sample_mask is not None,
         "input_samples": int(series_length),
@@ -405,7 +411,9 @@ def _sample_mask_window_summary(sample_mask, series_length, window_samples, stri
         "candidate_windows": int(len(candidates)),
         "retained_windows": int(len(retained)),
         "excluded_windows": int(len(candidates) - len(retained)),
-        "rule": "retain only windows whose covered samples are all retained by the frozen model sample mask; do not interpolate across masked gaps",
+        "excluded_boundary_windows": int(boundary_excluded),
+        "excluded_mask_windows": int(mask_excluded),
+        "rule": "exclude the first and last candidate windows; among interior windows, retain only those whose covered samples are all retained by the frozen model sample mask; do not interpolate across masked gaps",
     }
 
 
