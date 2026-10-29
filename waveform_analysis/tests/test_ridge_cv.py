@@ -324,7 +324,7 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     )
     table = tmp_path / "report" / "tables" / "datasets" / f"{board}_selected_events.tex"
     assert table.is_file()
-    assert table.read_text().count(" & 256") == 3  # Once per role, not once per model.
+    assert table.read_text().count(" & 256") == 6  # Three roles for each of two modes; not once per model.
     other_board = "FBK" if board == "UC" else "UC"
     assert not (table.parent / f"{other_board}_selected_events.tex").exists()
     assert (tmp_path / "report/tables/ridge_cv.csv").is_file()
