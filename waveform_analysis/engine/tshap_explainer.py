@@ -1954,7 +1954,7 @@ def explain_tshap_local(
             )
             identity = {
                 "method": "conditional_hermite_ppca_local_case_study",
-                "method_version": 3,
+                "method_version": 4,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
