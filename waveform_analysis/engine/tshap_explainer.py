@@ -1369,7 +1369,7 @@ def explain_tshap(results, *, models=None, artifact_root=None, output_root=None,
             # A matching flat cache is the canonical hit: no model inference.
             if _complete(destination, fingerprint) and not overwrite:
                 _refresh_presentation(destination)
-                    if logger:
+                if logger:
                     logger.info("TSHAP | cache hit | %s", destination)
                 outputs.append(destination)
                 continue
@@ -1535,7 +1535,7 @@ def explain_tshap(results, *, models=None, artifact_root=None, output_root=None,
                 # Replace stale settings/incomplete artifacts in-place. The cache
                 # check above prevents recalculation when the fingerprint matches.
                 _publish_directory(temporary, destination, overwrite=True)
-                finally:
+            finally:
                 if temporary.exists():
                     shutil.rmtree(temporary)
             outputs.append(destination)
