@@ -21,11 +21,14 @@ def root_relative(path):
     return path if path.is_absolute() else ROOT / path
 
 
-def load_wide_development(results, channel, cache_root=None, *, return_transform=False, include_control=False):
+def load_wide_development(results, channel, cache_root=None, *, return_transform=False,
+                          include_control=False, include_sample_mask=False):
     """Load prepared wide-window development waveforms for one channel.
 
     If ``return_transform`` is true, also return the frozen input transform so
     diagnostics can be expressed in the original configured signal units.
+    ``include_sample_mask`` additionally returns the retained-sample mask from
+    preprocessing (all samples are valid for energy-channel inputs).
     """
     matches = []
     for run in discover_runs(results):
@@ -62,10 +65,22 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
             raise ValueError("Control and development waveform transforms differ")
     if waves is None or times is None or waves.ndim != 3 or waves.shape[1] != 2:
         raise ValueError("Expected development waveforms [events, 2 detectors, samples]")
+    if include_sample_mask and not return_transform:
+        raise ValueError("include_sample_mask requires return_transform=True")
     if return_transform:
         if transform is None:
             raise ValueError(f"Missing frozen {channel} input transform")
-        if include_control:
-            return waves, np.asarray(times), directory, dataset.manifest, transform, control_waves
-        return waves, np.asarray(times), directory, dataset.manifest, transform
+        extra = (control_waves,) if include_control else ()
+        if include_sample_mask:
+            if channel == "timing":
+                mask = dataset.sample_mask
+                if mask is None:
+                    raise ValueError("Timing-channel sample mask is unavailable")
+                mask = np.asarray(mask, dtype=bool)
+                if mask.shape != (len(times),):
+                    raise ValueError("Timing-channel sample mask does not match waveform grid")
+            else:
+                mask = np.ones(len(times), dtype=bool)
+            extra += (mask,)
+        return (waves, np.asarray(times), directory, dataset.manifest, transform, *extra)
     return waves, np.asarray(times), directory, dataset.manifest
