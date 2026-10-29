@@ -35,7 +35,7 @@ GLOBAL_PLOT_VERSION = 14
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
-    "summary.json", "attributions.npz", "global_importance.csv", "global_importance.png",
+    "summary.json", "attributions.npz", "signed_window_importance.csv", "global_importance.png",
 )
 
 
@@ -502,6 +502,23 @@ def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *
     ax.axhline(0, color="0.4", linewidth=0.7)
     if label:
         ax.legend(loc="best", fontsize=8)
+
+
+def _write_signed_csv(destination, time_ps, starts, positive, negative, window_samples, formulation):
+    dt = float(np.median(np.diff(time_ps)))
+    shared = str(formulation).lower() == "shared"
+    with (Path(destination) / "signed_window_importance.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("detector_or_shared", "window_start_ps", "window_end_ps",
+                         "mean_positive_contribution_ps", "mean_negative_contribution_ps"))
+        channels = [( "shared", positive.mean(axis=0), negative.mean(axis=0))] if shared else [
+            (f"detector_{d+1}", positive[d], negative[d]) for d in range(2)
+        ]
+        for label, pos, neg in channels:
+            for j, start in enumerate(starts):
+                writer.writerow((label, float(time_ps[start]),
+                                 float(time_ps[start] + window_samples * dt),
+                                 float(pos[j]), float(neg[j])))
 
 def _write_global_importance_csv(destination, time_ps, mean_absolute, formulation, roi_maps=None):
     """Write only unnormalized absolute-importance summaries to the global CSV."""
@@ -1240,7 +1257,7 @@ def _refresh_presentation(destination):
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     current_plot_files = (
-        "global_importance.png", "global_importance.pdf", "global_importance.csv"
+        "global_importance.png", "global_importance.pdf", "signed_window_importance.csv"
     )
     if (
         summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION
@@ -1251,6 +1268,8 @@ def _refresh_presentation(destination):
     with np.load(destination / "attributions.npz") as saved:
         time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
         window_maps = np.asarray(saved["window_attribution_ps"], dtype=np.float64)
+        raw_scores = np.asarray(saved["raw_window_scores_ps"], dtype=np.float64)
+        window_starts = np.asarray(saved["window_starts"], dtype=np.int64)
         if "mean_waveform_mv" not in saved:
             raise ValueError(
                 "Cannot refresh global TSHAP saliency plot: cached attributions.npz "
@@ -1265,10 +1284,10 @@ def _refresh_presentation(destination):
     if window_maps.ndim != 3 or window_maps.shape[1:] != (2, time_ps.size):
         raise ValueError("Cached TSHAP attribution array must have shape [events, 2 detectors, samples]")
     mean_absolute = np.mean(np.abs(window_maps), axis=0)
+    signed_positive, signed_negative = _signed_means(raw_scores)
     context = _global_plot_context(destination, summary)
-    _write_global_importance_csv(
-        destination, time_ps, mean_absolute, context["formulation"], roi_maps
-    )
+    _write_signed_csv(destination, time_ps, window_starts, signed_positive,
+                      signed_negative, context["window_samples"], context["formulation"])
     _plot_global(
         destination, time_ps, mean_absolute, mean_waveform_mv,
         model_name=context["model_name"],
@@ -1278,6 +1297,8 @@ def _refresh_presentation(destination):
         board_name=context["board_name"],
         n_events=context["n_events"] or len(window_maps),
         window_samples=context["window_samples"],
+        window_starts=window_starts,
+        signed_positive=signed_positive, signed_negative=signed_negative,
     )
 
     summary["plot_version"] = GLOBAL_PLOT_VERSION
@@ -1575,9 +1596,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 np.savez_compressed(temporary / "attributions.npz", **payload)
                 board_name = _find_board_label(directory, output_root)
                 window_name = str(config.get("window_name", directory.parent.name))
-                _write_global_importance_csv(
-                    temporary, time_ps, win_abs, spec.estimator_formulation, roi_maps
-                )
+                _write_signed_csv(temporary, time_ps, window_starts, signed_positive,
+                                  signed_negative, window_samples, spec.estimator_formulation)
                 _plot_global(
                     temporary, time_ps, win_abs, payload["mean_waveform_mv"],
                     model_name=spec.name,
@@ -1611,7 +1631,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     "n_explained_events": len(event_ids),
                     "n_control_baselines": 0, "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
-                    "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
+                    "attribution_units": "signed raw temporal-window contributions in ps; interpolated maps in ps/sample",
                     "interpretation": "Conditional window-occlusion prediction differences in ps; "
                                       "these are not exact Shapley values.",
                     "cohort": "blind", "input_units": "mV (inverse of frozen prepared waveform normalization)",
@@ -2025,7 +2045,7 @@ def explain_tshap_local(
                         "typical": "closest predicted corrections to the blind-population median, excluding other selected events",
                     },
                     "plots": plot_names,
-                    "attribution_units": "ps/sample (upstream TSHAP window scores redistributed over samples)",
+                    "attribution_units": "signed raw temporal-window contributions in ps; interpolated maps in ps/sample",
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
