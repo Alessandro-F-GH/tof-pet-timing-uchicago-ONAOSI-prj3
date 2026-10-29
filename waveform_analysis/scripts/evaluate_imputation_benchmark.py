@@ -78,6 +78,14 @@ def physical_unit_scale(values):
     return (1.0, "mV") if largest >= 1.0 else (1e6, "nV")
 
 
+def format_rmse_label(value_mv):
+    """Use nV for individual bar labels below 1 mV."""
+    value_mv = float(value_mv)
+    if value_mv < 1.0:
+        return f"{value_mv * 1e6:.3g} nV"
+    return f"{value_mv:.3g} mV"
+
+
 def save_position_plot(rows, output, label, channel):
     scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
@@ -100,13 +108,15 @@ def save_position_plot(rows, output, label, channel):
         ax.set_title(f"Detector {detector}")
         ax.set_yscale("log")
         ax.grid(alpha=0.25, which="both")
-    fig.suptitle(f"{label} - {channel.capitalize()} channel")
-    fig.supxlabel("Masked interval start (ns)")
-    fig.supylabel(f"Reconstruction RMSE ({unit})")
+    # Keep the one shared legend between the figure title and subplot titles.
+    # A figure-level x label remains at the bottom with no competing legend.
+    fig.suptitle(f"{label} - {channel.capitalize()} channel", y=0.99)
     fig.legend(handles, [LABELS[m] for m in METHODS],
-               loc="lower center", bbox_to_anchor=(0.5, 0.01),
+               loc="upper center", bbox_to_anchor=(0.5, 0.935),
                ncol=len(METHODS), fontsize="small", frameon=False)
-    fig.tight_layout(rect=(0.04, 0.15, 1.0, 0.94))
+    axes[0].set_ylabel(f"Reconstruction RMSE ({unit})", labelpad=5)
+    fig.supxlabel("Masked interval start (ns)", y=0.02)
+    fig.tight_layout(rect=(0.01, 0.07, 0.99, 0.82))
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{label}_{channel}")
     fig.savefig(output / f"rmse_by_position_{safe}.pdf", bbox_inches="tight")
     fig.savefig(output / f"rmse_by_position_{safe}.png", dpi=180, bbox_inches="tight")
@@ -343,7 +353,8 @@ def save_overall_plot(rows, output):
         bars = ax.bar(xpos, values, width=bar_width, yerr=yerr, capsize=2.5,
                       label=LABELS[method])
         for bar, value in zip(bars, values):
-            ax.annotate(f"{value:.3g} {unit}", (bar.get_x() + bar.get_width()/2, bar.get_height()),
+            ax.annotate(format_rmse_label(value / scale),
+                        (bar.get_x() + bar.get_width()/2, bar.get_height()),
                         xytext=(0, 3), textcoords="offset points", ha="center",
                         va="bottom", fontsize=7, rotation=90 if len(configs) > 3 else 0)
     ax.set_xticks(x)
