@@ -28,3 +28,47 @@ def test_runtime_configs_deep_copy_nested_settings(tmp_path):
     assert runtime[0]["cross_validation"] is not runtime[1]["cross_validation"]
     runtime[0]["cross_validation"]["folds"] = 2
     assert runtime[1]["cross_validation"]["folds"] == 5
+
+def test_planner_fingerprints_cover_declared_graph_and_propagate_parents(tmp_path):
+    from copy import deepcopy
+    from waveform_analysis.core.dependencies import STAGE_DEPENDENCIES, STAGE_ORDER
+
+    c = config(tmp_path)
+    baseline = _planner_fingerprints(c)
+    assert set(STAGE_ORDER).issubset(baseline)
+    assert all(stage in baseline for stage in STAGE_DEPENDENCIES)
+
+    changed = deepcopy(c)
+    changed["bootstrap"]["n_resamples"] += 1
+    after_bootstrap = _planner_fingerprints(changed)
+    for stage in ("cv", "selection", "final_fit", "blind"):
+        assert after_bootstrap[stage] == baseline[stage]
+    for stage in ("bootstrap", "plots"):
+        assert after_bootstrap[stage] != baseline[stage]
+    assert after_bootstrap["xai"] == baseline["xai"]
+
+    changed = deepcopy(c)
+    changed["blind"]["root_file"] = "another-blind.root"
+    after_blind = _planner_fingerprints(changed)
+    for stage in ("cv", "selection", "final_fit"):
+        assert after_blind[stage] == baseline[stage]
+    for stage in ("blind", "bootstrap", "xai", "plots"):
+        assert after_blind[stage] != baseline[stage]
+
+    changed = deepcopy(c)
+    changed["plot_config"]["dpi"] += 1
+    after_plots = _planner_fingerprints(changed)
+    for stage in STAGE_ORDER:
+        assert after_plots[stage] == baseline[stage]
+    assert after_plots["plots"] != baseline["plots"]
+
+
+def test_planner_ignores_machine_local_cache_roots(tmp_path):
+    from copy import deepcopy
+
+    c = config(tmp_path)
+    baseline = _planner_fingerprints(c)
+    changed = deepcopy(c)
+    changed["preprocessing"]["cache_dir"] = "/different/cache"
+    changed["preprocessing"]["artifact_root"] = "/different/artifacts"
+    assert _planner_fingerprints(changed) == baseline
