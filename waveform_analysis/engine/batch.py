@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, shutil
+import copy, json, shutil
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash, write_csv
 from waveform_analysis.core.dependencies import planner_fingerprints as _planner_fingerprints
@@ -38,7 +38,7 @@ def _runtime_configs(batch):
     prepared = {}
     all_modes = tuple(sorted(fit_by_mode))
     for config in batch.runs:
-        item = dict(config)
+        item = copy.deepcopy(config)
         item['_board'] = next((p for p in Path(batch.results['folder']).parts if p in {'UC', 'FBK'}), None)
         item["_prepared_datasets"] = prepared
         item["_control_modes"] = all_modes

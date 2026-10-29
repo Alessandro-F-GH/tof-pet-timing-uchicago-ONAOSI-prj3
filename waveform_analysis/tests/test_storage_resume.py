@@ -49,3 +49,18 @@ def test_numeric_products_are_shared_and_invalidation_drops_only_references(tmp_
     assert not store.bootstrap_draws_path.exists()
     assert predictions.is_file()
     assert draws.is_file()
+
+
+def test_external_store_does_not_fall_back_to_local_predictions(tmp_path):
+    store = RunStore(tmp_path / "run", artifact_root=tmp_path / "artifact_store")
+    store.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        store.artifacts_dir / "pred.npz",
+        event_id=np.arange(2),
+        prediction_ps=np.zeros(2),
+        corrected_ps=np.ones(2),
+        led_residual_ps=np.ones(2),
+    )
+    assert not store.predictions_path.is_file()
+    assert store.predictions_path != store.artifacts_dir / "pred.npz"
+

@@ -115,7 +115,8 @@ class RunStore:
             return fallback
         reference = self._artifact_references().get(key)
         if not reference:
-            return fallback
+            # The external store is authoritative; never treat a local copy as registered.
+            return self.artifacts_dir / ".unresolved" / key / filename
         return ArtifactStore(self.artifact_root).resolve(
             reference["product_type"], reference["product_id"]
         ).payload_path(filename)
@@ -149,16 +150,15 @@ class RunStore:
 
     @property
     def model_dir(self):
-        """Resolve the immutable model artifact, or return the absent local staging path."""
-        if self.model_reference_path.is_file() and self.artifact_root is not None:
-            reference = self.read_json(self.model_reference_path, {})
-            try:
-                return ArtifactStore(self.artifact_root).resolve(
-                    reference["product_type"], reference["product_id"]
-                ).path
-            except (KeyError, ValueError, RuntimeError):
-                return self.root / "model"
-        return self.root / "model"
+        """Resolve the authoritative model artifact; never fall back across stores."""
+        if self.artifact_root is None:
+            return self.root / "model"
+        reference = self.read_json(self.model_reference_path)
+        if not reference:
+            return self.artifacts_dir / ".unresolved" / "final-model"
+        return ArtifactStore(self.artifact_root).resolve(
+            reference["product_type"], reference["product_id"]
+        ).path
 
     def save_model_artifact(self, spec, fitted, parameters, *, final_fit_fingerprint):
         """Persist fitted weights once outside result views and record a stable reference."""
