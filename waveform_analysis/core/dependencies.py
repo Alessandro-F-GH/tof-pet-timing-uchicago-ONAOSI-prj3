@@ -87,7 +87,7 @@ def planner_fingerprints(config):
             "model": config["model"],
             "seed": config["seed"],
         },
-        "selection": {"metric": config["cross_validation"]["metric"]},
+        "selection": {},  # The selected candidate is fully determined by the CV parent.
         "final_fit": {
             "development": development,
             "model": config["model"],
