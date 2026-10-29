@@ -1,4 +1,6 @@
 import numpy as np
+
+from waveform_analysis.core.dependencies import INVALIDATES, STAGE_DEPENDENCIES
 from waveform_analysis.data.storage import RunStore
 def test_fold_upsert_and_scoped_invalidation(tmp_path):
     s=RunStore(tmp_path);s.upsert_fold({"candidate_id":"a","fold_id":1,"ctr_ps":100});s.upsert_fold({"candidate_id":"a","fold_id":2,"ctr_ps":101});s.upsert_fold({"candidate_id":"a","fold_id":2,"ctr_ps":99});assert len(s.read_fold_rows("a"))==2 and float(s.read_fold_rows("a")[1]["ctr_ps"])==99
@@ -64,3 +66,25 @@ def test_external_store_does_not_fall_back_to_local_predictions(tmp_path):
     assert not store.predictions_path.is_file()
     assert store.predictions_path != store.artifacts_dir / "pred.npz"
 
+def test_dependency_graph_defines_transitive_invalidation():
+    assert STAGE_DEPENDENCIES["selection"] == ("cv",)
+    assert STAGE_DEPENDENCIES["final_fit"] == ("selection",)
+    assert STAGE_DEPENDENCIES["blind"] == ("final_fit",)
+    assert STAGE_DEPENDENCIES["bootstrap"] == ("blind",)
+    assert STAGE_DEPENDENCIES["xai"] == ("final_fit", "blind")
+    assert INVALIDATES["cv"] == (
+        "cv", "selection", "final_fit", "blind", "bootstrap", "xai", "plots"
+    )
+    assert INVALIDATES["bootstrap"] == ("bootstrap", "plots")
+
+
+def test_stage_local_invalidation_preserves_upstream_state(tmp_path):
+    store = RunStore(tmp_path)
+    for stage in ("cv", "selection", "final_fit", "blind", "bootstrap"):
+        store.mark_stage(stage, f"{stage}-fingerprint")
+    store.invalidate_stage("blind")
+    assert store.stage_status("cv", "cv-fingerprint") == "complete"
+    assert store.stage_status("selection", "selection-fingerprint") == "complete"
+    assert store.stage_status("final_fit", "final_fit-fingerprint") == "complete"
+    assert store.stage_status("blind", "blind-fingerprint") == "missing"
+    assert store.stage_status("bootstrap", "bootstrap-fingerprint") == "complete"

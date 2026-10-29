@@ -194,13 +194,20 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         d.manifest["sample_mask_fit_role"] = "control"
         datasets[role] = d
     fit_calls = []
+    search_calls = []
     original_fit = study._fit_final
+    original_search = study._search
 
     def fit(*args, **kwargs):
         fit_calls.append(args[0].name)
         return original_fit(*args, **kwargs)
 
+    def search(*args, **kwargs):
+        search_calls.append(args[1].name)
+        return original_search(*args, **kwargs)
+
     monkeypatch.setattr(study, "_fit_final", fit)
+    monkeypatch.setattr(study, "_search", search)
 
     def prepare(config, role, *args, **kwargs):
         if role == "blind":
@@ -225,6 +232,10 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     if mixed:
         expected_fit_calls.append("direct_mlp")
     assert sorted(fit_calls) == sorted(expected_fit_calls)
+    expected_search_calls = ["direct_linear_ridge"] * 2
+    if mixed:
+        expected_search_calls.append("direct_mlp")
+    assert sorted(search_calls) == sorted(expected_search_calls)
     for output, run_config in zip(outputs, runs):
         manifest = read_run_manifest(output)
         best = json.loads((output / "metadata/best.json").read_text())
@@ -270,6 +281,7 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     assert (tmp_path / "report/tables/validation.csv").is_file()
     assert batch_engine.run_batch(resolved) == outputs
     assert len(fit_calls) == (3 if mixed else 2)
+    search_count_before_recovery = len(search_calls)
     # Missing artifact references trigger inference from the persisted model,
     # without retraining or assuming that payloads live inside the run folder.
     reference_path = outputs[0] / "metadata/artifact_references.json"
@@ -278,6 +290,7 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     reference_path.write_text(json.dumps(references))
     study.run_study(runs[0])
     assert len(fit_calls) == (3 if mixed else 2)
+    assert len(search_calls) == search_count_before_recovery
     assert RunStore(
         outputs[0], artifact_root=runs[0]["preprocessing"]["artifact_root"]
     ).predictions_path.is_file()
@@ -290,4 +303,5 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         outputs[0], artifact_root=runs[0]["preprocessing"]["artifact_root"]
     ).development_predictions_path.is_file()
     assert len(fit_calls) == (3 if mixed else 2)
+    assert len(search_calls) == search_count_before_recovery
 

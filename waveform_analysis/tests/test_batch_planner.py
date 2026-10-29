@@ -9,4 +9,22 @@ def complete(c):
 def test_scoped_planner(tmp_path):
     c=config(tmp_path);complete(c);old=_planner_fingerprints(c);assert _run_state(c,{c["run_id"]:old})[:2]==("keep","complete");c["bootstrap"]={"n_resamples":200};assert _run_state(c,{c["run_id"]:old})[:2]==("resume","bootstrap")
 def test_blind_vs_development_invalidation(tmp_path):
-    c=config(tmp_path);complete(c);old=_planner_fingerprints(c);c["blind"]={"root_file":"new"};assert _run_state(c,{c["run_id"]:old})[:2]==("resume","blind");c=config(tmp_path/"x");Path(c["output_dir"]).parent.mkdir(parents=True,exist_ok=True);complete(c);old=_planner_fingerprints(c);c["model"]={"name":"m","space":{"x":2}};assert _run_state(c,{c["run_id"]:old})[:2]==("rebuild","cv")
+    c=config(tmp_path);complete(c);old=_planner_fingerprints(c);c["blind"]={"root_file":"new"};assert _run_state(c,{c["run_id"]:old})[:2]==("resume","blind");c=config(tmp_path/"x");Path(c["output_dir"]).parent.mkdir(parents=True,exist_ok=True);complete(c);old=_planner_fingerprints(c);c["model"]={"name":"m","space":{"x":2}};assert _run_state(c,{c["run_id"]:old})[:2]==("resume","cv")
+
+def test_runtime_configs_deep_copy_nested_settings(tmp_path):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from waveform_analysis.engine.batch import _runtime_configs
+
+    first = config(tmp_path / "first")
+    second = deepcopy(first)
+    first["run_id"] = "first"
+    second["run_id"] = "second"
+    batch = SimpleNamespace(
+        runs=(first, second),
+        results={"folder": "UC/energy/wide"},
+    )
+    runtime = _runtime_configs(batch)
+    assert runtime[0]["cross_validation"] is not runtime[1]["cross_validation"]
+    runtime[0]["cross_validation"]["folds"] = 2
+    assert runtime[1]["cross_validation"]["folds"] == 5
