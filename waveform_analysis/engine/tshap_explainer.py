@@ -440,6 +440,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
         def _explain_instance(self, fnc, input_sample, baselines):
             """Explain only windows retained by the model mask, without bridging gaps."""
             n_channels, series_length = input_sample.shape
+            self._last_series_length = series_length
             valid_starts, valid_at_start, _ = _valid_window_starts(
                 series_length, self.window_length, self.stride, self.sample_mask
             )
@@ -486,7 +487,10 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
 
         def _find_rois_v2(self, window_scores):
             rois = super()._find_rois_v2(window_scores)
-            n_samples = len(window_scores)
+            n_samples = getattr(
+                self, "_last_series_length",
+                self.sample_mask.size if self.sample_mask is not None else len(window_scores),
+            )
             candidates = _candidate_window_starts(
                 n_samples, self.window_length, self.stride
             )
