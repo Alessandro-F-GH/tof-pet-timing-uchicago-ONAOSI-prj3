@@ -31,7 +31,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 4
-GLOBAL_PLOT_VERSION = 15
+GLOBAL_PLOT_VERSION = 16
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -506,16 +506,30 @@ def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *
         ax.legend(loc="best", fontsize=8)
 
 
-def _write_signed_csv(destination, time_ps, starts, positive, negative, window_samples, formulation):
+def _write_signed_csv(
+    destination, time_ps, starts, positive, negative, window_samples, formulation,
+    *, aggregated_positive=None, aggregated_negative=None,
+):
     dt = float(np.median(np.diff(time_ps)))
     shared = str(formulation).lower() == "shared"
     with (Path(destination) / "signed_window_importance.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow(("detector_or_shared", "window_start_ps", "window_end_ps",
                          "mean_positive_contribution_ps", "mean_negative_contribution_ps"))
-        channels = [( "shared", positive.mean(axis=0), negative.mean(axis=0))] if shared else [
-            (f"detector_{d+1}", positive[d], negative[d]) for d in range(2)
-        ]
+        if shared:
+            channels = [("shared", positive.mean(axis=0), negative.mean(axis=0))]
+        else:
+            if aggregated_positive is None or aggregated_negative is None:
+                raise ValueError("Direct-model signed CSV requires aggregated window contributions")
+            aggregated_positive = np.asarray(aggregated_positive, dtype=np.float64)
+            aggregated_negative = np.asarray(aggregated_negative, dtype=np.float64)
+            expected = (len(starts),)
+            if aggregated_positive.shape != expected or aggregated_negative.shape != expected:
+                raise ValueError("Aggregated signed contributions must have one value per window")
+            channels = [
+                (f"detector_{d+1}", positive[d], negative[d]) for d in range(2)
+            ]
+            channels.append(("aggregated", aggregated_positive, aggregated_negative))
         for label, pos, neg in channels:
             for j, start in enumerate(starts):
                 writer.writerow((label, float(time_ps[start]),
@@ -595,6 +609,7 @@ def _plot_global(
     destination, time_ps, mean_absolute, mean_waveform_mv, *,
     model_name, formulation, mode, window_name, board_name, n_events,
     window_samples, window_starts=None, signed_positive=None, signed_negative=None,
+    aggregated_positive=None, aggregated_negative=None,
 ):
     """Plot physical waveforms with common-scale TSHAP saliency and aligned histograms."""
     import matplotlib
@@ -692,10 +707,10 @@ def _plot_global(
             colorbar_ax = fig.add_subplot(gs[0:2, 1])
             hist_axes = [ax_shared_hist]
         else:
-            fig = plt.figure(figsize=(13.2, 6.3), constrained_layout=True)
+            fig = plt.figure(figsize=(13.2, 8.0), constrained_layout=True)
             gs = fig.add_gridspec(
-                2, 2,
-                height_ratios=[2.35, 1.0],
+                3, 2,
+                height_ratios=[2.35, 1.0, 1.0],
                 hspace=0.025,
                 wspace=0.12,
             )
@@ -703,7 +718,8 @@ def _plot_global(
             ax_signal2 = fig.add_subplot(gs[0, 1])
             ax_detector1_hist = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
             ax_detector2_hist = fig.add_subplot(gs[1, 1], sharex=ax_signal2)
-            hist_axes = [ax_detector1_hist, ax_detector2_hist]
+            ax_aggregated_hist = fig.add_subplot(gs[2, :], sharex=ax_signal1)
+            hist_axes = [ax_detector1_hist, ax_detector2_hist, ax_aggregated_hist]
             colorbar_ax = None
         signal_axes = [ax_signal1, ax_signal2]
 
@@ -752,6 +768,8 @@ def _plot_global(
                               signed_positive.mean(axis=0), signed_negative.mean(axis=0))
             ax_shared_hist.set_ylabel("Contribution (ps)")
         else:
+            if aggregated_positive is None or aggregated_negative is None:
+                raise ValueError("Direct-model global plot requires aggregated signed contributions")
             for d, ax in enumerate((ax_detector1_hist, ax_detector2_hist)):
                 _signed_histogram(ax, time_ps, window_starts, window_samples,
                                   signed_positive[d], signed_negative[d], label=(d == 0))
@@ -759,6 +777,21 @@ def _plot_global(
             limit = max(np.max(signed_positive), -np.min(signed_negative), 1e-6) * 1.05
             ax_detector1_hist.set_ylim(-limit, limit)
             ax_detector2_hist.set_ylim(-limit, limit)
+            _signed_histogram(
+                ax_aggregated_hist, time_ps, window_starts, window_samples,
+                aggregated_positive, aggregated_negative,
+            )
+            ax_aggregated_hist.set_ylabel("Combined\ncontribution (ps)")
+            ax_aggregated_hist.set_title(
+                "Aggregated signed contributions (Detector 1 + Detector 2)",
+                loc="left", fontsize=9.5,
+            )
+            aggregated_limit = max(
+                float(np.max(aggregated_positive)),
+                float(-np.min(aggregated_negative)),
+                1e-6,
+            ) * 1.05
+            ax_aggregated_hist.set_ylim(-aggregated_limit, aggregated_limit)
 
         for ax in hist_axes:
             ax.set_xlabel("Waveform time (ns)")
@@ -1287,8 +1320,17 @@ def _refresh_presentation(destination):
     mean_absolute = np.mean(np.abs(window_maps), axis=0)
     signed_positive, signed_negative = _signed_means(raw_scores)
     context = _global_plot_context(destination, summary)
-    _write_signed_csv(destination, time_ps, window_starts, signed_positive,
-                      signed_negative, context["window_samples"], context["formulation"])
+    if context["formulation"] == "shared":
+        aggregated_positive = aggregated_negative = None
+    else:
+        # Sum each event's two raw signed detector scores before separating signs.
+        # This preserves cancellation between detectors within the same window.
+        aggregated_positive, aggregated_negative = _signed_means(raw_scores.sum(axis=1))
+    _write_signed_csv(
+        destination, time_ps, window_starts, signed_positive, signed_negative,
+        context["window_samples"], context["formulation"],
+        aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
+    )
     _plot_global(
         destination, time_ps, mean_absolute, mean_waveform_mv,
         model_name=context["model_name"],
@@ -1300,6 +1342,7 @@ def _refresh_presentation(destination):
         window_samples=context["window_samples"],
         window_starts=window_starts,
         signed_positive=signed_positive, signed_negative=signed_negative,
+        aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
     )
 
     summary["plot_version"] = GLOBAL_PLOT_VERSION
@@ -1312,6 +1355,7 @@ def _refresh_presentation(destination):
     summary["global_importance_aggregation"] = {
         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
+                        "direct_signed_windows": "sum the two raw signed detector scores per event and window, then average positive and negative parts separately",
         "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
     }
     summary["tshap_window_samples"] = context["window_samples"]
@@ -1320,7 +1364,7 @@ def _refresh_presentation(destination):
         "layout": (
             "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
             if context["formulation"] == "shared"
-            else "two-column grid with each detector waveform directly above its importance histogram"
+            else "three-row grid: detector waveforms side by side, detector-specific signed histograms below, and a full-width aggregated signed histogram (sum of per-event detector scores) at the bottom"
         ),
         "onishi_interval_ns": [-1.5, 2.0],
         "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
@@ -1337,7 +1381,7 @@ def _refresh_presentation(destination):
         "detector_identity": (
             "shared absolute-importance curve and pooled histogram for both signals"
             if context["formulation"] == "shared"
-            else "detector-specific absolute-importance curves and histograms"
+            else "detector-specific absolute-importance curves and signed histograms, plus an aggregated signed histogram formed by summing both detector scores per event and window"
         ),
         "legend": "omitted; detector labels are placed inside waveform panels according to channel type",
     }
@@ -1572,6 +1616,11 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     raise ValueError("Non-finite TSHAP attribution")
                 raw_scores = np.asarray(raw_scores, dtype=np.float64)
                 signed_positive, signed_negative = _signed_means(raw_scores)
+                if str(spec.estimator_formulation).lower() == "shared":
+                    aggregated_positive = aggregated_negative = None
+                else:
+                    # Sum per-event detector scores before splitting positive/negative.
+                    aggregated_positive, aggregated_negative = _signed_means(raw_scores.sum(axis=1))
                 win_abs = np.mean(np.abs(window_maps), axis=0)
                 waveform_transform = getattr(
                     blind, f"{mode_family(config['mode'])}_transform"
@@ -1597,8 +1646,11 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 np.savez_compressed(temporary / "attributions.npz", **payload)
                 board_name = _find_board_label(directory, output_root)
                 window_name = str(config.get("window_name", directory.parent.name))
-                _write_signed_csv(temporary, time_ps, window_starts, signed_positive,
-                                  signed_negative, window_samples, spec.estimator_formulation)
+                _write_signed_csv(
+                    temporary, time_ps, window_starts, signed_positive, signed_negative,
+                    window_samples, spec.estimator_formulation,
+                    aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
+                )
                 _plot_global(
                     temporary, time_ps, win_abs, payload["mean_waveform_mv"],
                     model_name=spec.name,
@@ -1610,6 +1662,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     window_samples=window_samples,
                     window_starts=window_starts,
                     signed_positive=signed_positive, signed_negative=signed_negative,
+                    aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
                 )
                 atomic_json(temporary / "summary.json", {
                     **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
@@ -1639,6 +1692,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     "global_importance_aggregation": {
                         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
                         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
+                        "direct_signed_windows": "sum the two raw signed detector scores per event and window, then average positive and negative parts separately",
                         "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
                     },
                     "global_plot": {
@@ -1646,7 +1700,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         "layout": (
                             "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
                             if spec.estimator_formulation == "shared"
-                            else "two-column grid with each detector waveform directly above its importance histogram"
+                            else "three-row grid: detector waveforms side by side, detector-specific signed histograms below, and a full-width aggregated signed histogram (sum of per-event detector scores) at the bottom"
                         ),
                         "onishi_interval_ns": [-1.5, 2.0],
                         "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
@@ -1663,7 +1717,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         "detector_identity": (
                             "shared absolute-importance curve and pooled histogram for both signals"
                             if spec.estimator_formulation == "shared"
-                            else "detector-specific absolute-importance curves and histograms"
+                            else "detector-specific absolute-importance curves and signed histograms, plus an aggregated signed histogram formed by summing both detector scores per event and window"
                         ),
                         "legend": "omitted; detector labels are placed inside waveform panels",
                     },
