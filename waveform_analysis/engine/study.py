@@ -591,11 +591,12 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             for i, v in (store.read_json(store.candidates_path, {}) or {}).items()
         }
     selection_fp = _stage(
-        "selection", {"cv": cv_fp, "metric": config["cross_validation"]["metric"]}
+        "selection", {"metric": config["cross_validation"]["metric"]},
+        parents={"cv": cv_fp},
     )
     best = (
         store.read_json(store.best_path)
-        if _sync(store, "selection", selection_fp) == "complete"
+        if _sync(store, "selection", selection_fp, logger) == "complete"
         else None
     )
     if not isinstance(best, dict):
@@ -626,9 +627,10 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             if frozen_transform is None
             else frozen_transform.identity,
         },
+        parents={"selection": selection_fp},
     )
     fitted = None
-    if _sync(store, "final_fit", final_fp) != "complete":
+    if _sync(store, "final_fit", final_fp, logger) != "complete":
         logger.info(
             "Final fit | %s | training on full development set | n=%d",
             _model_label(spec.name),
@@ -676,16 +678,16 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
     blind_fp = _stage(
         "blind",
         {
-            "final_fit": final_fp,
             "blind": blind.manifest["analysis_protocol_identity"],
             "fit": config["fit"],
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
         },
+        parents={"final_fit": final_fp},
     )
     if (
-        _sync(store, "blind", blind_fp) != "complete"
+        _sync(store, "blind", blind_fp, logger) != "complete"
         or not store.predictions_path.is_file()
     ):
         logger.info(
@@ -766,8 +768,8 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
 def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
     pred = store.load_predictions()
     bootstrap_fp = _stage(
-        "bootstrap",
-        {"blind": blind_fp, "bootstrap": config["bootstrap"], "seed": config["seed"]},
+        "bootstrap", {"bootstrap": config["bootstrap"], "seed": config["seed"]},
+        parents={"blind": blind_fp},
     )
     if (
         _sync(store, "bootstrap", bootstrap_fp) != "complete"
@@ -799,10 +801,16 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
     return bootstrap_fp
 
 
-def _record_external_xai_stage(store, final_fp):
-    """Preserve legacy stage bookkeeping without running legacy XAI."""
-    fingerprint = _stage("xai", {"final_fit": final_fp, "enabled": False, "method": None})
-    store.mark_stage("xai", fingerprint, metadata={"enabled": False, "reason": "post_training_tshap_only"})
+def _record_external_xai_stage(store, final_fp, blind_fp):
+    """Record that in-pipeline XAI is disabled; temporal TSHAP runs separately."""
+    fingerprint = _stage(
+        "xai", {"enabled": False, "method": None},
+        parents={"final_fit": final_fp, "blind": blind_fp},
+    )
+    store.mark_stage(
+        "xai", fingerprint,
+        metadata={"enabled": False, "reason": "post_training_tshap_only"},
+    )
     return fingerprint
 
 
@@ -937,7 +945,7 @@ def run_study(config, *, logger=None):
         logger, frozen_transform, frozen_development,
     )
     bootstrap_fp = _estimate_blind_uncertainty(store, spec, config, blind_fp, logger)
-    xai_fp = _record_external_xai_stage(store, final_fp)
+    xai_fp = _record_external_xai_stage(store, final_fp, blind_fp)
     _publish_run_metadata(
         store, spec, config, control, control_dir, development, blind, fitted, best,
         control_prepared, cv_fp, selection_fp, final_fp, blind_fp, bootstrap_fp, xai_fp,

@@ -2,21 +2,52 @@
 from waveform_analysis.core.io import canonical_hash
 
 # Increment when stage-identity semantics change; the new CV pipeline invalidates old Ridge stages.
-RUN_IDENTITY_VERSION = 54
-STAGE_ORDER = ("cv", "selection", "final_fit", "blind", "bootstrap", "xai", "plots")
+RUN_IDENTITY_VERSION = 55
+STAGE_DEPENDENCIES = {
+    "cv": (),
+    "selection": ("cv",),
+    "final_fit": ("selection",),
+    "blind": ("final_fit",),
+    "bootstrap": ("blind",),
+    "xai": ("final_fit", "blind"),
+    "plots": ("cv", "selection", "final_fit", "blind", "bootstrap", "xai"),
+}
+STAGE_ORDER = tuple(STAGE_DEPENDENCIES)
+
+
+def _depends_on(stage, ancestor):
+    return any(
+        parent == ancestor or _depends_on(parent, ancestor)
+        for parent in STAGE_DEPENDENCIES[stage]
+    )
+
+
 INVALIDATES = {
-    "cv": STAGE_ORDER,
-    "selection": STAGE_ORDER[1:],
-    "final_fit": STAGE_ORDER[2:],
-    "blind": STAGE_ORDER[3:],
-    "bootstrap": ("bootstrap", "plots"),
-    "xai": ("xai", "plots"),
-    "plots": ("plots",),
+    stage: tuple(
+        candidate for candidate in STAGE_ORDER
+        if candidate == stage or _depends_on(candidate, stage)
+    )
+    for stage in STAGE_ORDER
 }
 
 
-def stage_fingerprint(stage, payload):
-    return canonical_hash({"schema_version": RUN_IDENTITY_VERSION, "stage": stage, "payload": payload})
+def stage_fingerprint(stage, payload, *, parents=None):
+    """Hash a stage's own inputs and the identities of its direct parents."""
+    if stage not in STAGE_DEPENDENCIES:
+        raise ValueError(f"Unknown pipeline stage: {stage}")
+    parents = dict(parents or {})
+    expected = set(STAGE_DEPENDENCIES[stage])
+    if set(parents) != expected:
+        raise ValueError(
+            f"Stage {stage!r} requires parent fingerprints {sorted(expected)}; "
+            f"received {sorted(parents)}"
+        )
+    return canonical_hash({
+        "schema_version": RUN_IDENTITY_VERSION,
+        "stage": stage,
+        "parents": parents,
+        "payload": payload,
+    })
 
 
 def planner_fingerprints(config):
