@@ -375,9 +375,6 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
 
     assert output.is_file()
     assert output.stat().st_size > 0
-    pdf_output = tmp_path / "global_importance.pdf"
-    assert pdf_output.is_file()
-    assert pdf_output.stat().st_size > 0
 
 
 
@@ -464,10 +461,15 @@ def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_pa
         window_starts=np.asarray([0, 80]),
         signed_positive=np.ones((2, 2)),
         signed_negative=-np.ones((2, 2)),
+        aggregated_positive=np.ones(2),
+        aggregated_negative=-np.ones(2),
     )
     output = tmp_path / "global_importance.png"
     assert output.is_file()
     assert output.stat().st_size > 0
+    pdf_output = tmp_path / "global_importance.pdf"
+    assert pdf_output.is_file()
+    assert pdf_output.stat().st_size > 0
 
 
 def test_shared_global_importance_csv_pools_detector_curves(tmp_path):
