@@ -105,3 +105,46 @@ def test_vector_export_and_configured_bar_style(tmp_path, monkeypatch):
         title="Blind timing resolution",
     )
     assert output.read_bytes().startswith(b"%PDF")
+
+
+
+def test_development_plot_resolves_predictions_from_artifact_store(tmp_path, monkeypatch):
+    from waveform_analysis.data.storage import RunStore
+
+    run = tmp_path / "run"
+    (run / "metadata").mkdir(parents=True)
+    (run / "metadata" / "manifest.json").write_text("{}", encoding="utf-8")
+    artifact_root = tmp_path / "artifact_store"
+    store = RunStore(run, artifact_root=artifact_root)
+    target = np.asarray([-3.0, -1.0, 1.0, 3.0])
+    prediction = np.asarray([0.5, -0.5, 0.25, -0.25])
+    store.save_predictions(
+        event_id=np.arange(target.size),
+        prediction_ps=prediction,
+        corrected_ps=target - prediction,
+        led_residual_ps=target,
+        dataset_role="development",
+        metadata={
+            "dataset_role": np.asarray("development"),
+            "final_fit_fingerprint": np.asarray("fit-v1"),
+            "analysis_protocol_identity": np.asarray("protocol-v1"),
+        },
+    )
+    monkeypatch.setattr(
+        plotting,
+        "resolve_run_config",
+        lambda _: {"preprocessing": {"artifact_root": str(artifact_root)}},
+    )
+    monkeypatch.setattr(
+        plotting,
+        "read_run_manifest",
+        lambda _: {
+            "stage_fingerprints": {"final_fit": "fit-v1"},
+            "led_centering_fit_role": "control",
+        },
+    )
+
+    output = plotting.plot_run_development(run, config())
+
+    assert output == run / "plots" / "development.png"
+    assert output.is_file()
