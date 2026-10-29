@@ -222,7 +222,8 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         d = DummyDataset(tmp_path / role, role, n_events=256, n_samples=8)
         d.timing_windows = d.energy_windows
         d.timing_time_ps = d.energy_time_ps
-        d.timing_target_ps = d.energy_target_ps * 80
+        d.energy_target_ps = d.energy_target_ps * 80
+        d.timing_target_ps = d.energy_target_ps.copy()
         d.timing_led_time_ps = np.column_stack(
             [d.timing_target_ps, np.zeros(d.n_events)]
         )

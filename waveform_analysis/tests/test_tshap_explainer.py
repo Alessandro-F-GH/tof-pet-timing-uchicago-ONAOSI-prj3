@@ -56,6 +56,7 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
     rng = np.random.default_rng(3)
     waves = rng.normal(0.5, .15, (70, 2, 60)).astype(np.float32)
     control = SimpleNamespace(
+        directory=tmp_path / "control",
         n_events=len(waves), event_index=np.arange(len(waves)),
         energy_windows=waves, energy_time_ps=np.arange(60)*12.5,
         manifest={"analysis_protocol_identity": "control-v1",

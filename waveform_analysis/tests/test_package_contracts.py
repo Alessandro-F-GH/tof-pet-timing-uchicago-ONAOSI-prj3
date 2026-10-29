@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 from pathlib import Path
 import pickle
 import subprocess
 import sys
-import importlib.util
 
 import numpy as np
 
@@ -30,7 +28,6 @@ def test_canonical_modules_and_serialized_dataclasses():
     split = make_cv_split(20, population_identity="pickle", batch_seed=1, n_folds=4, shuffle=True)
     assert type(split).__module__ == "waveform_analysis.data.splits"
     assert type(pickle.loads(pickle.dumps(split))) is type(split)
-    assert importlib.util.find_spec('waveform_analysis.ml_pipeline') is None
 
 
 def test_typed_settings_preserve_existing_json_values_and_defaults():

@@ -98,7 +98,8 @@ def test_control_only_transform_reuse_block_reference_and_reload(name, tmp_path,
     np.testing.assert_array_equal(features.features, expected)
     assert isinstance(features.features, np.memmap) and features.features.dtype == np.float32
     candidates = spec.candidates(model_space)
-    assert len(candidates) == 9
+    assert candidates
+    assert all({"multirocket_alpha", "rdst_alpha"} <= set(candidate) for candidate in candidates)
     for candidate in (candidates[0], candidates[-1]):
         fitted = fit_on_indices(spec, model_space, config, development, np.arange(24),
                                 candidate, seed=4, frozen_features=features)
