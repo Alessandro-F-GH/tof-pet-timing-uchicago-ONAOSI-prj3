@@ -16,33 +16,69 @@ from waveform_analysis.engine.tshap_explainer import (
 )
 
 
-@pytest.mark.parametrize("roi", [False, True])
-def test_tshap_matches_upstream_reference(roi):
-    from tshap.tshap import TSHAPExplainer
+class _ZeroImputer:
+    def impute_segment_batch(self, waveforms, detector, start, width):
+        return np.zeros((len(waveforms), width), dtype=np.float64)
 
+
+@pytest.mark.parametrize("roi", [False, True])
+def test_conditional_window_occlusion_is_signed_and_baseline_independent(roi):
     rng = np.random.default_rng(47)
-    waveforms = rng.normal(size=(2, 2, 32)).astype(np.float32)
-    baselines = rng.normal(size=(3, 2, 32)).astype(np.float32)
-    def predict(x):
-        x = np.asarray(x)
-        return (x[:, 0, 3:13].sum(axis=1)
-                - 0.4 * x[:, 1, 9:22].sum(axis=1)
-                + 0.07 * x[:, 0, 4] * x[:, 1, 6])
-    reference = TSHAPExplainer(window_length=8, stride=4, interpolation=True, roi=roi)
-    bounded = _new_explainer(8, 4, roi, predict_batch_size=5)
-    expected = reference.explain(waveforms, baselines, predict)
-    actual = bounded.explain(waveforms, baselines, predict)
-    for observed, original in zip(actual, expected):
-        np.testing.assert_allclose(observed, original, rtol=1e-5, atol=1e-5)
+    sample = rng.uniform(0.1, 1, size=(2, 32)).astype(np.float32)
+    explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
+                              imputer=_ZeroImputer())
+    positions = [(0, 4, 8), (1, 8, 8), (0, 16, 8)]
+    def predict(values):
+        return np.asarray(values)[:, 0].sum(axis=1) - 2 * np.asarray(values)[:, 1].sum(axis=1)
+    expected = np.asarray([sample[0, 4:12].sum(),
+                           -2 * sample[1, 8:16].sum(),
+                           sample[0, 16:24].sum()])
+    observed = explainer._calculate_window_attrib_scores(
+        predict, sample, np.zeros((5, 2, 32)), positions)
+    np.testing.assert_allclose(observed, expected, rtol=1e-6)
+    other = explainer._calculate_window_attrib_scores(
+        predict, sample, rng.normal(size=(2, 2, 32)), positions)
+    np.testing.assert_allclose(other, observed, rtol=0, atol=0)
 
 
 def test_tshap_constant_prediction_is_zero():
-    model = _new_explainer(6, 3, True, 4)
-    x = np.ones((1, 2, 24), dtype=np.float32)
-    refs = np.zeros((2, 2, 24), dtype=np.float32)
-    maps = model.explain(x, refs, lambda v: np.full(len(v), 7.0))
-    for value in maps:
-        np.testing.assert_allclose(value, 0)
+    model = _new_explainer(6, 3, False, 4, imputer=_ZeroImputer())
+    sample = np.ones((2, 24), dtype=np.float32)
+    values = model._calculate_window_attrib_scores(
+        lambda values: np.full(len(values), 7.0), sample, sample[None],
+        [(0, 0, 6), (1, 8, 6)])
+    np.testing.assert_allclose(values, 0)
+
+
+def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.engine import tshap_explainer as t
+    rng = np.random.default_rng(3)
+    waves = rng.normal(0.5, .15, (70, 2, 60)).astype(np.float32)
+    control = SimpleNamespace(
+        n_events=len(waves), event_index=np.arange(len(waves)),
+        energy_windows=waves, energy_time_ps=np.arange(60)*12.5,
+        manifest={"analysis_protocol_identity": "control-v1",
+                  "event_population_identity": "population-v1"})
+    config = {"_board": "UC", "window_ns": {"start": -2, "end": 50},
+              "output_dir": str(tmp_path / "UC" / "test_ridge")}
+    options = dict(window_samples=20, stride_samples=20,
+                   components=4, fit_events=30, tuning_events=12,
+                   slope_points=5, batch_size=8, seed=42)
+    first, first_meta = t._cached_hermite_ppca_imputer(
+        control, "energy_to_energy", config, tmp_path, **options)
+    assert first_meta["cache_hit"] is False
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Imputer was refitted on cache hit")
+    monkeypatch.setattr(t, "_fit_hermite_ppca_imputer", forbidden)
+    second, second_meta = t._cached_hermite_ppca_imputer(
+        control, "energy_to_energy", config, tmp_path, **options)
+    assert second_meta["cache_hit"] is True
+    assert second_meta["cache_identity"] == first_meta["cache_identity"]
+    np.testing.assert_allclose(
+        first.impute_segment_batch(waves[:3], 0, 20, 20),
+        second.impute_segment_batch(waves[:3], 0, 20, 20),
+        rtol=1e-12, atol=1e-12)
 
 
 def test_event_selection_is_reproducible():

@@ -81,8 +81,8 @@ python -m waveform_analysis.cli explain-tshap \
   --stride-samples 20
 ```
 
-TSHAP retains signed values in ps. Window scores distributed over samples are
-densities in ps/sample, not exact individual-sample Shapley values. The
+The conditional imputer cache stores fitted detector-specific PPCA models and all position-dependent blend weights. Its identity includes the control population, board, channel/mode, time grid and 20-sample window configuration. Subsequent model explanations reuse it without fitting.\n\nConditional temporal occlusion retains signed prediction differences in ps. Window scores distributed over samples are
+densities in ps/sample, not exact individual-sample Shapley values. This conditional reconstruction approach is not mathematically equivalent to reference-baseline SHAP. The
 existing absolute-importance plots are provisional, pending the final
 signed local, response-conditioned and global analyses. Use
 `explain-tshap-local` for the current local diagnostic.

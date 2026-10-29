@@ -30,7 +30,7 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 2
+TSHAP_METHOD_VERSION = 3
 GLOBAL_PLOT_VERSION = 13
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
@@ -203,7 +203,7 @@ class _HermitePPCAImputer:
 def _fit_hermite_ppca_imputer(control, mode, baseline_ids, *, components,
                               fit_events, tuning_events, slope_points,
                               batch_size, seed):
-    """Fit PPCA on control events disjoint from TSHAP reference baselines and tuning events."""
+    """Fit PPCA on control events with disjoint fitting and tuning cohorts."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 
     all_ids = np.arange(control.n_events, dtype=np.int64)
@@ -250,72 +250,156 @@ def _fit_hermite_ppca_imputer(control, mode, baseline_ids, *, components,
     return imputer, metadata
 
 
+
+def _cached_hermite_ppca_imputer(
+    control, mode, config, output_root, *, window_samples, stride_samples,
+    components, fit_events, tuning_events, slope_points, batch_size, seed,
+):
+    """Reuse frozen detector PPCA parameters and all position-specific weights.
+
+    Cache identity includes the control cohort, board, channel/mode, full time
+    grid, window geometry and fitting parameters. A new cache is fitted only
+    for a genuinely different imputation configuration.
+    """
+    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
+
+    family = mode_family(mode)
+    times = np.asarray(getattr(control, f"{family}_time_ps"), np.float64)
+    if times.ndim != 1 or times.size < 2 or not np.all(np.isfinite(times)):
+        raise ValueError("Invalid control time grid for imputer cache")
+    board = str(config.get("_board") or _find_board_label(config.get("output_dir", "")))
+    if board == "Unknown board":
+        board = str(control.manifest.get("board") or "unknown_board")
+    settings = dict(
+        cache_schema=1, board=board, channel=family, mode=mode,
+        window_ns=config["window_ns"],
+        control_identity=control.manifest.get("analysis_protocol_identity"),
+        control_population=control.manifest.get("event_population_identity"),
+        samples=int(times.size), time_grid_hash=canonical_hash(times.tolist()),
+        window_samples=int(window_samples), stride_samples=int(stride_samples),
+        components=int(components), fit_events=int(fit_events),
+        tuning_events=int(tuning_events), slope_points=int(slope_points),
+        seed=int(seed),
+    )
+    identity = canonical_hash(settings)
+    cache_dir = Path(output_root).resolve() / "imputer_cache" / board / mode
+    cache_file = cache_dir / (identity[:24] + ".npz")
+    if cache_file.is_file():
+        with np.load(cache_file, allow_pickle=False) as saved:
+            if str(saved["identity"].item()) != identity:
+                raise ValueError(f"Imputer cache identity mismatch: {cache_file}")
+            models = []
+            for detector in range(2):
+                model = ProbabilisticPCA(components)
+                model.mean = np.asarray(saved[f"mean_{detector}"], np.float64)
+                model.W = np.asarray(saved[f"loadings_{detector}"], np.float64)
+                model.sigma2 = float(saved[f"noise_{detector}"])
+                model.explained_variance_ratio = float(saved[f"variance_{detector}"])
+                if model.mean.shape != (len(times),) or model.W.shape != (len(times), components):
+                    raise ValueError(f"Imputer cache shape mismatch: {cache_file}")
+                models.append(model)
+            imputer = _HermitePPCAImputer(
+                models, np.empty((0, 2, len(times))), slope_points=slope_points,
+                batch_size=batch_size,
+            )
+            starts = np.asarray(saved["starts"], np.int64)
+            widths = np.asarray(saved["widths"], np.int64)
+            alphas = np.asarray(saved["alphas"], np.float64)
+            if alphas.shape != (2, len(starts)) or not np.all(np.isfinite(alphas)):
+                raise ValueError(f"Imputer cache weights invalid: {cache_file}")
+            for i, (start, width) in enumerate(zip(starts, widths)):
+                for detector in range(2):
+                    key = (detector, int(start), int(width))
+                    imputer._alphas[key] = float(alphas[detector, i])
+                    imputer._prepared[key] = models[detector].prepare_mask(int(start), int(width))
+                    imputer._envelopes[key] = imputer._envelope(int(start), int(width), len(times))
+            metadata = json.loads(str(saved["metadata_json"].item()))
+        return imputer, {**metadata, "cache_file": str(cache_file), "cache_hit": True,
+                         "cache_identity": identity}
+
+    # Use every available control event in the fit/tuning split, with no reference
+    # baselines: the occlusion score is conditional on the waveform itself.
+    imputer, fit_meta = _fit_hermite_ppca_imputer(
+        control, mode, np.empty(0, np.int64), components=components,
+        fit_events=fit_events, tuning_events=tuning_events, slope_points=slope_points,
+        batch_size=batch_size, seed=seed,
+    )
+    starts = np.arange(0, len(times), int(stride_samples), dtype=np.int64)
+    widths = np.minimum(int(window_samples), len(times) - starts).astype(np.int64)
+    for start, width in zip(starts, widths):
+        for detector in range(2):
+            imputer._prepare(detector, int(start), int(width))
+    alphas = np.asarray([
+        [imputer._alphas[(detector, int(start), int(width))]
+         for start, width in zip(starts, widths)]
+        for detector in range(2)
+    ], dtype=np.float64)
+    metadata = dict(
+        n_training_events=int(fit_meta["n_training_events"]),
+        n_tuning_events=int(fit_meta["n_tuning_events"]),
+        explained_variance_ratio_by_detector=fit_meta["explained_variance_ratio_by_detector"],
+        training_and_tuning_exclude_reference_baselines=True,
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(dir=cache_dir, suffix=".npz")
+    os.close(handle)
+    try:
+        np.savez_compressed(
+            temporary_name, identity=np.asarray(identity),
+            metadata_json=np.asarray(json.dumps(metadata)),
+            starts=starts, widths=widths, alphas=alphas,
+            **{f"mean_{d}": model.mean for d, model in enumerate(imputer.models)},
+            **{f"loadings_{d}": model.W for d, model in enumerate(imputer.models)},
+            **{f"noise_{d}": np.asarray(model.sigma2) for d, model in enumerate(imputer.models)},
+            **{f"variance_{d}": np.asarray(model.explained_variance_ratio)
+               for d, model in enumerate(imputer.models)},
+        )
+        os.replace(temporary_name, cache_file)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return imputer, {**metadata, "cache_file": str(cache_file), "cache_hit": False,
+                     "cache_identity": identity}
+
+
+
 def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None):
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
         raise ImportError("TSHAP requires the upstream dependency: pip install tshap==0.0.1") from exc
 
-    baseline_imputation_cache = {}
+    if imputer is None:
+        raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
 
     class BoundedTSHAP(TSHAPExplainer):
-        """Keep upstream TSHAP aggregation/ROI while bounding perturbation allocation."""
+        """Upstream temporal aggregation with conditional single-event occlusion."""
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
-            sample = np.asarray(input_sample)
-            backgrounds = np.asarray(baselines)
-            n_background = len(backgrounds)
-            if not n_background:
-                raise ValueError("TSHAP requires at least one control baseline")
-            endpoints = np.asarray(fnc(np.concatenate((sample[None], backgrounds))), dtype=np.float64)
-            if endpoints.shape != (n_background + 1,):
-                raise ValueError("Unexpected model output for TSHAP endpoints")
-            scores = np.empty(len(window_positions), dtype=np.float64)
-            windows_per_batch = max(1, predict_batch_size // (2 * n_background))
-            for first in range(0, len(window_positions), windows_per_batch):
-                positions = window_positions[first:first + windows_per_batch]
-                candidates = np.empty((len(positions) * 2 * n_background, *sample.shape),
-                                      dtype=np.float32)
-                for i, position in enumerate(positions):
+            sample = np.asarray(input_sample, np.float32)
+            if sample.ndim != 2 or sample.shape[0] != 2:
+                raise ValueError("Expected one two-detector waveform")
+            original = np.asarray(fnc(sample[None]), np.float64)
+            if original.shape != (1,):
+                raise ValueError("TSHAP predictor must return one scalar per event")
+            scores = np.empty(len(window_positions), np.float64)
+            for first in range(0, len(window_positions), predict_batch_size):
+                part = window_positions[first:first + predict_batch_size]
+                candidates = np.repeat(sample[None], len(part), axis=0)
+                for i, position in enumerate(part):
                     channel, start = int(position[0]), int(position[1])
                     width = int(position[2]) if len(position) == 3 else self.window_length
-                    if not (0 <= channel < sample.shape[0]):
-                        raise ValueError("Invalid TSHAP channel")
-                    stop = min(start + width, sample.shape[1])
-                    if start < 0:
-                        raise ValueError("Negative TSHAP window start")
-                    block = candidates[i * 2 * n_background:(i + 1) * 2 * n_background]
-                    block[0::2] = sample
-                    block[1::2] = backgrounds
-                    if stop > start:
-                        if imputer is None:
-                            # Original TSHAP reference substitution.
-                            block[0::2, channel, start:stop] = backgrounds[:, channel, start:stop]
-                            block[1::2, channel, start:stop] = sample[channel, start:stop]
-                        else:
-                            # Imputation-based variant: remove the same interval from
-                            # each waveform by reconstructing it from that waveform's
-                            # own observed context, instead of copying the other signal.
-                            sample_fill = imputer.impute_segment_batch(
-                                sample[None, ...], channel, start, stop - start
-                            )[0]
-                            cache_key = (channel, start, stop - start)
-                            if cache_key not in baseline_imputation_cache:
-                                baseline_imputation_cache[cache_key] = imputer.impute_segment_batch(
-                                    backgrounds, channel, start, stop - start
-                                )
-                            baseline_fill = baseline_imputation_cache[cache_key]
-                            block[0::2, channel, start:stop] = sample_fill[None, :]
-                            block[1::2, channel, start:stop] = baseline_fill
-                predicted = np.asarray(fnc(candidates), dtype=np.float64)
-                if predicted.shape != (len(candidates),):
-                    raise ValueError("TSHAP predictor returned incorrect batch shape")
-                for i in range(len(positions)):
-                    block = predicted[i * 2 * n_background:(i + 1) * 2 * n_background]
-                    scores[first + i] = np.mean(
-                        ((endpoints[0] - block[0::2])
-                         + (block[1::2] - endpoints[1:])) / 2
-                    )
+                    stop = min(start + width, sample.shape[-1])
+                    if not 0 <= channel < 2 or start < 0 or stop <= start:
+                        raise ValueError("Invalid temporal occlusion window")
+                    imputed = imputer.impute_segment_batch(
+                        sample[None], channel, start, stop-start
+                    )[0]
+                    candidates[i, channel, start:stop] = imputed
+                predicted = np.asarray(fnc(candidates), np.float64)
+                if predicted.shape != (len(part),):
+                    raise ValueError("TSHAP returned an invalid prediction batch")
+                scores[first:first+len(part)] = original[0] - predicted
             return scores
 
     return BoundedTSHAP(window_length=window_samples, stride=stride_samples,
@@ -1248,7 +1332,7 @@ def _cleanup_legacy_result_tshap(run_directory):
 
 def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=10, predict_batch_size=64, seed=42,
-                  roi=False, overwrite=False, imputation="reference",
+                  roi=False, overwrite=False, imputation="hermite_ppca",
                   imputer_components=32, imputer_fit_events=2000,
                   imputer_tuning_events=300, imputer_slope_points=5,
                   logger=None):
@@ -1264,8 +1348,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
         _validate_positive_int(name, value)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
-    if imputation not in {"reference", "hermite_ppca"}:
-        raise ValueError("imputation must be 'reference' or 'hermite_ppca'")
+    if imputation != "hermite_ppca":
+        raise ValueError("Only conditional Hermite-PPCA imputation is supported")
     if imputation == "hermite_ppca":
         for name, value in (("imputer_components", imputer_components),
                             ("imputer_fit_events", imputer_fit_events),
@@ -1321,8 +1405,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                                 imputer_tuning_events=imputer_tuning_events,
                                 imputer_slope_points=imputer_slope_points)
             identity = {
-                "method": ("tshap_hermite_ppca_imputation" if imputation == "hermite_ppca"
-                           else "tshap_window_roi" if roi else "tshap_window"),
+                "method": "conditional_hermite_ppca_occlusion",
                 "method_version": TSHAP_METHOD_VERSION, "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -1365,28 +1448,21 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             time_ps = _check_prepared_grids(control, blind, config["mode"])
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
-            baseline_ids = _choose_indices(
-                control.n_events, n_baselines, _selection_seed(sampling_seed, "control_baselines")
-            )
             event_ids = _choose_indices(
                 blind.n_events, max_events, _selection_seed(sampling_seed, "blind_events")
             )
-            baselines = waveform_view(control, config["mode"], baseline_ids).materialize()
             waves = waveform_view(blind, config["mode"], event_ids).materialize()
-            if baselines.shape[1:] != waves.shape[1:] or waves.shape[1] != 2:
-                raise ValueError("TSHAP inputs must have matching [2, samples] dimensions")
-            if not np.all(np.isfinite(waves)) or not np.all(np.isfinite(baselines)):
-                raise ValueError("Non-finite control or blind waveform values")
+            if waves.shape[1] != 2 or not np.all(np.isfinite(waves)):
+                raise ValueError("Invalid blind waveforms")
             imputer = None
             imputer_metadata = None
             if imputation == "hermite_ppca":
-                imputer, imputer_metadata = _fit_hermite_ppca_imputer(
-                    control, config["mode"], baseline_ids,
-                    components=imputer_components,
-                    fit_events=imputer_fit_events,
+                imputer, imputer_metadata = _cached_hermite_ppca_imputer(
+                    control, config["mode"], config, output_root,
+                    window_samples=window_samples, stride_samples=stride_samples,
+                    components=imputer_components, fit_events=imputer_fit_events,
                     tuning_events=imputer_tuning_events,
-                    slope_points=imputer_slope_points,
-                    batch_size=predict_batch_size,
+                    slope_points=imputer_slope_points, batch_size=predict_batch_size,
                     seed=sampling_seed,
                 )
                 if logger:
@@ -1396,9 +1472,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         imputer_metadata["n_tuning_events"], imputer_components,
                     )
             if logger:
-                logger.info("TSHAP | %s | events=%d/%d | baselines=%d/%d | samples=%d | ROI=%s",
-                            spec.name, len(event_ids), blind.n_events, len(baseline_ids),
-                            control.n_events, time_ps.size, roi)
+                logger.info("TSHAP conditional occlusion | %s | events=%d/%d | samples=%d | ROI=%s",
+                            spec.name, len(event_ids), blind.n_events, time_ps.size, roi)
             parent = destination.parent
             parent.mkdir(parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=".tshap-", dir=parent))
@@ -1418,7 +1493,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         roi_maps = np.empty_like(waves, dtype=np.float64) if roi else None
                         for i, pair in enumerate(waves):
-                            win, regions = explainer.explain(pair[None], baselines, predict)
+                            win, regions = explainer.explain(pair[None], pair[None], predict)
                             window_maps[i] = win[0]
                             if roi:
                                 roi_maps[i] = regions[0]
@@ -1441,7 +1516,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 mean_waveform_mv = np.mean(waveform_mv, axis=0)
                 payload = dict(
                     event_id=np.asarray(blind.event_index[event_ids], np.int64),
-                    control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
+                    control_event_id=np.empty(0, np.int64),
                     time_ps=time_ps,
                     window_attribution_ps=window_maps,
                     mean_waveform_mv=mean_waveform_mv,
@@ -1476,17 +1551,19 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         "training_events": int(imputer_metadata["n_training_events"]),
                         "tuning_events": int(imputer_metadata["n_tuning_events"]),
                         "explained_variance_ratio_by_detector": imputer_metadata["explained_variance_ratio_by_detector"],
-                        "training_and_tuning_exclude_reference_baselines": True,
+                        "cache_file": imputer_metadata["cache_file"],
+                        "cache_identity": imputer_metadata["cache_identity"],
+                        "cache_hit": imputer_metadata["cache_hit"],
                         "blend_weights_by_detector_and_window": imputer.weight_rows,
                     }} if imputer is not None else {}),
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
-                    "n_control_baselines": len(baseline_ids), "waveform_samples": len(time_ps),
+                    "n_control_baselines": 0, "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
                     "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
-                    "interpretation": "Two-player window/complement SHAP with reference substitution; "
-                                      "overlapping-window maps are not exact sample-level Shapley values.",
+                    "interpretation": "Conditional window-occlusion prediction differences in ps; "
+                                      "these are not exact Shapley values.",
                     "cohort": "blind", "input_units": "mV (inverse of frozen prepared waveform normalization)",
                     "global_importance_aggregation": {
                         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
@@ -1544,6 +1621,8 @@ def explain_tshap_local(
     results, *, models=None, cache_root=None, output_root=None, events_per_group=2,
     extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
+    imputer_components=32, imputer_fit_events=2000,
+    imputer_tuning_events=300, imputer_slope_points=5,
 ):
     """Explain a small, reproducible set of good/bad and typical blind events.
 
@@ -1612,10 +1691,14 @@ def explain_tshap_local(
                 stride_samples=stride_samples,
                 predict_batch_size=predict_batch_size,
                 seed=int(seed),
+                imputer_components=imputer_components,
+                imputer_fit_events=imputer_fit_events,
+                imputer_tuning_events=imputer_tuning_events,
+                imputer_slope_points=imputer_slope_points,
             )
             identity = {
-                "method": "tshap_local_case_study",
-                "method_version": 1,
+                "method": "conditional_hermite_ppca_local_case_study",
+                "method_version": 2,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -1666,13 +1749,13 @@ def explain_tshap_local(
             if targets.shape != (blind.n_events,) or not np.all(np.isfinite(targets)):
                 raise ValueError("Blind targets must be finite and match the event population")
 
-            baseline_ids = _choose_indices(
-                control.n_events, n_baselines,
-                _selection_seed(int(seed), "control_baselines"),
+            imputer, imputer_metadata = _cached_hermite_ppca_imputer(
+                control, config["mode"], config, output_root,
+                window_samples=window_samples, stride_samples=stride_samples,
+                components=imputer_components, fit_events=imputer_fit_events,
+                tuning_events=imputer_tuning_events, slope_points=imputer_slope_points,
+                batch_size=predict_batch_size, seed=int(seed),
             )
-            baselines = waveform_view(control, config["mode"], baseline_ids).materialize()
-            if baselines.shape[1:] != (2, time_ps.size) or not np.all(np.isfinite(baselines)):
-                raise ValueError("TSHAP control baselines must be finite [events, 2, samples] arrays")
 
             parent = destination.parent
             parent.mkdir(parents=True, exist_ok=True)
@@ -1767,12 +1850,12 @@ def explain_tshap_local(
 
                         explainer = _new_explainer(
                             window_samples, stride_samples, roi=False,
-                            predict_batch_size=predict_batch_size,
+                            predict_batch_size=predict_batch_size, imputer=imputer,
                         )
                         local_maps = np.empty_like(waves, dtype=np.float64)
                         for i, pair in enumerate(waves):
                             window_map, _ = explainer.explain(
-                                pair[None, ...], baselines, predict
+                                pair[None, ...], pair[None, ...], predict
                             )
                             local_maps[i] = window_map[0]
                             if logger:
@@ -1845,7 +1928,7 @@ def explain_tshap_local(
                     predicted_correction_ps=selected_predictions,
                     residual_ps=selected_targets - selected_predictions,
                     signed_improvement_ps=selected_improvements,
-                    control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
+                    control_event_id=np.empty(0, np.int64),
                     median_predicted_correction_ps=np.asarray(median_prediction, dtype=np.float64),
                 )
                 group_counts = {
@@ -1858,7 +1941,9 @@ def explain_tshap_local(
                     "plot_version": LOCAL_PLOT_VERSION,
                     "n_explained_events": len(event_ids),
                     "n_events_per_group": events_per_group,
-                    "n_control_baselines": len(baseline_ids),
+                    "n_control_baselines": 0,
+                    "imputer_cache_identity": imputer_metadata["cache_identity"],
+                    "imputer_cache_file": imputer_metadata["cache_file"],
                     "waveform_samples": int(time_ps.size),
                     "median_predicted_correction_ps": median_prediction,
                     "group_counts": group_counts,

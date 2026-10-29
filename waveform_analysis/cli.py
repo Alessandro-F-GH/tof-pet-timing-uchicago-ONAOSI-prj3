@@ -53,8 +53,8 @@ def _parser() -> argparse.ArgumentParser:
                        help="Fixed sampling seed shared across models (default: 42)")
     tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
     tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
-    tshap.add_argument("--imputation", choices=("reference", "hermite_ppca"), default="reference",
-                       help="Window perturbation: original reference swapping or Hermite-PPCA imputation")
+    tshap.add_argument("--imputation", choices=("hermite_ppca",), default="hermite_ppca",
+                       help="Conditional Hermite-PPCA waveform reconstruction")
     tshap.add_argument("--imputer-components", type=int, default=32)
     tshap.add_argument("--imputer-fit-events", type=int, default=2000)
     tshap.add_argument("--imputer-tuning-events", type=int, default=300)
@@ -78,6 +78,10 @@ def _parser() -> argparse.ArgumentParser:
     tshap_local.add_argument("--predict-batch-size", type=int, default=64)
     tshap_local.add_argument("--seed", type=int, default=42,
                              help="Fixed control-baseline sampling seed (default: 42)")
+    tshap_local.add_argument("--imputer-components", type=int, default=32)
+    tshap_local.add_argument("--imputer-fit-events", type=int, default=2000)
+    tshap_local.add_argument("--imputer-tuning-events", type=int, default=300)
+    tshap_local.add_argument("--imputer-slope-points", type=int, default=5)
     tshap_local.add_argument("--overwrite", action="store_true",
                              help="Force recomputation of local explanations")
     for command in (plots, report):
@@ -116,7 +120,12 @@ def main() -> None:
                 extreme_margin=args.extreme_margin, n_baselines=args.n_baselines,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed,
-                overwrite=args.overwrite, logger=logger):
+                overwrite=args.overwrite,
+                imputer_components=args.imputer_components,
+                imputer_fit_events=args.imputer_fit_events,
+                imputer_tuning_events=args.imputer_tuning_events,
+                imputer_slope_points=args.imputer_slope_points,
+                logger=logger):
             print(output)
         return
     if args.command in {"plots", "report"}:
