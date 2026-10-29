@@ -59,7 +59,8 @@ def test_planner_fingerprints_cover_declared_graph_and_propagate_parents(tmp_pat
     changed["plot_config"]["dpi"] += 1
     after_plots = _planner_fingerprints(changed)
     for stage in STAGE_ORDER:
-        assert after_plots[stage] == baseline[stage]
+        if stage != "plots":
+            assert after_plots[stage] == baseline[stage]
     assert after_plots["plots"] != baseline["plots"]
 
 
