@@ -1,8 +1,6 @@
 """Stage identity and invalidation definitions used by planning and execution."""
 from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
-from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
-from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
 
 # Preserve existing identity payloads so moving code does not change seeds/caches.
 RUN_IDENTITY_VERSION = 53
@@ -24,6 +22,8 @@ def stage_fingerprint(stage, payload):
 
 def planner_fingerprints(config):
     from waveform_analysis.data.sample_mask import SAMPLE_MASK_VERSION
+    from waveform_analysis.engine.control_preprocessing import CONTROL_ARTIFACT_VERSION
+    from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION
     preprocessing_identity = {
         key: value for key, value in config["preprocessing"].items()
         if key not in {"cache_dir", "artifact_root"}
