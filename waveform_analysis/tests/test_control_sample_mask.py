@@ -1,5 +1,6 @@
 """The timing input mask is shared by all models and fitted on control only."""
 from dataclasses import replace
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -55,6 +56,7 @@ def dataset(tmp_path, role, *, mode='timing_to_timing', seed=1):
     for name in ('event_index','bias_voltage_V',f'{family}_windows',f'{family}_time_ps',
                  f'{family}_target_ps',f'{family}_led_time_ps'):
         np.save(directory/f'{name}.npy',getattr(d,name))
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return d
 
 
@@ -81,11 +83,16 @@ def test_control_fit_once_cached_persisted_and_reloaded(tmp_path, monkeypatch):
     for d in (control,dev,blind):
         np.testing.assert_array_equal(d.sample_mask,control.sample_mask)
         assert d.manifest['sample_mask_control_events'] == 100
+        original_manifest = json.loads((d.directory / "manifest.json").read_text(encoding="utf-8"))
+        assert "sample_mask_identity" not in original_manifest
+        assert not (d.directory / "sample_mask.npz").exists()
         loaded = load_prepared_dataset(d.directory)
-        np.testing.assert_array_equal(loaded.sample_mask,control.sample_mask)
+        assert loaded.sample_mask is None
         np.testing.assert_array_equal(loaded.timing_windows,d.timing_windows)
+        loaded = policy.attach_control_sample_mask(loaded,control,cache_root=tmp_path)
+        np.testing.assert_array_equal(loaded.sample_mask,control.sample_mask)
         assert loaded.manifest['sample_mask_identity'] == control.manifest['sample_mask_identity']
-        policy.attach_control_sample_mask(loaded,control,cache_root=tmp_path)
+        assert json.loads((d.directory / "manifest.json").read_text(encoding="utf-8")) == original_manifest
     assert len(calls) == 1
 
 
