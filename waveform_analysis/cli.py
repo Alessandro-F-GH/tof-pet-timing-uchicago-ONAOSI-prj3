@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     tshap.add_argument("--max-events", type=int, default=100, help="Maximum blind events per model (default: 100)")
     tshap.add_argument("--n-baselines", type=int, default=8, help="Control reference events (default: 8)")
     tshap.add_argument("--window-samples", type=int, default=20)
-    tshap.add_argument("--stride-samples", type=int, default=10)
+    tshap.add_argument("--stride-samples", type=int, default=20)
     tshap.add_argument("--predict-batch-size", type=int, default=64)
     tshap.add_argument("--seed", type=int, default=42,
                        help="Fixed sampling seed shared across models (default: 42)")
@@ -74,7 +74,7 @@ def _parser() -> argparse.ArgumentParser:
                              help="Exclude the most extreme margin of each good/bad tail (default: 0.05)")
     tshap_local.add_argument("--n-baselines", type=int, default=8)
     tshap_local.add_argument("--window-samples", type=int, default=20)
-    tshap_local.add_argument("--stride-samples", type=int, default=10)
+    tshap_local.add_argument("--stride-samples", type=int, default=20)
     tshap_local.add_argument("--predict-batch-size", type=int, default=64)
     tshap_local.add_argument("--seed", type=int, default=42,
                              help="Fixed control-baseline sampling seed (default: 42)")
