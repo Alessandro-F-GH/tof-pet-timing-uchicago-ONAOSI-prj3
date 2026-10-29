@@ -1224,7 +1224,10 @@ def _cleanup_legacy_result_tshap(run_directory):
 
 def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=10, predict_batch_size=64, seed=42,
-                  roi=False, overwrite=False, logger=None):
+                  roi=False, overwrite=False, imputation="reference",
+                  imputer_components=32, imputer_fit_events=2000,
+                  imputer_tuning_events=300, imputer_slope_points=5,
+                  logger=None):
     """Explain saved regressors using reproducible blind/control subsets.
 
     Identical requests reuse completed explanation artifacts without inference.
@@ -1237,6 +1240,16 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
         _validate_positive_int(name, value)
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
+    if imputation not in {"reference", "hermite_ppca"}:
+        raise ValueError("imputation must be 'reference' or 'hermite_ppca'")
+    if imputation == "hermite_ppca":
+        for name, value in (("imputer_components", imputer_components),
+                            ("imputer_fit_events", imputer_fit_events),
+                            ("imputer_tuning_events", imputer_tuning_events),
+                            ("imputer_slope_points", imputer_slope_points)):
+            _validate_positive_int(name, value)
+        if imputer_slope_points < 2:
+            raise ValueError("imputer_slope_points must be >= 2")
     tshap_version = version("tshap")
     results_path = Path(results).expanduser().resolve()
     if output_root is None:
@@ -1277,9 +1290,15 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             settings = dict(max_events=max_events, n_baselines=n_baselines,
                             window_samples=window_samples, stride_samples=stride_samples,
                             predict_batch_size=predict_batch_size, seed=sampling_seed,
-                            roi=bool(roi))
+                            roi=bool(roi), imputation=imputation)
+            if imputation == "hermite_ppca":
+                settings.update(imputer_components=imputer_components,
+                                imputer_fit_events=imputer_fit_events,
+                                imputer_tuning_events=imputer_tuning_events,
+                                imputer_slope_points=imputer_slope_points)
             identity = {
-                "method": "tshap_window_roi" if roi else "tshap_window",
+                "method": ("tshap_hermite_ppca_imputation" if imputation == "hermite_ppca"
+                           else "tshap_window_roi" if roi else "tshap_window"),
                 "method_version": TSHAP_METHOD_VERSION, "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -1334,6 +1353,24 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 raise ValueError("TSHAP inputs must have matching [2, samples] dimensions")
             if not np.all(np.isfinite(waves)) or not np.all(np.isfinite(baselines)):
                 raise ValueError("Non-finite control or blind waveform values")
+            imputer = None
+            imputer_metadata = None
+            if imputation == "hermite_ppca":
+                imputer, imputer_metadata = _fit_hermite_ppca_imputer(
+                    control, config["mode"], baseline_ids,
+                    components=imputer_components,
+                    fit_events=imputer_fit_events,
+                    tuning_events=imputer_tuning_events,
+                    slope_points=imputer_slope_points,
+                    batch_size=predict_batch_size,
+                    seed=sampling_seed,
+                )
+                if logger:
+                    logger.info(
+                        "TSHAP imputation | Hermite-PPCA | train=%d | tune=%d | components=%d",
+                        imputer_metadata["n_training_events"],
+                        imputer_metadata["n_tuning_events"], imputer_components,
+                    )
             if logger:
                 logger.info("TSHAP | %s | events=%d/%d | baselines=%d/%d | samples=%d | ROI=%s",
                             spec.name, len(event_ids), blind.n_events, len(baseline_ids),
@@ -1353,7 +1390,7 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         if not np.allclose(original, replay, atol=1e-4, rtol=1e-6):
                             raise ValueError("TSHAP model adapter does not reproduce saved inference")
                         explainer = _new_explainer(window_samples, stride_samples, roi,
-                                                   predict_batch_size)
+                                                   predict_batch_size, imputer=imputer)
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         roi_maps = np.empty_like(waves, dtype=np.float64) if roi else None
                         for i, pair in enumerate(waves):
@@ -1407,6 +1444,17 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                 atomic_json(temporary / "summary.json", {
                     **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name, "window_name": window_name,
+                    "imputation": imputation,
+                    **({"imputer": {
+                        "method": "position-specific Hermite baseline plus smooth-envelope PPCA correction",
+                        "components": int(imputer_components),
+                        "slope_points": int(imputer_slope_points),
+                        "training_events": int(imputer_metadata["n_training_events"]),
+                        "tuning_events": int(imputer_metadata["n_tuning_events"]),
+                        "explained_variance_ratio_by_detector": imputer_metadata["explained_variance_ratio_by_detector"],
+                        "training_and_tuning_exclude_reference_baselines": True,
+                        "blend_weights_by_detector_and_window": imputer.weight_rows,
+                    }} if imputer is not None else {}),
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
