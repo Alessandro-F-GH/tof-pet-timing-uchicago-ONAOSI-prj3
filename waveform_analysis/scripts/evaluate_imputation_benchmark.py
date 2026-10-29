@@ -32,8 +32,9 @@ from waveform_analysis.scripts.train_ppca_interpolation_blend import (
 )
 
 
-METHODS = ("linear", "hermite", "ppca", "hermite_ppca_blend")
+METHODS = ("original_tshap", "linear", "hermite", "ppca", "hermite_ppca_blend")
 LABELS = {
+    "original_tshap": "Original TSHAP (multi-baseline)",
     "linear": "Linear interpolation",
     "hermite": "Cubic Hermite",
     "ppca": "Standard PPCA",
@@ -69,20 +70,37 @@ def bootstrap_rmse(event_sse, values_per_event, seed, replicates=500):
     return tuple(np.quantile(estimates, [0.025, 0.975]).tolist())
 
 
+def physical_unit_scale(values):
+    """Choose a readable signal unit; input values are in mV."""
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite) & (finite > 0)]
+    largest = float(np.max(finite)) if finite.size else 1.0
+    if largest >= 1.0:
+        return 1.0, "mV"
+    if largest >= 1e-3:
+        return 1e3, "µV"
+    if largest >= 1e-6:
+        return 1e6, "nV"
+    return 1e9, "pV"
+
+
 def save_position_plot(rows, output, label, channel):
+    scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.4), sharey=True)
     for detector, ax in enumerate(axes, start=1):
         selected = [r for r in rows if r["detector"] == detector]
         for method in METHODS:
             series = [r for r in selected if r["method"] == method]
             series.sort(key=lambda r: r["start_ns"])
+            values = np.asarray([r["rmse"] for r in series], dtype=np.float64) * scale
             ax.plot([r["start_ns"] for r in series],
-                    [r["rmse"] for r in series],
+                    np.maximum(values, np.finfo(float).tiny),
                     label=LABELS[method], lw=1.5)
         ax.set_title(f"Detector {detector}")
         ax.set_xlabel("Masked interval start (ns)")
-        ax.set_ylabel("RMSE")
-        ax.grid(alpha=0.25)
+        ax.set_yscale("log")
+        ax.set_ylabel(f"Reconstruction RMSE ({unit})")
+        ax.grid(alpha=0.25, which="both")
         ax.legend(fontsize="small")
     fig.suptitle(f"{label} — {channel} channel")
     fig.tight_layout()
@@ -93,10 +111,13 @@ def save_position_plot(rows, output, label, channel):
 
 
 def evaluate_configuration(label, results, channel, args, output):
-    waves, time_ps, source, manifest = load_wide_development(
-        root_relative(results), channel, root_relative(args.cache_root)
+    waves, time_ps, source, manifest, transform = load_wide_development(
+        root_relative(results), channel, root_relative(args.cache_root), return_transform=True
     )
-    waves = np.asarray(waves)
+    # The prepared arrays are normalized/clipped for model training. Convert them
+    # back through the frozen per-detector transform before fitting imputers or
+    # computing reconstruction errors, so all reported RMSE values are in mV.
+    waves = np.asarray(transform.inverse(waves), dtype=np.float64)
     time_ps = np.asarray(time_ps, dtype=np.float64)
     n_total, n_detectors, length = waves.shape
     if n_detectors != 2:
@@ -127,6 +148,13 @@ def evaluate_configuration(label, results, channel, args, output):
     print(f"[{label}/{channel}] events={len(selected)} train={len(training)} "
           f"tune={len(tuning)} test={len(evaluation)} length={length} "
           f"mask={width} samples positions={len(starts)}", flush=True)
+    n_reference = min(args.n_baselines, len(training))
+    if n_reference < 1:
+        raise ValueError("No training events available for original TSHAP references")
+    # The original TSHAP occlusion method substitutes reference-waveform segments.
+    # References come from the non-evaluation cohort and are fixed across positions.
+    reference_waves = np.asarray(waves[training[:n_reference]], dtype=np.float64)
+
     models = []
     prepared_masks = []
     for det in range(2):
@@ -180,6 +208,18 @@ def evaluate_configuration(label, results, channel, args, output):
                     "linear": linear, "hermite": hermite,
                     "ppca": ppca, "hermite_ppca_blend": blend,
                 }
+                # Original TSHAP replaces each masked segment with the corresponding
+                # segment from every reference baseline. Score expected squared error
+                # over references per event, rather than imputing their mean waveform.
+                reference_segments = reference_waves[:, det, start:stop]
+                reference_squared = np.square(
+                    reference_segments[None, :, :] - truth[:, None, :]
+                )
+                original_sse_per_event = np.mean(
+                    np.sum(reference_squared, axis=2), axis=1
+                )
+                sse["original_tshap"][det] += float(original_sse_per_event.sum())
+                event_sse["original_tshap"][local] += original_sse_per_event
                 for method, pred in predictions.items():
                     squared = np.square(pred - truth)
                     sse[method][det] += float(squared.sum())
@@ -222,6 +262,8 @@ def evaluate_configuration(label, results, channel, args, output):
         "mask_width_ns": width * dt_ps / 1000.0, "mask_positions": len(starts),
         "components": args.components, "seed": args.seed,
         "methods": list(METHODS), "slope_points": args.slope_points,
+        "n_original_tshap_reference_baselines": int(n_reference),
+        "signal_units": "mV (inverse of frozen per-detector input transform)",
     }
 
 
@@ -262,25 +304,37 @@ def write_latex(path, rows):
 
 
 def save_overall_plot(rows, output):
-    """Compact pooled-RMSE comparison with event-bootstrap confidence intervals."""
+    """One grouped pooled-RMSE plot with event-bootstrap confidence intervals."""
     configs = list(dict.fromkeys((r["dataset"], r["channel"]) for r in rows))
-    fig, axes = plt.subplots(1, len(configs), figsize=(5.2 * len(configs), 4.4), squeeze=False)
-    for ax, (dataset, channel) in zip(axes.flat, configs):
-        subset = [r for r in rows if r["dataset"] == dataset and r["channel"] == channel]
-        by_method = {r["method"]: r for r in subset}
-        values = np.array([by_method[m]["rmse"] for m in METHODS])
-        low = np.array([by_method[m]["ci95_low"] for m in METHODS])
-        high = np.array([by_method[m]["ci95_high"] for m in METHODS])
-        yerr = np.vstack((values - low, high - values))
-        ax.bar(np.arange(len(METHODS)), values, yerr=yerr, capsize=3)
-        ax.set_xticks(np.arange(len(METHODS)))
-        ax.set_xticklabels([{"linear": "Linear", "hermite": "Hermite", "ppca": "PPCA",
-                             "hermite_ppca_blend": "Hermite-PPCA"}[m] for m in METHODS],
-                           rotation=25, ha="right")
-        ax.set_title(f"{dataset} — {channel.capitalize()}")
-        ax.set_ylabel("Pooled held-out RMSE")
-        ax.grid(axis="y", alpha=0.25)
-    fig.suptitle("Overall imputation reconstruction error")
+    scale, unit = physical_unit_scale([r["rmse"] for r in rows])
+    x = np.arange(len(configs), dtype=np.float64)
+    total_width = 0.82
+    bar_width = total_width / len(METHODS)
+    fig, ax = plt.subplots(figsize=(max(9.0, 1.7 * len(configs)), 5.2))
+    for mi, method in enumerate(METHODS):
+        values, low, high = [], [], []
+        for dataset, channel in configs:
+            row = next(r for r in rows if r["dataset"] == dataset and r["channel"] == channel
+                       and r["method"] == method)
+            values.append(row["rmse"] * scale)
+            low.append(row["ci95_low"] * scale)
+            high.append(row["ci95_high"] * scale)
+        values = np.asarray(values)
+        yerr = np.vstack((values - np.asarray(low), np.asarray(high) - values))
+        xpos = x - total_width / 2 + (mi + 0.5) * bar_width
+        bars = ax.bar(xpos, values, width=bar_width, yerr=yerr, capsize=2.5,
+                      label=LABELS[method])
+        for bar, value in zip(bars, values):
+            ax.annotate(f"{value:.3g}", (bar.get_x() + bar.get_width()/2, bar.get_height()),
+                        xytext=(0, 3), textcoords="offset points", ha="center",
+                        va="bottom", fontsize=7, rotation=90 if len(configs) > 3 else 0)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{dataset}\n{channel.capitalize()}" for dataset, channel in configs])
+    ax.set_ylabel(f"Pooled held-out RMSE ({unit})")
+    ax.set_title("Overall imputation reconstruction error")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(fontsize="small", ncol=min(3, len(METHODS)))
+    ax.margins(y=0.18)
     fig.tight_layout()
     fig.savefig(output / "overall_rmse.pdf", bbox_inches="tight")
     fig.savefig(output / "overall_rmse.png", dpi=180, bbox_inches="tight")
@@ -297,6 +351,8 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("waveform_analysis/imputation_benchmark"))
     parser.add_argument("--max-events", type=int, default=5000)
     parser.add_argument("--components", type=int, default=32)
+    parser.add_argument("--n-baselines", type=int, default=8,
+                        help="Number of non-evaluation reference waveforms for original TSHAP substitution")
     parser.add_argument("--mask-ns", type=float, default=0.25)
     parser.add_argument("--mask-stride-samples", type=int)
     parser.add_argument("--eval-events", type=int, default=500)
@@ -308,7 +364,7 @@ def main():
     parser.add_argument("--bootstrap", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-    if (args.max_events < 20 or args.components < 1 or args.mask_ns <= 0
+    if (args.max_events < 20 or args.components < 1 or args.n_baselines < 1 or args.mask_ns <= 0
             or args.batch_size < 1 or args.eval_events < 1 or args.tuning_events < 1
             or not 0 < args.eval_fraction < 1 or not 0 < args.tuning_fraction < 1
             or args.slope_points < 2 or args.bootstrap < 20
@@ -333,10 +389,12 @@ def main():
     write_latex(output / "reconstruction_metrics.tex", all_overall)
     save_overall_plot(all_overall, output)
     summary = {
-        "description": "Held-out reconstruction benchmark; event-level bootstrap CIs.",
+        "description": "Held-out reconstruction benchmark in physical mV units; original TSHAP multi-baseline substitution is evaluated as expected reconstruction error over reference segments; event-level bootstrap CIs.",
         "configurations": configurations,
         "methods": list(METHODS), "method_labels": LABELS,
         "mask_width_ns": args.mask_ns, "seed": args.seed,
+        "n_baselines": args.n_baselines,
+        "signal_units": "mV; plots automatically scale to mV, µV, nV, or pV",
         "bootstrap_replicates": args.bootstrap,
         "warning": "Results are valid only if each results path resolves to the intended development dataset and split.",
     }
