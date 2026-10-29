@@ -96,14 +96,149 @@ def _predict_bounded(spec, fitted, values, batch_size):
     return output
 
 
-def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
+class _HermitePPCAImputer:
+    """Position-specific Hermite baseline with a calibration-fitted PPCA correction."""
+
+    def __init__(self, models, tuning_waves, *, slope_points=5, batch_size=64):
+        from waveform_analysis.scripts.train_ppca_interpolation_blend import (
+            hermite_interpolation_batch, smooth_blend_envelope,
+        )
+        self.models = models
+        self.tuning_waves = np.asarray(tuning_waves, dtype=np.float64)
+        self.slope_points = int(slope_points)
+        self.batch_size = int(batch_size)
+        self._prepared = {}
+        self._envelopes = {}
+        self._alphas = {}
+        self._hermite = hermite_interpolation_batch
+        self._envelope = smooth_blend_envelope
+
+    def _prepare(self, detector, start, width):
+        key = (int(detector), int(start), int(width))
+        if key in self._alphas:
+            return key
+        model = self.models[detector]
+        stop = start + width
+        prepared = model.prepare_mask(start, width)
+        envelope = self._envelope(start, width, len(model.mean))
+        alpha = 0.0
+        if start > 0 and stop < len(model.mean) and np.any(envelope):
+            numerator = 0.0
+            denominator = 0.0
+            for offset in range(0, len(self.tuning_waves), self.batch_size):
+                batch = self.tuning_waves[offset:offset + self.batch_size, detector, :]
+                truth = batch[:, start:stop]
+                hermite = self._hermite(batch, start, width, self.slope_points)
+                ppca = model.conditional_mean_batch(
+                    batch, start, width, prepared=prepared
+                )
+                delta = envelope[None, :] * (ppca - hermite)
+                numerator += float(np.sum(delta * (truth - hermite)))
+                denominator += float(np.sum(delta * delta))
+            if denominator > 1e-18:
+                alpha = float(np.clip(numerator / denominator, 0.0, 1.0))
+        self._prepared[key] = prepared
+        self._envelopes[key] = envelope
+        self._alphas[key] = alpha
+        return key
+
+    def impute_segment_batch(self, waveforms, detector, start, width):
+        """Return imputed samples only, for [events, detectors, time] waveforms."""
+        from waveform_analysis.scripts.train_ppca_interpolation_blend import (
+            linear_interpolation_batch,
+        )
+        batch = np.asarray(waveforms, dtype=np.float64)
+        if batch.ndim != 3 or batch.shape[1] != 2:
+            raise ValueError("Imputation expects [events, 2 detectors, samples]")
+        key = self._prepare(detector, start, width)
+        if self._alphas[key] == 0.0 and (
+            start == 0 or start + width >= batch.shape[-1]
+        ):
+            return linear_interpolation_batch(batch[:, detector, :], start, width)
+        model = self.models[detector]
+        signal = batch[:, detector, :]
+        hermite = self._hermite(signal, start, width, self.slope_points)
+        ppca = model.conditional_mean_batch(
+            signal, start, width, prepared=self._prepared[key]
+        )
+        envelope = self._envelopes[key]
+        return hermite + self._alphas[key] * envelope[None, :] * (ppca - hermite)
+
+    @property
+    def weight_rows(self):
+        return [
+            {"detector": detector + 1, "start_sample": start, "width_samples": width,
+             "alpha_ppca": float(alpha)}
+            for (detector, start, width), alpha in sorted(self._alphas.items())
+        ]
+
+    @property
+    def mean_alpha_by_detector(self):
+        return [
+            float(np.mean([a for (d, _, _), a in self._alphas.items() if d == detector]))
+            if any(d == detector for d, _, _ in self._alphas) else 0.0
+            for detector in range(2)
+        ]
+
+
+def _fit_hermite_ppca_imputer(control, mode, baseline_ids, *, components,
+                              fit_events, tuning_events, slope_points,
+                              batch_size, seed):
+    """Fit PPCA on control events disjoint from TSHAP reference baselines and tuning events."""
+    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
+
+    all_ids = np.arange(control.n_events, dtype=np.int64)
+    available = np.setdiff1d(all_ids, np.asarray(baseline_ids, dtype=np.int64), assume_unique=False)
+    rng = np.random.default_rng(int(seed) + 1)
+    available = rng.permutation(available)
+    n_tune = min(int(tuning_events), max(2, len(available) // 5))
+    n_fit = min(int(fit_events), len(available) - n_tune)
+    if n_fit <= components or n_tune < 2:
+        raise ValueError(
+            "Not enough control events to fit the imputation-based TSHAP method "
+            f"(available={len(available)}, fit={n_fit}, tuning={n_tune}, components={components}). "
+            "Reduce --imputer-components/--imputer-fit-events or use more control events."
+        )
+    fit_ids = available[:n_fit]
+    tune_ids = available[n_fit:n_fit + n_tune]
+    fit_waves = waveform_view(control, mode, fit_ids).materialize()
+    tuning_waves = waveform_view(control, mode, tune_ids).materialize()
+    models = []
+    explained = []
+    for detector in range(2):
+        model = ProbabilisticPCA(components).fit(
+            np.asarray(fit_waves[:, detector, :], dtype=np.float64)
+        )
+        models.append(model)
+        explained.append(float(model.explained_variance_ratio))
+    del fit_waves
+    imputer = _HermitePPCAImputer(
+        models, tuning_waves, slope_points=slope_points, batch_size=batch_size
+    )
+    del tuning_waves
+    metadata = {
+        "training_indices": fit_ids,
+        "tuning_indices": tune_ids,
+        "training_event_ids": np.asarray(control.event_index[fit_ids], dtype=np.int64),
+        "tuning_event_ids": np.asarray(control.event_index[tune_ids], dtype=np.int64),
+        "n_training_events": int(len(fit_ids)),
+        "n_tuning_events": int(len(tune_ids)),
+        "components": int(components),
+        "slope_points": int(slope_points),
+        "explained_variance_ratio_by_detector": explained,
+        "training_and_tuning_exclude_reference_baselines": True,
+    }
+    return imputer, metadata
+
+
+def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None):
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
         raise ImportError("TSHAP requires the upstream dependency: pip install tshap==0.0.1") from exc
 
     class BoundedTSHAP(TSHAPExplainer):
-        """Keep upstream TSHAP aggregation/ROI, but bound perturbation allocation."""
+        """Keep upstream TSHAP aggregation/ROI while bounding perturbation allocation."""
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
             sample = np.asarray(input_sample)
@@ -111,12 +246,10 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
             n_background = len(backgrounds)
             if not n_background:
                 raise ValueError("TSHAP requires at least one control baseline")
-            # Upstream evaluates the original and each reference just once per call.
             endpoints = np.asarray(fnc(np.concatenate((sample[None], backgrounds))), dtype=np.float64)
             if endpoints.shape != (n_background + 1,):
                 raise ValueError("Unexpected model output for TSHAP endpoints")
             scores = np.empty(len(window_positions), dtype=np.float64)
-            # Do not construct every overlapping perturbation in one huge matrix.
             windows_per_batch = max(1, predict_batch_size // (2 * n_background))
             for first in range(0, len(window_positions), windows_per_batch):
                 positions = window_positions[first:first + windows_per_batch]
@@ -125,7 +258,6 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
                 for i, position in enumerate(positions):
                     channel, start = int(position[0]), int(position[1])
                     width = int(position[2]) if len(position) == 3 else self.window_length
-                    # Match upstream half-open masks, including truncated end windows.
                     if not (0 <= channel < sample.shape[0]):
                         raise ValueError("Invalid TSHAP channel")
                     stop = min(start + width, sample.shape[1])
@@ -135,14 +267,27 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size):
                     block[0::2] = sample
                     block[1::2] = backgrounds
                     if stop > start:
-                        block[0::2, channel, start:stop] = backgrounds[:, channel, start:stop]
-                        block[1::2, channel, start:stop] = sample[channel, start:stop]
+                        if imputer is None:
+                            # Original TSHAP reference substitution.
+                            block[0::2, channel, start:stop] = backgrounds[:, channel, start:stop]
+                            block[1::2, channel, start:stop] = sample[channel, start:stop]
+                        else:
+                            # Imputation-based variant: remove the same interval from
+                            # each waveform by reconstructing it from that waveform's
+                            # own observed context, instead of copying the other signal.
+                            sample_fill = imputer.impute_segment_batch(
+                                sample[None, ...], channel, start, stop - start
+                            )[0]
+                            baseline_fill = imputer.impute_segment_batch(
+                                backgrounds, channel, start, stop - start
+                            )
+                            block[0::2, channel, start:stop] = sample_fill[None, :]
+                            block[1::2, channel, start:stop] = baseline_fill
                 predicted = np.asarray(fnc(candidates), dtype=np.float64)
                 if predicted.shape != (len(candidates),):
                     raise ValueError("TSHAP predictor returned incorrect batch shape")
                 for i in range(len(positions)):
                     block = predicted[i * 2 * n_background:(i + 1) * 2 * n_background]
-                    # Identical two-player window/complement formula as upstream.
                     scores[first + i] = np.mean(
                         ((endpoints[0] - block[0::2])
                          + (block[1::2] - endpoints[1:])) / 2
