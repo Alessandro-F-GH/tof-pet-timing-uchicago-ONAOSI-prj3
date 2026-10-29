@@ -81,11 +81,31 @@ python -m waveform_analysis.cli explain-tshap \
   --stride-samples 20
 ```
 
-The conditional imputer cache stores fitted detector-specific PPCA models and all position-dependent blend weights. Its identity includes the control population, board, channel/mode, time grid and 20-sample window configuration. Subsequent model explanations reuse it without fitting.\n\nConditional temporal occlusion retains signed prediction differences in ps. Window scores distributed over samples are
-densities in ps/sample, not exact individual-sample Shapley values. This conditional reconstruction approach is not mathematically equivalent to reference-baseline SHAP. The
-existing absolute-importance plots are provisional, pending the final
-signed local, response-conditioned and global analyses. Use
-`explain-tshap-local` for the current local diagnostic.
+The conditional Hermite–PPCA imputer is fitted on control waveforms and reused across
+models. Occluding a detector window measures the signed prediction difference between
+the original and reconstructed waveform (in ps); these differences are not exact
+Shapley values.
+
+Global TSHAP plots show two adjacent signed bars per temporal window: the mean
+positive contribution and mean negative contribution across all explained blind
+events (including zero contributions from events of the opposite sign). The
+`signed_window_importance.csv` contains these values in ps. Direct models retain
+separate detector histograms; shared models pool detector means for the figure.
+Uninterpolated scores and window starts are saved in `attributions.npz`.
+
+The first and last candidate TSHAP windows are excluded to avoid boundary
+artifacts. Remaining windows are filtered using the fitted model's frozen sample
+mask: a window is scored only if every sample it spans is retained by the model.
+Attribution interpolation is restricted to contiguous valid regions, so it cannot
+bridge a masked gap. Excluded windows are not assigned zero importance; they are
+omitted. The global and local `summary.json` records report retained windows and
+exclusions due to boundaries and masking.
+
+For individual representative cases, `explain-tshap-local` generates signed
+window histograms rather than interpolated sample-importance curves. The local
+archive stores the raw window scores alongside the older sample-level attribution
+arrays. Global and local plots can be refreshed from saved raw scores without
+rerunning the trained correction model.
 
 ## Imputation diagnostics
 

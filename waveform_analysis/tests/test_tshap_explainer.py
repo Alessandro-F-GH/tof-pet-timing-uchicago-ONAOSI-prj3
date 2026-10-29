@@ -12,7 +12,7 @@ from waveform_analysis.engine.tshap_explainer import (
     _native_led_baselines,
     _is_excluded_tshap_window, _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
-    _selection_seed, _write_global_importance_csv,
+    _selection_seed, _write_global_importance_csv, _valid_window_starts,
 )
 
 
@@ -40,6 +40,31 @@ def test_conditional_window_occlusion_is_signed_and_baseline_independent(roi):
         predict, sample, rng.normal(size=(2, 2, 32)), positions)
     np.testing.assert_allclose(other, observed, rtol=0, atol=0)
 
+
+
+def test_tshap_excludes_windows_crossing_model_mask_and_does_not_bridge_gap():
+    keep = np.ones(16, dtype=bool)
+    keep[6:10] = False
+    starts, valid_at_start, _ = _valid_window_starts(16, 4, 2, keep)
+    assert starts == [2, 10]
+    assert not any(not np.all(keep[start:min(start + 4, len(keep))]) for start in starts)
+
+    sample = np.arange(32, dtype=np.float32).reshape(2, 16) / 32
+    explainer = _new_explainer(
+        4, 2, False, predict_batch_size=4,
+        imputer=_ZeroImputer(), sample_mask=keep,
+    )
+    window_map, _ = explainer.explain(
+        sample[None], sample[None],
+        lambda values: np.asarray(values)[:, 0].sum(axis=1)
+        - 2 * np.asarray(values)[:, 1].sum(axis=1),
+    )
+    positions = explainer.last_window_positions
+    assert {start for channel, start in positions if channel == 0} == set(starts)
+    assert {start for channel, start in positions if channel == 1} == set(starts)
+    np.testing.assert_allclose(window_map[0, :, 6:10], 0.0)
+    # Attribution interpolation must not connect the valid regions on either side.
+    assert explainer.last_window_scores.shape == (2 * len(starts),)
 
 def test_tshap_constant_prediction_is_zero():
     model = _new_explainer(6, 3, False, 4, imputer=_ZeroImputer())
@@ -92,7 +117,7 @@ def test_complete_identity_and_replace(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     (scratch / "summary.json").write_text(json.dumps({"identity_sha256": "123"}))
-    for file in ("attributions.npz", "global_importance.csv", "global_importance.png"):
+    for file in ("attributions.npz", "signed_window_importance.csv", "global_importance.png"):
         (scratch / file).touch()
     _publish_directory(scratch, target, overwrite=False)
     assert _complete(target, "123")
@@ -100,7 +125,7 @@ def test_complete_identity_and_replace(tmp_path):
     newer = tmp_path / "replacement"
     newer.mkdir()
     (newer / "summary.json").write_text(json.dumps({"identity_sha256": "456"}))
-    for file in ("attributions.npz", "global_importance.csv", "global_importance.png"):
+    for file in ("attributions.npz", "signed_window_importance.csv", "global_importance.png"):
         (newer / file).touch()
     _publish_directory(newer, target, overwrite=True)
     assert _complete(target, "456")
@@ -338,6 +363,8 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         dataset_mean_difference_mv=np.zeros(waveform_mv.shape[1], dtype=np.float64),
         led_baseline_mv=np.asarray([5.0, 2.0]),
         attribution=attribution,
+        window_starts=np.asarray([0, 2]), window_scores=np.asarray([[2.0, -1.0], [-2.0, 1.0]]),
+        window_samples=2,
         group="typical",
         event_id=123,
         target_ps=10.0,
@@ -348,9 +375,6 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
 
     assert output.is_file()
     assert output.stat().st_size > 0
-    pdf_output = tmp_path / "global_importance.pdf"
-    assert pdf_output.is_file()
-    assert pdf_output.stat().st_size > 0
 
 
 
@@ -434,10 +458,18 @@ def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_pa
         board_name="FBK",
         n_events=64,
         window_samples=80,
+        window_starts=np.asarray([0, 80]),
+        signed_positive=np.ones((2, 2)),
+        signed_negative=-np.ones((2, 2)),
+        aggregated_positive=np.ones(2),
+        aggregated_negative=-np.ones(2),
     )
     output = tmp_path / "global_importance.png"
     assert output.is_file()
     assert output.stat().st_size > 0
+    pdf_output = tmp_path / "global_importance.pdf"
+    assert pdf_output.is_file()
+    assert pdf_output.stat().st_size > 0
 
 
 def test_shared_global_importance_csv_pools_detector_curves(tmp_path):
@@ -473,6 +505,9 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
         tmp_path / "attributions.npz",
         time_ps=time_ps,
         window_attribution_ps=maps,
+        raw_window_scores_ps=np.asarray([[[2.0, -1.0], [-2.0, 1.0]],
+                                        [[-1.0, 2.0], [1.0, -2.0]]]),
+        window_starts=np.asarray([0, 2]),
         mean_waveform_mv=waveform_mv,
     )
     (tmp_path / "summary.json").write_text(json.dumps({
@@ -486,20 +521,64 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 13
+    assert summary["plot_version"] == 16
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
     assert summary["global_plot"]["output_formats"] == ["PNG (240 dpi)", "PDF (vector)"]
     assert (tmp_path / "global_importance.png").is_file()
-    with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
+    assert (tmp_path / "signed_window_importance.csv").is_file()
+    with (tmp_path / "signed_window_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
-    assert len(rows) == len(time_ps)
-    np.testing.assert_allclose(
-        [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
-        np.mean(np.mean(np.abs(maps), axis=0), axis=0),
+    assert len(rows) == 2
+    assert {row["detector_or_shared"] for row in rows} == {"shared"}
+    assert all(float(row["mean_positive_contribution_ps"]) >= 0 for row in rows)
+    assert all(float(row["mean_negative_contribution_ps"]) <= 0 for row in rows)
+
+
+
+def test_direct_global_plot_includes_aggregated_signed_histogram_and_csv(tmp_path):
+    pytest.importorskip("matplotlib")
+    import csv
+    from waveform_analysis.engine.tshap_explainer import (
+        _plot_global, _write_signed_csv, _signed_means,
     )
 
+    time_ps = np.arange(8, dtype=np.float64) * 1000.0
+    starts = np.asarray([0, 2, 4, 6])
+    raw_scores = np.asarray([
+        [[2.0, -1.0, 3.0, -2.0], [-1.0, 2.0, -1.0, 1.0]],
+        [[-3.0, 1.0, 2.0, -1.0], [1.0, -2.0, -3.0, 2.0]],
+    ])
+    detector_positive, detector_negative = _signed_means(raw_scores)
+    aggregate_positive, aggregate_negative = _signed_means(raw_scores.sum(axis=1))
+    _write_signed_csv(
+        tmp_path, time_ps, starts, detector_positive, detector_negative, 2, "direct",
+        aggregated_positive=aggregate_positive, aggregated_negative=aggregate_negative,
+    )
+    rows = list(csv.DictReader((tmp_path / "signed_window_importance.csv").open(newline="", encoding="utf-8")))
+    assert {row["detector_or_shared"] for row in rows} == {"detector_1", "detector_2", "aggregated"}
+    grouped = [row for row in rows if row["detector_or_shared"] == "aggregated"]
+    assert len(grouped) == len(starts)
+    np.testing.assert_allclose(
+        [float(row["mean_positive_contribution_ps"]) for row in grouped],
+        aggregate_positive,
+    )
+    np.testing.assert_allclose(
+        [float(row["mean_negative_contribution_ps"]) for row in grouped],
+        aggregate_negative,
+    )
+
+    _plot_global(
+        tmp_path, time_ps, np.ones((2, 8)), np.ones((2, 8)),
+        model_name="direct_multirocket", formulation="direct", mode="energy_to_energy",
+        window_name="wide", board_name="UC", n_events=2, window_samples=2,
+        window_starts=starts, signed_positive=detector_positive,
+        signed_negative=detector_negative, aggregated_positive=aggregate_positive,
+        aggregated_negative=aggregate_negative,
+    )
+    assert (tmp_path / "global_importance.png").is_file()
+    assert (tmp_path / "global_importance.pdf").is_file()
 
 def test_cli_exposes_only_tshap_interpretability_commands():
     from waveform_analysis.cli import _parser
