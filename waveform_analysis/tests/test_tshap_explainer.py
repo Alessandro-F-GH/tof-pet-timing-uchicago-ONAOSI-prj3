@@ -463,3 +463,13 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
         [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
         np.mean(np.mean(np.abs(maps), axis=0), axis=0),
     )
+
+
+def test_cli_exposes_only_tshap_interpretability_commands():
+    from waveform_analysis.cli import _parser
+
+    commands = _parser()._subparsers._group_actions[0].choices
+    assert "explain-tshap" in commands
+    assert "explain-tshap-local" in commands
+    assert "xai" not in commands
+    assert "explain-regression" not in commands
