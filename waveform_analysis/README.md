@@ -93,12 +93,13 @@ events (including zero contributions from events of the opposite sign). The
 separate detector histograms; shared models pool detector means for the figure.
 Uninterpolated scores and window starts are saved in `attributions.npz`.
 
-TSHAP windows are filtered using the fitted model's frozen sample mask: a window
-is scored only if every sample it spans is retained by the model. Attribution
-interpolation is also restricted to contiguous valid regions, so it cannot bridge
-a masked gap. Excluded windows are not assigned zero importance; they are omitted.
-The global and local `summary.json` records report how many candidate windows
-were retained or excluded.
+The first and last candidate TSHAP windows are excluded to avoid boundary
+artifacts. Remaining windows are filtered using the fitted model's frozen sample
+mask: a window is scored only if every sample it spans is retained by the model.
+Attribution interpolation is restricted to contiguous valid regions, so it cannot
+bridge a masked gap. Excluded windows are not assigned zero importance; they are
+omitted. The global and local `summary.json` records report retained windows and
+exclusions due to boundaries and masking.
 
 For individual representative cases, `explain-tshap-local` generates signed
 window histograms rather than interpolated sample-importance curves. The local
