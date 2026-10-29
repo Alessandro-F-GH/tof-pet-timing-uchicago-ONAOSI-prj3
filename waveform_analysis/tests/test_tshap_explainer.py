@@ -494,7 +494,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 13
+    assert summary["plot_version"] == 14
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
@@ -503,11 +503,10 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     assert (tmp_path / "signed_window_importance.csv").is_file()
     with (tmp_path / "signed_window_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
-    assert len(rows) == len(time_ps)
-    np.testing.assert_allclose(
-        [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
-        np.mean(np.mean(np.abs(maps), axis=0), axis=0),
-    )
+    assert len(rows) == 2
+    assert {row["detector_or_shared"] for row in rows} == {"shared"}
+    assert all(float(row["mean_positive_contribution_ps"]) >= 0 for row in rows)
+    assert all(float(row["mean_negative_contribution_ps"]) <= 0 for row in rows)
 
 
 def test_cli_exposes_only_tshap_interpretability_commands():
