@@ -39,6 +39,8 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--config", type=Path, required=True)
     prepare.add_argument("--cache-root", type=Path, required=True,
                          help="Directory for the portable preprocessing and artifact cache bundle")
+    prepare.add_argument("--models", nargs="+", metavar="MODEL",
+                         help="Prepare caches only for these model names (default: all batch models)")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -164,7 +166,9 @@ def main() -> None:
         for run in batch.runs:
             run["preprocessing"]["cache_dir"] = str(root / "preprocessing")
             run["preprocessing"]["artifact_root"] = str(root / "artifact_store")
-        print(prepare_batch_cache(batch, cache_root=root, logger=logger))
+        print(prepare_batch_cache(
+            batch, cache_root=root, models=args.models, logger=logger
+        ))
         return
     if args.cache_root is not None:
         root = args.cache_root.expanduser().resolve()
