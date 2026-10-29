@@ -15,7 +15,8 @@ The first implementation provides three primitives:
 ```text
 <artifact-root>/
   products/<product-type>/<sha256>/
-    manifest.json
+    .artifact.json
+    manifest.json  # domain metadata, when required
     <payloads>
   .locks/
   registry.json

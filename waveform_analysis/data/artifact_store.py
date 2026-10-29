@@ -18,7 +18,7 @@ import numpy as np
 from waveform_analysis.core.artifact_identity import ProductRecipe, canonical_digest, canonical_json
 
 
-MANIFEST_NAME = "manifest.json"
+MANIFEST_NAME = ".artifact.json"
 STORE_SCHEMA_VERSION = 1
 _PRODUCT_ID = re.compile(r"^[0-9a-f]{64}$")
 
