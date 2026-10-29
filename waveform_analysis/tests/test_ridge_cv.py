@@ -181,6 +181,7 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
         )
         c["batch_output_dir"] = str(tmp_path)
         c["preprocessing"]["cache_dir"] = str(tmp_path / "cache")
+        c["preprocessing"]["artifact_root"] = str(tmp_path / "artifact_store")
         c["cross_validation"] = None
         c["bootstrap"] = protocol["bootstrap"]
         c["xai"] = protocol["xai"]

@@ -393,6 +393,18 @@ class RunStore:
                 final_fit_fingerprint if final_fit_fingerprint != "unspecified" else None,
             ) if value
         )
+        payload_identity = {}
+        for key, value in payload.items():
+            array = np.ascontiguousarray(np.asarray(value))
+            if array.dtype.hasobject:
+                raise TypeError(
+                    f"Prediction payload {key!r} uses an unsupported object dtype"
+                )
+            payload_identity[str(key)] = {
+                "shape": list(array.shape),
+                "dtype": array.dtype.str,
+                "sha256": hashlib.sha256(array.tobytes()).hexdigest(),
+            }
         recipe = ProductRecipe(
             "predictions",
             {
@@ -402,9 +414,13 @@ class RunStore:
                 "event_count": int(payload["event_id"].size),
                 "event_ids_hash": canonical_hash(payload["event_id"].tolist()),
                 "metadata": metadata_identity,
+                # Manifest labels and event IDs alone do not identify target values.
+                # Include all arrays so changed source data or predictions cannot
+                # resolve to a stale immutable artifact with the same run identity.
+                "payload_arrays": payload_identity,
             },
             parents=parents,
-            implementation="paired-tof-predictions-v1",
+            implementation="paired-tof-predictions-v2",
         )
         store = ArtifactStore(self.artifact_root)
         reference = store.get_or_build(

@@ -10,6 +10,7 @@ import pytest
 from waveform_analysis.core.artifact_identity import ProductRecipe, canonical_digest
 from waveform_analysis.data.artifact_store import ArtifactCorrupt, ArtifactStore
 from waveform_analysis.data.artifact_registry import ArtifactRegistry
+from waveform_analysis.data.storage import RunStore
 
 
 def _build_array(root: Path, value: float = 1.0) -> None:
@@ -101,3 +102,40 @@ def test_domain_manifest_is_payload_not_store_completion_record(tmp_path):
     assert reference.payload_path("manifest.json").is_file()
     assert (reference.path / ".artifact.json").is_file()
     assert store.lookup(recipe).status == "hit"
+
+
+
+def test_prediction_cache_identity_includes_payload_values(tmp_path):
+    """Identical labels and event IDs must not reuse changed prediction payloads."""
+    run = RunStore(tmp_path / "run", artifact_root=tmp_path / "store")
+    metadata = {
+        "final_fit_fingerprint": "same-fit",
+        "analysis_protocol_identity": "same-protocol",
+        "dataset_role": "development",
+    }
+    event_id = np.arange(3, dtype=np.int64)
+    first_target = np.asarray([1.0, 2.0, 3.0])
+    second_target = np.asarray([-4.0, 5.0, 6.0])
+
+    first_path = run.save_predictions(
+        event_id=event_id,
+        prediction_ps=np.zeros(3),
+        corrected_ps=first_target,
+        led_residual_ps=first_target,
+        dataset_role="development",
+        metadata=metadata,
+    )
+    second_path = run.save_predictions(
+        event_id=event_id,
+        prediction_ps=np.zeros(3),
+        corrected_ps=second_target,
+        led_residual_ps=second_target,
+        dataset_role="development",
+        metadata=metadata,
+    )
+
+    assert first_path != second_path
+    with np.load(first_path) as first:
+        np.testing.assert_array_equal(first["led_residual_ps"], first_target)
+    with np.load(second_path) as second:
+        np.testing.assert_array_equal(second["led_residual_ps"], second_target)
