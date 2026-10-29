@@ -130,6 +130,9 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     for original in resolved.runs:
         c = deepcopy(original)
         mode_tag = "energy" if c["mode"] == "energy_to_energy" else "timing"
+        c["output_dir"] = str(
+            tmp_path / mode_tag / c["window_name"] / c["model"]["name"]
+        )
         c["batch_output_dir"] = str(tmp_path)
         c["preprocessing"]["cache_dir"] = str(tmp_path / "cache")
         c["preprocessing"]["artifact_root"] = str(tmp_path / "artifact_store")
