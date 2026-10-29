@@ -317,10 +317,16 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
             np.testing.assert_array_equal(diagnostic["corrected_ps"],
                                           diagnostic["led_residual_ps"] - diagnostic["prediction_ps"])
         assert (output / "plots/development.png").exists()
-    table = tmp_path / "report/tables/datasets/FBK_selected_events.tex"
+    # The table name follows the board declared by the batch configuration,
+    # not the synthetic dataset fixture or the temporary output directory.
+    board = next(
+        part for part in Path(resolved.results["folder"]).parts if part in {"UC", "FBK"}
+    )
+    table = tmp_path / "report" / "tables" / "datasets" / f"{board}_selected_events.tex"
     assert table.is_file()
     assert table.read_text().count(" & 256") == 3  # Once per role, not once per model.
-    assert not (table.parent / "UC_selected_events.tex").exists()
+    other_board = "FBK" if board == "UC" else "UC"
+    assert not (table.parent / f"{other_board}_selected_events.tex").exists()
     assert (tmp_path / "report/tables/ridge_cv.csv").is_file()
     assert (tmp_path / "report/tables/validation.csv").exists() == mixed
     assert batch_engine.run_batch(resolved) == outputs
