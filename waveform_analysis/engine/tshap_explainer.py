@@ -1331,7 +1331,7 @@ def _cleanup_legacy_result_tshap(run_directory):
 
 
 def explain_tshap(results, *, models=None, cache_root=None, output_root=None, max_events=100, n_baselines=8,
-                  window_samples=20, stride_samples=10, predict_batch_size=64, seed=42,
+                  window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
                   roi=False, overwrite=False, imputation="hermite_ppca",
                   imputer_components=32, imputer_fit_events=2000,
                   imputer_tuning_events=300, imputer_slope_points=5,
