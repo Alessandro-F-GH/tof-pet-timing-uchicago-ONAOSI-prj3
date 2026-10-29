@@ -1023,7 +1023,8 @@ def _led_line_extent(time_ns):
 
 def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
                       led_baseline_mv, attribution, group, event_id, target_ps,
-                      prediction_ps, improvement_ps, led_threshold_mv):
+                      prediction_ps, improvement_ps, led_threshold_mv,
+                      window_starts=None, window_scores=None, window_samples=None):
     """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
@@ -1085,11 +1086,24 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax.legend(loc="best", fontsize=9)
 
     ax = axes[2]
-    ax.plot(time_ns, attribution[0], linewidth=1.1, label="Detector 1")
-    ax.plot(time_ns, attribution[1], linewidth=1.1, label="Detector 2")
-    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Local TSHAP attributions")
-    ax.set_ylabel("Attribution (ps/sample)")
+    if window_starts is None or window_scores is None or window_samples is None:
+        raise ValueError("Local signed histogram requires raw window scores")
+    scores = np.asarray(window_scores, dtype=np.float64)
+    starts = np.asarray(window_starts, dtype=np.int64)
+    if scores.shape != (2, len(starts)):
+        raise ValueError("Local window scores have invalid shape")
+    # Overlay detectors with different transparency; both preserve score sign.
+    dt = float(np.median(np.diff(time_ps)))
+    centers = (time_ps[starts] + window_samples * dt / 2) / 1000
+    width = 0.4 * window_samples * dt / 1000
+    for d, alpha in ((0, 0.95), (1, 0.45)):
+        offset = (-0.5 if d == 0 else 0.5) * width
+        ax.bar(centers + offset, scores[d], width=width,
+               color=np.where(scores[d] >= 0, "#2585bd", "#de8546").tolist(),
+               alpha=alpha, label=f"Detector {d + 1}")
+    ax.axhline(0, color="0.4", linewidth=0.7)
+    ax.set_title("Signed local TSHAP window contributions")
+    ax.set_ylabel("Contribution (ps)")
     ax.set_xlabel("Waveform time (ns)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9, ncols=2)
@@ -1171,6 +1185,9 @@ def _refresh_local_presentation(
             dataset_mean_difference_mv=dataset_mean,
             led_baseline_mv=led_baselines_mv[i],
             attribution=attributions[i],
+            window_starts=np.asarray(arrays["window_starts"], dtype=np.int64),
+            window_scores=np.asarray(arrays["raw_window_scores_ps"], dtype=np.float64)[i],
+            window_samples=int(arrays["window_samples"]),
             group=groups[i],
             event_id=int(event_ids[i]),
             target_ps=float(targets[i]),
@@ -1886,11 +1903,19 @@ def explain_tshap_local(
                             predict_batch_size=predict_batch_size, imputer=imputer,
                         )
                         local_maps = np.empty_like(waves, dtype=np.float64)
+                        local_scores = []
+                        window_starts = None
                         for i, pair in enumerate(waves):
                             window_map, _ = explainer.explain(
                                 pair[None, ...], pair[None, ...], predict
                             )
                             local_maps[i] = window_map[0]
+                            starts, scores = _raw_window_data(explainer)
+                            if window_starts is None:
+                                window_starts = starts
+                            elif not np.array_equal(window_starts, starts):
+                                raise ValueError("Inconsistent local window positions")
+                            local_scores.append(scores)
                             if logger:
                                 logger.info(
                                     "TSHAP local | %s | %d/%d | %s | event=%s",
@@ -1900,6 +1925,7 @@ def explain_tshap_local(
                         del fitted
                         release_training_memory()
 
+                local_scores = np.asarray(local_scores, dtype=np.float64)
                 if not np.all(np.isfinite(local_maps)):
                     raise ValueError("Non-finite local TSHAP attribution values")
 
@@ -1929,6 +1955,8 @@ def explain_tshap_local(
                             dataset_mean_difference_mv=dataset_mean_difference_mv,
                             led_baseline_mv=led_baselines_mv[i],
                             attribution=local_maps[i],
+                            window_starts=window_starts, window_scores=local_scores[i],
+                            window_samples=window_samples,
                             group=group,
                             event_id=int(event_id),
                             target_ps=target_ps,
@@ -1957,6 +1985,9 @@ def explain_tshap_local(
                     led_threshold_mv=np.asarray(led_threshold_mv, dtype=np.float64),
                     led_time_ps=selected_led_times_ps,
                     attribution_ps_per_sample=local_maps,
+                    raw_window_scores_ps=local_scores,
+                    window_starts=window_starts,
+                    window_samples=np.asarray(window_samples),
                     target_correction_ps=selected_targets,
                     predicted_correction_ps=selected_predictions,
                     residual_ps=selected_targets - selected_predictions,
