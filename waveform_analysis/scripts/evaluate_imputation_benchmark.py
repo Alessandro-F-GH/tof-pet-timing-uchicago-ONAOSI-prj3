@@ -111,8 +111,9 @@ def save_position_plot(rows, output, label, channel):
 
 
 def evaluate_configuration(label, results, channel, args, output):
-    waves, time_ps, source, manifest, transform = load_wide_development(
-        root_relative(results), channel, root_relative(args.cache_root), return_transform=True
+    waves, time_ps, source, manifest, transform, control_waves = load_wide_development(
+        root_relative(results), channel, root_relative(args.cache_root),
+        return_transform=True, include_control=True
     )
     # The prepared arrays are normalized/clipped for model training. Convert them
     # back through the frozen per-detector transform before fitting imputers or
@@ -153,7 +154,14 @@ def evaluate_configuration(label, results, channel, args, output):
         raise ValueError("No training events available for original TSHAP references")
     # The original TSHAP occlusion method substitutes reference-waveform segments.
     # References come from the non-evaluation cohort and are fixed across positions.
-    reference_waves = np.asarray(waves[training[:n_reference]], dtype=np.float64)
+    control_waves = np.asarray(transform.inverse(control_waves), dtype=np.float64)
+    if len(control_waves) < 1:
+        raise ValueError("No control waveforms available for original TSHAP reference substitution")
+    n_reference = min(args.n_baselines, len(control_waves))
+    reference_ids = np.random.default_rng(args.seed + 17).choice(
+        len(control_waves), size=n_reference, replace=False
+    )
+    reference_waves = control_waves[reference_ids]
 
     models = []
     prepared_masks = []
@@ -263,6 +271,7 @@ def evaluate_configuration(label, results, channel, args, output):
         "components": args.components, "seed": args.seed,
         "methods": list(METHODS), "slope_points": args.slope_points,
         "n_original_tshap_reference_baselines": int(n_reference),
+        "original_tshap_reference_source": "independent control dataset",
         "signal_units": "mV (inverse of frozen per-detector input transform)",
     }
 
