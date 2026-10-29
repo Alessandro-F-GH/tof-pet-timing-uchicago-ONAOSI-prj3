@@ -73,9 +73,18 @@ def _bool(v):
 
 
 
-def _sync(store, stage, fp):
+def _sync(store, stage, fp, logger=None):
     status = store.stage_status(stage, fp)
     if status == "stale":
+        previous = store.read_state()["stages"].get(str(stage), {})
+        if logger is not None:
+            logger.warning(
+                "Invalidating stale stage | stage=%s | previous_fingerprint=%s "
+                "current_fingerprint=%s",
+                stage,
+                previous.get("fingerprint"),
+                fp,
+            )
         store.invalidate_from(stage)
         return "missing"
     return status
@@ -579,7 +588,17 @@ def _ridge_cv_selection_and_fit(
             else frozen_development.identity,
         },
     )
-    if _sync(store, "cv", cv_fp) != "complete":
+    cv_status = _sync(store, "cv", cv_fp, logger=logger)
+    if cv_status != "complete":
+        logger.info(
+            "RidgeCV CV stage | status=%s fingerprint=%s development_identity=%s "
+            "model=%s ridge_cv_version=%s",
+            cv_status,
+            cv_fp,
+            development.manifest.get("analysis_protocol_identity"),
+            spec.name,
+            RIDGE_CV_VERSION,
+        )
         store.mark_stage(
             "cv", cv_fp, metadata={"skipped": True, "selection_method": "ridge_cv"}
         )
