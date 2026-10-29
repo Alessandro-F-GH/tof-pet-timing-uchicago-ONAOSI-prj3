@@ -1,5 +1,5 @@
 from __future__ import annotations
-import csv, json, os, shutil, tempfile
+import csv, hashlib, json, os, shutil, tempfile
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv, canonical_hash
@@ -453,5 +453,34 @@ class RunStore:
         return reference.payload_path("bootstrap.npz")
 
     def save_xai(self, **arrays):
-        _atomic_npz(self.xai_path, **arrays)
-        return self.xai_path
+        if self.artifact_root is None:
+            _atomic_npz(self.xai_path, **arrays)
+            return self.xai_path
+        payload_identity = {}
+        for name, value in sorted(arrays.items()):
+            array = np.asarray(value)
+            if array.dtype.hasobject:
+                raise TypeError(f"XAI payload {name!r} uses an object dtype")
+            contiguous = np.ascontiguousarray(array)
+            payload_identity[name] = {
+                "shape": list(contiguous.shape),
+                "dtype": contiguous.dtype.str,
+                "sha256": hashlib.sha256(contiguous.tobytes()).hexdigest(),
+            }
+        recipe = ProductRecipe(
+            "xai-products",
+            {
+                "run_identity": str(self.read_json(self.final_fit_path, {}).get(
+                    "fingerprint", self.root.name
+                )),
+                "arrays": payload_identity,
+            },
+            implementation="post-training-xai-v1",
+        )
+        reference = ArtifactStore(self.artifact_root).get_or_build(
+            recipe,
+            lambda directory: _atomic_npz(directory / "xai.npz", **arrays),
+            metadata={"pinned": True, "run_id": self.root.name},
+        )
+        self._write_artifact_reference("xai", reference)
+        return reference.payload_path("xai.npz")

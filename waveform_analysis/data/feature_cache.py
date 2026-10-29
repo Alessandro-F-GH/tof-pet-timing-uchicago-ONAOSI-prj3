@@ -185,7 +185,9 @@ def prepare_frozen_features(
         parents=(frozen_transform.identity,),
         implementation=f"{spec.feature_transform.name}:feature-matrix-v{_CACHE_VERSION}",
     )
-    store = ArtifactStore(Path(cache_root) / "artifact_store")
+    store = ArtifactStore(config["preprocessing"].get(
+        "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
+    ))
 
     def build(directory):
         chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))

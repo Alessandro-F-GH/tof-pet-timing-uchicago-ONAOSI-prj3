@@ -232,7 +232,7 @@ def fit_control_artifact(
                 )
         manifest = {
             "format_version": CONTROL_ARTIFACT_VERSION,
-            "fingerprint": fp,
+            "fingerprint": fingerprint,
             "control_dataset": control_dataset,
             "control_source": str(Path(control_file).resolve()),
             "preprocessing_fingerprint": canonical_hash(preprocessing),
