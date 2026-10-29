@@ -30,8 +30,8 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 3
-GLOBAL_PLOT_VERSION = 13
+TSHAP_METHOD_VERSION = 4
+GLOBAL_PLOT_VERSION = 14
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -400,6 +400,9 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                 if predicted.shape != (len(part),):
                     raise ValueError("TSHAP returned an invalid prediction batch")
                 scores[first:first+len(part)] = original[0] - predicted
+            if window_positions and all(len(p) == 2 for p in window_positions):
+                self.last_window_positions = [(int(ch), int(st)) for ch, st in window_positions]
+                self.last_window_scores = scores.copy()
             return scores
 
     return BoundedTSHAP(window_length=window_samples, stride=stride_samples,
@@ -468,6 +471,37 @@ def _global_plot_context(destination, summary):
         "window_samples": window_samples,
     }
 
+
+
+def _raw_window_data(explainer):
+    positions = getattr(explainer, "last_window_positions", None)
+    scores = getattr(explainer, "last_window_scores", None)
+    if positions is None or scores is None:
+        raise ValueError("Missing raw TSHAP window scores")
+    starts = np.array([start for channel, start in positions if channel == 0], dtype=np.int64)
+    other = np.array([start for channel, start in positions if channel == 1], dtype=np.int64)
+    if not np.array_equal(starts, other) or len(starts) == 0:
+        raise ValueError("Inconsistent detector windows")
+    values = np.asarray(scores, dtype=np.float64).reshape(2, len(starts))
+    return starts, values
+
+
+def _signed_means(scores):
+    scores = np.asarray(scores, dtype=np.float64)
+    return np.maximum(scores, 0).mean(axis=0), np.minimum(scores, 0).mean(axis=0)
+
+
+def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *, label=True):
+    dt = float(np.median(np.diff(time_ps)))
+    centers = (time_ps[starts] + window_samples * dt / 2) / 1000
+    width = 0.42 * window_samples * dt / 1000
+    ax.bar(centers - width / 2, positive, width=width, color="#2585bd",
+           label="Positive" if label else None)
+    ax.bar(centers + width / 2, negative, width=width, color="#de8546",
+           label="Negative" if label else None)
+    ax.axhline(0, color="0.4", linewidth=0.7)
+    if label:
+        ax.legend(loc="best", fontsize=8)
 
 def _write_global_importance_csv(destination, time_ps, mean_absolute, formulation, roi_maps=None):
     """Write only unnormalized absolute-importance summaries to the global CSV."""
@@ -541,7 +575,7 @@ def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, line
 def _plot_global(
     destination, time_ps, mean_absolute, mean_waveform_mv, *,
     model_name, formulation, mode, window_name, board_name, n_events,
-    window_samples,
+    window_samples, window_starts=None, signed_positive=None, signed_negative=None,
 ):
     """Plot physical waveforms with common-scale TSHAP saliency and aligned histograms."""
     import matplotlib
@@ -692,35 +726,20 @@ def _plot_global(
             for spine in ax.spines.values():
                 spine.set_linewidth(0.7)
 
-        histogram_color = "#4c78a8"
+        if window_starts is None or signed_positive is None or signed_negative is None:
+            raise ValueError("Raw signed window contributions required")
         if shared:
-            ax_shared_hist.bar(
-                bin_centers_ns, shared_window_importance, width=window_width_ns,
-                align="center", color=histogram_color, edgecolor="0.25",
-                linewidth=0.35, zorder=2,
-            )
-            ax_shared_hist.set_ylabel("Importance (ps)")
-            ax_shared_hist.set_title("Shared importance", loc="left", fontsize=9.5, pad=2)
-            ax_shared_hist.grid(True, axis="y", alpha=0.18, linewidth=0.5)
+            _signed_histogram(ax_shared_hist, time_ps, window_starts, window_samples,
+                              signed_positive.mean(axis=0), signed_negative.mean(axis=0))
+            ax_shared_hist.set_ylabel("Contribution (ps)")
         else:
-            hist_specs = (
-                (ax_detector1_hist, detector_window_importance[0]),
-                (ax_detector2_hist, detector_window_importance[1]),
-            )
-            # One absolute y-scale keeps detector histograms directly comparable.
-            histogram_ymax = float(np.max(detector_window_importance))
-            if not np.isfinite(histogram_ymax) or histogram_ymax <= 0.0:
-                histogram_ymax = 1.0
-            histogram_ymax *= 1.05
-            for ax, values in hist_specs:
-                ax.bar(
-                    bin_centers_ns, values, width=window_width_ns,
-                    align="center", color=histogram_color, edgecolor="0.25",
-                    linewidth=0.35, zorder=2,
-                )
-                ax.set_ylim(0.0, histogram_ymax)
-                ax.set_ylabel("Importance (ps)")
-                ax.grid(True, axis="y", alpha=0.18, linewidth=0.5)
+            for d, ax in enumerate((ax_detector1_hist, ax_detector2_hist)):
+                _signed_histogram(ax, time_ps, window_starts, window_samples,
+                                  signed_positive[d], signed_negative[d], label=(d == 0))
+                ax.set_ylabel("Contribution (ps)")
+            limit = max(np.max(signed_positive), -np.min(signed_negative), 1e-6) * 1.05
+            ax_detector1_hist.set_ylim(-limit, limit)
+            ax_detector2_hist.set_ylim(-limit, limit)
 
         for ax in hist_axes:
             ax.set_xlabel("Waveform time (ns)")
@@ -868,7 +887,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 9
+LOCAL_PLOT_VERSION = 10
 
 
 def _detector_difference(values):
@@ -1491,10 +1510,18 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         explainer = _new_explainer(window_samples, stride_samples, roi,
                                                    predict_batch_size, imputer=imputer)
                         window_maps = np.empty_like(waves, dtype=np.float64)
+                        raw_scores = []
+                        window_starts = None
                         roi_maps = np.empty_like(waves, dtype=np.float64) if roi else None
                         for i, pair in enumerate(waves):
                             win, regions = explainer.explain(pair[None], pair[None], predict)
                             window_maps[i] = win[0]
+                            starts, scores = _raw_window_data(explainer)
+                            if window_starts is None:
+                                window_starts = starts
+                            elif not np.array_equal(window_starts, starts):
+                                raise ValueError("Inconsistent window positions")
+                            raw_scores.append(scores)
                             if roi:
                                 roi_maps[i] = regions[0]
                             if logger and (i == 0 or (i + 1) % 10 == 0 or i + 1 == len(waves)):
@@ -1504,6 +1531,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         release_training_memory()
                 if not np.all(np.isfinite(window_maps)) or (roi and not np.all(np.isfinite(roi_maps))):
                     raise ValueError("Non-finite TSHAP attribution")
+                raw_scores = np.asarray(raw_scores, dtype=np.float64)
+                signed_positive, signed_negative = _signed_means(raw_scores)
                 win_abs = np.mean(np.abs(window_maps), axis=0)
                 waveform_transform = getattr(
                     blind, f"{mode_family(config['mode'])}_transform"
@@ -1519,6 +1548,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     control_event_id=np.empty(0, np.int64),
                     time_ps=time_ps,
                     window_attribution_ps=window_maps,
+                    raw_window_scores_ps=raw_scores,
+                    window_starts=window_starts,
                     mean_waveform_mv=mean_waveform_mv,
                     original_prediction_ps=original,
                 )
@@ -1539,6 +1570,8 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     board_name=board_name,
                     n_events=len(event_ids),
                     window_samples=window_samples,
+                    window_starts=window_starts,
+                    signed_positive=signed_positive, signed_negative=signed_negative,
                 )
                 atomic_json(temporary / "summary.json", {
                     **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
