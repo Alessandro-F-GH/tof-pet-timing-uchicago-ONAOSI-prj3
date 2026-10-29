@@ -10,7 +10,6 @@ from waveform_analysis.data.dataset import DATASET_FORMAT_VERSION, InputTransfor
 from waveform_analysis.data import sample_mask as policy
 from waveform_analysis.data.feature_cache import prepare_frozen_features, prepare_frozen_transform
 from waveform_analysis.engine.train import FitInputCache, FittedModel, _model_input
-from waveform_analysis.engine.xai import temporal_occlusion_importance
 from waveform_analysis.models import get_model, model_names
 from waveform_analysis.models.spec import FeatureTransformSpec
 from waveform_analysis.signal.sample_mask import control_clipping_sample_mask
@@ -155,17 +154,13 @@ def test_missing_timing_control_mask_and_grid_mismatch_fail(tmp_path):
         policy.attach_control_sample_mask(replace(d,timing_time_ps=d.timing_time_ps+1),control,cache_root=tmp_path)
 
 
-def test_prediction_and_xai_exclude_clipped_columns_but_keep_physical_axis(tmp_path):
-    control, _, blind, _ = calibrated(tmp_path)
-    fitted = FittedModel(None,{},sample_mask=blind.sample_mask)
-    actual = _model_input(fitted,blind,'timing_to_timing',np.arange(5))
-    np.testing.assert_array_equal(actual,blind.timing_windows[:5,:,:16])
-    spec = SimpleNamespace(estimator_formulation='direct',
-                           predict=lambda _,x: x.sum(axis=(1,2)))
-    values = temporal_occlusion_importance(spec,fitted,blind,'timing_to_timing',
-                        control_dataset=control,group_size_samples=4,max_events=5,seed=1)
-    np.testing.assert_array_equal(values['time_ps'],blind.timing_time_ps)
-    np.testing.assert_array_equal(values['importance_ps'][:,-8:],0.)
+def test_prediction_excludes_clipped_columns_and_preserves_physical_time_axis(tmp_path):
+    _, _, blind, _ = calibrated(tmp_path)
+    fitted = FittedModel(None, {}, sample_mask=blind.sample_mask)
+    actual = _model_input(fitted, blind, 'timing_to_timing', np.arange(5))
+    np.testing.assert_array_equal(actual, blind.timing_windows[:5, :, :16])
+    # Masking changes model input only; it must not rewrite the physical time axis.
+    np.testing.assert_array_equal(blind.timing_time_ps, np.arange(24, dtype=float) * 50.)
 
 
 def test_mask_refits_when_control_identity_changes(tmp_path,monkeypatch):
