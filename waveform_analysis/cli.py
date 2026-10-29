@@ -66,6 +66,12 @@ def _parser() -> argparse.ArgumentParser:
                        help="Fixed sampling seed shared across models (default: 42)")
     tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
     tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
+    tshap.add_argument("--imputation", choices=("reference", "hermite_ppca"), default="reference",
+                       help="Window perturbation: original reference swapping or Hermite-PPCA imputation")
+    tshap.add_argument("--imputer-components", type=int, default=32)
+    tshap.add_argument("--imputer-fit-events", type=int, default=2000)
+    tshap.add_argument("--imputer-tuning-events", type=int, default=300)
+    tshap.add_argument("--imputer-slope-points", type=int, default=5)
 
     tshap_local = sub.add_parser(
         "explain-tshap-local",
@@ -108,7 +114,11 @@ def main() -> None:
                 output_root=args.output_root, max_events=args.max_events, n_baselines=args.n_baselines,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed, roi=args.roi,
-                overwrite=args.overwrite, logger=logger):
+                overwrite=args.overwrite, imputation=args.imputation,
+                imputer_components=args.imputer_components,
+                imputer_fit_events=args.imputer_fit_events,
+                imputer_tuning_events=args.imputer_tuning_events,
+                imputer_slope_points=args.imputer_slope_points, logger=logger):
             print(output)
         return
     if args.command == "explain-tshap-local":
