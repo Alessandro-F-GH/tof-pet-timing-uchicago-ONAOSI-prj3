@@ -338,6 +338,8 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         dataset_mean_difference_mv=np.zeros(waveform_mv.shape[1], dtype=np.float64),
         led_baseline_mv=np.asarray([5.0, 2.0]),
         attribution=attribution,
+        window_starts=np.asarray([0, 2]), window_scores=np.asarray([[2.0, -1.0], [-2.0, 1.0]]),
+        window_samples=2,
         group="typical",
         event_id=123,
         target_ps=10.0,
@@ -434,6 +436,9 @@ def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_pa
         board_name="FBK",
         n_events=64,
         window_samples=80,
+        window_starts=np.asarray([0, 80]),
+        signed_positive=np.ones((2, 2)),
+        signed_negative=-np.ones((2, 2)),
     )
     output = tmp_path / "global_importance.png"
     assert output.is_file()
@@ -473,6 +478,9 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
         tmp_path / "attributions.npz",
         time_ps=time_ps,
         window_attribution_ps=maps,
+        raw_window_scores_ps=np.asarray([[[2.0, -1.0], [-2.0, 1.0]],
+                                        [[-1.0, 2.0], [1.0, -2.0]]]),
+        window_starts=np.asarray([0, 2]),
         mean_waveform_mv=waveform_mv,
     )
     (tmp_path / "summary.json").write_text(json.dumps({
@@ -492,6 +500,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
     assert summary["global_plot"]["output_formats"] == ["PNG (240 dpi)", "PDF (vector)"]
     assert (tmp_path / "global_importance.png").is_file()
+    assert (tmp_path / "signed_window_importance.csv").is_file()
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == len(time_ps)
