@@ -71,18 +71,18 @@ def bootstrap_rmse(event_sse, values_per_event, seed, replicates=500):
 
 
 def physical_unit_scale(values):
-    """RMSE values are stored in mV; use nV for any scale below 1 mV."""
+    """RMSE values are stored in mV; use microvolts below 1 mV."""
     finite = np.asarray(values, dtype=np.float64)
     finite = finite[np.isfinite(finite) & (finite > 0)]
     largest = float(np.max(finite)) if finite.size else 1.0
-    return (1.0, "mV") if largest >= 1.0 else (1e6, "nV")
+    return (1.0, "mV") if largest >= 1.0 else (1e3, "µV")
 
 
 def format_rmse_label(value_mv):
-    """Use nV for individual bar labels below 1 mV."""
+    """Use microvolts for individual bar labels below 1 mV."""
     value_mv = float(value_mv)
     if value_mv < 1.0:
-        return f"{value_mv * 1e6:.3g} nV"
+        return f"{value_mv * 1e3:.3g} µV"
     return f"{value_mv:.3g} mV"
 
 
@@ -112,11 +112,14 @@ def save_position_plot(rows, output, label, channel):
     # A figure-level x label remains at the bottom with no competing legend.
     fig.suptitle(f"{label} - {channel.capitalize()} channel", y=0.99)
     fig.legend(handles, [LABELS[m] for m in METHODS],
-               loc="upper center", bbox_to_anchor=(0.5, 0.935),
-               ncol=len(METHODS), fontsize="small", frameon=False)
+               loc="upper center", bbox_to_anchor=(0.5, 0.94),
+               ncol=len(METHODS), fontsize=10, frameon=False)
     axes[0].set_ylabel(f"Reconstruction RMSE ({unit})", labelpad=5)
-    fig.supxlabel("Masked interval start (ns)", y=0.02)
-    fig.tight_layout(rect=(0.01, 0.07, 0.99, 0.82))
+    fig.supxlabel("Masked interval start (ns)", y=0.068)
+    # Fixed figure margins keep the subplot titles close to the shared legend,
+    # with the shared x-axis label just below the tick labels.
+    fig.subplots_adjust(left=0.09, right=0.985, bottom=0.165,
+                        top=0.825, wspace=0.08)
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{label}_{channel}")
     fig.savefig(output / f"rmse_by_position_{safe}.pdf", bbox_inches="tight")
     fig.savefig(output / f"rmse_by_position_{safe}.png", dpi=180, bbox_inches="tight")
@@ -423,7 +426,7 @@ def main():
         "methods": list(METHODS), "method_labels": LABELS,
         "mask_width_ns": args.mask_ns, "seed": args.seed,
         "n_baselines": args.n_baselines,
-        "signal_units": "mV; plot values use nV if all RMSE values are below 1 mV",
+        "signal_units": "mV; plot values use µV if all RMSE values are below 1 mV",
         "bootstrap_replicates": args.bootstrap,
         "warning": "Results are valid only if each results path resolves to the intended development dataset and split.",
     }
