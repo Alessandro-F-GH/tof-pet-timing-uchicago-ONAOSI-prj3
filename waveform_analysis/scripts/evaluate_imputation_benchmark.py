@@ -104,9 +104,11 @@ def save_position_plot(rows, output, label, channel):
             # NaNs break the line over excluded timing masks; log axes cannot
             # meaningfully display zero or negative reconstruction errors.
             y[~np.isfinite(y) | (y <= 0)] = np.nan
-            (line,) = ax.plot(x, y, label=LABELS[method], lw=1.5)
+            # Plot only evaluated mask positions. Connecting points with lines
+            # would visually interpolate across cropped/excluded time regions.
+            points = ax.scatter(x, y, label=LABELS[method], s=18, zorder=3)
             if detector == 1:
-                handles.append(line)
+                handles.append(points)
         ax.set_title(f"Detector {detector}")
         ax.set_yscale("log")
         ax.grid(alpha=0.25, which="both")
