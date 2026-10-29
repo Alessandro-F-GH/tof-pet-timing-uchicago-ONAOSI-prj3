@@ -1696,6 +1696,10 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
             try:
                 with diagnostic_random_state():
                     fitted = load_fitted_model(spec, model_dir, run["best"]["parameters"], config)
+                    sample_mask = (
+                        None if fitted.sample_mask is None
+                        else np.asarray(fitted.sample_mask, dtype=bool).copy()
+                    )
                     try:
                         predict = lambda x: _predict_bounded(spec, fitted, x, predict_batch_size)
                         # Preprocessing/masks, fitted feature map and clipping must be unchanged.
@@ -1704,8 +1708,10 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                         replay = predict(waves)
                         if not np.allclose(original, replay, atol=1e-4, rtol=1e-6):
                             raise ValueError("TSHAP model adapter does not reproduce saved inference")
-                        explainer = _new_explainer(window_samples, stride_samples, roi,
-                                                   predict_batch_size, imputer=imputer)
+                        explainer = _new_explainer(
+                            window_samples, stride_samples, roi,
+                            predict_batch_size, imputer=imputer, sample_mask=sample_mask,
+                        )
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         raw_scores = []
                         window_starts = None
@@ -1796,6 +1802,9 @@ def explain_tshap(results, *, models=None, cache_root=None, output_root=None, ma
                     }} if imputer is not None else {}),
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
+                    "sample_mask_window_filter": _sample_mask_window_summary(
+                        sample_mask, time_ps.size, window_samples, stride_samples, window_starts
+                    ),
                     "n_explained_events": len(event_ids),
                     "n_control_baselines": 0, "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
@@ -2002,6 +2011,10 @@ def explain_tshap_local(
             try:
                 with diagnostic_random_state():
                     fitted = load_fitted_model(spec, model_dir, run["best"]["parameters"], config)
+                    sample_mask = (
+                        None if fitted.sample_mask is None
+                        else np.asarray(fitted.sample_mask, dtype=bool).copy()
+                    )
                     try:
                         # Predictions over the full blind population are needed only
                         # to select cases; the expensive TSHAP stage explains 10 by default.
@@ -2090,6 +2103,7 @@ def explain_tshap_local(
                         explainer = _new_explainer(
                             window_samples, stride_samples, roi=False,
                             predict_batch_size=predict_batch_size, imputer=imputer,
+                            sample_mask=sample_mask,
                         )
                         local_maps = np.empty_like(waves, dtype=np.float64)
                         local_scores = []
@@ -2198,6 +2212,9 @@ def explain_tshap_local(
                     "imputer_cache_identity": imputer_metadata["cache_identity"],
                     "imputer_cache_file": imputer_metadata["cache_file"],
                     "waveform_samples": int(time_ps.size),
+                    "sample_mask_window_filter": _sample_mask_window_summary(
+                        sample_mask, time_ps.size, window_samples, stride_samples, window_starts
+                    ),
                     "median_predicted_correction_ps": median_prediction,
                     "group_counts": group_counts,
                     "selection": {
