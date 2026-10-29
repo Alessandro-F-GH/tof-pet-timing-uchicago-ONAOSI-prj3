@@ -16,7 +16,6 @@ from .exceptions import ConfigError
 from pathlib import Path
 
 from waveform_analysis.core.io import canonical_hash
-from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, normalize_ridge_space
 
 CHANNEL_MODES = ("energy_to_energy", "timing_to_timing")
 MODEL_SELECTION_METRICS = ("rmse", "ctr")
@@ -123,13 +122,6 @@ def _model(owner: Path, raw: str | dict[str, Any], root: Path) -> dict[str, Any]
         raise ConfigError(
             "model optimization must not define its own seed; use protocol.seed"
         )
-    if name in LINEAR_RIDGE_MODELS:
-        try:
-            space = normalize_ridge_space(space, name)
-        except (ValueError, TypeError, KeyError) as exc:
-            raise ConfigError(
-                f"Invalid RidgeCV configuration for {name}: {exc}"
-            ) from exc
     return {"name": name, "space": space}
 
 
@@ -507,10 +499,7 @@ def load_batch_config(
                 if _excluded(model_name, mode, str(window_name), rules):
                     continue
                 model = _model(source, model_raw, root)
-                if (
-                    model_name not in LINEAR_RIDGE_MODELS
-                    and normalized_protocol["cross_validation"] is None
-                ):
+                if normalized_protocol["cross_validation"] is None:
                     raise ConfigError(
                         f"protocol.cross_validation is required for {model_name}"
                     )

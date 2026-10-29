@@ -58,8 +58,8 @@ class ModelSpec:
     inplace_fit_input: bool = False
 
     def __post_init__(self) -> None:
-        if self.selection_method not in {"development_cv", "ridge_cv"}:
-            raise ValueError("selection_method must be development_cv or ridge_cv")
+        if self.selection_method != "development_cv":
+            raise ValueError("selection_method must be development_cv")
         formulation = str(self.estimator_formulation).strip().lower()
         if formulation not in {"shared", "direct"}:
             raise ValueError(

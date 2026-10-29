@@ -144,8 +144,6 @@ def plot_run_cv(run, cfg):
         return None
     rows = _csv(path)
     manifest = read_run_manifest(run)
-    if manifest.get("selection_method") == "ridge_cv":
-        return None
     metric = manifest["cv"]["metric"]
     mean = f"{metric}_mean_ps"
     std = f"{metric}_std_ps"

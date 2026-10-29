@@ -3,7 +3,6 @@ import json, logging, pickle, shutil
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.dependencies import stage_fingerprint as _stage
-from waveform_analysis.core.ridge import RIDGE_CV_VERSION
 from waveform_analysis.data.feature_cache import (
     prepare_frozen_features,
     prepare_frozen_transform,
@@ -500,7 +499,7 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
         config["mode"],
         config.get("window_name"),
         spec.name,
-        "ridge_cv" if spec.selection_method == "ridge_cv" else best["candidate_id"],
+        best["candidate_id"],
         "final_fit",
     )
     fitted = fit_on_indices(
@@ -544,144 +543,13 @@ def _model(
             "n_train": int(development.n_events),
             "seed": int(seed),
             "model_saved": bool(config["save_model"]),
-            **(
-                {
-                    "selection_method": "ridge_cv",
-                    "internal_cv_mse_ps2": fitted.artifact.metadata[
-                        "internal_cv_mse_ps2"
-                    ],
-                }
-                if spec.selection_method == "ridge_cv"
-                else {}
-            ),
+
         }
     )
     store.mark_stage(
         "final_fit", fp, metadata={"model_saved": bool(config["save_model"])}
     )
     return fitted
-
-
-def _ridge_cv_selection_and_fit(
-    store,
-    spec,
-    space,
-    config,
-    development,
-    logger,
-    frozen_development=None,
-):
-    """Select lambda and fit once on all development events using sklearn CV.
-
-    Existing stage names are retained for resume compatibility; the outer CV
-    stage is explicitly marked skipped and writes no fold/candidate scores.
-    """
-    cv_fp = _stage(
-        "cv",
-        {
-            "selection_method": "ridge_cv",
-            "version": RIDGE_CV_VERSION,
-            "development": development.manifest["analysis_protocol_identity"],
-            "model": config["model"],
-            "frozen_transform": None
-            if frozen_development is None
-            else frozen_development.identity,
-        },
-    )
-    cv_status = _sync(store, "cv", cv_fp, logger=logger)
-    if cv_status != "complete":
-        logger.info(
-            "RidgeCV CV stage | status=%s fingerprint=%s development_identity=%s "
-            "model=%s ridge_cv_version=%s",
-            cv_status,
-            cv_fp,
-            development.manifest.get("analysis_protocol_identity"),
-            spec.name,
-            RIDGE_CV_VERSION,
-        )
-        store.mark_stage(
-            "cv", cv_fp, metadata={"skipped": True, "selection_method": "ridge_cv"}
-        )
-    selection_fp = _stage("selection", {"ridge_cv": cv_fp})
-    selection_status = _sync(store, "selection", selection_fp)
-    best = store.read_json(store.best_path) if selection_status == "complete" else None
-    final_fp = _stage("final_fit", {"selection": selection_fp, "seed": config["seed"]})
-    final_status = _sync(store, "final_fit", final_fp)
-    fitted = None
-    model_available = not config["save_model"] or saved_model_complete(
-        spec, store.model_dir
-    )
-    logger.info(
-        "RidgeCV resume state | selection=%s final_fit=%s best_available=%s "
-        "model_available=%s save_model=%s model_dir=%s",
-        selection_status,
-        final_status,
-        isinstance(best, dict),
-        model_available,
-        bool(config["save_model"]),
-        store.model_dir,
-    )
-    if not isinstance(best, dict) or final_status != "complete" or not model_available:
-        store.invalidate_from("final_fit")
-        logger.info(
-            "RidgeCV | %s | selecting lambda and fitting full development set | n=%d",
-            _model_label(spec.name),
-            int(development.n_events),
-        )
-        provisional = {"candidate_id": "ridge_cv", "parameters": {}}
-        fitted, seed = _fit_final(
-            spec, space, config, development, provisional, logger, frozen_development
-        )
-        metadata = fitted.artifact.metadata
-        parameters = {"ridge_alpha": metadata["ridge_alpha"]}
-        identifier = candidate_id(parameters)
-        best = {
-            "candidate_id": identifier,
-            "parameters": parameters,
-            "selection_method": "ridge_cv",
-            "selection_metric": "neg_mean_squared_error",
-            "selected_from": "development_ridge_cv_only",
-            "folds": 0,
-            "internal_cv": metadata["internal_cv"],
-            "internal_cv_mse_ps2": metadata["internal_cv_mse_ps2"],
-            "ridge_cv": metadata["ridge_cv"],
-            "n_train": int(development.n_events),
-            "validation_ctr_mean_ps": None,
-            "validation_ctr_std_ps": None,
-            "validation_rmse_mean_ps": None,
-            "validation_rmse_std_ps": None,
-        }
-        if config["save_model"]:
-            store.save_model_artifact(
-                spec, fitted, parameters, final_fit_fingerprint=final_fp
-            )
-        store.write_best(best)
-        store.write_final_fit(
-            {
-                "candidate_id": identifier,
-                "parameters": parameters,
-                "training_dataset_role": "development",
-                "n_train": int(development.n_events),
-                "seed": int(seed),
-                "model_saved": bool(config["save_model"]),
-                "selection_method": "ridge_cv",
-                "internal_cv_mse_ps2": metadata["internal_cv_mse_ps2"],
-            }
-        )
-        store.mark_stage(
-            "selection", selection_fp, metadata={"selection_method": "ridge_cv"}
-        )
-        store.mark_stage(
-            "final_fit", final_fp, metadata={"model_saved": bool(config["save_model"])}
-        )
-        logger.info(
-            "RidgeCV selected | lambda=%.6g | internal CV MSE=%.6g ps²",
-            parameters["ridge_alpha"],
-            metadata["internal_cv_mse_ps2"],
-        )
-    else:
-        logger.info("RidgeCV | reusing full-development fit and selected lambda")
-    return cv_fp, selection_fp, final_fp, best, fitted
 
 
 def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
@@ -995,26 +863,14 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
         "blind_role": "final_one_time_evaluation_only",
         "blind_used_in_selection": False,
         "selection_method": spec.selection_method,
-        "cv": (
-            {
-                "enabled": False,
-                "selection_method": "ridge_cv",
-                "internal_cv": best["internal_cv"],
-            }
-            if spec.selection_method == "ridge_cv"
-            else config["cross_validation"]
-        ),
+        "cv": config["cross_validation"],
         "selected_candidate_id": best["candidate_id"],
         "selected_hyperparameters": best["parameters"],
         "validation_ctr_mean_ps": best["validation_ctr_mean_ps"],
         "validation_ctr_std_ps": best["validation_ctr_std_ps"],
         "validation_rmse_mean_ps": best["validation_rmse_mean_ps"],
         "validation_rmse_std_ps": best["validation_rmse_std_ps"],
-        "validation_std_interpretation": (
-            None
-            if spec.selection_method == "ridge_cv"
-            else "fold-to-fold development validation variability"
-        ),
+        "validation_std_interpretation": "fold-to-fold development validation variability",
         "blind_bootstrap_interpretation": "event-level uncertainty conditional on final fitted model; no retraining",
         "bootstrap_unit": "blind_event",
         "single_configured_seed": int(config["seed"]),
@@ -1073,20 +929,9 @@ def run_study(config, *, logger=None):
             cache_root=config["preprocessing"]["cache_dir"],
             logger=logger,
         )
-    if spec.selection_method == "ridge_cv":
-        cv_fp, selection_fp, final_fp, best, fitted = _ridge_cv_selection_and_fit(
-            store,
-            spec,
-            space,
-            config,
-            development,
-            logger,
-            frozen_development,
-        )
-    else:
-        cv_fp, selection_fp, final_fp, best, fitted = _outer_cv_selection_and_fit(
-            store, spec, space, config, development, logger, frozen_transform, frozen_development
-        )
+    cv_fp, selection_fp, final_fp, best, fitted = _outer_cv_selection_and_fit(
+        store, spec, space, config, development, logger, frozen_transform, frozen_development
+    )
     blind, blind_fp, fitted = _evaluate_blind(
         store, spec, space, config, control, development, best, final_fp, fitted,
         logger, frozen_transform, frozen_development,

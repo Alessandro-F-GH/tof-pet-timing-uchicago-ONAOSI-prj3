@@ -1,9 +1,8 @@
 """Stage identity and invalidation definitions used by planning and execution."""
 from waveform_analysis.core.io import canonical_hash
-from waveform_analysis.core.ridge import LINEAR_RIDGE_MODELS, RIDGE_CV_VERSION
 
-# Preserve existing identity payloads so moving code does not change seeds/caches.
-RUN_IDENTITY_VERSION = 53
+# Increment when stage-identity semantics change; the new CV pipeline invalidates old Ridge stages.
+RUN_IDENTITY_VERSION = 54
 STAGE_ORDER = ("cv", "selection", "final_fit", "blind", "bootstrap", "xai", "plots")
 INVALIDATES = {
     "cv": STAGE_ORDER,
@@ -53,10 +52,6 @@ def planner_fingerprints(config):
         "model": config["model"],
         "seed": config["seed"],
     }
-    if config["model"]["name"] in LINEAR_RIDGE_MODELS:
-        cv_dependencies.pop("cross_validation")
-        cv_dependencies["selection_method"] = "ridge_cv"
-        cv_dependencies["ridge_cv_version"] = RIDGE_CV_VERSION
     cv = canonical_hash(cv_dependencies)
     final = canonical_hash(
         {"cv": cv, "development": dev, "model": config["model"], "seed": config["seed"]}
