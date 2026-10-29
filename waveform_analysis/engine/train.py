@@ -273,7 +273,10 @@ def fit_on_indices(
         # FrozenFeatureSet.rows uses advanced indexing and owns its result.
         # Only this disposable copy may be centered in place by Ridge.
         cfg["_fit_input_owned"] = bool(
-            x.flags.writeable and not np.shares_memory(x, frozen_features.features)
+            x.flags.writeable and (
+                frozen_features._features is None
+                or not np.shares_memory(x, frozen_features._features)
+            )
         )
     cfg["_early_stopping_seed"] = int(seed)
     cfg["_input_time_ps"] = np.asarray(time, np.float64)
