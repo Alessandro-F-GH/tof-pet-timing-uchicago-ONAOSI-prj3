@@ -494,7 +494,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 14
+    assert summary["plot_version"] == 16
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
@@ -508,6 +508,50 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     assert all(float(row["mean_positive_contribution_ps"]) >= 0 for row in rows)
     assert all(float(row["mean_negative_contribution_ps"]) <= 0 for row in rows)
 
+
+
+def test_direct_global_plot_includes_aggregated_signed_histogram_and_csv(tmp_path):
+    pytest.importorskip("matplotlib")
+    import csv
+    from waveform_analysis.engine.tshap_explainer import (
+        _plot_global, _write_signed_csv, _signed_means,
+    )
+
+    time_ps = np.arange(8, dtype=np.float64) * 1000.0
+    starts = np.asarray([0, 2, 4, 6])
+    raw_scores = np.asarray([
+        [[2.0, -1.0, 3.0, -2.0], [-1.0, 2.0, -1.0, 1.0]],
+        [[-3.0, 1.0, 2.0, -1.0], [1.0, -2.0, -3.0, 2.0]],
+    ])
+    detector_positive, detector_negative = _signed_means(raw_scores)
+    aggregate_positive, aggregate_negative = _signed_means(raw_scores.sum(axis=1))
+    _write_signed_csv(
+        tmp_path, time_ps, starts, detector_positive, detector_negative, 2, "direct",
+        aggregated_positive=aggregate_positive, aggregated_negative=aggregate_negative,
+    )
+    rows = list(csv.DictReader((tmp_path / "signed_window_importance.csv").open(newline="", encoding="utf-8")))
+    assert {row["detector_or_shared"] for row in rows} == {"detector_1", "detector_2", "aggregated"}
+    grouped = [row for row in rows if row["detector_or_shared"] == "aggregated"]
+    assert len(grouped) == len(starts)
+    np.testing.assert_allclose(
+        [float(row["mean_positive_contribution_ps"]) for row in grouped],
+        aggregate_positive,
+    )
+    np.testing.assert_allclose(
+        [float(row["mean_negative_contribution_ps"]) for row in grouped],
+        aggregate_negative,
+    )
+
+    _plot_global(
+        tmp_path, time_ps, np.ones((2, 8)), np.ones((2, 8)),
+        model_name="direct_multirocket", formulation="direct", mode="energy_to_energy",
+        window_name="wide", board_name="UC", n_events=2, window_samples=2,
+        window_starts=starts, signed_positive=detector_positive,
+        signed_negative=detector_negative, aggregated_positive=aggregate_positive,
+        aggregated_negative=aggregate_negative,
+    )
+    assert (tmp_path / "global_importance.png").is_file()
+    assert (tmp_path / "global_importance.pdf").is_file()
 
 def test_cli_exposes_only_tshap_interpretability_commands():
     from waveform_analysis.cli import _parser
