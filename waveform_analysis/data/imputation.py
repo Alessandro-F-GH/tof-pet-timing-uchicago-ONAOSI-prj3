@@ -21,8 +21,12 @@ def root_relative(path):
     return path if path.is_absolute() else ROOT / path
 
 
-def load_wide_development(results, channel, cache_root=None):
-    """Load prepared wide-window development waveforms for one channel."""
+def load_wide_development(results, channel, cache_root=None, *, return_transform=False):
+    """Load prepared wide-window development waveforms for one channel.
+
+    If ``return_transform`` is true, also return the frozen input transform so
+    diagnostics can be expressed in the original configured signal units.
+    """
     matches = []
     for run in discover_runs(results):
         directory = Path(run["directory"])
@@ -40,6 +44,11 @@ def load_wide_development(results, channel, cache_root=None):
     dataset = PreparedCacheLookup().find(cache, "development", cfg, manifest)
     waves = dataset.energy_windows if channel == "energy" else dataset.timing_windows
     times = dataset.energy_time_ps if channel == "energy" else dataset.timing_time_ps
+    transform = dataset.energy_transform if channel == "energy" else dataset.timing_transform
     if waves is None or times is None or waves.ndim != 3 or waves.shape[1] != 2:
         raise ValueError("Expected development waveforms [events, 2 detectors, samples]")
+    if return_transform:
+        if transform is None:
+            raise ValueError(f"Missing frozen {channel} input transform")
+        return waves, np.asarray(times), directory, dataset.manifest, transform
     return waves, np.asarray(times), directory, dataset.manifest
