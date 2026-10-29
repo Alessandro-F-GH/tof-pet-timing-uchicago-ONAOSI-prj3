@@ -28,16 +28,39 @@ class FrozenTransform:
 
 @dataclass(frozen=True)
 class FrozenFeatureSet:
-    features: np.ndarray
+    # Legacy combined matrices are retained as one mmap. New composite caches
+    # keep their feature families in separate read-only mmaps.
+    _features: np.ndarray | None
     sample_mask: np.ndarray
     transform: FittedFeatureTransform
     identity: str
     role: str
+    feature_blocks: tuple[np.ndarray, ...] = ()
+    block_names: tuple[str, ...] = ()
+
+    @property
+    def features(self) -> np.ndarray:
+        if self._features is not None:
+            return self._features
+        # Compatibility accessor for diagnostics/tests; training uses rows()
+        # and therefore never materializes the full concatenated matrix.
+        return np.concatenate(self.feature_blocks, axis=1)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        if self._features is not None:
+            return self._features.shape
+        return (self.feature_blocks[0].shape[0],
+                sum(block.shape[1] for block in self.feature_blocks))
 
     def rows(self, indices) -> np.ndarray:
-        return np.asarray(
-            self.features[np.asarray(indices, dtype=np.int64)],
-            dtype=np.float32,
+        indices = np.asarray(indices, dtype=np.int64)
+        if self._features is not None:
+            return np.asarray(self._features[indices], dtype=np.float32)
+        return np.concatenate(
+            [np.asarray(block[indices], dtype=np.float32)
+             for block in self.feature_blocks],
+            axis=1,
         )
 
 
@@ -188,6 +211,116 @@ def prepare_frozen_features(
     store = ArtifactStore(config["preprocessing"].get(
         "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
     ))
+
+    # Prefer a legacy combined matrix when one already exists. Its recipe is
+    # intentionally unchanged so caches created before block storage remain valid.
+    combined = store.lookup(recipe)
+    if combined.status == "hit":
+        features = store.open_array(combined.reference, "features.npy")
+        if features.shape[0] != int(dataset.n_events) or features.ndim != 2:
+            raise ValueError("Cached feature matrix has incompatible shape")
+        if logger:
+            logger.info(
+                "Model input artifact | %s | %s | events=%d | features=%d | id=%s",
+                spec.name.replace("_", " ").title(), role, features.shape[0],
+                features.shape[1], combined.reference.product_id[:12],
+            )
+        return FrozenFeatureSet(
+            features, np.asarray(frozen_transform.sample_mask, dtype=bool),
+            frozen_transform.transform, combined.reference.product_id, str(role),
+        )
+
+    transform_spec = spec.feature_transform
+    if transform_spec.block_names and transform_spec.transform_block is not None:
+        block_arrays = []
+        block_ids = []
+        chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
+        if spec.bounded_transform_batches:
+            chunk_size = min(
+                chunk_size,
+                int(frozen_transform.transform.artifact.metadata["batch_size"]),
+            )
+        for block_name in transform_spec.block_names:
+            block_recipe = ProductRecipe(
+                "feature-blocks",
+                {
+                    "schema_version": 1,
+                    "transform_identity": frozen_transform.identity,
+                    "dataset_identity": dataset_identity,
+                    "role": str(role),
+                    "mode": mode,
+                    "block": block_name,
+                },
+                parents=(frozen_transform.identity,),
+                implementation=f"{transform_spec.name}:{block_name}:feature-block-v1",
+            )
+
+            def build_block(directory, block_name=block_name):
+                first = np.asarray(
+                    transform_spec.transform_block(
+                        frozen_transform.transform.artifact,
+                        _pair(dataset, mode, np.asarray([0], dtype=np.int64)),
+                        block_name,
+                    ),
+                    dtype=np.float32,
+                )
+                if first.ndim != 2 or first.shape[0] != 1 or not np.all(np.isfinite(first)):
+                    raise RuntimeError(f"{spec.name}/{block_name} produced invalid features")
+                count = int(first.shape[1])
+                matrix = np.lib.format.open_memmap(
+                    directory / "features.npy", mode="w+", dtype=np.float32,
+                    shape=(int(dataset.n_events), count),
+                )
+                try:
+                    matrix[0:1] = first
+                    for start in range(1, int(dataset.n_events), chunk_size):
+                        stop = min(start + chunk_size, int(dataset.n_events))
+                        transformed = np.asarray(
+                            transform_spec.transform_block(
+                                frozen_transform.transform.artifact,
+                                _pair(dataset, mode, np.arange(start, stop, dtype=np.int64)),
+                                block_name,
+                            ),
+                            dtype=np.float32,
+                        )
+                        if transformed.shape != (stop - start, count) or not np.all(np.isfinite(transformed)):
+                            raise RuntimeError(f"{spec.name}/{block_name} produced invalid feature batches")
+                        matrix[start:stop] = transformed
+                    matrix.flush()
+                finally:
+                    mmap = getattr(matrix, "_mmap", None)
+                    if mmap is not None:
+                        mmap.close()
+                    del matrix
+
+            block_ref = store.get_or_build(
+                block_recipe, build_block,
+                metadata={"model": spec.name, "block": block_name,
+                          "role": str(role), "events": int(dataset.n_events),
+                          "dataset_identity": dataset_identity},
+            )
+            block = store.open_array(block_ref, "features.npy")
+            if block.ndim != 2 or block.shape[0] != int(dataset.n_events):
+                raise ValueError(f"Cached feature block {block_name} has incompatible shape")
+            block_arrays.append(block)
+            block_ids.append(block_ref.product_id)
+        identity = canonical_hash({
+            "transform_identity": frozen_transform.identity,
+            "dataset_identity": dataset_identity,
+            "role": str(role), "mode": mode,
+            "blocks": dict(zip(transform_spec.block_names, block_ids)),
+        })
+        if logger:
+            logger.info(
+                "Model input blocks | %s | %s | events=%d | blocks=%s",
+                spec.name.replace("_", " ").title(), role, int(dataset.n_events),
+                ", ".join(f"{name}={array.shape[1]}" for name, array in zip(transform_spec.block_names, block_arrays)),
+            )
+        return FrozenFeatureSet(
+            None, np.asarray(frozen_transform.sample_mask, dtype=bool),
+            frozen_transform.transform, identity, str(role),
+            tuple(block_arrays), tuple(transform_spec.block_names),
+        )
 
     def build(directory):
         chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
