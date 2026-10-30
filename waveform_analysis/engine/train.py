@@ -546,6 +546,17 @@ def _load_pickle_feature_transform(spec, directory, config=None, sample_mask=Non
     if contract is not None:
         if contract.get("fit_role") != spec.feature_transform.fit_role:
             raise ValueError(f"Shared transform alias {alias} has an incompatible fit role")
+        expected_manifest = config.get("_tshap_run_manifest", {})
+        expected_control = (
+            expected_manifest.get("dataset_populations", {}).get("control", {})
+            .get("analysis_protocol_identity")
+        )
+        if expected_control is not None and contract.get("fit_identity") != expected_control:
+            raise ValueError(f"Shared transform alias {alias} was fitted on a different control population")
+        if contract.get("batch_seed") is not None and int(contract["batch_seed"]) != int(config["seed"]):
+            raise ValueError(f"Shared transform alias {alias} was fitted with a different batch seed")
+        if contract.get("mode") != config.get("mode") or contract.get("window_ns") != config.get("window_ns"):
+            raise ValueError(f"Shared transform alias {alias} has an incompatible mode/window")
         if sample_mask is not None and not np.array_equal(
             np.asarray(contract.get("sample_mask"), dtype=bool),
             np.asarray(sample_mask, dtype=bool),
