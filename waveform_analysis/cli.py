@@ -75,9 +75,12 @@ def _parser() -> argparse.ArgumentParser:
                               help="Explain every complete model run below this result root")
     tshap_source.add_argument("--model-dir", type=Path,
                               help="Explain one run: directory containing metadata/manifest.json, or its local model/ subdirectory")
-    tshap.add_argument("--models", nargs="+", metavar="MODEL")
-    tshap.add_argument("--ml-window", choices=("onishi", "wide", "all"), default=None,
-                       help="Window filter; defaults to wide for --results and to the selected run's window for --model-dir")
+    tshap.add_argument("--models", nargs="+", metavar="MODEL",
+                       help="One or more model names to explain")
+    tshap.add_argument("--windows", nargs="+", choices=("onishi", "wide", "all"), default=None,
+                       metavar="WINDOW", help="One or more ML windows to explain (onishi, wide; or all)")
+    tshap.add_argument("--mode", choices=("energy", "timing"),
+                       help="Restrict the batch to energy or timing runs")
     tshap_cache = tshap.add_mutually_exclusive_group()
     tshap_cache.add_argument("--cache-root", type=Path,
                              help="Shared prepare-cache bundle (uses preprocessing/ and artifact_store/)")
@@ -106,9 +109,12 @@ def _parser() -> argparse.ArgumentParser:
                                     help="Explain every complete model run below this result root")
     tshap_local_source.add_argument("--model-dir", type=Path,
                                     help="Explain one run: directory containing metadata/manifest.json, or its local model/ subdirectory")
-    tshap_local.add_argument("--models", nargs="+", metavar="MODEL")
-    tshap_local.add_argument("--ml-window", choices=("onishi", "wide", "all"), default=None,
-                             help="Window filter; defaults to wide for --results and to the selected run's window for --model-dir")
+    tshap_local.add_argument("--models", nargs="+", metavar="MODEL",
+                             help="One or more model names to explain")
+    tshap_local.add_argument("--windows", nargs="+", choices=("onishi", "wide", "all"), default=None,
+                             metavar="WINDOW", help="One or more ML windows to explain (onishi, wide; or all)")
+    tshap_local.add_argument("--mode", choices=("energy", "timing"),
+                             help="Restrict the batch to energy or timing runs")
     tshap_local_cache = tshap_local.add_mutually_exclusive_group()
     tshap_local_cache.add_argument("--cache-root", type=Path,
                                    help="Shared prepare-cache bundle (uses preprocessing/ and artifact_store/)")
@@ -152,7 +158,8 @@ def main() -> None:
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
         for output in explain_tshap(args.results, model_dir=args.model_dir, models=args.models,
-                ml_window=args.ml_window, cache_root=args.cache_root, artifact_root=args.artifact_root,
+                ml_window=args.windows, mode=args.mode,
+                cache_root=args.cache_root, artifact_root=args.artifact_root,
                 output_root=args.output_root, max_events=args.max_events,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed, roi=args.roi,
@@ -166,7 +173,8 @@ def main() -> None:
     if args.command == "explain-tshap-local":
         from .engine.tshap_explainer import explain_tshap_local
         for output in explain_tshap_local(
-                args.results, model_dir=args.model_dir, models=args.models, ml_window=args.ml_window,
+                args.results, model_dir=args.model_dir, models=args.models,
+                ml_window=args.windows, mode=args.mode,
                 cache_root=args.cache_root, artifact_root=args.artifact_root, output_root=args.output_root, events_per_group=args.events_per_group,
                 extreme_margin=args.extreme_margin,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
