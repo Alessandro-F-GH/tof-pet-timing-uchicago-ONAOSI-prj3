@@ -10,6 +10,7 @@ import numpy as np
 from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import transform_alias, feature_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
@@ -142,7 +143,7 @@ def prepare_frozen_transform(
     )
     store = ArtifactStore(config["preprocessing"].get("artifact_root", Path(cache_root) / "artifact_store"))
 
-    def build(directory):
+    def build(directory, effective_recipe=None):
         if fit_role == "control":
             fit_pair = _pair(control_dataset, mode)
         else:
@@ -163,14 +164,15 @@ def prepare_frozen_transform(
         if isinstance(metadata, dict):
             metadata["transform_fit_role"] = fit_role
             metadata["input_samples"] = input_samples
-            metadata["transform_identity"] = recipe.product_id
+            metadata["transform_identity"] = (effective_recipe or recipe).product_id
             metadata["control_analysis_protocol_identity"] = fit_identity
         with (directory / "transform.pkl").open("wb") as stream:
             pickle.dump(artifact, stream, protocol=pickle.HIGHEST_PROTOCOL)
             stream.flush()
             os.fsync(stream.fileno())
 
-    reference = store.get_or_build(recipe, build, metadata={
+    alias = transform_alias(cache_root_from_config(config, cache_root), config, spec.feature_transform.name, fit_role)
+    reference = get_or_build_named(store, recipe, alias, build, metadata={
         "fit_role": fit_role, "model": spec.name, "transform": spec.feature_transform.name,
     })
     with (reference.payload_path("transform.pkl")).open("rb") as stream:
@@ -255,7 +257,7 @@ def prepare_frozen_features(
                 implementation=f"{transform_spec.name}:{block_name}:feature-block-v1",
             )
 
-            def build_block(directory, block_name=block_name):
+            def build_block(directory, effective_recipe=None, block_name=block_name):
                 first = np.asarray(
                     transform_spec.transform_block(
                         frozen_transform.transform.artifact,
@@ -293,8 +295,9 @@ def prepare_frozen_features(
                         mmap.close()
                     del matrix
 
-            block_ref = store.get_or_build(
-                block_recipe, build_block,
+            block_alias = feature_alias(cache_root_from_config(config, cache_root), config, transform_spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role), block_name)
+            block_ref = get_or_build_named(
+                store, block_recipe, block_alias, build_block,
                 metadata={"model": spec.name, "block": block_name,
                           "role": str(role), "events": int(dataset.n_events),
                           "dataset_identity": dataset_identity},
@@ -322,7 +325,7 @@ def prepare_frozen_features(
             tuple(block_arrays), tuple(transform_spec.block_names),
         )
 
-    def build(directory):
+    def build(directory, effective_recipe=None):
         chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
         if spec.bounded_transform_batches:
             chunk_size = min(
@@ -361,7 +364,8 @@ def prepare_frozen_features(
                 mmap.close()
             del matrix
 
-    reference = store.get_or_build(recipe, build, metadata={
+    alias = feature_alias(cache_root_from_config(config, cache_root), config, transform_spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role))
+    reference = get_or_build_named(store, recipe, alias, build, metadata={
         "model": spec.name, "role": str(role), "events": int(dataset.n_events),
         "dataset_identity": dataset_identity,
     })
