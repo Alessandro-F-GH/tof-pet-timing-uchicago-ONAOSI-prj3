@@ -19,7 +19,7 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.results import batch_root, discover_runs, resolve_run_config
+from waveform_analysis.data.results import batch_root, discover_runs, read_run, resolve_run_config
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, model_target, waveform_view
 from waveform_analysis.engine.train import (
@@ -52,6 +52,71 @@ def _matches_tshap_window(config, ml_window):
     if ml_window not in {"onishi", "wide", "all"}:
         raise ValueError("ml_window must be 'onishi', 'wide', or 'all'")
     return ml_window == "all" or str(config.get("window_name", "")).strip().lower() == ml_window
+
+
+
+
+def _resolve_model_run_directory(model_dir):
+    """Resolve a run directory from its result folder or its local model/ child.
+
+    The run directory owns the scientific metadata and model reference. A raw
+    shared ArtifactStore product is not sufficient because it has no unique
+    control/blind cohort or experiment configuration.
+    """
+    path = Path(model_dir).expanduser().resolve()
+    for candidate in (path, path.parent):
+        if (candidate / "metadata" / "manifest.json").is_file():
+            return candidate
+    raise ValueError(
+        f"Cannot identify a saved-model run from {path}. Pass the run directory "
+        "containing metadata/manifest.json, or its local model/ subdirectory; "
+        "a raw ArtifactStore model product is not a complete run."
+    )
+
+
+def _tshap_run_inputs(results=None, model_dir=None):
+    """Load either all runs under a result root or one explicitly selected run."""
+    if (results is None) == (model_dir is None):
+        raise ValueError("Specify exactly one of results or model_dir")
+    if model_dir is not None:
+        directory = _resolve_model_run_directory(model_dir)
+        return [read_run(directory)], directory
+    root = Path(results).expanduser().resolve()
+    runs = discover_runs(root)
+    return runs, root
+
+
+def _apply_tshap_cache(config, *, cache_root=None, artifact_root=None):
+    """Override run-local cache paths with a portable shared cache bundle."""
+    if cache_root is not None and artifact_root is not None:
+        raise ValueError("Specify cache_root or artifact_root, not both")
+    if cache_root is not None:
+        root = Path(cache_root).expanduser().resolve()
+        store = root / "artifact_store"
+        if not store.is_dir():
+            raise FileNotFoundError(
+                f"Shared cache artifact store not found: {store}. "
+                "Expected the prepare-cache bundle layout."
+            )
+        config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
+        config["preprocessing"]["artifact_root"] = str(store)
+    elif artifact_root is not None:
+        config["preprocessing"]["artifact_root"] = str(
+            Path(artifact_root).expanduser().resolve()
+        )
+    return config
+
+
+def _effective_tshap_window(ml_window, *, model_dir):
+    """Keep the historical Wide default for result-root scans.
+
+    With one explicitly selected model run, its own window is authoritative
+    unless the caller explicitly requests a filter.
+    """
+    if ml_window is None:
+        return "all" if model_dir is not None else "wide"
+    _matches_tshap_window({}, ml_window)
+    return ml_window
 
 
 def _choose_indices(n, cap, seed):
@@ -1278,7 +1343,7 @@ def _explanation_destination(output_root, run_directory):
     return Path(output_root).resolve() / batch.name / relative_run / "tshap"
 
 
-def explain_tshap(results, *, models=None, ml_window='wide', artifact_root=None, output_root=None, max_events=100, n_baselines=8,
+def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
                   roi=False, overwrite=False, imputation="hermite_ppca",
                   imputer_components=32, imputer_fit_events=2000,
@@ -1306,20 +1371,19 @@ def explain_tshap(results, *, models=None, ml_window='wide', artifact_root=None,
             _validate_positive_int(name, value)
         if imputer_slope_points < 2:
             raise ValueError("imputer_slope_points must be >= 2")
-    _matches_tshap_window({}, ml_window)
+    ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
     tshap_version = version("tshap")
-    results_path = Path(results).expanduser().resolve()
+    runs, source_path = _tshap_run_inputs(results, model_dir)
+    if not runs:
+        raise ValueError(f"No complete saved-model runs found in {results or model_dir}")
     if output_root is None:
         output_root = (Path.cwd() / "xai").resolve()
-        if output_root.is_relative_to(results_path):
-            output_root = results_path.parent / "xai"
+        if output_root.is_relative_to(source_path):
+            output_root = source_path.parent / "xai"
     else:
         output_root = Path(output_root).expanduser().resolve()
-        if output_root == results_path or output_root.is_relative_to(results_path):
-            raise ValueError("TSHAP output-root must be outside the supplied results tree")
-    runs = discover_runs(results_path)
-    if not runs:
-        raise ValueError(f"No complete saved-model runs found in {results}")
+        if output_root == source_path or output_root.is_relative_to(source_path):
+            raise ValueError("TSHAP output-root must be outside the supplied results/model directory")
     available = {run["manifest"]["model"] for run in runs}
     if models is not None and set(models) - available:
         raise ValueError(f"Requested models not found: {sorted(set(models) - available)}")
@@ -1332,9 +1396,13 @@ def explain_tshap(results, *, models=None, ml_window='wide', artifact_root=None,
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
-            if artifact_root is not None:
-                config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
+            _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
             if not _matches_tshap_window(config, ml_window):
+                if model_dir is not None:
+                    raise ValueError(
+                        f"Selected model uses ML window {config.get('window_name')!r}, "
+                        f"which does not match --ml-window {ml_window!r}"
+                    )
                 if logger:
                     logger.info(
                         "TSHAP skipped | unselected window=%s | requested=%s | model=%s",
@@ -1552,7 +1620,7 @@ def explain_tshap(results, *, models=None, ml_window='wide', artifact_root=None,
 
 
 def explain_tshap_local(
-    results, *, models=None, ml_window='wide', artifact_root=None, output_root=None, events_per_group=2,
+    results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
     extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
@@ -1577,21 +1645,19 @@ def explain_tshap_local(
     if not np.isfinite(extreme_margin) or not 0 < extreme_margin < 0.25:
         raise ValueError("extreme_margin must be greater than 0 and less than 0.25")
 
-    _matches_tshap_window({}, ml_window)
+    ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
     tshap_version = version("tshap")
-    results_path = Path(results).expanduser().resolve()
+    runs, source_path = _tshap_run_inputs(results, model_dir)
+    if not runs:
+        raise ValueError(f"No complete saved-model runs found in {results or model_dir}")
     if output_root is None:
         output_root = (Path.cwd() / "xai").resolve()
-        if output_root.is_relative_to(results_path):
-            output_root = results_path.parent / "xai"
+        if output_root.is_relative_to(source_path):
+            output_root = source_path.parent / "xai"
     else:
         output_root = Path(output_root).expanduser().resolve()
-        if output_root == results_path or output_root.is_relative_to(results_path):
-            raise ValueError("TSHAP output-root must be outside the supplied results tree")
-
-    runs = discover_runs(results_path)
-    if not runs:
-        raise ValueError(f"No complete saved-model runs found in {results}")
+        if output_root == source_path or output_root.is_relative_to(source_path):
+            raise ValueError("TSHAP output-root must be outside the supplied results/model directory")
     available = {run["manifest"]["model"] for run in runs}
     if models is not None and set(models) - available:
         raise ValueError(f"Requested models not found: {sorted(set(models) - available)}")
@@ -1605,9 +1671,13 @@ def explain_tshap_local(
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
-            if artifact_root is not None:
-                config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
+            _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
             if not _matches_tshap_window(config, ml_window):
+                if model_dir is not None:
+                    raise ValueError(
+                        f"Selected model uses ML window {config.get('window_name')!r}, "
+                        f"which does not match --ml-window {ml_window!r}"
+                    )
                 if logger:
                     logger.info(
                         "TSHAP local skipped | unselected window=%s | requested=%s | model=%s",
