@@ -88,15 +88,12 @@ def control_alias(root, control_dataset, modes) -> Path:
 
 
 def selection_alias(root, dataset, control_dataset, mode) -> Path:
-    return alias_path(
-        root, "selection", dataset_name(control_dataset), dataset_name(dataset), mode_name(mode)
-    )
+    # Selection rules are control-fitted, but the selected population is dataset-specific.
+    return alias_path(root, "selection", dataset_name(dataset), mode_name(mode))
 
 
 def native_alias(root, dataset, control_dataset, mode) -> Path:
-    return alias_path(
-        root, "native", dataset_name(control_dataset), dataset_name(dataset), mode_name(mode)
-    )
+    return alias_path(root, "native", dataset_name(dataset), mode_name(mode))
 
 
 def prepared_dataset_alias(root, config, role: str) -> Path:
