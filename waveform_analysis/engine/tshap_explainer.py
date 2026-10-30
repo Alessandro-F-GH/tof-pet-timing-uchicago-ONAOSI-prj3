@@ -273,18 +273,13 @@ class _HermitePPCAImputer:
         ]
 
 
-def _fit_hermite_ppca_imputer(control, mode, baseline_ids=None, *, components,
+def _fit_hermite_ppca_imputer(control, mode, *, components,
                               fit_events, tuning_events, slope_points,
                               batch_size, seed):
-    """Fit PPCA on control events excluding TSHAP reference baselines."""
+    """Fit PPCA on the control cohort with disjoint fitting and tuning subsets."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 
-    baseline_ids = np.asarray([] if baseline_ids is None else baseline_ids, dtype=np.int64)
-    if baseline_ids.ndim != 1 or np.any(baseline_ids < 0) or np.any(baseline_ids >= control.n_events):
-        raise ValueError("TSHAP baseline indices are outside the control population")
-    if np.unique(baseline_ids).size != baseline_ids.size:
-        raise ValueError("TSHAP baseline indices must be unique")
-    available = np.setdiff1d(np.arange(control.n_events, dtype=np.int64), baseline_ids)
+    available = np.arange(control.n_events, dtype=np.int64)
     rng = np.random.default_rng(int(seed) + 1)
     available = rng.permutation(available)
     n_tune = min(int(tuning_events), max(2, len(available) // 5))
@@ -323,8 +318,7 @@ def _fit_hermite_ppca_imputer(control, mode, baseline_ids=None, *, components,
         "slope_points": int(slope_points),
         "explained_variance_ratio_by_detector": explained,
         "training_and_tuning_are_disjoint": True,
-        "training_and_tuning_exclude_reference_baselines": True,
-        "n_excluded_reference_baselines": int(len(baseline_ids)),
+        "training_and_tuning_are_disjoint": True,
     }
     return imputer, metadata
 
@@ -332,7 +326,6 @@ def _fit_hermite_ppca_imputer(control, mode, baseline_ids=None, *, components,
 def _cached_hermite_ppca_imputer(
     control, mode, config, *, window_samples, stride_samples,
     components, fit_events, tuning_events, slope_points, batch_size, seed,
-    baseline_ids=None,
 ):
     """Fit or resolve one immutable conditional Hermite-PPCA imputer product."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
@@ -344,16 +337,8 @@ def _cached_hermite_ppca_imputer(
     board = str(config.get("_board") or _find_board_label(config.get("output_dir", "")))
     if board == "Unknown board":
         board = str(control.manifest.get("board") or "unknown_board")
-    baseline_ids = np.asarray([] if baseline_ids is None else baseline_ids, dtype=np.int64)
-    if baseline_ids.ndim != 1 or np.any(baseline_ids < 0) or np.any(baseline_ids >= control.n_events):
-        raise ValueError("TSHAP baseline indices are outside the control population")
-    if np.unique(baseline_ids).size != baseline_ids.size:
-        raise ValueError("TSHAP baseline indices must be unique")
-    baseline_event_ids = np.asarray(control.event_index[baseline_ids], dtype=np.int64)
-    baseline_key = canonical_hash(baseline_event_ids.tolist())
     settings = dict(
-        cache_schema=3, board=board, channel=family, mode=mode,
-        baseline_event_ids_hash=baseline_key, n_reference_baselines=int(len(baseline_ids)),
+        cache_schema=4, board=board, channel=family, mode=mode,
         window_ns=config["window_ns"],
         control_identity=control.manifest.get("analysis_protocol_identity"),
         control_population=control.manifest.get("event_population_identity"),
@@ -367,14 +352,14 @@ def _cached_hermite_ppca_imputer(
         "tshap-imputers",
         settings,
         parents=(str(control.directory.name),),
-        implementation="conditional-hermite-ppca-v2",
+        implementation="conditional-hermite-ppca-v3",
     )
     store = ArtifactStore(config["preprocessing"]["artifact_root"])
     prior = store.lookup(recipe)
 
     def build(directory, effective_recipe=None):
         imputer, fit_meta = _fit_hermite_ppca_imputer(
-            control, mode, baseline_ids, components=components,
+            control, mode, components=components,
             fit_events=fit_events, tuning_events=tuning_events,
             slope_points=slope_points, batch_size=batch_size, seed=seed,
         )
@@ -409,7 +394,6 @@ def _cached_hermite_ppca_imputer(
         cache_root_from_config(config), config, window_samples=window_samples,
         stride_samples=stride_samples, components=components, fit_events=fit_events,
         tuning_events=tuning_events, slope_points=slope_points, seed=seed,
-        baseline_key=baseline_key,
     )
     reference = get_or_build_named(
         store, recipe, alias, build,
@@ -418,8 +402,6 @@ def _cached_hermite_ppca_imputer(
             "control_population": settings["control_population"],
             "fit_events": int(fit_events),
             "tuning_events": int(tuning_events),
-            "baseline_event_ids_hash": baseline_key,
-            "n_excluded_reference_baselines": int(len(baseline_ids)),
         },
     )
     cache_file = reference.payload_path("imputer.npz")
@@ -455,8 +437,6 @@ def _cached_hermite_ppca_imputer(
         "cache_file": str(cache_file),
         "cache_hit": prior.status == "hit",
         "cache_identity": reference.product_id,
-        "baseline_event_ids_hash": baseline_key,
-        "n_excluded_reference_baselines": int(len(baseline_ids)),
     }
 
 
