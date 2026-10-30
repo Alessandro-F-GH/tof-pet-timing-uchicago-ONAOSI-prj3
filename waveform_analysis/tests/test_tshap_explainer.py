@@ -506,3 +506,39 @@ def test_cli_exposes_only_tshap_interpretability_commands():
     assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
                for group in local_args)
     assert "explain-regression" not in commands
+
+
+
+def test_tshap_recomputes_fitted_features_for_each_waveform():
+    from types import SimpleNamespace
+    from waveform_analysis.engine.tshap_explainer import _predict_bounded
+
+    transformed_inputs = []
+
+    class Transform:
+        def apply(self, values):
+            transformed_inputs.append(np.array(values, copy=True))
+            return np.asarray(values).reshape(len(values), -1)
+
+    class Spec:
+        @staticmethod
+        def predict(artifact, values):
+            return np.asarray(values).sum(axis=1)
+
+    fitted = SimpleNamespace(
+        sample_mask=np.ones(8, dtype=bool),
+        feature_transform=Transform(),
+        output_max_abs_ps=None,
+        artifact=object(),
+    )
+    original = np.ones((1, 2, 8), dtype=np.float32)
+    occluded = original.copy()
+    occluded[:, 0, 2:5] = 0
+
+    first = _predict_bounded(Spec, fitted, original, batch_size=8)
+    second = _predict_bounded(Spec, fitted, occluded, batch_size=8)
+
+    assert len(transformed_inputs) == 2
+    np.testing.assert_array_equal(transformed_inputs[0], original)
+    np.testing.assert_array_equal(transformed_inputs[1], occluded)
+    assert first[0] != second[0]
