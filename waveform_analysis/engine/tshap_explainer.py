@@ -157,6 +157,8 @@ def _predict_array(spec, fitted, pair):
         dtype=np.float32,
     )
     if fitted.feature_transform is not None:
+        # Never look up a cached feature row here: each occluded waveform is a
+        # new signal and must pass through the fitted transform independently.
         values = fitted.feature_transform.apply(values)
     prediction = np.asarray(
         spec.predict(fitted.artifact, values), dtype=np.float64
@@ -1497,6 +1499,8 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                     try:
                         predict = lambda x: _predict_bounded(spec, fitted, x, predict_batch_size)
                         # Preprocessing/masks, fitted feature map and clipping must be unchanged.
+                        # Deliberately omit frozen_features: TSHAP inference always starts
+                        # from original waveforms and reapplies the fitted transform.
                         original = predict_indices(spec, fitted, blind, config["mode"], event_ids,
                                                    chunk_size=predict_batch_size)
                         replay = predict(waves)
@@ -1792,6 +1796,8 @@ def explain_tshap_local(
                         # Predictions over the full blind population are needed only
                         # to select cases; the expensive TSHAP stage explains 10 by default.
                         all_indices = np.arange(blind.n_events, dtype=np.int64)
+                        # Do not use precomputed feature matrices for case selection.
+                        # Keep the same waveform -> fitted-transform -> model path as occlusion.
                         predictions = predict_indices(
                             spec, fitted, blind, config["mode"], all_indices,
                             chunk_size=predict_batch_size,
