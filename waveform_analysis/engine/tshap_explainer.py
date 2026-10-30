@@ -1613,6 +1613,32 @@ def _window_imputer_identity(control, config, *, window_samples, stride_samples,
         "seed": int(seed),
     }
 
+def _get_window_imputer(cache, control, config, output_root, run_directory, *,
+                           window_samples, stride_samples, components, fit_events,
+                           tuning_events, slope_points, batch_size, seed):
+    """Return the single fitted imputer shared by models using the same window."""
+    identity = _window_imputer_identity(
+        control, config, window_samples=window_samples,
+        stride_samples=stride_samples, components=components,
+        fit_events=fit_events, tuning_events=tuning_events,
+        slope_points=slope_points, batch_size=batch_size, seed=seed,
+    )
+    key = canonical_hash(identity)
+    if key not in cache:
+        cache[key] = _cached_hermite_ppca_imputer(
+            control, config["mode"], config,
+            window_samples=window_samples, stride_samples=stride_samples,
+            components=components, fit_events=fit_events,
+            tuning_events=tuning_events, slope_points=slope_points,
+            batch_size=batch_size, seed=seed,
+        )
+        _publish_window_imputer(
+            _window_imputer_destination(output_root, run_directory, config),
+            cache[key][1], identity,
+        )
+    return cache[key]
+
+
 def explain_tshap(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
     cache_root=None, artifact_root=None, output_root=None, max_events=100,
@@ -1773,28 +1799,14 @@ def explain_tshap(
                     "Blind TSHAP waveforms must be finite [events, 2 detectors, samples] arrays"
                 )
 
-            imputer_identity = _window_imputer_identity(
-                control, config, window_samples=window_samples,
-                stride_samples=stride_samples, components=imputer_components,
-                fit_events=imputer_fit_events, tuning_events=imputer_tuning_events,
-                slope_points=imputer_slope_points, batch_size=predict_batch_size,
-                seed=sampling_seed,
+            imputer, imputer_metadata = _get_window_imputer(
+                window_imputers, control, config, output_root, directory,
+                window_samples=window_samples, stride_samples=stride_samples,
+                components=imputer_components, fit_events=imputer_fit_events,
+                tuning_events=imputer_tuning_events,
+                slope_points=imputer_slope_points,
+                batch_size=predict_batch_size, seed=sampling_seed,
             )
-            imputer_key = canonical_hash(imputer_identity)
-            if imputer_key not in window_imputers:
-                window_imputers[imputer_key] = _cached_hermite_ppca_imputer(
-                    control, config["mode"], config,
-                    window_samples=window_samples, stride_samples=stride_samples,
-                    components=imputer_components, fit_events=imputer_fit_events,
-                    tuning_events=imputer_tuning_events,
-                    slope_points=imputer_slope_points,
-                    batch_size=predict_batch_size, seed=sampling_seed,
-                )
-                _publish_window_imputer(
-                    _window_imputer_destination(output_root, directory, config),
-                    window_imputers[imputer_key][1], imputer_identity,
-                )
-            imputer, imputer_metadata = window_imputers[imputer_key]
             if logger:
                 logger.info(
                     "TSHAP blend imputer | train=%d | tune=%d | components=%d | cache_hit=%s",
@@ -2191,28 +2203,14 @@ def explain_tshap_local(
             if targets.shape != (blind.n_events,) or not np.all(np.isfinite(targets)):
                 raise ValueError("Blind targets must be finite and match the event population")
 
-            imputer_identity = _window_imputer_identity(
-                control, config, window_samples=window_samples,
-                stride_samples=stride_samples, components=imputer_components,
-                fit_events=imputer_fit_events, tuning_events=imputer_tuning_events,
-                slope_points=imputer_slope_points, batch_size=predict_batch_size,
-                seed=int(seed),
+            imputer, imputer_metadata = _get_window_imputer(
+                window_imputers, control, config, output_root, directory,
+                window_samples=window_samples, stride_samples=stride_samples,
+                components=imputer_components, fit_events=imputer_fit_events,
+                tuning_events=imputer_tuning_events,
+                slope_points=imputer_slope_points,
+                batch_size=predict_batch_size, seed=int(seed),
             )
-            imputer_key = canonical_hash(imputer_identity)
-            if imputer_key not in window_imputers:
-                window_imputers[imputer_key] = _cached_hermite_ppca_imputer(
-                    control, config["mode"], config,
-                    window_samples=window_samples, stride_samples=stride_samples,
-                    components=imputer_components, fit_events=imputer_fit_events,
-                    tuning_events=imputer_tuning_events,
-                    slope_points=imputer_slope_points,
-                    batch_size=predict_batch_size, seed=int(seed),
-                )
-                _publish_window_imputer(
-                    _window_imputer_destination(output_root, directory, config),
-                    window_imputers[imputer_key][1], imputer_identity,
-                )
-            imputer, imputer_metadata = window_imputers[imputer_key]
 
             parent = destination.parent
             parent.mkdir(parents=True, exist_ok=True)
