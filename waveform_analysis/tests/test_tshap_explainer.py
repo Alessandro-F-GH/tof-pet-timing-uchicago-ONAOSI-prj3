@@ -499,10 +499,14 @@ def test_cli_exposes_only_tshap_interpretability_commands():
     assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
                for group in local_args)
     assert "explain-regression" not in commands
-    assert "--n-baselines" not in {
-        option
-        for command in ("explain-tshap", "explain-tshap-local")
-        for action in commands[command]._actions
+    for command in ("explain-tshap", "explain-tshap-local"):
+        options = {
+            option for action in commands[command]._actions
+            for option in action.option_strings
+        }
+        assert "--n-baselines" in options
+    assert "--imputation" in {
+        option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
     }
 
