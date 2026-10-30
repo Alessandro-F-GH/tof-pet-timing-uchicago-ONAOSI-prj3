@@ -75,7 +75,13 @@ def physical_unit_scale(values):
     finite = np.asarray(values, dtype=np.float64)
     finite = finite[np.isfinite(finite) & (finite > 0)]
     largest = float(np.max(finite)) if finite.size else 1.0
-    return (1.0, "mV") if largest >= 1.0 else (1e3, "µV")
+    if largest >= 1.0:
+        return 1.0, "mV"
+    if largest >= 1e-3:
+        return 1e3, "µV"
+    if largest >= 1e-6:
+        return 1e6, "nV"
+    return 1e9, "pV"
 
 
 def format_rmse_label(value_mv):
