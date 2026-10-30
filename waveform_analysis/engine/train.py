@@ -494,18 +494,16 @@ def save_model(spec, fitted, directory, parameters, *, include_feature_transform
 
 def _load_pickle_feature_transform(spec, directory, config=None, sample_mask=None):
     tpath = directory / "feature_transform" / "transform.pkl"
-    if tpath.is_file():
-        with tpath.open("rb") as stream:
-            artifact = pickle.load(stream)
-        metadata = getattr(artifact, "metadata", {})
-        identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
-        return FittedFeatureTransform(
-            spec.feature_transform, artifact, identity, {}, 0, {}
-        )
 
     # Historical runs can keep their model weights locally while their fitted
     # transform has been migrated into the portable shared cache.
     if config is None or spec.feature_transform is None:
+        if tpath.is_file():
+            with tpath.open("rb") as stream:
+                artifact = pickle.load(stream)
+            metadata = getattr(artifact, "metadata", {})
+            identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
+            return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
         return None
     from waveform_analysis.data.named_cache import (
         alias_exists, cache_root_from_config, load_named_reference, transform_alias,
@@ -514,6 +512,12 @@ def _load_pickle_feature_transform(spec, directory, config=None, sample_mask=Non
     preprocessing = config.get("preprocessing", {})
     artifact_root = preprocessing.get("artifact_root")
     if not artifact_root:
+        if tpath.is_file():
+            with tpath.open("rb") as stream:
+                artifact = pickle.load(stream)
+            metadata = getattr(artifact, "metadata", {})
+            identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
+            return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
         return None
     cache_root = cache_root_from_config(config)
     alias = transform_alias(
@@ -521,6 +525,12 @@ def _load_pickle_feature_transform(spec, directory, config=None, sample_mask=Non
         spec.feature_transform.fit_role,
     )
     if not alias_exists(alias):
+        if tpath.is_file():
+            with tpath.open("rb") as stream:
+                artifact = pickle.load(stream)
+            metadata = getattr(artifact, "metadata", {})
+            identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
+            return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
         return None
     store = ArtifactStore(artifact_root)
     reference = load_named_reference(store, alias, expected_type="feature-transforms")
