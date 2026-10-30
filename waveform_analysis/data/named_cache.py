@@ -88,7 +88,16 @@ def control_alias(root, control_dataset, modes) -> Path:
 
 
 def selection_alias(root, dataset, control_dataset, mode) -> Path:
-    # Selection rules are control-fitted, but the selected population is dataset-specific.
+    # The selected population depends on both the target dataset and the
+    # control dataset whose fitted rules are applied to it.
+    return alias_path(
+        root, "selection", dataset_name(control_dataset),
+        dataset_name(dataset), mode_name(mode),
+    )
+
+
+def legacy_selection_alias(root, dataset, mode) -> Path:
+    """Pre-control-qualified selection alias used by earlier cache layouts."""
     return alias_path(root, "selection", dataset_name(dataset), mode_name(mode))
 
 
