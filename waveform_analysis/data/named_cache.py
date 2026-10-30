@@ -136,13 +136,12 @@ def feature_alias(root, config, model_name: str, dataset, role: str, block="comb
 
 def imputer_alias(
     root, config, *, window_samples, stride_samples, components,
-    fit_events, tuning_events, slope_points, seed, baseline_key=None,
+    fit_events, tuning_events, slope_points, seed,
 ) -> Path:
     settings = (
         f"w{int(window_samples)}_s{int(stride_samples)}_k{int(components)}"
         f"_fit{int(fit_events)}_tune{int(tuning_events)}"
         f"_slope{int(slope_points)}_seed{int(seed)}"
-        + (f"_baseline{safe_component(baseline_key)}" if baseline_key else "")
     )
     return alias_path(
         root, "imputers", "hermite_ppca", dataset_name(config["control"]),
