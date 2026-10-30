@@ -408,7 +408,7 @@ def _cached_hermite_ppca_imputer(
         cache_root_from_config(config), config, window_samples=window_samples,
         stride_samples=stride_samples, components=components, fit_events=fit_events,
         tuning_events=tuning_events, slope_points=slope_points, seed=seed,
-        baseline_key=baseline_key[:12],
+        baseline_key=baseline_key,
     )
     reference = get_or_build_named(
         store, recipe, alias, build,
