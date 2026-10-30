@@ -1198,7 +1198,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
                       led_baseline_mv, attribution, group, event_id, target_ps,
                       prediction_ps, improvement_ps, led_threshold_mv,
                       window_starts=None, window_scores=None, window_samples=None):
-    """Plot detector waveforms in mV, their mean-centered difference, and TSHAP."""
+    """Plot detector waveforms, their mean-centered difference, and pair-level TSHAP."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1211,9 +1211,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     if not np.all(np.isfinite(waveform_mv)) or not np.isfinite(led_threshold_mv):
         raise ValueError("Waveforms and LED threshold must be finite")
 
-    waveform_difference = _center_detector_difference(
-        waveform_mv, dataset_mean_difference_mv
-    )
+    waveform_difference = _center_detector_difference(waveform_mv, dataset_mean_difference_mv)
     led_levels_mv = _led_reference_levels(led_baseline_mv, led_threshold_mv)
     led_line_start_ns, led_line_end_ns = _led_line_extent(time_ns)
 
@@ -1234,16 +1232,12 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax = axes[0]
     ax.plot(time_ns, waveform_mv[0], linewidth=1.15, label="Detector 1")
     ax.plot(time_ns, waveform_mv[1], linewidth=1.15, label="Detector 2")
-    ax.hlines(
-        led_levels_mv[0], xmin=led_line_start_ns, xmax=led_line_end_ns,
-        linestyle="--", linewidth=0.9,
-        label=f"Detector 1 LED threshold ({led_levels_mv[0]:.1f} mV)",
-    )
-    ax.hlines(
-        led_levels_mv[1], xmin=led_line_start_ns, xmax=led_line_end_ns,
-        linestyle=":", linewidth=0.9,
-        label=f"Detector 2 LED threshold ({led_levels_mv[1]:.1f} mV)",
-    )
+    ax.hlines(led_levels_mv[0], xmin=led_line_start_ns, xmax=led_line_end_ns,
+              linestyle="--", linewidth=0.9,
+              label=f"Detector 1 LED threshold ({led_levels_mv[0]:.1f} mV)")
+    ax.hlines(led_levels_mv[1], xmin=led_line_start_ns, xmax=led_line_end_ns,
+              linestyle=":", linewidth=0.9,
+              label=f"Detector 2 LED threshold ({led_levels_mv[1]:.1f} mV)")
     ax.set_title("Detector waveforms")
     ax.set_ylabel("Amplitude (mV)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
@@ -1260,30 +1254,25 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
 
     ax = axes[2]
     if window_starts is None or window_scores is None or window_samples is None:
-        raise ValueError("Local signed histogram requires raw window scores")
+        raise ValueError("Local signed histogram requires raw pair-level window scores")
     scores = np.asarray(window_scores, dtype=np.float64)
     starts = np.asarray(window_starts, dtype=np.int64)
-    if scores.shape != (2, len(starts)):
-        raise ValueError("Local window scores have invalid shape")
-    # Each detector's signed bar spans the full window. Bars share the window
-    # center and use transparency so detector contributions remain comparable.
+    if scores.shape != (1, len(starts)):
+        raise ValueError("Local paired window scores must have shape [1, windows]")
     dt = float(np.median(np.diff(time_ps)))
     centers = (time_ps[starts] + window_samples * dt / 2) / 1000
     width = window_samples * dt / 1000
-    for d, color, alpha in ((0, "#2585bd", 0.75), (1, "#de8546", 0.55)):
-        ax.bar(centers, scores[d], width=width, color=color, alpha=alpha,
-               edgecolor=color, linewidth=0.5, label=f"Detector {d + 1}")
+    ax.bar(centers, scores[0], width=width, color="#4c78a8",
+           edgecolor="#4c78a8", linewidth=0.5, label="Paired detectors")
     ax.axhline(0, color="0.4", linewidth=0.7)
-    ax.set_title("Signed local TSHAP window contributions")
-    ax.set_ylabel("Contribution (ps)")
+    ax.set_title("Joint signed TSHAP window contributions")
+    ax.set_ylabel("Pair contribution (ps)")
     ax.set_xlabel("Waveform time (ns)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
-    ax.legend(loc="best", fontsize=9, ncols=2)
+    ax.legend(loc="best", fontsize=9)
 
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
-
-
 def _refresh_local_presentation(
     destination, *, waveform_transform, led_threshold_mv, baseline_window_ns,
     dataset, mode, seed, artifact_root
