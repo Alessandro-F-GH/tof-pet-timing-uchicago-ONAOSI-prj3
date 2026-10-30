@@ -618,7 +618,32 @@ def apply_selection_rules(
             "rules_fingerprint": rules["fingerprint"],
         },
     )
-    selected = load_selection(reference.path, root, dataset, preprocessing, rules, mode)
+    try:
+        selected = load_selection(reference.path, root, dataset, preprocessing, rules, mode)
+    except ValueError as exc:
+        if str(exc) != "selection cache stale" or rebuild:
+            raise
+        # A semantic alias may point to a valid immutable product created
+        # under an older selection fingerprint. Rebuild only this selected-
+        # events product, then atomically retarget its readable alias.
+        if logger:
+            logger.warning(
+                "Stale selection cache | %s | %s | rebuilding selected events",
+                root.name, mode,
+            )
+        reference = get_or_build_named(
+            store, recipe, alias,
+            lambda directory, _recipe: build(directory),
+            rebuild=True,
+            metadata={
+                "source": str(root),
+                "mode": str(mode),
+                "rules_fingerprint": rules["fingerprint"],
+            },
+        )
+        selected = load_selection(
+            reference.path, root, dataset, preprocessing, rules, mode
+        )
     manifest = dict(selected.manifest)
     manifest["artifact_product_id"] = reference.product_id
     return replace(selected, manifest=manifest)
