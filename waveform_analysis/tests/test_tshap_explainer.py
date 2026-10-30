@@ -23,7 +23,7 @@ class _ZeroImputer:
 
 
 @pytest.mark.parametrize("roi", [False, True])
-def test_conditional_window_occlusion_is_signed_and_baseline_independent(roi):
+def test_conditional_window_occlusion_is_symmetric_and_uses_baselines(roi):
     rng = np.random.default_rng(47)
     sample = rng.uniform(0.1, 1, size=(2, 32)).astype(np.float32)
     explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
@@ -31,15 +31,16 @@ def test_conditional_window_occlusion_is_signed_and_baseline_independent(roi):
     positions = [(0, 4, 8), (1, 8, 8), (0, 16, 8)]
     def predict(values):
         return np.asarray(values)[:, 0].sum(axis=1) - 2 * np.asarray(values)[:, 1].sum(axis=1)
-    expected = np.asarray([sample[0, 4:12].sum(),
-                           -2 * sample[1, 8:16].sum(),
-                           sample[0, 16:24].sum()])
+    expected = 0.5 * np.asarray([sample[0, 4:12].sum(),
+                                 -2 * sample[1, 8:16].sum(),
+                                 sample[0, 16:24].sum()])
     observed = explainer._calculate_window_attrib_scores(
         predict, sample, np.zeros((5, 2, 32)), positions)
     np.testing.assert_allclose(observed, expected, rtol=1e-6)
+    other_baselines = rng.normal(size=(2, 2, 32)).astype(np.float32)
     other = explainer._calculate_window_attrib_scores(
-        predict, sample, rng.normal(size=(2, 2, 32)), positions)
-    np.testing.assert_allclose(other, observed, rtol=0, atol=0)
+        predict, sample, other_baselines, positions)
+    assert not np.allclose(other, observed)
 
 
 def test_tshap_constant_prediction_is_zero():
@@ -540,3 +541,32 @@ def test_tshap_recomputes_fitted_features_for_each_waveform():
     np.testing.assert_array_equal(transformed_inputs[0], original)
     np.testing.assert_array_equal(transformed_inputs[1], occluded)
     assert first[0] != second[0]
+
+
+def test_reference_substitution_uses_symmetric_multi_baseline_score():
+    from waveform_analysis.engine.tshap_explainer import _new_explainer
+
+    sample = np.ones((2, 16), dtype=np.float32)
+    baselines = np.stack([
+        np.zeros((2, 16), dtype=np.float32),
+        np.full((2, 16), 2.0, dtype=np.float32),
+    ])
+    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=None)
+
+    def predict(values):
+        return np.asarray(values, dtype=np.float64)[:, 0].sum(axis=1)
+
+    observed = explainer._calculate_window_attrib_scores(
+        predict, sample, baselines, [(0, 4, 4)]
+    )
+    # The two independent references are averaged after the symmetric
+    # two-player swap; this is not the single-event conditional score.
+    np.testing.assert_allclose(observed, [-1.0])
+
+
+def test_selection_seed_separates_blind_and_control_roles():
+    from waveform_analysis.engine.tshap_explainer import _selection_seed
+
+    assert _selection_seed(42, "blind_events") == _selection_seed(42, "blind_events")
+    assert _selection_seed(42, "control_baselines") == _selection_seed(42, "control_baselines")
+    assert _selection_seed(42, "blind_events") != _selection_seed(42, "control_baselines")
