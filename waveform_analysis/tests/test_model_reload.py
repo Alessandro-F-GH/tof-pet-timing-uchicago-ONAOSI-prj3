@@ -90,3 +90,42 @@ def test_run_store_pins_model_outside_result_tree(tmp_path):
     assert not (run.root / "model").exists()
     assert run.model_reference_path.is_file()
     assert (reference.path / "model.pkl").is_file()
+
+
+def test_saved_model_requires_its_bundled_feature_transform(tmp_path):
+    spec = get_model("direct_minirocket")
+    directory = tmp_path / "incomplete"
+    directory.mkdir()
+    (directory / "model.pkl").write_bytes(b"placeholder")
+    np.save(directory / "sample_mask.npy", np.ones(3, dtype=bool))
+    assert not saved_model_complete(spec, directory)
+
+    # A model saved through the normal artifact path is self-contained.
+    import pickle
+    transform_artifact = spec.feature_transform.fit_transform(
+        {"num_kernels": 84, "n_jobs": 1},
+        np.random.default_rng(31).normal(size=(12, 2, 16)).astype(np.float32),
+        seed=9, config={},
+    )[0]
+    from waveform_analysis.engine.train import FittedFeatureTransform
+    model_artifact = spec.fit(
+        {"ridge_alpha": 0.1},
+        np.random.default_rng(32).normal(size=(12, 84)).astype(np.float32),
+        np.random.default_rng(33).normal(size=12),
+        seed=9, config={},
+    )
+    fitted = FittedModel(
+        artifact=model_artifact, metadata={}, output_max_abs_ps=2000.0,
+        sample_mask=np.ones(16, dtype=bool),
+        feature_transform=FittedFeatureTransform(
+            spec.feature_transform, transform_artifact, "transform-id", {}, 9, {}
+        ),
+    )
+    save_model(spec, fitted, directory, {"ridge_alpha": 0.1})
+    assert (directory / "feature_transform" / "transform.pkl").is_file()
+    assert saved_model_complete(spec, directory)
+    loaded = load_fitted_model(
+        spec, directory, {"ridge_alpha": 0.1},
+        {"ml_output": {"max_abs_ps": 2000.0}, "runtime": {"prediction_chunk_size": 32}},
+    )
+    assert loaded.feature_transform is not None
