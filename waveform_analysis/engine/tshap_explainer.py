@@ -1557,8 +1557,9 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                         imputer_metadata["n_tuning_events"], imputer_components,
                     )
             if logger:
-                logger.info("TSHAP conditional occlusion | %s | events=%d/%d | samples=%d | ROI=%s",
-                            spec.name, len(event_ids), blind.n_events, time_ps.size, roi)
+                logger.info("TSHAP | %s | imputation=%s | events=%d/%d | baselines=%d/%d | samples=%d | ROI=%s",
+                            spec.name, imputation, len(event_ids), blind.n_events,
+                            len(baseline_ids), control.n_events, time_ps.size, roi)
             parent = destination.parent
             parent.mkdir(parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=".tshap-", dir=parent))
@@ -1652,8 +1653,13 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                     "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
                     "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
-                    "interpretation": "Conditional window-occlusion prediction differences in ps; "
-                                      "these are not exact Shapley values.",
+                    "interpretation": (
+                        "Symmetric two-player window substitution averaged over independent control references; "
+                        "upstream temporal aggregation is not an exact sample-wise Shapley decomposition."
+                        if imputation == "reference" else
+                        "Symmetric two-player conditional window-occlusion prediction differences in ps; "
+                        "upstream temporal aggregation is not an exact sample-wise Shapley decomposition."
+                    ),
                     "cohort": "blind", "input_units": "mV (inverse of frozen prepared waveform normalization)",
                     "global_importance_aggregation": {
                         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
@@ -1802,7 +1808,7 @@ def explain_tshap_local(
             identity = {
                 "method": "conditional_hermite_ppca_local_case_study",
                 "baseline_sampling_seed": _selection_seed(int(seed), "control_baselines"),
-                "method_version": 3,
+                "method_version": 4,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
