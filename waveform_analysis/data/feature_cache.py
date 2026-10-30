@@ -99,7 +99,7 @@ def _pair(dataset, mode, indices=None) -> np.ndarray:
 
 def prepare_frozen_transform(
     spec, model_space, config, *, control_dataset, development_dataset,
-    cache_root, logger=None,
+    cache_root, logger=None, legacy_transform_path=None,
 ) -> FrozenTransform | None:
     """Load or fit one immutable feature transform in the shared artifact store."""
     if not uses_frozen_model_input(spec):
@@ -144,18 +144,27 @@ def prepare_frozen_transform(
     store = ArtifactStore(config["preprocessing"].get("artifact_root", Path(cache_root) / "artifact_store"))
 
     def build(directory, effective_recipe=None):
-        if fit_role == "control":
-            fit_pair = _pair(control_dataset, mode)
+        if legacy_transform_path is not None:
+            source = Path(legacy_transform_path).expanduser().resolve()
+            if not source.is_file():
+                raise FileNotFoundError(f"Legacy fitted transformation not found: {source}")
+            with source.open("rb") as stream:
+                artifact = pickle.load(stream)
+            if not hasattr(artifact, "metadata"):
+                raise ValueError(f"Legacy transformation has no metadata: {source}")
         else:
-            fit_pair = _pair(development_dataset, mode, np.asarray([0], dtype=np.int64))
-        try:
-            artifact, _ = spec.feature_transform.fit_transform(
-                transform_parameters, fit_pair, seed=int(seed),
-                config=({**model_space, "_frozen_transform_only": True}
-                        if spec.bounded_transform_batches else model_space),
-            )
-        finally:
-            del fit_pair
+            if fit_role == "control":
+                fit_pair = _pair(control_dataset, mode)
+            else:
+                fit_pair = _pair(development_dataset, mode, np.asarray([0], dtype=np.int64))
+            try:
+                artifact, _ = spec.feature_transform.fit_transform(
+                    transform_parameters, fit_pair, seed=int(seed),
+                    config=({**model_space, "_frozen_transform_only": True}
+                            if spec.bounded_transform_batches else model_space),
+                )
+            finally:
+                del fit_pair
         if spec.requires_frozen_features:
             view = waveform_view(control_dataset, mode, np.asarray([0], dtype=np.int64))
             artifact.time_ps = np.asarray(view.time_ps, dtype=np.float64)[sample_mask]
