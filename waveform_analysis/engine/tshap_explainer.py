@@ -1007,7 +1007,7 @@ def _plot_global(
         span = high - low
         y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
         for channel, ax in enumerate(signal_axes):
-            importance = saliency if shared else saliency[channel]
+            importance = saliency if pooled else saliency[channel]
             if std_waveform_mv is not None:
                 ax.fill_between(
                     time_ns,
