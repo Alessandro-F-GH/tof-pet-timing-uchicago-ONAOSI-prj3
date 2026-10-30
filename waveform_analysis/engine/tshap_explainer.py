@@ -104,6 +104,28 @@ def _resolve_model_run_directory(model_dir):
     )
 
 
+def _resolve_tshap_model_directory(spec, run_store, run_directory, *, explicit_model_dir=False):
+    """Resolve a final model, retaining compatibility with legacy local-model runs.
+
+    New runs with model_reference.json must use the referenced shared artifact.
+    Older runs without that reference may still carry a complete run-local model.
+    """
+    local_model = Path(run_directory) / "model"
+    has_reference = run_store.model_reference_path.is_file()
+    if saved_model_complete(spec, local_model) and (
+        explicit_model_dir or not has_reference
+    ):
+        return local_model
+    if not has_reference:
+        raise FileNotFoundError(
+            f"No model_reference.json and no complete local saved model found for "
+            f"{run_directory}. Expected a complete model under {local_model} "
+            "(including its frozen feature transform and sample mask), or a "
+            "registered final-model artifact."
+        )
+    return run_store.model_dir
+
+
 def _tshap_run_inputs(results=None, model_dir=None):
     """Load either all runs under a result root or one explicitly selected run."""
     if (results is None) == (model_dir is None):
@@ -1620,11 +1642,8 @@ def explain_tshap(
             run_store = RunStore(
                 directory, artifact_root=config["preprocessing"]["artifact_root"]
             )
-            local_model = Path(directory) / "model"
-            fitted_model_dir = (
-                local_model
-                if model_dir is not None and saved_model_complete(spec, local_model)
-                else run_store.model_dir
+            fitted_model_dir = _resolve_tshap_model_directory(
+                spec, run_store, directory, explicit_model_dir=model_dir is not None
             )
             if not saved_model_complete(spec, fitted_model_dir):
                 raise FileNotFoundError(
@@ -2027,12 +2046,8 @@ def explain_tshap_local(
             run_store = RunStore(
                 directory, artifact_root=config["preprocessing"]["artifact_root"]
             )
-            # An explicitly supplied local model directory is authoritative.
-            # Otherwise resolve the model product from the run's artifact reference.
-            local_model = Path(directory) / "model"
-            fitted_model_dir = (
-                local_model if model_dir is not None and saved_model_complete(spec, local_model)
-                else run_store.model_dir
+            fitted_model_dir = _resolve_tshap_model_directory(
+                spec, run_store, directory, explicit_model_dir=model_dir is not None
             )
             if not saved_model_complete(spec, fitted_model_dir):
                 raise FileNotFoundError(
