@@ -34,7 +34,7 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 3
+TSHAP_METHOD_VERSION = 4
 GLOBAL_PLOT_VERSION = 13
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
@@ -124,13 +124,11 @@ def _choose_indices(n, cap, seed):
     return np.sort(np.random.default_rng(seed).choice(n, size=min(n, cap), replace=False))
 
 
-def _selection_seed(seed, role):
-    """Stable sampling seed independent of model identity."""
+def _selection_seed(seed):
+    """Stable sampling seed for selecting blind events and plotting samples."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
-    if role not in {"blind_events", "control_baselines"}:
-        raise ValueError(f"Unknown TSHAP sampling role: {role}")
-    return semantic_seed(seed, "tshap", role)
+    return semantic_seed(seed, "tshap", "blind_events")
 
 
 def _check_prepared_grids(control, blind, mode):
@@ -272,14 +270,13 @@ class _HermitePPCAImputer:
         ]
 
 
-def _fit_hermite_ppca_imputer(control, mode, baseline_ids, *, components,
+def _fit_hermite_ppca_imputer(control, mode, *, components,
                               fit_events, tuning_events, slope_points,
                               batch_size, seed):
     """Fit PPCA on control events with disjoint fitting and tuning cohorts."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 
-    all_ids = np.arange(control.n_events, dtype=np.int64)
-    available = np.setdiff1d(all_ids, np.asarray(baseline_ids, dtype=np.int64), assume_unique=False)
+    available = np.arange(control.n_events, dtype=np.int64)
     rng = np.random.default_rng(int(seed) + 1)
     available = rng.permutation(available)
     n_tune = min(int(tuning_events), max(2, len(available) // 5))
@@ -317,7 +314,7 @@ def _fit_hermite_ppca_imputer(control, mode, baseline_ids, *, components,
         "components": int(components),
         "slope_points": int(slope_points),
         "explained_variance_ratio_by_detector": explained,
-        "training_and_tuning_exclude_reference_baselines": True,
+        "training_and_tuning_are_disjoint": True,
     }
     return imputer, metadata
 
@@ -359,7 +356,7 @@ def _cached_hermite_ppca_imputer(
 
     def build(directory, effective_recipe=None):
         imputer, fit_meta = _fit_hermite_ppca_imputer(
-            control, mode, np.empty(0, np.int64), components=components,
+            control, mode, components=components,
             fit_events=fit_events, tuning_events=tuning_events,
             slope_points=slope_points, batch_size=batch_size, seed=seed,
         )
@@ -377,7 +374,7 @@ def _cached_hermite_ppca_imputer(
             n_training_events=int(fit_meta["n_training_events"]),
             n_tuning_events=int(fit_meta["n_tuning_events"]),
             explained_variance_ratio_by_detector=fit_meta["explained_variance_ratio_by_detector"],
-            training_and_tuning_exclude_reference_baselines=True,
+            training_and_tuning_are_disjoint=True,
         )
         np.savez_compressed(
             directory / "imputer.npz",
@@ -975,7 +972,7 @@ def _dataset_mean_difference_mv(
     if dataset.n_events < 1:
         raise ValueError("Cannot estimate dataset mean from an empty population")
     indices = _choose_indices(
-        dataset.n_events, max_events, _selection_seed(int(seed), "blind_events")
+        dataset.n_events, max_events, _selection_seed(int(seed))
     )
     normalized = waveform_view(dataset, mode, indices).materialize()
     waveform_mv = np.asarray(waveform_transform.inverse(normalized), dtype=np.float64)
@@ -1350,7 +1347,7 @@ def _explanation_destination(output_root, run_directory):
     return Path(output_root).resolve() / batch.name / relative_run / "tshap"
 
 
-def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, max_events=100, n_baselines=8,
+def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, max_events=100,
                   window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
                   roi=False, overwrite=False, imputation="hermite_ppca",
                   imputer_components=32, imputer_fit_events=2000,
@@ -1362,7 +1359,7 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
     Changes in model, cohorts or settings produce separate, fingerprinted results.
     The explicit overwrite flag recomputes/replaces only the matching identity.
     """
-    for name, value in (("max_events", max_events), ("n_baselines", n_baselines),
+    for name, value in (("max_events", max_events),
                         ("window_samples", window_samples), ("stride_samples", stride_samples),
                         ("predict_batch_size", predict_batch_size)):
         _validate_positive_int(name, value)
@@ -1430,7 +1427,7 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
             if not saved_model_complete(spec, fitted_model_dir):
                 raise FileNotFoundError(f"Saved model or frozen feature transform missing: {fitted_model_dir}")
             sampling_seed = int(seed)
-            settings = dict(max_events=max_events, n_baselines=n_baselines,
+            settings = dict(max_events=max_events,
                             window_samples=window_samples, stride_samples=stride_samples,
                             predict_batch_size=predict_batch_size, seed=sampling_seed,
                             roi=bool(roi), imputation=imputation)
@@ -1465,7 +1462,7 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
             event_ids = _choose_indices(
-                blind.n_events, max_events, _selection_seed(sampling_seed, "blind_events")
+                blind.n_events, max_events, _selection_seed(sampling_seed)
             )
             waves = waveform_view(blind, config["mode"], event_ids).materialize()
             if waves.shape[1] != 2 or not np.all(np.isfinite(waves)):
@@ -1577,7 +1574,7 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
-                    "n_control_baselines": 0, "waveform_samples": len(time_ps),
+                    "waveform_samples": len(time_ps),
                     "formulation": spec.estimator_formulation,
                     "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
                     "interpretation": "Conditional window-occlusion prediction differences in ps; "
@@ -1636,7 +1633,7 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
 
 def explain_tshap_local(
     results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
-    extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
+    extreme_margin=0.05, window_samples=20, stride_samples=10,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
     imputer_tuning_events=300, imputer_slope_points=5,
@@ -1649,7 +1646,6 @@ def explain_tshap_local(
     """
     for name, value in (
         ("events_per_group", events_per_group),
-        ("n_baselines", n_baselines),
         ("window_samples", window_samples),
         ("stride_samples", stride_samples),
         ("predict_batch_size", predict_batch_size),
@@ -1717,7 +1713,6 @@ def explain_tshap_local(
             settings = dict(
                 events_per_group=events_per_group,
                 extreme_margin=float(extreme_margin),
-                n_baselines=n_baselines,
                 window_samples=window_samples,
                 stride_samples=stride_samples,
                 predict_batch_size=predict_batch_size,
@@ -1729,7 +1724,7 @@ def explain_tshap_local(
             )
             identity = {
                 "method": "conditional_hermite_ppca_local_case_study",
-                "method_version": 2,
+                "method_version": 3,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -1972,7 +1967,6 @@ def explain_tshap_local(
                     "plot_version": LOCAL_PLOT_VERSION,
                     "n_explained_events": len(event_ids),
                     "n_events_per_group": events_per_group,
-                    "n_control_baselines": 0,
                     "imputer_cache_identity": imputer_metadata["cache_identity"],
                     "imputer_cache_file": imputer_metadata["cache_file"],
                     "waveform_samples": int(time_ps.size),
