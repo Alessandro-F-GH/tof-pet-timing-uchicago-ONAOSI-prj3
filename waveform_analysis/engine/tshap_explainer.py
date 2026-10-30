@@ -1403,7 +1403,6 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
-            config["_tshap_run_manifest"] = manifest
             _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
             if not _matches_tshap_window(config, ml_window):
                 if model_dir is not None:
@@ -1687,7 +1686,6 @@ def explain_tshap_local(
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
-            config["_tshap_run_manifest"] = manifest
             _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
             if not _matches_tshap_window(config, ml_window):
                 if model_dir is not None:
