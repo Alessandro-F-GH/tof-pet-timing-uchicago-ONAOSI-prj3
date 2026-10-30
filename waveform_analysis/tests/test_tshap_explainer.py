@@ -333,6 +333,9 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         prediction_ps=2.0,
         improvement_ps=2.0,
         led_threshold_mv=20.0,
+        window_starts=np.asarray([1, 3, 5]),
+        window_scores=np.asarray([[1.0, -0.5, 0.2], [-0.3, 0.4, -0.1]]),
+        window_samples=2,
     )
 
     assert output.is_file()
