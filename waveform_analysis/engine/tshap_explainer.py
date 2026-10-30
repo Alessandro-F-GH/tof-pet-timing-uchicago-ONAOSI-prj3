@@ -2078,7 +2078,6 @@ def explain_tshap_local(
             )
             identity = {
                 "method": "conditional_hermite_ppca_local_case_study",
-                "baseline_sampling_seed": _selection_seed(int(seed), "control_baselines"),
                 "method_version": 4,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -2142,6 +2141,7 @@ def explain_tshap_local(
             try:
                 with diagnostic_random_state():
                     fitted = load_fitted_model(spec, fitted_model_dir, run["best"]["parameters"], config)
+                    sample_mask = None if fitted.sample_mask is None else np.asarray(fitted.sample_mask, bool).copy()
                     try:
                         # Predictions over the full blind population are needed only
                         # to select cases; the expensive TSHAP stage explains 10 by default.
