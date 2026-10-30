@@ -37,7 +37,7 @@ def dataset_name(dataset: dict[str, Any]) -> str:
         # Result folders and prepared-cache bundles may move between Windows
         # and POSIX machines. pathlib.Path follows the host OS, so normalize
         # both separator styles before extracting the filename stem.
-        label = Path(str(source).replace("\\\\", "/")).stem
+        label = Path(str(source).replace("\\", "/")).stem
     return safe_component(label)
 
 
