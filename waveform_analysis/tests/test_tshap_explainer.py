@@ -10,7 +10,8 @@ from waveform_analysis.engine.tshap_explainer import (
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
-    _is_excluded_tshap_window, _new_explainer, _plot_global, _plot_local_event,
+    _matches_tshap_window, _resolve_model_run_directory, _apply_tshap_cache,
+    _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
     _selection_seed, _write_global_importance_csv,
 )
@@ -354,13 +355,48 @@ def test_led_reference_line_stops_at_time_zero():
 
 
 @pytest.mark.parametrize("window_name", ["onishi", "Onishi", "ONISHI"])
-def test_tshap_excludes_onishi_window(window_name):
-    assert _is_excluded_tshap_window({"window_name": window_name})
+def test_tshap_window_selector_accepts_onishi(window_name):
+    assert _matches_tshap_window({"window_name": window_name}, "onishi")
+    assert not _matches_tshap_window({"window_name": window_name}, "wide")
 
 
-@pytest.mark.parametrize("window_name", ["wide", "default", ""])
-def test_tshap_keeps_non_onishi_windows(window_name):
-    assert not _is_excluded_tshap_window({"window_name": window_name})
+@pytest.mark.parametrize("window_name", ["wide", "WIDE"])
+def test_tshap_window_selector_accepts_wide(window_name):
+    assert _matches_tshap_window({"window_name": window_name}, "wide")
+    assert not _matches_tshap_window({"window_name": window_name}, "onishi")
+
+
+def test_tshap_window_selector_all_and_invalid():
+    assert _matches_tshap_window({"window_name": "onishi"}, "all")
+    with pytest.raises(ValueError, match="ml_window"):
+        _matches_tshap_window({"window_name": "wide"}, "invalid")
+
+
+def test_tshap_model_directory_and_shared_cache_resolution(tmp_path):
+    from waveform_analysis.engine.tshap_explainer import _effective_tshap_window
+
+    run = tmp_path / "results" / "energy" / "wide" / "direct_multirocket"
+    (run / "metadata").mkdir(parents=True)
+    (run / "metadata" / "manifest.json").write_text("{}", encoding="utf-8")
+    (run / "model").mkdir()
+    assert _resolve_model_run_directory(run) == run.resolve()
+    assert _resolve_model_run_directory(run / "model") == run.resolve()
+    assert _effective_tshap_window(None, model_dir=run) == "all"
+    assert _effective_tshap_window(None, model_dir=None) == "wide"
+
+    cache = tmp_path / "cache"
+    (cache / "artifact_store").mkdir(parents=True)
+    config = {"preprocessing": {"cache_dir": "old-cache", "artifact_root": "old-store"}}
+    _apply_tshap_cache(config, cache_root=cache)
+    assert config["preprocessing"]["cache_dir"] == str((cache / "preprocessing").resolve())
+    assert config["preprocessing"]["artifact_root"] == str((cache / "artifact_store").resolve())
+    with pytest.raises(ValueError, match="cache_root or artifact_root"):
+        _apply_tshap_cache(config, cache_root=cache, artifact_root=cache / "artifact_store")
+
+
+def test_tshap_model_directory_requires_run_metadata(tmp_path):
+    with pytest.raises(ValueError, match="metadata/manifest.json"):
+        _resolve_model_run_directory(tmp_path / "raw_model_artifact")
 
 
 
@@ -459,4 +495,14 @@ def test_cli_exposes_only_tshap_interpretability_commands():
     assert "explain-tshap" in commands
     assert "explain-tshap-local" in commands
     assert "xai" not in commands
+    global_args = commands["explain-tshap"]._mutually_exclusive_groups
+    local_args = commands["explain-tshap-local"]._mutually_exclusive_groups
+    assert any({"--results", "--model-dir"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in global_args)
+    assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in global_args)
+    assert any({"--results", "--model-dir"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in local_args)
+    assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in local_args)
     assert "explain-regression" not in commands
