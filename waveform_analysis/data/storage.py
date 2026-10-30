@@ -189,14 +189,15 @@ class RunStore:
             parents=(str(final_fit_fingerprint),) + (
                 (str(transform_identity),) if transform_identity else ()
             ),
-            implementation=f"{spec.name}:{spec.artifact_format}:model-v1",
+            # v2 bundles the fitted feature transform beside the estimator.
+            implementation=f"{spec.name}:{spec.artifact_format}:model-v2",
             compatibility=compatibility,
         )
         store = ArtifactStore(self.artifact_root)
         reference = store.get_or_build(
             recipe,
             lambda directory: save_model(
-                spec, fitted, directory, parameters, include_feature_transform=False
+                spec, fitted, directory, parameters, include_feature_transform=True
             ),
             metadata={
                 "model": spec.name,
