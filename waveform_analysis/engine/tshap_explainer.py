@@ -1986,8 +1986,8 @@ def explain_tshap_local(
                 imputer_slope_points=imputer_slope_points,
             )
             identity = {
-                "method": "conditional_hermite_ppca_local_case_study",
-                "method_version": 4,
+                "method": "paired_hermite_ppca_local_case_study",
+                "method_version": 5,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -2269,7 +2269,8 @@ def explain_tshap_local(
                         "typical": "closest predicted corrections to the blind-population median, excluding other selected events",
                     },
                     "plots": plot_names,
-                    "attribution_units": "ps/sample (upstream TSHAP window scores redistributed over samples)",
+                    "attribution_units": "ps/sample (joint pair-level window scores redistributed identically over both detector waveforms)",
+                    "importance_protocol": "both detector signals are imputed together over the same temporal window; one signed pair-level score is retained per window",
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
