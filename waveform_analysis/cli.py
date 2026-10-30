@@ -94,7 +94,7 @@ def _parser() -> argparse.ArgumentParser:
                        help="Fixed sampling seed shared across models (default: 42)")
     tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
     tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
-    tshap.add_argument("--imputation", choices=("reference", "hermite_ppca"), default="hermite_ppca",
+    tshap.add_argument("--imputation", choices=("reference", "hermite_ppca"), default="reference",
                        help="Window perturbation: symmetric control-reference substitution or conditional Hermite-PPCA reconstruction")
     tshap.add_argument("--imputer-components", type=int, default=32)
     tshap.add_argument("--imputer-fit-events", type=int, default=2000)
