@@ -19,6 +19,7 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import imputer_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.data.results import batch_root, discover_runs, read_run, resolve_run_config
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, model_target, waveform_view
@@ -354,7 +355,7 @@ def _cached_hermite_ppca_imputer(
     store = ArtifactStore(config["preprocessing"]["artifact_root"])
     prior = store.lookup(recipe)
 
-    def build(directory):
+    def build(directory, effective_recipe=None):
         imputer, fit_meta = _fit_hermite_ppca_imputer(
             control, mode, np.empty(0, np.int64), components=components,
             fit_events=fit_events, tuning_events=tuning_events,
@@ -387,9 +388,13 @@ def _cached_hermite_ppca_imputer(
                for d, model in enumerate(imputer.models)},
         )
 
-    reference = store.get_or_build(
-        recipe,
-        build,
+    alias = imputer_alias(
+        cache_root_from_config(config), config, window_samples=window_samples,
+        stride_samples=stride_samples, components=components, fit_events=fit_events,
+        tuning_events=tuning_events, slope_points=slope_points, seed=seed,
+    )
+    reference = get_or_build_named(
+        store, recipe, alias, build,
         metadata={
             "control_identity": settings["control_identity"],
             "control_population": settings["control_population"],
