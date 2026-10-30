@@ -93,9 +93,8 @@ def format_rmse_label(value_mv):
 
 
 def save_position_plot(rows, output, label, channel):
-    # Keep position-wise log plots in a consistent physical unit across runs.
-    # A logarithmic axis does not require rescaling small values to microvolts.
-    scale, unit = 1.0, "mV"
+    # Use one readable physical unit across both detectors and all methods.
+    scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
     handles = []
     for detector, ax in enumerate(axes, start=1):
