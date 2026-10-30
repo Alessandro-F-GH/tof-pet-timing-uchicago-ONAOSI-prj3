@@ -509,7 +509,7 @@ def test_cli_exposes_only_tshap_interpretability_commands():
             for option in action.option_strings
         }
         assert "--n-baselines" not in options
-    assert "--imputation" in {
+    assert "--imputation" not in {
         option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
     }
@@ -572,14 +572,6 @@ def test_selection_seed_is_blind_only():
         _selection_seed(42, "control_baselines")
 
 
-def test_selection_seed_separates_blind_and_control_roles():
-    from waveform_analysis.engine.tshap_explainer import _selection_seed
-
-    assert _selection_seed(42, "blind_events") == _selection_seed(42, "blind_events")
-    assert _selection_seed(42, "control_baselines") == _selection_seed(42, "control_baselines")
-    assert _selection_seed(42, "blind_events") != _selection_seed(42, "control_baselines")
-
-
 def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
     from types import SimpleNamespace
     from waveform_analysis.engine.tshap_explainer import _fit_hermite_ppca_imputer
@@ -600,7 +592,7 @@ def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
 
 
 def test_reference_tshap_constant_prediction_is_zero():
-    explainer = _new_explainer(6, 3, True, 4, imputer=None)
+    explainer = _new_explainer(6, 3, True, 4, imputer=_ZeroImputer())
     waveforms = np.ones((1, 2, 24), dtype=np.float32)
     baselines = np.zeros((2, 2, 24), dtype=np.float32)
     maps = explainer.explain(
