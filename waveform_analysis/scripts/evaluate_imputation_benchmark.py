@@ -85,11 +85,10 @@ def physical_unit_scale(values):
 
 
 def format_rmse_label(value_mv):
-    """Use microvolts for individual bar labels below 1 mV."""
+    """Format an RMSE value in the most readable physical signal unit."""
     value_mv = float(value_mv)
-    if value_mv < 1.0:
-        return f"{value_mv * 1e3:.3g} µV"
-    return f"{value_mv:.3g} mV"
+    scale, unit = physical_unit_scale([value_mv])
+    return f"{value_mv * scale:.3g} {unit}"
 
 
 def save_position_plot(rows, output, label, channel):
