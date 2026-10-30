@@ -5,6 +5,7 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import control_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.reporting.preprocessing_plots import plot_led_selection
 from waveform_analysis.engine.event_selection import (
     fit_selection_rules,
@@ -169,7 +170,7 @@ def fit_control_artifact(
         "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
     ))
 
-    def build(directory):
+    def build(directory, effective_recipe=None):
         directory.mkdir(parents=True, exist_ok=True)
         rules = fit_selection_rules(
             control_file,
@@ -247,9 +248,10 @@ def fit_control_artifact(
             "criteria_fit_role": "control",
         }
         atomic_json(directory / "manifest.json", manifest)
-    reference = store.get_or_build(
-        recipe,
-        build,
+    alias = control_alias(cache_root_from_config(preprocessing, cache_root), control_dataset, selected_modes)
+    reference = get_or_build_named(
+        store, recipe, alias, build,
+        rebuild=rebuild,
         metadata={
             "control_fingerprint": fingerprint,
             "modes": list(selected_modes),
