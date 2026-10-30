@@ -549,7 +549,7 @@ def test_reference_substitution_uses_symmetric_multi_baseline_score():
     sample = np.ones((2, 16), dtype=np.float32)
     baselines = np.stack([
         np.zeros((2, 16), dtype=np.float32),
-        np.full((2, 16), 2.0, dtype=np.float32),
+        np.full((2, 16), 1.0, dtype=np.float32),
     ])
     explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=None)
 
@@ -570,3 +570,28 @@ def test_selection_seed_separates_blind_and_control_roles():
     assert _selection_seed(42, "blind_events") == _selection_seed(42, "blind_events")
     assert _selection_seed(42, "control_baselines") == _selection_seed(42, "control_baselines")
     assert _selection_seed(42, "blind_events") != _selection_seed(42, "control_baselines")
+
+
+def test_hermite_ppca_fit_excludes_reference_baseline_events(tmp_path):
+    from types import SimpleNamespace
+    from waveform_analysis.engine.tshap_explainer import _fit_hermite_ppca_imputer
+
+    rng = np.random.default_rng(91)
+    waves = rng.normal(0.5, 0.1, size=(80, 2, 40)).astype(np.float32)
+    control = SimpleNamespace(
+        n_events=len(waves),
+        event_index=np.arange(1000, 1000 + len(waves), dtype=np.int64),
+        energy_windows=waves,
+        directory=tmp_path / "control",
+    )
+    imputer, metadata = _fit_hermite_ppca_imputer(
+        control, "energy_to_energy", np.asarray([1, 5, 9, 13]),
+        components=3, fit_events=30, tuning_events=10,
+        slope_points=3, batch_size=8, seed=42,
+    )
+    excluded = {1, 5, 9, 13}
+    assert excluded.isdisjoint(metadata["training_indices"].tolist())
+    assert excluded.isdisjoint(metadata["tuning_indices"].tolist())
+    assert metadata["n_excluded_reference_baselines"] == len(excluded)
+    assert metadata["training_and_tuning_exclude_reference_baselines"]
+    assert imputer is not None
