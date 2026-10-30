@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import prepared_dataset_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
     canonical_hash,
@@ -255,9 +256,11 @@ def prepare_ml_dataset(
                 rows.size,
                 threshold,
             )
-    reference = store.get_or_build(
-        recipe,
-        build,
+    alias = prepared_dataset_alias(cache_root_from_config(config, cache_dir), config, str(dataset_role))
+    reference = get_or_build_named(
+        store, recipe, alias,
+        lambda directory, _recipe: build(directory),
+        rebuild=rebuild,
         metadata={"dataset_role": str(dataset_role), "prepared_fingerprint": fp},
     )
     dataset = load_prepared_dataset(reference.path)
