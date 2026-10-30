@@ -8,6 +8,7 @@ from numpy.lib.format import open_memmap
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import native_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.data.root_io import iterate_energy_chunks
 from waveform_analysis.engine.event_selection import (
     SelectionData as SelectionData,
@@ -331,9 +332,11 @@ def preprocess_selected(
             logger.info(
                 "Materialized preprocessing | %s | %s | n=%d", root.name, mode, rows.size
             )
-    reference = store.get_or_build(
-        recipe,
-        build,
+    alias = native_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
+    reference = get_or_build_named(
+        store, recipe, alias,
+        lambda directory, _recipe: build(directory),
+        rebuild=rebuild,
         metadata={
             "source": str(root),
             "mode": str(mode),
