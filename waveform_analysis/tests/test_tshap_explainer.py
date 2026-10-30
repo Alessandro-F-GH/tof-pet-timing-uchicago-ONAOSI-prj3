@@ -24,17 +24,19 @@ class _ZeroImputer:
 
 
 @pytest.mark.parametrize("roi", [False, True])
-def test_conditional_window_occlusion_is_single_event_and_signed(roi):
+def test_paired_window_occlusion_is_single_event_and_signed(roi):
     rng = np.random.default_rng(47)
     sample = rng.uniform(0.1, 1, size=(2, 32)).astype(np.float32)
     explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
                               imputer=_ZeroImputer())
-    positions = [(0, 4, 8), (1, 8, 8), (0, 16, 8)]
+    positions = [(-1, 4, 8), (-1, 8, 8), (-1, 16, 8)]
     def predict(values):
         return np.asarray(values)[:, 0].sum(axis=1) - 2 * np.asarray(values)[:, 1].sum(axis=1)
-    expected = 0.5 * np.asarray([sample[0, 4:12].sum(),
-                                 -2 * sample[1, 8:16].sum(),
-                                 sample[0, 16:24].sum()])
+    expected = 0.5 * np.asarray([
+        sample[0, 4:12].sum() - 2 * sample[1, 4:12].sum(),
+        sample[0, 8:16].sum() - 2 * sample[1, 8:16].sum(),
+        sample[0, 16:24].sum() - 2 * sample[1, 16:24].sum(),
+    ])
     observed = explainer._calculate_window_attrib_scores(
         predict, sample, np.zeros((5, 2, 32)), positions)
     np.testing.assert_allclose(observed, expected, rtol=1e-6)
@@ -73,7 +75,7 @@ def test_tshap_constant_prediction_is_zero():
     sample = np.ones((2, 24), dtype=np.float32)
     values = model._calculate_window_attrib_scores(
         lambda values: np.full(len(values), 7.0), sample, sample[None],
-        [(0, 0, 6), (1, 8, 6)])
+        [(-1, 0, 6), (-1, 8, 6)])
     np.testing.assert_allclose(values, 0)
 
 
@@ -425,46 +427,36 @@ def test_tshap_model_directory_requires_run_metadata(tmp_path):
 
 
 
-@pytest.mark.parametrize("formulation", ["direct", "shared"])
-def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_path, formulation):
+@pytest.mark.parametrize("model_name", ["direct_multirocket", "shared_linear_ridge"])
+def test_global_saliency_plot_uses_pair_importance_for_every_model(tmp_path, model_name):
     pytest.importorskip("matplotlib")
     time_ps = np.linspace(-2000.0, 60000.0, 125, dtype=np.float64)
     waveform_mv = np.vstack([
         20.0 * np.exp(-((time_ps / 1000.0 - 2.0) / 3.0) ** 2),
         18.0 * np.exp(-((time_ps / 1000.0 - 2.2) / 3.5) ** 2),
     ])
-    importance = np.vstack([
-        np.linspace(0.0, 2.0, time_ps.size),
-        np.linspace(1.0, 3.0, time_ps.size),
-    ])
+    pair_importance = np.linspace(0.0, 3.0, time_ps.size)
     _plot_global(
-        tmp_path, time_ps, importance, waveform_mv,
-        model_name="direct_multirocket" if formulation == "direct" else "shared_linear_ridge",
-        formulation=formulation,
-        mode="timing_to_timing",
-        window_name="wide",
-        board_name="FBK",
-        n_events=64,
-        window_samples=80,
+        tmp_path, time_ps, pair_importance, waveform_mv,
+        model_name=model_name, mode="timing_to_timing", window_name="wide",
+        board_name="FBK", n_events=64, window_samples=20,
+        window_starts=np.asarray([20, 40, 60]),
+        signed_positive=np.asarray([[1.0, 2.0, 3.0]]),
+        signed_negative=np.asarray([[-0.5, -1.0, -1.5]]),
         std_waveform_mv=np.full_like(waveform_mv, 0.5),
     )
     output = tmp_path / "global_importance.png"
-    assert output.is_file()
-    assert output.stat().st_size > 0
+    assert output.is_file() and output.stat().st_size > 0
 
 
-def test_shared_global_importance_csv_pools_detector_curves(tmp_path):
+def test_pair_global_importance_csv_writes_one_curve(tmp_path):
     time_ps = np.asarray([-1000.0, 0.0, 1000.0])
-    importance = np.asarray([
-        [1.0, 2.0, 3.0],
-        [5.0, 6.0, 7.0],
-    ])
-    _write_global_importance_csv(tmp_path, time_ps, importance, "shared")
-    import csv
+    importance = np.asarray([3.0, 4.0, 5.0])
+    _write_global_importance_csv(tmp_path, time_ps, importance)
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 3
-    assert {row["detector_or_shared"] for row in rows} == {"shared"}
+    assert {row["importance_source"] for row in rows} == {"pair"}
     np.testing.assert_allclose(
         [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
         [3.0, 4.0, 5.0],
@@ -500,8 +492,8 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 17
-    assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
+    assert summary["plot_version"] == 19
+    assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
     assert summary["waveform_dispersion"].startswith("shaded mean +/- one population standard deviation")
@@ -544,7 +536,7 @@ def test_cli_exposes_only_tshap_interpretability_commands():
         option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
     }
-    assert "--paired-occlusion" in {
+    assert "--paired-occlusion" not in {
         option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
     }
@@ -586,17 +578,17 @@ def test_tshap_recomputes_fitted_features_for_each_waveform():
     assert first[0] != second[0]
 
 
-def test_single_event_occlusion_is_independent_of_reference_argument():
+def test_paired_event_occlusion_is_independent_of_reference_argument():
     sample = np.ones((2, 16), dtype=np.float32)
     explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=_ZeroImputer())
-    predict = lambda values: np.asarray(values)[:, 0].sum(axis=1)
+    predict = lambda values: np.asarray(values)[:, 0].sum(axis=1) + 2 * np.asarray(values)[:, 1].sum(axis=1)
     score_a = explainer._calculate_window_attrib_scores(
-        predict, sample, sample[None], [(0, 4, 4)]
+        predict, sample, sample[None], [(-1, 4, 4)]
     )
     score_b = explainer._calculate_window_attrib_scores(
-        predict, sample, np.zeros((8, 2, 16)), [(0, 4, 4)]
+        predict, sample, np.zeros((8, 2, 16)), [(-1, 4, 4)]
     )
-    np.testing.assert_allclose(score_a, [4.0])
+    np.testing.assert_allclose(score_a, [12.0])
     np.testing.assert_array_equal(score_a, score_b)
 
 
@@ -628,26 +620,6 @@ def test_reference_tshap_constant_prediction_is_zero():
     )
     for value in maps:
         np.testing.assert_allclose(value, 0)
-
-
-def test_paired_global_plot_uses_vertical_waveforms_and_one_pair_histogram(tmp_path):
-    pytest.importorskip("matplotlib")
-    time_ps = np.linspace(-2000.0, 60000.0, 64)
-    waveform = np.vstack([np.sin(time_ps / 1000), np.cos(time_ps / 1000)])
-    importance = np.ones_like(waveform)
-    starts = np.asarray([8, 16, 24], dtype=np.int64)
-    positive = np.asarray([[1.0, 2.0, 3.0]])
-    negative = np.asarray([[-0.5, -1.0, -1.5]])
-    _plot_global(
-        tmp_path, time_ps, importance, waveform,
-        model_name="direct_multirocket", formulation="direct",
-        mode="energy_to_energy", window_name="wide", board_name="UC",
-        n_events=8, window_samples=4, window_starts=starts,
-        signed_positive=positive, signed_negative=negative,
-        paired_occlusion=True,
-    )
-    assert (tmp_path / "global_importance.png").is_file()
-    assert (tmp_path / "global_importance.pdf").is_file()
 
 
 def test_global_plot_validates_waveform_dispersion(tmp_path):
