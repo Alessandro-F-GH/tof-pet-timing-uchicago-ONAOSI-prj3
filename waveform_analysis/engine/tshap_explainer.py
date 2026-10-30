@@ -1064,6 +1064,114 @@ LOCAL_GROUP_LABELS = {
 }
 
 
+def _load_materialized_local_predictions(run_store, blind, manifest):
+    """Load and validate the materialized blind predictions used for local case selection."""
+    predictions_path = Path(run_store.predictions_path)
+    if not predictions_path.is_file():
+        raise FileNotFoundError(
+            "Materialized blind predictions are missing: "
+            f"{predictions_path}. Run the completed blind-evaluation stage before local TSHAP; "
+            "local case selection does not recompute predictions for the full blind population."
+        )
+
+    materialized = run_store.load_predictions()
+    required = {
+        "event_id", "prediction_ps", "corrected_ps", "led_residual_ps",
+        "final_fit_fingerprint", "analysis_protocol_identity",
+    }
+    missing = sorted(required - set(materialized))
+    if missing:
+        raise ValueError(
+            "Materialized blind predictions are missing required fields: "
+            + ", ".join(missing)
+        )
+
+    event_ids = np.asarray(materialized["event_id"], dtype=np.int64)
+    predictions = np.asarray(materialized["prediction_ps"], dtype=np.float64)
+    corrected = np.asarray(materialized["corrected_ps"], dtype=np.float64)
+    targets = np.asarray(materialized["led_residual_ps"], dtype=np.float64)
+    expected_event_ids = np.asarray(blind.event_index, dtype=np.int64)
+    expected_shape = (int(blind.n_events),)
+    if any(values.shape != expected_shape for values in (
+        event_ids, predictions, corrected, targets, expected_event_ids
+    )):
+        raise ValueError(
+            "Materialized blind prediction arrays must contain exactly one value "
+            "per prepared blind event"
+        )
+    if (
+        np.unique(event_ids).size != event_ids.size
+        or np.unique(expected_event_ids).size != expected_event_ids.size
+    ):
+        raise ValueError("Materialized and prepared blind event IDs must be unique")
+
+    if set(event_ids.tolist()) != set(expected_event_ids.tolist()):
+        raise ValueError(
+            "Materialized blind prediction event IDs do not match the prepared blind population"
+        )
+    row_by_event_id = {
+        int(event_id): row for row, event_id in enumerate(event_ids)
+    }
+    order = np.asarray(
+        [row_by_event_id[int(event_id)] for event_id in expected_event_ids],
+        dtype=np.int64,
+    )
+    predictions = predictions[order]
+    corrected = corrected[order]
+    targets = targets[order]
+
+    def metadata_text(name):
+        value = np.asarray(materialized[name])
+        if value.size != 1:
+            raise ValueError(
+                f"Materialized blind prediction metadata {name!r} must be scalar"
+            )
+        scalar = value.reshape(-1)[0]
+        if isinstance(scalar, bytes):
+            scalar = scalar.decode("utf-8")
+        return str(scalar)
+
+    expected_final_fit = str(
+        manifest.get("stage_fingerprints", {}).get("final_fit") or ""
+    )
+    if not expected_final_fit:
+        raise ValueError("Run manifest has no final-fit fingerprint for prediction validation")
+    saved_final_fit = metadata_text("final_fit_fingerprint")
+    if saved_final_fit != expected_final_fit:
+        raise ValueError(
+            "Materialized blind predictions belong to a different final model "
+            f"(saved={saved_final_fit}, expected={expected_final_fit})"
+        )
+
+    expected_protocol = str(
+        blind.manifest.get("analysis_protocol_identity") or
+        manifest.get("dataset_populations", {}).get("blind", {}).get(
+            "analysis_protocol_identity"
+        ) or ""
+    )
+    if not expected_protocol:
+        raise ValueError("Prepared blind dataset has no analysis-protocol identity")
+    saved_protocol = metadata_text("analysis_protocol_identity")
+    if saved_protocol != expected_protocol:
+        raise ValueError(
+            "Materialized blind predictions belong to a different blind dataset "
+            f"(saved={saved_protocol}, expected={expected_protocol})"
+        )
+
+    if not all(np.all(np.isfinite(values)) for values in (
+        predictions, corrected, targets
+    )):
+        raise ValueError("Materialized blind predictions contain non-finite values")
+    if not np.allclose(
+        corrected, targets - predictions, rtol=1e-10, atol=1e-10
+    ):
+        raise ValueError(
+            "Materialized corrected residuals are inconsistent with "
+            "led_residual_ps - prediction_ps"
+        )
+    return predictions, targets
+
+
 def _select_local_events(predictions, targets, events_per_group=2, extreme_margin=0.05):
     """Select two non-overlapping examples per correction/improvement category.
 
@@ -2155,7 +2263,7 @@ def explain_tshap_local(
             )
             identity = {
                 "method": "paired_hermite_ppca_local_case_study",
-                "method_version": 5,
+                "method_version": 6,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -2200,9 +2308,9 @@ def explain_tshap_local(
             time_ps = _check_prepared_grids(control, blind, config["mode"])
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
-            targets = np.asarray(model_target(blind, config["mode"]), dtype=np.float64)
-            if targets.shape != (blind.n_events,) or not np.all(np.isfinite(targets)):
-                raise ValueError("Blind targets must be finite and match the event population")
+            predictions, targets = _load_materialized_local_predictions(
+                run_store, blind, manifest
+            )
 
             imputer, imputer_metadata = _get_window_imputer(
                 window_imputers, control, config, output_root, directory,
@@ -2221,15 +2329,6 @@ def explain_tshap_local(
                     fitted = load_fitted_model(spec, fitted_model_dir, run["best"]["parameters"], config)
                     sample_mask = None if fitted.sample_mask is None else np.asarray(fitted.sample_mask, bool).copy()
                     try:
-                        # Predictions over the full blind population are needed only
-                        # to select cases; the expensive TSHAP stage explains 10 by default.
-                        all_indices = np.arange(blind.n_events, dtype=np.int64)
-                        # Do not use precomputed feature matrices for case selection.
-                        # Keep the same waveform -> fitted-transform -> model path as occlusion.
-                        predictions = predict_indices(
-                            spec, fitted, blind, config["mode"], all_indices,
-                            chunk_size=predict_batch_size,
-                        )
                         selected, improvement, median_prediction = _select_local_events(
                             predictions, targets, events_per_group=events_per_group,
                             extreme_margin=extreme_margin,
