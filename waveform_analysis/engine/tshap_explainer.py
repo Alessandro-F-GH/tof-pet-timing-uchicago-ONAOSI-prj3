@@ -35,7 +35,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 7
-GLOBAL_PLOT_VERSION = 17
+GLOBAL_PLOT_VERSION = 18
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -440,7 +440,7 @@ def _cached_hermite_ppca_imputer(
 
 
 def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None,
-                   sample_mask=None):
+                   sample_mask=None, paired_occlusion=False):
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
@@ -454,6 +454,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
 
         def __init__(self, *args, sample_mask=None, **kwargs):
             super().__init__(*args, **kwargs)
+            self.paired_occlusion = bool(paired_occlusion)
             self.sample_mask = (
                 None if sample_mask is None
                 else np.asarray(sample_mask, dtype=bool).reshape(-1).copy()
@@ -470,18 +471,29 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                 raise ValueError(
                     "The model sample mask leaves no valid TSHAP windows at this window size"
                 )
-            positions = [
-                (channel, start)
-                for channel in range(n_channels)
-                for start in valid_starts
-            ]
+            positions = (
+                [(-1, start) for start in valid_starts]
+                if self.paired_occlusion
+                else [
+                    (channel, start)
+                    for channel in range(n_channels)
+                    for start in valid_starts
+                ]
+            )
             scores = self._calculate_window_attrib_scores(
                 fnc, input_sample, baselines, positions
             )
             reshaped = np.zeros(input_sample.shape, dtype=np.float64)
             n_windows = len(valid_starts)
-            for channel in range(n_channels):
-                channel_scores = scores[channel * n_windows:(channel + 1) * n_windows]
+            score_rows = (
+                [scores] * n_channels
+                if self.paired_occlusion
+                else [
+                    scores[channel * n_windows:(channel + 1) * n_windows]
+                    for channel in range(n_channels)
+                ]
+            )
+            for channel, channel_scores in enumerate(score_rows):
                 for j, (start, score) in enumerate(zip(valid_starts, channel_scores)):
                     reshaped[channel, start] = score
                     if j + 1 >= n_windows:
@@ -549,12 +561,23 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                     channel, start = int(position[0]), int(position[1])
                     width = int(position[2]) if len(position) == 3 else self.window_length
                     stop = min(start + width, sample.shape[-1])
-                    if not 0 <= channel < 2 or start < 0 or stop <= start:
+                    if start < 0 or stop <= start:
                         raise ValueError("Invalid temporal occlusion window")
-                    imputed = imputer.impute_segment_batch(
-                        sample[None], channel, start, stop-start
-                    )[0]
-                    candidates[i, channel, start:stop] = imputed
+                    if self.paired_occlusion:
+                        if channel != -1:
+                            raise ValueError("Paired occlusion requires the joint-channel sentinel")
+                        for detector in range(2):
+                            imputed = imputer.impute_segment_batch(
+                                sample[None], detector, start, stop-start
+                            )[0]
+                            candidates[i, detector, start:stop] = imputed
+                    else:
+                        if not 0 <= channel < 2:
+                            raise ValueError("Invalid detector index for temporal occlusion")
+                        imputed = imputer.impute_segment_batch(
+                            sample[None], channel, start, stop-start
+                        )[0]
+                        candidates[i, channel, start:stop] = imputed
                 predicted = np.asarray(fnc(candidates), np.float64)
                 if predicted.shape != (len(part),):
                     raise ValueError("TSHAP returned an invalid prediction batch")
@@ -625,6 +648,13 @@ def _raw_window_data(explainer):
     scores = getattr(explainer, "last_window_scores", None)
     if positions is None or scores is None:
         raise ValueError("Missing raw TSHAP window scores")
+    if bool(getattr(explainer, "paired_occlusion", False)):
+        starts = np.array(
+            [start for channel, start in positions if channel == -1], dtype=np.int64
+        )
+        if len(starts) == 0 or len(starts) != np.asarray(scores).size:
+            raise ValueError("Inconsistent paired TSHAP windows")
+        return starts, np.asarray(scores, dtype=np.float64).reshape(1, len(starts))
     starts = np.array([start for channel, start in positions if channel == 0], dtype=np.int64)
     other = np.array([start for channel, start in positions if channel == 1], dtype=np.int64)
     if not np.array_equal(starts, other) or len(starts) == 0:
@@ -652,7 +682,7 @@ def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *
 
 def _write_signed_csv(
     destination, time_ps, starts, positive, negative, window_samples, formulation,
-    *, aggregated_positive=None, aggregated_negative=None,
+    *, paired_occlusion=False, aggregated_positive=None, aggregated_negative=None,
 ):
     dt = float(np.median(np.diff(time_ps)))
     shared = str(formulation).lower() == "shared"
@@ -660,7 +690,11 @@ def _write_signed_csv(
         writer = csv.writer(stream)
         writer.writerow(("detector_or_shared", "window_start_ps", "window_end_ps",
                          "mean_positive_contribution_ps", "mean_negative_contribution_ps"))
-        if shared:
+        if paired_occlusion:
+            if positive.shape != (1, len(starts)) or negative.shape != (1, len(starts)):
+                raise ValueError("Paired signed contributions must have one score per window")
+            channels = [("paired", positive[0], negative[0])]
+        elif shared:
             channels = [("shared", positive.mean(axis=0), negative.mean(axis=0))]
         else:
             if aggregated_positive is None or aggregated_negative is None:
@@ -739,10 +773,16 @@ def _global_plot_context(destination, summary):
         "board_name": board_name,
         "n_events": int(summary.get("n_explained_events", 0)),
         "window_samples": window_samples,
+        "paired_occlusion": bool(
+            summary.get("paired_occlusion", settings.get("paired_occlusion", False))
+        ),
     }
 
 
-def _write_global_importance_csv(destination, time_ps, mean_absolute, formulation, roi_maps=None):
+def _write_global_importance_csv(
+    destination, time_ps, mean_absolute, formulation, roi_maps=None, *,
+    paired_occlusion=False,
+):
     """Write only unnormalized absolute-importance summaries to the global CSV."""
     time_ps = np.asarray(time_ps, dtype=np.float64)
     mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
@@ -756,7 +796,13 @@ def _write_global_importance_csv(destination, time_ps, mean_absolute, formulatio
         roi_abs = np.mean(np.abs(roi_maps), axis=0)
 
     shared = str(formulation).lower() == "shared"
-    if shared:
+    if paired_occlusion:
+        curves = [(
+            "paired",
+            np.mean(mean_absolute, axis=0),
+            np.mean(roi_abs, axis=0) if roi_abs is not None else None,
+        )]
+    elif shared:
         curves = [(
             "shared",
             np.mean(mean_absolute, axis=0),
@@ -816,6 +862,7 @@ def _plot_global(
     model_name, formulation, mode, window_name, board_name, n_events,
     window_samples, window_starts=None, signed_positive=None, signed_negative=None,
     aggregated_positive=None, aggregated_negative=None, std_waveform_mv=None,
+    paired_occlusion=False,
 ):
     """Plot mean physical waveforms, their event-wise dispersion and TSHAP saliency."""
     import matplotlib
@@ -869,11 +916,13 @@ def _plot_global(
             raise ValueError("Global waveform standard deviations must be finite and non-negative")
 
         shared = str(formulation).lower() == "shared"
-        saliency = np.mean(mean_absolute, axis=0) if shared else mean_absolute
+        paired = bool(paired_occlusion)
+        pooled = shared or paired
+        saliency = np.mean(mean_absolute, axis=0) if pooled else mean_absolute
         # Direct models use the maximum across BOTH detectors, preserving a common
         # quantitative colour scale while PowerNorm(gamma > 1) suppresses weak
         # attribution colours and improves separation of low and moderate importance.
-        vmax = float(np.max(saliency) if shared else np.max(mean_absolute))
+        vmax = float(np.max(saliency) if pooled else np.max(mean_absolute))
         if not np.isfinite(vmax) or vmax <= 0.0:
             vmax = 1.0
         norm = PowerNorm(gamma=1.6, vmin=0.0, vmax=vmax, clip=True)
@@ -906,8 +955,8 @@ def _plot_global(
             for start in bin_starts
         ], dtype=np.float64)
 
-        if shared:
-            # Stack both waveforms and the pooled importance histogram in one
+        if pooled:
+            # Stack both waveforms and the pooled or paired importance histogram in one
             # column so every time axis has exactly the same horizontal extent.
             fig = plt.figure(figsize=(12.2, 7.8), constrained_layout=True)
             gs = fig.add_gridspec(
@@ -940,6 +989,8 @@ def _plot_global(
         signal_axes = [ax_signal1, ax_signal2]
 
         title = f"Global TSHAP Saliency — {_format_global_model_name(model_name)}"
+        if paired_occlusion:
+            title += " (Paired Occlusion)"
         fig.suptitle(title, fontsize=12.5, y=1.015)
 
         for ax in [*signal_axes, *hist_axes]:
@@ -995,7 +1046,23 @@ def _plot_global(
 
         if window_starts is None or signed_positive is None or signed_negative is None:
             raise ValueError("Raw signed window contributions required")
-        if shared:
+        if paired:
+            if (
+                signed_positive is None or signed_negative is None
+                or np.asarray(signed_positive).shape != (1, len(window_starts))
+                or np.asarray(signed_negative).shape != (1, len(window_starts))
+            ):
+                raise ValueError("Paired global plot requires one signed contribution per window")
+            _signed_histogram(
+                ax_shared_hist, time_ps, window_starts, window_samples,
+                signed_positive[0], signed_negative[0],
+            )
+            ax_shared_hist.set_ylabel("Pair contribution (ps)")
+            ax_shared_hist.set_title(
+                "Joint contributions (both detector signals occluded together)",
+                loc="left", fontsize=9.5,
+            )
+        elif shared:
             _signed_histogram(ax_shared_hist, time_ps, window_starts, window_samples,
                               signed_positive.mean(axis=0), signed_negative.mean(axis=0))
             ax_shared_hist.set_ylabel("Contribution (ps)")
@@ -1031,7 +1098,7 @@ def _plot_global(
             for spine in ax.spines.values():
                 spine.set_linewidth(0.7)
 
-        if shared:
+        if pooled:
             colorbar = fig.colorbar(
                 ScalarMappable(norm=norm, cmap=cmap),
                 cax=colorbar_ax,
@@ -1499,7 +1566,8 @@ def _refresh_presentation(destination):
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     current_plot_files = (
-        "global_importance.png", "global_importance.pdf", "signed_window_importance.csv"
+        "global_importance.png", "global_importance.pdf",
+        "global_importance.csv", "signed_window_importance.csv",
     )
     if (
         summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION
@@ -1534,15 +1602,25 @@ def _refresh_presentation(destination):
     mean_absolute = np.mean(np.abs(window_maps), axis=0)
     signed_positive, signed_negative = _signed_means(raw_scores)
     context = _global_plot_context(destination, summary)
-    if context["formulation"] == "shared":
+    paired_occlusion = context["paired_occlusion"]
+    if paired_occlusion:
+        if raw_scores.ndim != 3 or raw_scores.shape[1] != 1:
+            raise ValueError("Cached paired TSHAP scores must contain one joint score per window")
+        aggregated_positive = aggregated_negative = None
+    elif context["formulation"] == "shared":
         aggregated_positive = aggregated_negative = None
     else:
         # Sum each event's two raw signed detector scores before separating signs.
         # This preserves cancellation between detectors within the same window.
         aggregated_positive, aggregated_negative = _signed_means(raw_scores.sum(axis=1))
+    _write_global_importance_csv(
+        destination, time_ps, mean_absolute, context["formulation"], roi_maps,
+        paired_occlusion=paired_occlusion,
+    )
     _write_signed_csv(
         destination, time_ps, window_starts, signed_positive, signed_negative,
         context["window_samples"], context["formulation"],
+        paired_occlusion=paired_occlusion,
         aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
     )
     _plot_global(
@@ -1558,8 +1636,10 @@ def _refresh_presentation(destination):
         window_starts=window_starts,
         signed_positive=signed_positive, signed_negative=signed_negative,
         aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
+        paired_occlusion=paired_occlusion,
     )
 
+    summary["paired_occlusion"] = paired_occlusion
     summary["plot_version"] = GLOBAL_PLOT_VERSION
     summary["board"] = context["board_name"]
     summary["window_name"] = context["window_name"]
@@ -1573,7 +1653,8 @@ def _refresh_presentation(destination):
     summary["global_importance_aggregation"] = {
         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-                        "direct_signed_windows": "sum the two raw signed detector scores per event and window, then average positive and negative parts separately",
+        "paired": "mean absolute joint-occlusion attribution across explained blind events; the same pair-level curve is displayed on both detector waveforms, without channel-specific scores",
+        "direct_signed_windows": "sum the two raw signed detector scores per event and window, then average positive and negative parts separately",
         "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
     }
     summary["tshap_window_samples"] = context["window_samples"]
@@ -1581,9 +1662,13 @@ def _refresh_presentation(destination):
         "style": "mean physical detector waveforms with shaded +/-1 standard deviation bands, saliency colouring and aligned importance histograms",
         "waveform_dispersion": "mean +/- one population standard deviation across explained blind events (mV)",
         "layout": (
-            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
-            if context["formulation"] == "shared"
-            else "three-row grid: detector waveforms side by side, detector-specific signed histograms below, and a full-width aggregated signed histogram (sum of per-event detector scores) at the bottom"
+            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, paired joint-occlusion histogram), with a common time axis"
+            if paired_occlusion
+            else (
+                "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
+                if context["formulation"] == "shared"
+                else "three-row grid: detector waveforms side by side, detector-specific signed histograms below, and a full-width aggregated signed histogram (sum of per-event detector scores) at the bottom"
+            )
         ),
         "onishi_interval_ns": [-1.5, 2.0],
         "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
@@ -1598,9 +1683,13 @@ def _refresh_presentation(destination):
             "unit": "ps",
         },
         "detector_identity": (
-            "shared absolute-importance curve and pooled histogram for both signals"
-            if context["formulation"] == "shared"
-            else "detector-specific absolute-importance curves and signed histograms, plus an aggregated signed histogram formed by summing both detector scores per event and window"
+            "one joint pair-importance curve displayed on both waveform panels; no channel-specific importance is calculated"
+            if paired_occlusion
+            else (
+                "shared absolute-importance curve and pooled histogram for both signals"
+                if context["formulation"] == "shared"
+                else "detector-specific absolute-importance curves and signed histograms, plus an aggregated signed histogram formed by summing both detector scores per event and window"
+            )
         ),
         "legend": "omitted; detector labels are placed inside waveform panels according to channel type",
     }
@@ -1619,7 +1708,7 @@ def explain_tshap(
     results=None, *, model_dir=None, models=None, ml_window=None,
     cache_root=None, artifact_root=None, output_root=None, max_events=100,
     window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
-    roi=False, overwrite=False, imputer_components=32,
+    roi=False, overwrite=False, paired_occlusion=False, imputer_components=32,
     imputer_fit_events=2000, imputer_tuning_events=300,
     imputer_slope_points=5, logger=None,
 ):
@@ -1645,6 +1734,8 @@ def explain_tshap(
         raise ValueError("imputer_slope_points must be >= 2")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
+    if not isinstance(paired_occlusion, bool):
+        raise ValueError("paired_occlusion must be a boolean")
 
     ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
     tshap_version = version("tshap")
@@ -1720,8 +1811,16 @@ def explain_tshap(
                     "slope_points": int(imputer_slope_points),
                 },
             }
+            # Keep the default-mode identity stable; paired mode is a distinct
+            # explanation protocol and therefore receives its own fingerprint.
+            if paired_occlusion:
+                settings["paired_occlusion"] = True
             identity = {
-                "method": "single_event_hermite_ppca_blend_window_occlusion",
+                "method": (
+                    "paired_single_event_hermite_ppca_blend_window_occlusion"
+                    if paired_occlusion
+                    else "single_event_hermite_ppca_blend_window_occlusion"
+                ),
                 "method_version": TSHAP_METHOD_VERSION,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -1817,6 +1916,7 @@ def explain_tshap(
                             window_samples, stride_samples, roi,
                             predict_batch_size, imputer=imputer,
                             sample_mask=sample_mask,
+                            paired_occlusion=paired_occlusion,
                         )
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         raw_scores = []
@@ -1854,10 +1954,13 @@ def explain_tshap(
                 ):
                     raise ValueError("Non-finite TSHAP attribution")
                 raw_scores = np.asarray(raw_scores, dtype=np.float64)
-                if raw_scores.shape != (len(event_ids), 2, len(window_starts)):
+                expected_score_channels = 1 if paired_occlusion else 2
+                if raw_scores.shape != (
+                    len(event_ids), expected_score_channels, len(window_starts)
+                ):
                     raise ValueError("Raw TSHAP scores have an invalid event/channel/window shape")
                 signed_positive, signed_negative = _signed_means(raw_scores)
-                if str(spec.estimator_formulation).lower() == "shared":
+                if paired_occlusion or str(spec.estimator_formulation).lower() == "shared":
                     aggregated_positive = aggregated_negative = None
                 else:
                     # Sum detector scores event-by-event before separating signs,
@@ -1902,11 +2005,13 @@ def explain_tshap(
                 _write_global_importance_csv(
                     temporary, time_ps, mean_absolute,
                     spec.estimator_formulation, roi_maps,
+                    paired_occlusion=paired_occlusion,
                 )
                 _write_signed_csv(
                     temporary, time_ps, window_starts,
                     signed_positive, signed_negative, window_samples,
                     spec.estimator_formulation,
+                    paired_occlusion=paired_occlusion,
                     aggregated_positive=aggregated_positive,
                     aggregated_negative=aggregated_negative,
                 )
@@ -1925,11 +2030,13 @@ def explain_tshap(
                     signed_negative=signed_negative,
                     aggregated_positive=aggregated_positive,
                     aggregated_negative=aggregated_negative,
+                    paired_occlusion=paired_occlusion,
                 )
 
                 atomic_json(temporary / "summary.json", {
                     **identity,
                     "identity_sha256": fingerprint,
+                    "paired_occlusion": bool(paired_occlusion),
                     "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name,
                     "window_name": window_name,
@@ -1959,10 +2066,20 @@ def explain_tshap(
                         "ps/sample (raw signed window prediction differences redistributed over samples)"
                     ),
                     "interpretation": (
-                        "Each detector/window is occluded once per event. Missing samples are "
-                        "replaced by the same event's conditional Hermite-PPCA blend imputation; "
-                        "the signed window score is original prediction minus imputed prediction. "
-                        "Temporal interpolation is not an exact sample-wise Shapley decomposition."
+                        (
+                            "Both detector signals are occluded together over the same temporal window once per event. "
+                            "Missing samples in each signal are replaced by that event's conditional Hermite-PPCA blend "
+                            "imputation; one signed pair-level score is the original prediction minus the jointly "
+                            "imputed prediction. The score is not decomposed into detector-specific contributions. "
+                            "Temporal interpolation is not an exact sample-wise Shapley decomposition."
+                        )
+                        if paired_occlusion
+                        else (
+                            "Each detector/window is occluded once per event. Missing samples are "
+                            "replaced by the same event's conditional Hermite-PPCA blend imputation; "
+                            "the signed window score is original prediction minus imputed prediction. "
+                            "Temporal interpolation is not an exact sample-wise Shapley decomposition."
+                        )
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
@@ -1981,6 +2098,10 @@ def explain_tshap(
                         "shared": (
                             "mean absolute interpolated attribution across explained blind events "
                             "and both detectors at each sample"
+                        ),
+                        "paired": (
+                            "mean absolute joint-occlusion attribution across explained blind events; "
+                            "the same pair-level curve is displayed on both waveforms without channel-specific scores"
                         ),
                         "direct_signed_windows": (
                             "sum the two raw signed detector scores per event and window, then "
@@ -2001,10 +2122,15 @@ def explain_tshap(
                         ),
                         "layout": (
                             "three vertically stacked panels (detector 1 waveform, detector 2 waveform, "
-                            "shared signed histogram), with a common time axis"
-                            if str(spec.estimator_formulation).lower() == "shared"
-                            else "detector waveforms side by side, detector-specific signed histograms below, "
-                            "and a full-width aggregated signed histogram at the bottom"
+                            "paired joint-occlusion histogram), with a common time axis"
+                            if paired_occlusion
+                            else (
+                                "three vertically stacked panels (detector 1 waveform, detector 2 waveform, "
+                                "shared signed histogram), with a common time axis"
+                                if str(spec.estimator_formulation).lower() == "shared"
+                                else "detector waveforms side by side, detector-specific signed histograms below, "
+                                "and a full-width aggregated signed histogram at the bottom"
+                            )
                         ),
                         "onishi_interval_ns": [-1.5, 2.0],
                         "importance_colour_scale": (
@@ -2013,8 +2139,13 @@ def explain_tshap(
                         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
                         "histogram_bar_width_samples": int(window_samples),
                         "detector_identity": (
-                            "shared pooled attribution" if str(spec.estimator_formulation).lower() == "shared"
-                            else "detector-specific and aggregated signed contributions"
+                            "one joint pair-importance curve displayed on both waveform panels; no channel-specific importance"
+                            if paired_occlusion
+                            else (
+                                "shared pooled attribution"
+                                if str(spec.estimator_formulation).lower() == "shared"
+                                else "detector-specific and aggregated signed contributions"
+                            )
                         ),
                     },
                     "prediction_equivalence_max_error_ps": float(
