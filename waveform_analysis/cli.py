@@ -41,6 +41,22 @@ def _parser() -> argparse.ArgumentParser:
                          help="Directory for the portable preprocessing and artifact cache bundle")
     prepare.add_argument("--models", nargs="+", metavar="MODEL",
                          help="Prepare caches only for these model names (default: all batch models)")
+    migrate = sub.add_parser(
+        "migrate-transforms",
+        help="Import fitted transformations from historical results into a shared cache",
+    )
+    migrate.add_argument("--results", type=Path, required=True,
+                         help="Historical canonical results root")
+    migrate.add_argument("--cache-root", type=Path, required=True,
+                         help="Destination prepare-cache bundle root")
+    migrate.add_argument("--source-artifact-root", type=Path,
+                         help="Artifact store containing externally stored historical models/transforms")
+    migrate.add_argument("--models", nargs="+", metavar="MODEL",
+                         help="Only import these model names")
+    migrate.add_argument("--overwrite", action="store_true",
+                         help="Retarget conflicting transform aliases to the selected historical fit")
+    migrate.add_argument("--dry-run", action="store_true",
+                         help="Validate and list imports without writing artifacts")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -177,6 +193,19 @@ def main() -> None:
         from .engine.development_diagnostic import ensure_development_predictions
         for run in discover_runs(args.results):
             print(ensure_development_predictions(run, logger=logger, artifact_root=args.artifact_root))
+        return
+    if args.command == "migrate-transforms":
+        from .engine.transform_migration import import_fitted_transforms
+        records = import_fitted_transforms(
+            args.results,
+            cache_root=args.cache_root,
+            source_artifact_root=args.source_artifact_root,
+            models=args.models,
+            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+            logger=logger,
+        )
+        print(json.dumps(records, indent=2))
         return
     batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
     if args.command == "prepare-cache":
