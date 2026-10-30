@@ -76,7 +76,15 @@ any alternative XAI procedure.
 python -m waveform_analysis.cli explain-tshap \
   --results waveform_analysis/results/UC/benchmark_48V_final \
   --models direct_multirocket direct_rdst shared_linear_ridge \
-  --imputation hermite_ppca \
+  --cache-root /path/to/cache_bundle \
+  --ml-window wide \
+  --imputation hermite_ppca
+
+# Explain one saved-model run directly (no batch result-root scan).
+python -m waveform_analysis.cli explain-tshap \
+  --model-dir waveform_analysis/results/UC/benchmark_48V_final/energy/wide/direct_multirocket \
+  --cache-root /path/to/cache_bundle \
+  --max-events 100 \
   --window-samples 20 \
   --stride-samples 20
 ```
