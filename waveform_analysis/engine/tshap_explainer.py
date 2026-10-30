@@ -35,7 +35,7 @@ from waveform_analysis.signal.baseline import baseline_level_mV
 
 
 TSHAP_METHOD_VERSION = 7
-GLOBAL_PLOT_VERSION = 16
+GLOBAL_PLOT_VERSION = 17
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -815,9 +815,9 @@ def _plot_global(
     destination, time_ps, mean_absolute, mean_waveform_mv, *,
     model_name, formulation, mode, window_name, board_name, n_events,
     window_samples, window_starts=None, signed_positive=None, signed_negative=None,
-    aggregated_positive=None, aggregated_negative=None,
+    aggregated_positive=None, aggregated_negative=None, std_waveform_mv=None,
 ):
-    """Plot physical waveforms with common-scale TSHAP saliency and aligned histograms."""
+    """Plot mean physical waveforms, their event-wise dispersion and TSHAP saliency."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -839,6 +839,10 @@ def _plot_global(
         time_ns = time_ps / 1000.0
         mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
         mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
+        std_waveform_mv = (
+            None if std_waveform_mv is None
+            else np.asarray(std_waveform_mv, dtype=np.float64)
+        )
         expected_shape = (2, time_ps.size)
         if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
             raise ValueError("Global TSHAP time grid must contain at least two finite samples")
@@ -853,10 +857,16 @@ def _plot_global(
         window_samples = int(window_samples)
         if mean_absolute.shape != expected_shape or mean_waveform_mv.shape != expected_shape:
             raise ValueError("Global TSHAP arrays must have shape [2 detectors, samples]")
+        if std_waveform_mv is not None and std_waveform_mv.shape != expected_shape:
+            raise ValueError("Global waveform standard deviation must have shape [2 detectors, samples]")
         if not np.all(np.isfinite(mean_absolute)) or np.any(mean_absolute < 0):
             raise ValueError("Global absolute importance must be finite and non-negative")
         if not np.all(np.isfinite(mean_waveform_mv)):
             raise ValueError("Global physical waveforms must be finite")
+        if std_waveform_mv is not None and (
+            not np.all(np.isfinite(std_waveform_mv)) or np.any(std_waveform_mv < 0)
+        ):
+            raise ValueError("Global waveform standard deviations must be finite and non-negative")
 
         shared = str(formulation).lower() == "shared"
         saliency = np.mean(mean_absolute, axis=0) if shared else mean_absolute
@@ -935,12 +945,28 @@ def _plot_global(
         for ax in [*signal_axes, *hist_axes]:
             ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.25, linewidth=0, zorder=0)
 
-        low = float(np.min(mean_waveform_mv))
-        high = float(np.max(mean_waveform_mv))
+        if std_waveform_mv is None:
+            waveform_low = mean_waveform_mv
+            waveform_high = mean_waveform_mv
+        else:
+            waveform_low = mean_waveform_mv - std_waveform_mv
+            waveform_high = mean_waveform_mv + std_waveform_mv
+        low = float(np.min(waveform_low))
+        high = float(np.max(waveform_high))
         span = high - low
         y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
         for channel, ax in enumerate(signal_axes):
             importance = saliency if shared else saliency[channel]
+            if std_waveform_mv is not None:
+                ax.fill_between(
+                    time_ns,
+                    mean_waveform_mv[channel] - std_waveform_mv[channel],
+                    mean_waveform_mv[channel] + std_waveform_mv[channel],
+                    color="#9ca3af",
+                    alpha=0.28,
+                    linewidth=0,
+                    zorder=1,
+                )
             ax.plot(
                 time_ns, mean_waveform_mv[channel],
                 color="#d8dadd", linewidth=3.8, linestyle="solid", zorder=2,
@@ -1479,7 +1505,7 @@ def _refresh_presentation(destination):
         summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION
         and all((destination / name).is_file() for name in current_plot_files)
     ):
-        return
+        return True
 
     with np.load(destination / "attributions.npz") as saved:
         time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
@@ -1492,6 +1518,12 @@ def _refresh_presentation(destination):
                 "does not contain mean_waveform_mv. TSHAP values were not recalculated."
             )
         mean_waveform_mv = np.asarray(saved["mean_waveform_mv"], dtype=np.float64)
+        if "std_waveform_mv" not in saved:
+            # Older results contain only the mean waveform. The event-wise
+            # dispersion cannot be recovered from it, so force a fresh TSHAP
+            # pass rather than silently publishing a plot without the band.
+            return False
+        std_waveform_mv = np.asarray(saved["std_waveform_mv"], dtype=np.float64)
         roi_maps = (
             np.asarray(saved["roi_attribution_ps"], dtype=np.float64)
             if "roi_attribution_ps" in saved else None
@@ -1515,6 +1547,7 @@ def _refresh_presentation(destination):
     )
     _plot_global(
         destination, time_ps, mean_absolute, mean_waveform_mv,
+        std_waveform_mv=std_waveform_mv,
         model_name=context["model_name"],
         formulation=context["formulation"],
         mode=context["mode"],
@@ -1534,6 +1567,9 @@ def _refresh_presentation(destination):
         "ps/sample (upstream window score redistributed across temporal samples)"
     )
     summary["input_units"] = "mV (inverse of frozen prepared waveform normalization)"
+    summary["waveform_dispersion"] = (
+        "shaded mean +/- one population standard deviation (ddof=0) across explained blind events, in mV"
+    )
     summary["global_importance_aggregation"] = {
         "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
         "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
@@ -1542,7 +1578,8 @@ def _refresh_presentation(destination):
     }
     summary["tshap_window_samples"] = context["window_samples"]
     summary["global_plot"] = {
-        "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
+        "style": "mean physical detector waveforms with shaded +/-1 standard deviation bands, saliency colouring and aligned importance histograms",
+        "waveform_dispersion": "mean +/- one population standard deviation across explained blind events (mV)",
         "layout": (
             "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
             if context["formulation"] == "shared"
@@ -1568,6 +1605,7 @@ def _refresh_presentation(destination):
         "legend": "omitted; detector labels are placed inside waveform panels according to channel type",
     }
     atomic_json(summary_path, summary)
+    return True
 
 
 def _explanation_destination(output_root, run_directory):
@@ -1697,11 +1735,17 @@ def explain_tshap(
             fingerprint = canonical_hash(identity)
             destination = _explanation_destination(output_root, directory)
             if _complete(destination, fingerprint) and not overwrite:
-                _refresh_presentation(destination)
+                presentation_ready = _refresh_presentation(destination)
+                if presentation_ready:
+                    if logger:
+                        logger.info("TSHAP | cache hit | %s", destination)
+                    outputs.append(destination)
+                    continue
                 if logger:
-                    logger.info("TSHAP | cache hit | %s", destination)
-                outputs.append(destination)
-                continue
+                    logger.info(
+                        "TSHAP | cached waveform dispersion unavailable; recomputing explained events | %s",
+                        destination,
+                    )
 
             control = lookup.find("control", config, manifest)
             blind = lookup.find("blind", config, manifest)
@@ -1836,6 +1880,7 @@ def explain_tshap(
                         "Inverse-transformed blind waveforms must be finite and match TSHAP inputs"
                     )
                 mean_waveform_mv = np.mean(waveform_mv, axis=0)
+                std_waveform_mv = np.std(waveform_mv, axis=0, ddof=0)
 
                 payload = dict(
                     event_id=np.asarray(blind.event_index[event_ids], dtype=np.int64),
@@ -1845,6 +1890,7 @@ def explain_tshap(
                     window_starts=np.asarray(window_starts, dtype=np.int64),
                     window_samples=np.asarray(window_samples, dtype=np.int64),
                     mean_waveform_mv=mean_waveform_mv,
+                    std_waveform_mv=std_waveform_mv,
                     original_prediction_ps=original,
                 )
                 if roi:
@@ -1866,6 +1912,7 @@ def explain_tshap(
                 )
                 _plot_global(
                     temporary, time_ps, mean_absolute, mean_waveform_mv,
+                    std_waveform_mv=std_waveform_mv,
                     model_name=spec.name,
                     formulation=spec.estimator_formulation,
                     mode=config["mode"],
@@ -1919,6 +1966,9 @@ def explain_tshap(
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
+                    "waveform_dispersion": (
+                        "shaded mean +/- one population standard deviation (ddof=0) across explained blind events, in mV"
+                    ),
                     "sample_mask_window_filter": _sample_mask_window_summary(
                         sample_mask, len(time_ps), window_samples, stride_samples,
                         window_starts,
@@ -1943,7 +1993,11 @@ def explain_tshap(
                     },
                     "global_plot": {
                         "style": (
-                            "physical detector waveforms with saliency colouring and aligned signed-window histograms"
+                            "mean physical detector waveforms with shaded +/-1 standard deviation bands, "
+                            "saliency colouring and aligned signed-window histograms"
+                        ),
+                        "waveform_dispersion": (
+                            "mean +/- one population standard deviation across explained blind events (mV)"
                         ),
                         "layout": (
                             "three vertically stacked panels (detector 1 waveform, detector 2 waveform, "
