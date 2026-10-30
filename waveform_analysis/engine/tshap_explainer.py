@@ -34,7 +34,7 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 4
+TSHAP_METHOD_VERSION = 5
 GLOBAL_PLOT_VERSION = 13
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
@@ -124,11 +124,13 @@ def _choose_indices(n, cap, seed):
     return np.sort(np.random.default_rng(seed).choice(n, size=min(n, cap), replace=False))
 
 
-def _selection_seed(seed):
-    """Stable sampling seed for selecting blind events and plotting samples."""
+def _selection_seed(seed, role="blind_events"):
+    """Stable, model-independent seed for a named TSHAP sampling role."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
-    return semantic_seed(seed, "tshap", "blind_events")
+    if role not in {"blind_events", "control_baselines"}:
+        raise ValueError(f"Unknown TSHAP sampling role: {role}")
+    return semantic_seed(seed, "tshap", role)
 
 
 def _check_prepared_grids(control, blind, mode):
@@ -270,13 +272,18 @@ class _HermitePPCAImputer:
         ]
 
 
-def _fit_hermite_ppca_imputer(control, mode, *, components,
+def _fit_hermite_ppca_imputer(control, mode, baseline_ids=None, *, components,
                               fit_events, tuning_events, slope_points,
                               batch_size, seed):
-    """Fit PPCA on control events with disjoint fitting and tuning cohorts."""
+    """Fit PPCA on control events excluding TSHAP reference baselines."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 
-    available = np.arange(control.n_events, dtype=np.int64)
+    baseline_ids = np.asarray([] if baseline_ids is None else baseline_ids, dtype=np.int64)
+    if baseline_ids.ndim != 1 or np.any(baseline_ids < 0) or np.any(baseline_ids >= control.n_events):
+        raise ValueError("TSHAP baseline indices are outside the control population")
+    if np.unique(baseline_ids).size != baseline_ids.size:
+        raise ValueError("TSHAP baseline indices must be unique")
+    available = np.setdiff1d(np.arange(control.n_events, dtype=np.int64), baseline_ids)
     rng = np.random.default_rng(int(seed) + 1)
     available = rng.permutation(available)
     n_tune = min(int(tuning_events), max(2, len(available) // 5))
@@ -315,14 +322,16 @@ def _fit_hermite_ppca_imputer(control, mode, *, components,
         "slope_points": int(slope_points),
         "explained_variance_ratio_by_detector": explained,
         "training_and_tuning_are_disjoint": True,
+        "training_and_tuning_exclude_reference_baselines": True,
+        "n_excluded_reference_baselines": int(len(baseline_ids)),
     }
     return imputer, metadata
-
 
 
 def _cached_hermite_ppca_imputer(
     control, mode, config, *, window_samples, stride_samples,
     components, fit_events, tuning_events, slope_points, batch_size, seed,
+    baseline_ids=None,
 ):
     """Fit or resolve one immutable conditional Hermite-PPCA imputer product."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
@@ -334,8 +343,16 @@ def _cached_hermite_ppca_imputer(
     board = str(config.get("_board") or _find_board_label(config.get("output_dir", "")))
     if board == "Unknown board":
         board = str(control.manifest.get("board") or "unknown_board")
+    baseline_ids = np.asarray([] if baseline_ids is None else baseline_ids, dtype=np.int64)
+    if baseline_ids.ndim != 1 or np.any(baseline_ids < 0) or np.any(baseline_ids >= control.n_events):
+        raise ValueError("TSHAP baseline indices are outside the control population")
+    if np.unique(baseline_ids).size != baseline_ids.size:
+        raise ValueError("TSHAP baseline indices must be unique")
+    baseline_event_ids = np.asarray(control.event_index[baseline_ids], dtype=np.int64)
+    baseline_key = canonical_hash(baseline_event_ids.tolist())
     settings = dict(
-        cache_schema=2, board=board, channel=family, mode=mode,
+        cache_schema=3, board=board, channel=family, mode=mode,
+        baseline_event_ids_hash=baseline_key, n_reference_baselines=int(len(baseline_ids)),
         window_ns=config["window_ns"],
         control_identity=control.manifest.get("analysis_protocol_identity"),
         control_population=control.manifest.get("event_population_identity"),
@@ -349,14 +366,14 @@ def _cached_hermite_ppca_imputer(
         "tshap-imputers",
         settings,
         parents=(str(control.directory.name),),
-        implementation="conditional-hermite-ppca-v1",
+        implementation="conditional-hermite-ppca-v2",
     )
     store = ArtifactStore(config["preprocessing"]["artifact_root"])
     prior = store.lookup(recipe)
 
     def build(directory, effective_recipe=None):
         imputer, fit_meta = _fit_hermite_ppca_imputer(
-            control, mode, components=components,
+            control, mode, baseline_ids, components=components,
             fit_events=fit_events, tuning_events=tuning_events,
             slope_points=slope_points, batch_size=batch_size, seed=seed,
         )
@@ -391,6 +408,7 @@ def _cached_hermite_ppca_imputer(
         cache_root_from_config(config), config, window_samples=window_samples,
         stride_samples=stride_samples, components=components, fit_events=fit_events,
         tuning_events=tuning_events, slope_points=slope_points, seed=seed,
+        baseline_key=baseline_key[:12],
     )
     reference = get_or_build_named(
         store, recipe, alias, build,
@@ -399,6 +417,8 @@ def _cached_hermite_ppca_imputer(
             "control_population": settings["control_population"],
             "fit_events": int(fit_events),
             "tuning_events": int(tuning_events),
+            "baseline_event_ids_hash": baseline_key,
+            "n_excluded_reference_baselines": int(len(baseline_ids)),
         },
     )
     cache_file = reference.payload_path("imputer.npz")
@@ -434,6 +454,8 @@ def _cached_hermite_ppca_imputer(
         "cache_file": str(cache_file),
         "cache_hit": prior.status == "hit",
         "cache_identity": reference.product_id,
+        "baseline_event_ids_hash": baseline_key,
+        "n_excluded_reference_baselines": int(len(baseline_ids)),
     }
 
 
@@ -443,41 +465,82 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
     except ImportError as exc:
         raise ImportError("TSHAP requires the upstream dependency: pip install tshap==0.0.1") from exc
 
-    if imputer is None:
-        raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
+    baseline_imputation_cache = {}
 
     class BoundedTSHAP(TSHAPExplainer):
-        """Upstream temporal aggregation with conditional single-event occlusion."""
+        """Bounded, symmetric two-player TSHAP with optional conditional imputation."""
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
-            sample = np.asarray(input_sample, np.float32)
+            sample = np.asarray(input_sample, dtype=np.float32)
+            backgrounds = np.asarray(baselines, dtype=np.float32)
             if sample.ndim != 2 or sample.shape[0] != 2:
                 raise ValueError("Expected one two-detector waveform")
-            original = np.asarray(fnc(sample[None]), np.float64)
-            if original.shape != (1,):
-                raise ValueError("TSHAP predictor must return one scalar per event")
-            scores = np.empty(len(window_positions), np.float64)
-            for first in range(0, len(window_positions), predict_batch_size):
-                part = window_positions[first:first + predict_batch_size]
-                candidates = np.repeat(sample[None], len(part), axis=0)
-                for i, position in enumerate(part):
+            if backgrounds.ndim != 3 or backgrounds.shape[1:] != sample.shape:
+                raise ValueError("TSHAP baselines must have shape [events, 2, samples]")
+            if len(backgrounds) < 1 or not np.all(np.isfinite(backgrounds)):
+                raise ValueError("TSHAP requires finite control reference baselines")
+            endpoints = np.asarray(
+                fnc(np.concatenate((sample[None, ...], backgrounds), axis=0)),
+                dtype=np.float64,
+            )
+            if endpoints.shape != (len(backgrounds) + 1,):
+                raise ValueError("Unexpected model output for TSHAP endpoints")
+
+            n_background = len(backgrounds)
+            scores = np.empty(len(window_positions), dtype=np.float64)
+            windows_per_batch = max(1, predict_batch_size // (2 * n_background))
+            for first in range(0, len(window_positions), windows_per_batch):
+                positions = window_positions[first:first + windows_per_batch]
+                candidates = np.empty(
+                    (len(positions) * 2 * n_background, *sample.shape),
+                    dtype=np.float32,
+                )
+                for i, position in enumerate(positions):
                     channel, start = int(position[0]), int(position[1])
                     width = int(position[2]) if len(position) == 3 else self.window_length
-                    stop = min(start + width, sample.shape[-1])
-                    if not 0 <= channel < 2 or start < 0 or stop <= start:
-                        raise ValueError("Invalid temporal occlusion window")
-                    imputed = imputer.impute_segment_batch(
-                        sample[None], channel, start, stop-start
-                    )[0]
-                    candidates[i, channel, start:stop] = imputed
-                predicted = np.asarray(fnc(candidates), np.float64)
-                if predicted.shape != (len(part),):
-                    raise ValueError("TSHAP returned an invalid prediction batch")
-                scores[first:first+len(part)] = original[0] - predicted
+                    if not 0 <= channel < sample.shape[0] or start < 0:
+                        raise ValueError("Invalid temporal TSHAP window")
+                    stop = min(start + width, sample.shape[1])
+                    if stop <= start:
+                        raise ValueError("Empty temporal TSHAP window")
+                    block = candidates[
+                        i * 2 * n_background:(i + 1) * 2 * n_background
+                    ]
+                    block[0::2] = sample
+                    block[1::2] = backgrounds
+                    if imputer is None:
+                        block[0::2, channel, start:stop] = backgrounds[:, channel, start:stop]
+                        block[1::2, channel, start:stop] = sample[channel, start:stop]
+                    else:
+                        sample_fill = imputer.impute_segment_batch(
+                            sample[None, ...], channel, start, stop - start
+                        )[0]
+                        cache_key = (channel, start, stop - start)
+                        if cache_key not in baseline_imputation_cache:
+                            baseline_imputation_cache[cache_key] = imputer.impute_segment_batch(
+                                backgrounds, channel, start, stop - start
+                            )
+                        baseline_fill = baseline_imputation_cache[cache_key]
+                        block[0::2, channel, start:stop] = sample_fill[None, :]
+                        block[1::2, channel, start:stop] = baseline_fill
+
+                predicted = np.asarray(fnc(candidates), dtype=np.float64)
+                if predicted.shape != (len(candidates),):
+                    raise ValueError("TSHAP predictor returned incorrect batch shape")
+                for i in range(len(positions)):
+                    block = predicted[
+                        i * 2 * n_background:(i + 1) * 2 * n_background
+                    ]
+                    scores[first + i] = np.mean(
+                        ((endpoints[0] - block[0::2])
+                         + (block[1::2] - endpoints[1:])) / 2
+                    )
             return scores
 
-    return BoundedTSHAP(window_length=window_samples, stride=stride_samples,
-                        interpolation=True, roi=roi)
+    return BoundedTSHAP(
+        window_length=window_samples, stride=stride_samples,
+        interpolation=True, roi=roi,
+    )
 
 
 def _format_global_model_name(model_name):
