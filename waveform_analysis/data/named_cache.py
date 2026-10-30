@@ -162,7 +162,7 @@ def resolve_alias(path) -> Path:
 
 def publish_alias(alias, target, *, replace: bool = False) -> Path:
     """Atomically publish a readable alias without duplicating large payloads."""
-    alias = Path(alias).expanduser().resolve()
+    alias = Path(os.path.abspath(Path(alias).expanduser()))
     target = Path(target).expanduser().resolve()
     if not target.is_dir():
         raise FileNotFoundError(f"Cache product directory does not exist: {target}")
@@ -233,7 +233,7 @@ def get_or_build_named(
     Explicit rebuilds publish a new immutable product and atomically retarget the
     same readable alias.
     """
-    alias = Path(alias).expanduser().resolve()
+    alias = Path(os.path.abspath(Path(alias).expanduser()))
     if alias_exists(alias) and not rebuild:
         return load_named_reference(store, alias, expected_type=recipe.product_type)
 
