@@ -27,5 +27,5 @@
             
             "modes": ["energy_to_energy","timing_to_timing"], 
 
-  "windows": { "wide": {"start": -2.0, "end": 60.0}}}
+  "windows": { "onishi": {"start": -1.5, "end": 2.0}}}
 }
