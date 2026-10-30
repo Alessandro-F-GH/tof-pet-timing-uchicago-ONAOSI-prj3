@@ -49,11 +49,39 @@ def _validate_positive_int(name, value):
         raise ValueError(f"{name} must be an integer >= 1")
 
 
+def _normalize_tshap_windows(ml_window):
+    """Normalize one or more selected ML windows."""
+    if ml_window is None:
+        return None
+    values = [ml_window] if isinstance(ml_window, str) else list(ml_window)
+    if not values:
+        raise ValueError("At least one TSHAP window must be selected")
+    normalized = tuple(dict.fromkeys(str(value).strip().lower() for value in values))
+    if set(normalized) - {"onishi", "wide", "all"}:
+        raise ValueError("windows must contain only 'onishi', 'wide', or 'all'")
+    if "all" in normalized and len(normalized) != 1:
+        raise ValueError("'all' cannot be combined with individual TSHAP windows")
+    return normalized
+
+
 def _matches_tshap_window(config, ml_window):
     """Select an ML input window by its resolved run configuration name."""
-    if ml_window not in {"onishi", "wide", "all"}:
-        raise ValueError("ml_window must be 'onishi', 'wide', or 'all'")
-    return ml_window == "all" or str(config.get("window_name", "")).strip().lower() == ml_window
+    windows = _normalize_tshap_windows(ml_window)
+    return (
+        windows is None
+        or "all" in windows
+        or str(config.get("window_name", "")).strip().lower() in windows
+    )
+
+
+def _matches_tshap_mode(config, mode):
+    """Select runs by the energy/timing family rather than internal mode names."""
+    if mode is None:
+        return True
+    selected = str(mode).strip().lower()
+    if selected not in {"energy", "timing"}:
+        raise ValueError("mode must be 'energy' or 'timing'")
+    return mode_family(config.get("mode")) == selected
 
 
 
@@ -117,7 +145,7 @@ def _effective_tshap_window(ml_window, *, model_dir):
     """
     if ml_window is None:
         return "all" if model_dir is not None else "wide"
-    _matches_tshap_window({}, ml_window)
+    _normalize_tshap_windows(ml_window)
     return ml_window
 
 
@@ -1501,7 +1529,7 @@ def _explanation_destination(output_root, run_directory):
 
 
 def explain_tshap(
-    results=None, *, model_dir=None, models=None, ml_window=None,
+    results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
     cache_root=None, artifact_root=None, output_root=None, max_events=100,
     window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
     roi=False, overwrite=False, imputer_components=32,
@@ -1530,6 +1558,8 @@ def explain_tshap(
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
     ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
+    if mode is not None and str(mode).strip().lower() not in {"energy", "timing"}:
+        raise ValueError("mode must be 'energy' or 'timing'")
     tshap_version = version("tshap")
     runs, source_path = _tshap_run_inputs(results, model_dir)
     if not runs:
@@ -1551,6 +1581,7 @@ def explain_tshap(
 
     lookup = PreparedCacheLookup()
     outputs, failures = [], []
+    selected_runs = 0
     for run in runs:
         manifest = run["manifest"]
         if models is not None and manifest["model"] not in models:
@@ -1563,7 +1594,7 @@ def explain_tshap(
                 if model_dir is not None:
                     raise ValueError(
                         f"Selected model uses ML window {config.get('window_name')!r}, "
-                        f"which does not match --ml-window {ml_window!r}"
+                        f"which does not match requested windows {ml_window!r}"
                     )
                 if logger:
                     logger.info(
@@ -1571,6 +1602,19 @@ def explain_tshap(
                         config.get("window_name"), ml_window, manifest["model"],
                     )
                 continue
+            if not _matches_tshap_mode(config, mode):
+                if model_dir is not None:
+                    raise ValueError(
+                        f"Selected model uses mode {config.get('mode')!r}, "
+                        f"which does not match --mode {mode!r}"
+                    )
+                if logger:
+                    logger.info(
+                        "TSHAP skipped | unselected mode=%s | requested=%s | model=%s",
+                        config.get("mode"), mode, manifest["model"],
+                    )
+                continue
+            selected_runs += 1
 
             spec = get_model(manifest["model"])
             run_store = RunStore(
@@ -1887,6 +1931,10 @@ def explain_tshap(
             if logger:
                 logger.exception("TSHAP failed | %s", directory)
 
+    if selected_runs == 0 and not failures:
+        raise ValueError(
+            f"No complete model runs match models={models!r}, windows={ml_window!r}, mode={mode!r}"
+        )
     if failures:
         raise RuntimeError(
             "Some TSHAP explanations failed; successful results retained:\n"
@@ -1895,7 +1943,8 @@ def explain_tshap(
     return outputs
 
 def explain_tshap_local(
-    results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
+    results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
+    cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
     extreme_margin=0.05, window_samples=20, stride_samples=20,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
@@ -1918,6 +1967,8 @@ def explain_tshap_local(
         raise ValueError("TSHAP seed must be an integer")
     if not np.isfinite(extreme_margin) or not 0 < extreme_margin < 0.25:
         raise ValueError("extreme_margin must be greater than 0 and less than 0.25")
+    if mode is not None and str(mode).strip().lower() not in {"energy", "timing"}:
+        raise ValueError("mode must be 'energy' or 'timing'")
 
     ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
     tshap_version = version("tshap")
@@ -1938,6 +1989,7 @@ def explain_tshap_local(
 
     lookup = PreparedCacheLookup()
     outputs, failures = [], []
+    selected_runs = 0
     for run in runs:
         manifest = run["manifest"]
         if models is not None and manifest["model"] not in models:
@@ -1950,7 +2002,7 @@ def explain_tshap_local(
                 if model_dir is not None:
                     raise ValueError(
                         f"Selected model uses ML window {config.get('window_name')!r}, "
-                        f"which does not match --ml-window {ml_window!r}"
+                        f"which does not match requested windows {ml_window!r}"
                     )
                 if logger:
                     logger.info(
@@ -1958,6 +2010,19 @@ def explain_tshap_local(
                         config.get("window_name"), ml_window, manifest["model"],
                     )
                 continue
+            if not _matches_tshap_mode(config, mode):
+                if model_dir is not None:
+                    raise ValueError(
+                        f"Selected model uses mode {config.get('mode')!r}, "
+                        f"which does not match --mode {mode!r}"
+                    )
+                if logger:
+                    logger.info(
+                        "TSHAP local skipped | unselected mode=%s | requested=%s | model=%s",
+                        config.get("mode"), mode, manifest["model"],
+                    )
+                continue
+            selected_runs += 1
             spec = get_model(manifest["model"])
             run_store = RunStore(
                 directory, artifact_root=config["preprocessing"]["artifact_root"]
@@ -2293,6 +2358,10 @@ def explain_tshap_local(
             if logger:
                 logger.exception("TSHAP local failed | %s", directory)
 
+    if selected_runs == 0 and not failures:
+        raise ValueError(
+            f"No complete model runs match models={models!r}, windows={ml_window!r}, mode={mode!r}"
+        )
     if failures:
         raise RuntimeError(
             "Some local TSHAP case-study explanations failed; successful results retained:\n"
