@@ -87,7 +87,6 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
         second.impute_segment_batch(waves[:3], 0, 20, 20),
         rtol=1e-12, atol=1e-12)
     third, third_meta = t._cached_hermite_ppca_imputer(
-    third, third_meta = t._cached_hermite_ppca_imputer(
         control, "energy_to_energy", config, **options)
     assert third_meta["cache_hit"] is True
     assert third_meta["cache_identity"] == first_meta["cache_identity"]
