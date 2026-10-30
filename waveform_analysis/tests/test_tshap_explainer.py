@@ -395,7 +395,7 @@ def test_tshap_window_selector_accepts_wide(window_name):
 
 def test_tshap_window_selector_all_and_invalid():
     assert _matches_tshap_window({"window_name": "onishi"}, "all")
-    with pytest.raises(ValueError, match="ml_window"):
+    with pytest.raises(ValueError, match="windows"):
         _matches_tshap_window({"window_name": "wide"}, "invalid")
 
 def test_tshap_window_and_mode_lists_select_batch_runs():
