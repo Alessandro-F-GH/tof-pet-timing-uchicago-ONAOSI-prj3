@@ -11,7 +11,12 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 class PreparedCacheLookup:
-    """Resolve exact prepared products referenced by a completed run manifest."""
+    """Resolve prepared datasets by semantic cache name, with legacy-ref fallback.
+
+    The selected cache is authoritative: historical run fingerprints are not
+    compared with current prepared-cache protocol fingerprints. Role and
+    waveform-grid compatibility are still checked by the consumer.
+    """
 
     def __init__(self):
         self.datasets: dict[Path, PreparedDataset] = {}
@@ -54,14 +59,9 @@ class PreparedCacheLookup:
             cache_root=Path(config["preprocessing"]["cache_dir"]),
             artifact_root=Path(config["preprocessing"]["artifact_root"]),
         )
-        expected_protocol = (
-            manifest.get("dataset_populations", {}).get(role, {})
-            .get("analysis_protocol_identity")
-        )
-        if (
-            expected_protocol is not None
-            and dataset.manifest.get("analysis_protocol_identity") != expected_protocol
-        ):
-            raise ValueError(f"Prepared artifact protocol mismatch for {role}")
+        # Do not compare analysis_protocol_identity with the historical run
+        # manifest. Named cache selection is intentional and user-controlled;
+        # code-version/fingerprint changes must not make reusable waveforms
+        # inaccessible. Structural role and time-grid checks remain in place.
         self.datasets[dataset_path] = dataset
         return dataset
