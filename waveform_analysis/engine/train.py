@@ -492,83 +492,25 @@ def save_model(spec, fitted, directory, parameters, *, include_feature_transform
         np.save(directory / "sample_mask.npy", np.asarray(fitted.sample_mask, bool))
 
 
-def _load_pickle_feature_transform(spec, directory, config=None, sample_mask=None):
-    tpath = directory / "feature_transform" / "transform.pkl"
-
-    # Historical runs can keep their model weights locally while their fitted
-    # transform has been migrated into the portable shared cache.
-    if config is None or spec.feature_transform is None:
-        if tpath.is_file():
-            with tpath.open("rb") as stream:
-                artifact = pickle.load(stream)
-            metadata = getattr(artifact, "metadata", {})
-            identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
-            return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
+def _load_pickle_feature_transform(spec, directory):
+    """Load the fitted feature transform bundled with its model artifact."""
+    if spec.feature_transform is None:
         return None
-    from waveform_analysis.data.named_cache import (
-        alias_exists, cache_root_from_config, load_named_reference, transform_alias,
-    )
-    from waveform_analysis.data.artifact_store import ArtifactStore
-    preprocessing = config.get("preprocessing", {})
-    artifact_root = preprocessing.get("artifact_root")
-    if not artifact_root:
-        if tpath.is_file():
-            with tpath.open("rb") as stream:
-                artifact = pickle.load(stream)
-            metadata = getattr(artifact, "metadata", {})
-            identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
-            return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
+    tpath = Path(directory) / "feature_transform" / "transform.pkl"
+    if not tpath.is_file():
+        if spec.feature_transform.save is not None:
+            raise FileNotFoundError(
+                f"Model directory is missing its fitted feature transform: {tpath}"
+            )
         return None
-    cache_root = cache_root_from_config(config)
-    alias = transform_alias(
-        cache_root, config, spec.feature_transform.name,
-        spec.feature_transform.fit_role,
-    )
-    if not alias_exists(alias):
-        if tpath.is_file():
-            with tpath.open("rb") as stream:
-                artifact = pickle.load(stream)
-            metadata = getattr(artifact, "metadata", {})
-            identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
-            return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
-        return None
-    store = ArtifactStore(artifact_root)
-    reference = load_named_reference(store, alias, expected_type="feature-transforms")
-    manifest_metadata = reference.manifest.get("metadata", {})
-    if manifest_metadata.get("model") != spec.name:
-        raise ValueError(
-            f"Shared transform alias {alias} belongs to model "
-            f"{manifest_metadata.get('model')!r}, not {spec.name!r}"
-        )
-    if manifest_metadata.get("transform") != spec.feature_transform.name:
-        raise ValueError(f"Shared transform alias {alias} has an incompatible transform")
-    contract = manifest_metadata.get("transform_contract")
-    if contract is not None:
-        if contract.get("fit_role") != spec.feature_transform.fit_role:
-            raise ValueError(f"Shared transform alias {alias} has an incompatible fit role")
-        expected_manifest = config.get("_tshap_run_manifest", {})
-        expected_control = (
-            expected_manifest.get("dataset_populations", {}).get("control", {})
-            .get("analysis_protocol_identity")
-        )
-        if expected_control is not None and contract.get("fit_identity") != expected_control:
-            raise ValueError(f"Shared transform alias {alias} was fitted on a different control population")
-        if contract.get("batch_seed") is not None and int(contract["batch_seed"]) != int(config["seed"]):
-            raise ValueError(f"Shared transform alias {alias} was fitted with a different batch seed")
-        if contract.get("mode") != config.get("mode") or contract.get("window_ns") != config.get("window_ns"):
-            raise ValueError(f"Shared transform alias {alias} has an incompatible mode/window")
-        if sample_mask is not None and not np.array_equal(
-            np.asarray(contract.get("sample_mask"), dtype=bool),
-            np.asarray(sample_mask, dtype=bool),
-        ):
-            raise ValueError(f"Shared transform alias {alias} has an incompatible sample mask")
-    with reference.payload_path("transform.pkl").open("rb") as stream:
+    with tpath.open("rb") as stream:
         artifact = pickle.load(stream)
-    identity = reference.product_id
-    return FittedFeatureTransform(
-        spec.feature_transform, artifact, identity, {}, 0, {}
+    metadata = getattr(artifact, "metadata", {})
+    identity = (
+        metadata.get("transform_identity", "reloaded")
+        if spec.requires_frozen_features else "reloaded"
     )
-
+    return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
 
 def _loaded_metadata(artifact, config):
     metadata = dict(getattr(artifact, "metadata", {}) or {})
@@ -580,32 +522,16 @@ def _loaded_metadata(artifact, config):
     return metadata
 
 
-def _shared_transform_complete(spec, directory) -> bool:
-    manifest_path = Path(directory) / ".artifact.json"
-    if not manifest_path.is_file():
-        return False
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        identity = manifest["recipe"]["parameters"].get("feature_transform_identity")
-        if not identity:
-            return False
-        from waveform_analysis.data.artifact_store import ArtifactStore
-        store_root = Path(directory).parents[2]
-        reference = ArtifactStore(store_root).resolve("feature-transforms", str(identity))
-        return reference.payload_path("transform.pkl").is_file()
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
-        return False
-
-
 def saved_model_complete(spec, directory) -> bool:
     directory = Path(directory)
     if not directory.is_dir() or not (directory / "sample_mask.npy").is_file():
         return False
     if spec.artifact_format == "pickle":
+        transform_spec = spec.feature_transform
         transform_ok = (
-            spec.feature_transform.save is None
+            transform_spec is None
+            or transform_spec.save is None
             or (directory / "feature_transform/transform.pkl").is_file()
-            or _shared_transform_complete(spec, directory)
         )
         return (directory / "model.pkl").is_file() and transform_ok
     return (directory / "model.pt").is_file()
@@ -619,7 +545,9 @@ def load_fitted_model(spec, directory, parameters, config):
     if spec.artifact_format == "pickle":
         with (directory / "model.pkl").open("rb") as stream:
             artifact = pickle.load(stream)
-        if spec.feature_transform.fit_role == "deterministic":
+        if spec.feature_transform is None:
+            feature_transform = None
+        elif spec.feature_transform.fit_role == "deterministic":
             from waveform_analysis.models.linear.linear_ridge_common import (
                 LinearTransformArtifact,
             )
@@ -633,7 +561,7 @@ def load_fitted_model(spec, directory, parameters, config):
                 {},
             )
         else:
-            feature_transform = _load_pickle_feature_transform(spec, directory, config, mask)
+            feature_transform = _load_pickle_feature_transform(spec, directory)
         return FittedModel(
             artifact,
             _loaded_metadata(artifact, config),
