@@ -85,7 +85,6 @@ def _parser() -> argparse.ArgumentParser:
                              help="Override only the shared scientific artifact store location")
     tshap.add_argument("--output-root", type=Path, help="Dedicated XAI output directory (default: ./xai, outside --results)")
     tshap.add_argument("--max-events", type=int, default=100, help="Maximum blind events per model (default: 100)")
-    tshap.add_argument("--n-baselines", type=int, default=8, help="Control reference events (default: 8)")
     tshap.add_argument("--window-samples", type=int, default=20)
     tshap.add_argument("--stride-samples", type=int, default=20)
     tshap.add_argument("--predict-batch-size", type=int, default=64)
@@ -122,7 +121,6 @@ def _parser() -> argparse.ArgumentParser:
                              help="Number of events per local category (default: 2; 10 total)")
     tshap_local.add_argument("--extreme-margin", type=float, default=0.05,
                              help="Exclude the most extreme margin of each good/bad tail (default: 0.05)")
-    tshap_local.add_argument("--n-baselines", type=int, default=8)
     tshap_local.add_argument("--window-samples", type=int, default=20)
     tshap_local.add_argument("--stride-samples", type=int, default=20)
     tshap_local.add_argument("--predict-batch-size", type=int, default=64)
@@ -157,7 +155,7 @@ def main() -> None:
         from .engine.tshap_explainer import explain_tshap
         for output in explain_tshap(args.results, model_dir=args.model_dir, models=args.models,
                 ml_window=args.ml_window, cache_root=args.cache_root, artifact_root=args.artifact_root,
-                output_root=args.output_root, max_events=args.max_events, n_baselines=args.n_baselines,
+                output_root=args.output_root, max_events=args.max_events,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed, roi=args.roi,
                 overwrite=args.overwrite, imputation=args.imputation,
@@ -172,7 +170,7 @@ def main() -> None:
         for output in explain_tshap_local(
                 args.results, model_dir=args.model_dir, models=args.models, ml_window=args.ml_window,
                 cache_root=args.cache_root, artifact_root=args.artifact_root, output_root=args.output_root, events_per_group=args.events_per_group,
-                extreme_margin=args.extreme_margin, n_baselines=args.n_baselines,
+                extreme_margin=args.extreme_margin,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed,
                 overwrite=args.overwrite,
