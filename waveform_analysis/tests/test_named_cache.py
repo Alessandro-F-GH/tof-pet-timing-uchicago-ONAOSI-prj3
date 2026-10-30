@@ -10,6 +10,7 @@ from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.named_cache import (
     get_or_build_named, load_named_reference, publish_alias, resolve_alias,
 )
+from waveform_analysis.data.named_cache import dataset_name, prepared_dataset_alias
 
 
 def _builder(value):
@@ -73,3 +74,21 @@ def test_named_cache_rejects_wrong_product_type(tmp_path):
     from waveform_analysis.data.artifact_store import ArtifactCorrupt
     with pytest.raises(ArtifactCorrupt, match="expected prepared-datasets"):
         get_or_build_named(store, expected, alias, _builder(2))
+
+
+def test_dataset_cache_name_is_portable_for_windows_and_posix_paths(tmp_path):
+    windows = {"root_file": r"C:\\Users\\aless\\Desktop\\data\\48V-R0.root"}
+    posix = {"root_file": "/home/aless/data/48V-R0.root"}
+    assert dataset_name(windows) == dataset_name(posix) == "48V-R0"
+
+    config_windows = {
+        "control": windows, "blind": windows, "mode": "energy_to_energy",
+        "window_name": "wide",
+    }
+    config_posix = {
+        "control": posix, "blind": posix, "mode": "energy_to_energy",
+        "window_name": "wide",
+    }
+    assert prepared_dataset_alias(tmp_path, config_windows, "blind") == (
+        prepared_dataset_alias(tmp_path, config_posix, "blind")
+    )
