@@ -582,6 +582,7 @@ def test_hermite_ppca_fit_excludes_reference_baseline_events(tmp_path):
         n_events=len(waves),
         event_index=np.arange(1000, 1000 + len(waves), dtype=np.int64),
         energy_windows=waves,
+        energy_time_ps=np.arange(waves.shape[-1], dtype=np.float64),
         directory=tmp_path / "control",
     )
     imputer, metadata = _fit_hermite_ppca_imputer(
