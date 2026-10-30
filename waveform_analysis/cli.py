@@ -56,6 +56,8 @@ def _parser() -> argparse.ArgumentParser:
     tshap = sub.add_parser("explain-tshap", help="TSHAP temporal explanations from frozen saved models")
     tshap.add_argument("--results", type=Path, required=True)
     tshap.add_argument("--models", nargs="+", metavar="MODEL")
+    tshap.add_argument("--ml-window", choices=("onishi", "wide", "all"), default="wide",
+                       help="ML input window to explain (default: wide; all selects both)")
     tshap.add_argument("--artifact-root", type=Path,
                        help="Override the shared artifact store location")
     tshap.add_argument("--output-root", type=Path, help="Dedicated XAI output directory (default: ./xai, outside --results)")
@@ -81,6 +83,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     tshap_local.add_argument("--results", type=Path, required=True)
     tshap_local.add_argument("--models", nargs="+", metavar="MODEL")
+    tshap_local.add_argument("--ml-window", choices=("onishi", "wide", "all"), default="wide",
+                             help="ML input window to explain (default: wide; all selects both)")
     tshap_local.add_argument("--artifact-root", type=Path,
                              help="Override the shared artifact store location")
     tshap_local.add_argument("--output-root", type=Path, help="Dedicated XAI output directory (default: ./xai, outside --results)")
@@ -121,7 +125,7 @@ def main() -> None:
     logger = configure_logging()
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
-        for output in explain_tshap(args.results, models=args.models, artifact_root=args.artifact_root,
+        for output in explain_tshap(args.results, models=args.models, ml_window=args.ml_window, artifact_root=args.artifact_root,
                 output_root=args.output_root, max_events=args.max_events, n_baselines=args.n_baselines,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed, roi=args.roi,
@@ -135,7 +139,7 @@ def main() -> None:
     if args.command == "explain-tshap-local":
         from .engine.tshap_explainer import explain_tshap_local
         for output in explain_tshap_local(
-                args.results, models=args.models, artifact_root=args.artifact_root,
+                args.results, models=args.models, ml_window=args.ml_window, artifact_root=args.artifact_root,
                 output_root=args.output_root, events_per_group=args.events_per_group,
                 extreme_margin=args.extreme_margin, n_baselines=args.n_baselines,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
