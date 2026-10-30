@@ -492,14 +492,58 @@ def save_model(spec, fitted, directory, parameters, *, include_feature_transform
         np.save(directory / "sample_mask.npy", np.asarray(fitted.sample_mask, bool))
 
 
-def _load_pickle_feature_transform(spec, directory):
+def _load_pickle_feature_transform(spec, directory, config=None, sample_mask=None):
     tpath = directory / "feature_transform" / "transform.pkl"
-    if not tpath.is_file():
+    if tpath.is_file():
+        with tpath.open("rb") as stream:
+            artifact = pickle.load(stream)
+        metadata = getattr(artifact, "metadata", {})
+        identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
+        return FittedFeatureTransform(
+            spec.feature_transform, artifact, identity, {}, 0, {}
+        )
+
+    # Historical runs can keep their model weights locally while their fitted
+    # transform has been migrated into the portable shared cache.
+    if config is None or spec.feature_transform is None:
         return None
-    with tpath.open("rb") as stream:
+    from waveform_analysis.data.named_cache import (
+        alias_exists, cache_root_from_config, load_named_reference, transform_alias,
+    )
+    from waveform_analysis.data.artifact_store import ArtifactStore
+    preprocessing = config.get("preprocessing", {})
+    artifact_root = preprocessing.get("artifact_root")
+    if not artifact_root:
+        return None
+    cache_root = cache_root_from_config(config)
+    alias = transform_alias(
+        cache_root, config, spec.feature_transform.name,
+        spec.feature_transform.fit_role,
+    )
+    if not alias_exists(alias):
+        return None
+    store = ArtifactStore(artifact_root)
+    reference = load_named_reference(store, alias, expected_type="feature-transforms")
+    manifest_metadata = reference.manifest.get("metadata", {})
+    if manifest_metadata.get("model") != spec.name:
+        raise ValueError(
+            f"Shared transform alias {alias} belongs to model "
+            f"{manifest_metadata.get('model')!r}, not {spec.name!r}"
+        )
+    if manifest_metadata.get("transform") != spec.feature_transform.name:
+        raise ValueError(f"Shared transform alias {alias} has an incompatible transform")
+    contract = manifest_metadata.get("transform_contract")
+    if contract is not None:
+        if contract.get("fit_role") != spec.feature_transform.fit_role:
+            raise ValueError(f"Shared transform alias {alias} has an incompatible fit role")
+        if sample_mask is not None and not np.array_equal(
+            np.asarray(contract.get("sample_mask"), dtype=bool),
+            np.asarray(sample_mask, dtype=bool),
+        ):
+            raise ValueError(f"Shared transform alias {alias} has an incompatible sample mask")
+    with reference.payload_path("transform.pkl").open("rb") as stream:
         artifact = pickle.load(stream)
-    metadata = getattr(artifact, "metadata", {})
-    identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
+    identity = reference.product_id
     return FittedFeatureTransform(
         spec.feature_transform, artifact, identity, {}, 0, {}
     )
@@ -568,7 +612,7 @@ def load_fitted_model(spec, directory, parameters, config):
                 {},
             )
         else:
-            feature_transform = _load_pickle_feature_transform(spec, directory)
+            feature_transform = _load_pickle_feature_transform(spec, directory, config, mask)
         return FittedModel(
             artifact,
             _loaded_metadata(artifact, config),
