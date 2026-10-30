@@ -463,6 +463,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
         time_ps=time_ps,
         window_attribution_ps=maps,
         mean_waveform_mv=waveform_mv,
+        std_waveform_mv=np.full_like(waveform_mv, 0.5),
     )
     (tmp_path / "summary.json").write_text(json.dumps({
         "plot_version": 3,
@@ -475,10 +476,11 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 13
+    assert summary["plot_version"] == 17
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
+    assert summary["waveform_dispersion"].startswith("shaded mean +/- one population standard deviation")
     assert summary["global_plot"]["output_formats"] == ["PNG (240 dpi)", "PDF (vector)"]
     assert (tmp_path / "global_importance.png").is_file()
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
