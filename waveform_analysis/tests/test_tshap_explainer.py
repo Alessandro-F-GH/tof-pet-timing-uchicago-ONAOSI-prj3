@@ -23,7 +23,7 @@ class _ZeroImputer:
 
 
 @pytest.mark.parametrize("roi", [False, True])
-def test_conditional_window_occlusion_is_symmetric_and_uses_baselines(roi):
+def test_conditional_window_occlusion_is_single_event_and_signed(roi):
     rng = np.random.default_rng(47)
     sample = rng.uniform(0.1, 1, size=(2, 32)).astype(np.float32)
     explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
@@ -37,10 +37,9 @@ def test_conditional_window_occlusion_is_symmetric_and_uses_baselines(roi):
     observed = explainer._calculate_window_attrib_scores(
         predict, sample, np.zeros((5, 2, 32)), positions)
     np.testing.assert_allclose(observed, expected, rtol=1e-6)
-    other_baselines = rng.normal(size=(2, 2, 32)).astype(np.float32)
     other = explainer._calculate_window_attrib_scores(
-        predict, sample, other_baselines, positions)
-    assert not np.allclose(other, observed)
+        predict, sample, np.full((1, 2, 32), 99.0), positions)
+    np.testing.assert_allclose(other, observed, rtol=0, atol=0)
 
 
 def test_tshap_constant_prediction_is_zero():
@@ -87,13 +86,10 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
         second.impute_segment_batch(waves[:3], 0, 20, 20),
         rtol=1e-12, atol=1e-12)
     third, third_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, baseline_ids=np.asarray([1, 2]), **options)
-    assert third_meta["cache_hit"] is False
-    assert third_meta["cache_identity"] != first_meta["cache_identity"]
-    fourth, fourth_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, baseline_ids=np.asarray([1, 2]), **options)
-    assert fourth_meta["cache_hit"] is True
-    assert fourth_meta["cache_identity"] == third_meta["cache_identity"]
+    third, third_meta = t._cached_hermite_ppca_imputer(
+        control, "energy_to_energy", config, **options)
+    assert third_meta["cache_hit"] is True
+    assert third_meta["cache_identity"] == first_meta["cache_identity"]
 
 
 def test_event_selection_is_reproducible():
@@ -512,7 +508,7 @@ def test_cli_exposes_only_tshap_interpretability_commands():
             option for action in commands[command]._actions
             for option in action.option_strings
         }
-        assert "--n-baselines" in options
+        assert "--n-baselines" not in options
     assert "--imputation" in {
         option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
@@ -555,25 +551,25 @@ def test_tshap_recomputes_fitted_features_for_each_waveform():
     assert first[0] != second[0]
 
 
-def test_reference_substitution_uses_symmetric_multi_baseline_score():
-    from waveform_analysis.engine.tshap_explainer import _new_explainer
-
+def test_single_event_occlusion_is_independent_of_reference_argument():
     sample = np.ones((2, 16), dtype=np.float32)
-    baselines = np.stack([
-        np.zeros((2, 16), dtype=np.float32),
-        np.full((2, 16), 1.0, dtype=np.float32),
-    ])
-    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=None)
-
-    def predict(values):
-        return np.asarray(values, dtype=np.float64)[:, 0].sum(axis=1)
-
-    observed = explainer._calculate_window_attrib_scores(
-        predict, sample, baselines, [(0, 4, 4)]
+    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=_ZeroImputer())
+    predict = lambda values: np.asarray(values)[:, 0].sum(axis=1)
+    score_a = explainer._calculate_window_attrib_scores(
+        predict, sample, sample[None], [(0, 4, 4)]
     )
-    # The two independent references are averaged after the symmetric
-    # two-player swap; this is not the single-event conditional score.
-    np.testing.assert_allclose(observed, [2.0])
+    score_b = explainer._calculate_window_attrib_scores(
+        predict, sample, np.zeros((8, 2, 16)), [(0, 4, 4)]
+    )
+    np.testing.assert_allclose(score_a, [4.0])
+    np.testing.assert_array_equal(score_a, score_b)
+
+
+def test_selection_seed_is_blind_only():
+    from waveform_analysis.engine.tshap_explainer import _selection_seed
+    assert _selection_seed(42) == _selection_seed(42, "blind_events")
+    with pytest.raises(ValueError):
+        _selection_seed(42, "control_baselines")
 
 
 def test_selection_seed_separates_blind_and_control_roles():
@@ -584,56 +580,23 @@ def test_selection_seed_separates_blind_and_control_roles():
     assert _selection_seed(42, "blind_events") != _selection_seed(42, "control_baselines")
 
 
-def test_hermite_ppca_fit_excludes_reference_baseline_events(tmp_path):
+def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
     from types import SimpleNamespace
     from waveform_analysis.engine.tshap_explainer import _fit_hermite_ppca_imputer
-
     rng = np.random.default_rng(91)
     waves = rng.normal(0.5, 0.1, size=(80, 2, 40)).astype(np.float32)
     control = SimpleNamespace(
-        n_events=len(waves),
-        event_index=np.arange(1000, 1000 + len(waves), dtype=np.int64),
-        energy_windows=waves,
-        energy_time_ps=np.arange(waves.shape[-1], dtype=np.float64),
+        n_events=len(waves), event_index=np.arange(1000, 1000 + len(waves), dtype=np.int64),
+        energy_windows=waves, energy_time_ps=np.arange(40, dtype=np.float64),
         directory=tmp_path / "control",
     )
     imputer, metadata = _fit_hermite_ppca_imputer(
-        control, "energy_to_energy", np.asarray([1, 5, 9, 13]),
-        components=3, fit_events=30, tuning_events=10,
+        control, "energy_to_energy", components=3, fit_events=30, tuning_events=10,
         slope_points=3, batch_size=8, seed=42,
     )
-    excluded = {1, 5, 9, 13}
-    assert excluded.isdisjoint(metadata["training_indices"].tolist())
-    assert excluded.isdisjoint(metadata["tuning_indices"].tolist())
-    assert metadata["n_excluded_reference_baselines"] == len(excluded)
-    assert metadata["training_and_tuning_exclude_reference_baselines"]
+    assert set(metadata["training_indices"]).isdisjoint(metadata["tuning_indices"])
+    assert metadata["training_and_tuning_are_disjoint"]
     assert imputer is not None
-
-
-@pytest.mark.parametrize("roi", [False, True])
-def test_reference_tshap_matches_upstream_implementation(roi):
-    from tshap.tshap import TSHAPExplainer
-
-    rng = np.random.default_rng(47)
-    waveforms = rng.normal(size=(2, 2, 32)).astype(np.float32)
-    baselines = rng.normal(size=(3, 2, 32)).astype(np.float32)
-
-    def predict(values):
-        values = np.asarray(values)
-        return (
-            values[:, 0, 3:13].sum(axis=1)
-            - 0.4 * values[:, 1, 9:22].sum(axis=1)
-            + 0.07 * values[:, 0, 4] * values[:, 1, 6]
-        )
-
-    upstream = __import__("tshap.tshap", fromlist=["TSHAPExplainer"]).TSHAPExplainer(
-        window_length=8, stride=4, interpolation=True, roi=roi
-    )
-    bounded = _new_explainer(8, 4, roi, predict_batch_size=5, imputer=None)
-    expected = upstream.explain(waveforms, baselines, predict)
-    actual = bounded.explain(waveforms, baselines, predict)
-    for observed, reference in zip(actual, expected):
-        np.testing.assert_allclose(observed, reference, rtol=1e-5, atol=1e-5)
 
 
 def test_reference_tshap_constant_prediction_is_zero():
