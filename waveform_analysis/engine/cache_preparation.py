@@ -8,7 +8,6 @@ from typing import Any
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.core.config import BatchConfig
 from waveform_analysis.data.feature_cache import (
-    prepare_frozen_features,
     prepare_frozen_transform,
     uses_frozen_model_input,
 )
@@ -158,18 +157,9 @@ def prepare_batch_cache(
                     )
                 run_record["transform_identity"] = frozen_transform.identity
                 run_record["fit_role"] = frozen_transform.fit_role
-                run_record["feature_matrices"] = {}
-                for role in ("development", "blind"):
-                    features = prepare_frozen_features(
-                        spec,
-                        frozen_transform,
-                        config,
-                        prepared_datasets[role],
-                        role=role,
-                        cache_root=preprocessing_root,
-                        logger=logger,
-                    )
-                    run_record["feature_matrices"][role] = features.identity
+                # Do not materialize feature matrices here. TSHAP starts from
+                # original prepared waveforms and reapplies this frozen transform
+                # independently to every original or perturbed input.
 
             records.append(run_record)
             manifest["status"] = "running"
