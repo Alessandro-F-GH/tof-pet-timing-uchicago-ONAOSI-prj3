@@ -91,6 +91,8 @@ def _parser() -> argparse.ArgumentParser:
     tshap.add_argument("--seed", type=int, default=42,
                        help="Fixed sampling seed shared across models (default: 42)")
     tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
+    tshap.add_argument("--paired-occlusion", action="store_true",
+                       help="Occlude the same temporal window in both detector signals together; report one pair-level importance")
     tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
     tshap.add_argument("--imputer-components", type=int, default=32)
     tshap.add_argument("--imputer-fit-events", type=int, default=2000)
@@ -156,7 +158,7 @@ def main() -> None:
                 output_root=args.output_root, max_events=args.max_events,
                 window_samples=args.window_samples, stride_samples=args.stride_samples,
                 predict_batch_size=args.predict_batch_size, seed=args.seed, roi=args.roi,
-                overwrite=args.overwrite,
+                paired_occlusion=args.paired_occlusion, overwrite=args.overwrite,
                 imputer_components=args.imputer_components,
                 imputer_fit_events=args.imputer_fit_events,
                 imputer_tuning_events=args.imputer_tuning_events,
