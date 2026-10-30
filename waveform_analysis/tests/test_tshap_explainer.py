@@ -11,7 +11,7 @@ from waveform_analysis.engine.tshap_explainer import (
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
     _matches_tshap_window, _matches_tshap_mode, _normalize_tshap_windows,
-    _resolve_model_run_directory, _apply_tshap_cache,
+    _resolve_model_run_directory, _resolve_tshap_model_directory, _apply_tshap_cache,
     _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
     _selection_seed, _write_global_importance_csv, _write_signed_csv, _signed_means,
@@ -436,6 +436,44 @@ def test_tshap_model_directory_and_shared_cache_resolution(tmp_path):
 def test_tshap_model_directory_requires_run_metadata(tmp_path):
     with pytest.raises(ValueError, match="metadata/manifest.json"):
         _resolve_model_run_directory(tmp_path / "raw_model_artifact")
+
+
+def test_tshap_uses_complete_legacy_local_model_without_reference(tmp_path):
+    from types import SimpleNamespace
+
+    run = tmp_path / "run"
+    local = run / "model"
+    local.mkdir(parents=True)
+    (local / "model.pkl").write_bytes(b"model")
+    (local / "sample_mask.npy").write_bytes(b"mask")
+    reference_path = run / "metadata" / "model_reference.json"
+    reference_path.parent.mkdir()
+    store = SimpleNamespace(
+        model_reference_path=reference_path,
+        model_dir=tmp_path / "unresolved",
+    )
+    spec = SimpleNamespace(artifact_format="pickle", feature_transform=None)
+    assert _resolve_tshap_model_directory(spec, store, run) == local
+
+
+def test_tshap_prefers_registered_model_artifact_over_local_copy(tmp_path):
+    from types import SimpleNamespace
+
+    run = tmp_path / "run"
+    local = run / "model"
+    local.mkdir(parents=True)
+    (local / "model.pkl").write_bytes(b"model")
+    (local / "sample_mask.npy").write_bytes(b"mask")
+    reference_path = run / "metadata" / "model_reference.json"
+    reference_path.parent.mkdir()
+    reference_path.write_text("{}", encoding="utf-8")
+    external = tmp_path / "external_model"
+    store = SimpleNamespace(
+        model_reference_path=reference_path,
+        model_dir=external,
+    )
+    spec = SimpleNamespace(artifact_format="pickle", feature_transform=None)
+    assert _resolve_tshap_model_directory(spec, store, run) == external
 
 
 
