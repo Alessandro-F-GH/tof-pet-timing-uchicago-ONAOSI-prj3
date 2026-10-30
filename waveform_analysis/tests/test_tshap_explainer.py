@@ -608,3 +608,40 @@ def test_hermite_ppca_fit_excludes_reference_baseline_events(tmp_path):
     assert metadata["n_excluded_reference_baselines"] == len(excluded)
     assert metadata["training_and_tuning_exclude_reference_baselines"]
     assert imputer is not None
+
+
+@pytest.mark.parametrize("roi", [False, True])
+def test_reference_tshap_matches_upstream_implementation(roi):
+    from tshap.tshap import TSHAPExplainer
+
+    rng = np.random.default_rng(47)
+    waveforms = rng.normal(size=(2, 2, 32)).astype(np.float32)
+    baselines = rng.normal(size=(3, 2, 32)).astype(np.float32)
+
+    def predict(values):
+        values = np.asarray(values)
+        return (
+            values[:, 0, 3:13].sum(axis=1)
+            - 0.4 * values[:, 1, 9:22].sum(axis=1)
+            + 0.07 * values[:, 0, 4] * values[:, 1, 6]
+        )
+
+    upstream = __import__("tshap.tshap", fromlist=["TSHAPExplainer"]).TSHAPExplainer(
+        window_length=8, stride=4, interpolation=True, roi=roi
+    )
+    bounded = _new_explainer(8, 4, roi, predict_batch_size=5, imputer=None)
+    expected = upstream.explain(waveforms, baselines, predict)
+    actual = bounded.explain(waveforms, baselines, predict)
+    for observed, reference in zip(actual, expected):
+        np.testing.assert_allclose(observed, reference, rtol=1e-5, atol=1e-5)
+
+
+def test_reference_tshap_constant_prediction_is_zero():
+    explainer = _new_explainer(6, 3, True, 4, imputer=None)
+    waveforms = np.ones((1, 2, 24), dtype=np.float32)
+    baselines = np.zeros((2, 2, 24), dtype=np.float32)
+    maps = explainer.explain(
+        waveforms, baselines, lambda values: np.full(len(values), 7.0)
+    )
+    for value in maps:
+        np.testing.assert_allclose(value, 0)
