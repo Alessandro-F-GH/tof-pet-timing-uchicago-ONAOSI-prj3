@@ -49,7 +49,6 @@ def test_paired_occlusion_masks_both_detectors_once_and_returns_one_score():
     sample = np.ones((2, 16), dtype=np.float32)
     explainer = _new_explainer(
         4, 4, False, predict_batch_size=4, imputer=_ZeroImputer(),
-        paired_occlusion=True,
     )
 
     def predict(values):
@@ -504,7 +503,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     assert len(rows) == len(time_ps)
     np.testing.assert_allclose(
         [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
-        np.mean(np.mean(np.abs(maps), axis=0), axis=0),
+        np.mean(np.abs(maps), axis=(0, 1, 2)),
     )
 
 
@@ -629,9 +628,12 @@ def test_global_plot_validates_waveform_dispersion(tmp_path):
     importance = np.ones_like(waveform)
     with pytest.raises(ValueError, match="standard deviation"):
         _plot_global(
-            tmp_path, time_ps, importance, waveform,
+            tmp_path, time_ps, np.ones(time_ps.size), waveform,
+            window_starts=np.asarray([4, 8]),
+            signed_positive=np.asarray([[1.0, 2.0]]),
+            signed_negative=np.asarray([[-1.0, -2.0]]),
             std_waveform_mv=-np.ones_like(waveform),
-            model_name="direct_multirocket", formulation="direct",
+            model_name="direct_multirocket",
             mode="energy_to_energy", window_name="wide", board_name="UC",
             n_events=8, window_samples=4,
         )
