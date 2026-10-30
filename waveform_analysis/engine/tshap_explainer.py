@@ -1515,15 +1515,14 @@ def explain_tshap(
     results=None, *, model_dir=None, models=None, ml_window=None,
     cache_root=None, artifact_root=None, output_root=None, max_events=100,
     window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
-    roi=False, overwrite=False, paired_occlusion=False, imputer_components=32,
+    roi=False, overwrite=False, imputer_components=32,
     imputer_fit_events=2000, imputer_tuning_events=300,
     imputer_slope_points=5, logger=None,
 ):
-    """Explain saved regressors with single-event Hermite-PPCA blend occlusions.
+    """Explain saved regressors using paired single-event Hermite-PPCA blend occlusions.
 
-    Each detector/window is occluded exactly once. Its missing samples are
-    replaced by the conditional Hermite-PPCA blend imputation of the waveform
-    being explained; no reference-waveform or multi-baseline averaging is used.
+    Both detector signals are imputed over the same temporal window in one
+    perturbation, yielding one pair-level score independent of model formulation.
     The control cohort is used only to fit PPCA and calibrate blend weights.
     """
     for name, value in (
@@ -1541,9 +1540,6 @@ def explain_tshap(
         raise ValueError("imputer_slope_points must be >= 2")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
-    if not isinstance(paired_occlusion, bool):
-        raise ValueError("paired_occlusion must be a boolean")
-
     ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
     tshap_version = version("tshap")
     runs, source_path = _tshap_run_inputs(results, model_dir)
@@ -1618,16 +1614,8 @@ def explain_tshap(
                     "slope_points": int(imputer_slope_points),
                 },
             }
-            # Keep the default-mode identity stable; paired mode is a distinct
-            # explanation protocol and therefore receives its own fingerprint.
-            if paired_occlusion:
-                settings["paired_occlusion"] = True
             identity = {
-                "method": (
-                    "paired_single_event_hermite_ppca_blend_window_occlusion"
-                    if paired_occlusion
-                    else "single_event_hermite_ppca_blend_window_occlusion"
-                ),
+                "method": "paired_single_event_hermite_ppca_blend_window_occlusion",
                 "method_version": TSHAP_METHOD_VERSION,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -1689,7 +1677,7 @@ def explain_tshap(
                     imputer_metadata["cache_hit"],
                 )
                 logger.info(
-                    "TSHAP single-window occlusion | %s | events=%d/%d | samples=%d | ROI=%s",
+                    "TSHAP paired-window occlusion | %s | events=%d/%d | samples=%d | ROI=%s",
                     spec.name, len(event_ids), blind.n_events, time_ps.size, roi,
                 )
 
@@ -1723,7 +1711,6 @@ def explain_tshap(
                             window_samples, stride_samples, roi,
                             predict_batch_size, imputer=imputer,
                             sample_mask=sample_mask,
-                            paired_occlusion=paired_occlusion,
                         )
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         raw_scores = []
@@ -1761,22 +1748,13 @@ def explain_tshap(
                 ):
                     raise ValueError("Non-finite TSHAP attribution")
                 raw_scores = np.asarray(raw_scores, dtype=np.float64)
-                expected_score_channels = 1 if paired_occlusion else 2
                 if raw_scores.shape != (
-                    len(event_ids), expected_score_channels, len(window_starts)
+                    len(event_ids), 1, len(window_starts)
                 ):
-                    raise ValueError("Raw TSHAP scores have an invalid event/channel/window shape")
+                    raise ValueError("Raw paired TSHAP scores have an invalid event/window shape")
                 signed_positive, signed_negative = _signed_means(raw_scores)
-                if paired_occlusion or str(spec.estimator_formulation).lower() == "shared":
-                    aggregated_positive = aggregated_negative = None
-                else:
-                    # Sum detector scores event-by-event before separating signs,
-                    # preserving cancellation between the two detector contributions.
-                    aggregated_positive, aggregated_negative = _signed_means(
-                        raw_scores.sum(axis=1)
-                    )
-
-                mean_absolute = np.mean(np.abs(window_maps), axis=0)
+                # Both detector maps carry the same pair-level attribution.
+                mean_absolute = np.mean(np.abs(window_maps), axis=(0, 1))
                 waveform_transform = getattr(
                     blind, f"{mode_family(config['mode'])}_transform"
                 )
@@ -1809,24 +1787,20 @@ def explain_tshap(
 
                 board_name = _find_board_label(directory, output_root)
                 window_name = str(config.get("window_name", directory.parent.name))
+                roi_importance = (
+                    np.mean(np.abs(roi_maps), axis=(0, 1)) if roi else None
+                )
                 _write_global_importance_csv(
-                    temporary, time_ps, mean_absolute,
-                    spec.estimator_formulation, roi_maps,
-                    paired_occlusion=paired_occlusion,
+                    temporary, time_ps, mean_absolute, roi_importance
                 )
                 _write_signed_csv(
                     temporary, time_ps, window_starts,
                     signed_positive, signed_negative, window_samples,
-                    spec.estimator_formulation,
-                    paired_occlusion=paired_occlusion,
-                    aggregated_positive=aggregated_positive,
-                    aggregated_negative=aggregated_negative,
                 )
                 _plot_global(
                     temporary, time_ps, mean_absolute, mean_waveform_mv,
                     std_waveform_mv=std_waveform_mv,
                     model_name=spec.name,
-                    formulation=spec.estimator_formulation,
                     mode=config["mode"],
                     window_name=window_name,
                     board_name=board_name,
@@ -1835,15 +1809,11 @@ def explain_tshap(
                     window_starts=window_starts,
                     signed_positive=signed_positive,
                     signed_negative=signed_negative,
-                    aggregated_positive=aggregated_positive,
-                    aggregated_negative=aggregated_negative,
-                    paired_occlusion=paired_occlusion,
                 )
 
                 atomic_json(temporary / "summary.json", {
                     **identity,
                     "identity_sha256": fingerprint,
-                    "paired_occlusion": bool(paired_occlusion),
                     "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name,
                     "window_name": window_name,
@@ -1873,20 +1843,11 @@ def explain_tshap(
                         "ps/sample (raw signed window prediction differences redistributed over samples)"
                     ),
                     "interpretation": (
-                        (
-                            "Both detector signals are occluded together over the same temporal window once per event. "
-                            "Missing samples in each signal are replaced by that event's conditional Hermite-PPCA blend "
-                            "imputation; one signed pair-level score is the original prediction minus the jointly "
-                            "imputed prediction. The score is not decomposed into detector-specific contributions. "
-                            "Temporal interpolation is not an exact sample-wise Shapley decomposition."
-                        )
-                        if paired_occlusion
-                        else (
-                            "Each detector/window is occluded once per event. Missing samples are "
-                            "replaced by the same event's conditional Hermite-PPCA blend imputation; "
-                            "the signed window score is original prediction minus imputed prediction. "
-                            "Temporal interpolation is not an exact sample-wise Shapley decomposition."
-                        )
+                        "Both detector signals are occluded together over the same temporal window once per event. "
+                        "Missing samples in each signal are replaced by that event's conditional Hermite-PPCA blend "
+                        "imputation; one signed pair-level score is the original prediction minus the jointly "
+                        "imputed prediction. The score is not decomposed into detector-specific contributions. "
+                        "Temporal interpolation is not an exact sample-wise Shapley decomposition."
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
@@ -1898,24 +1859,10 @@ def explain_tshap(
                         window_starts,
                     ),
                     "global_importance_aggregation": {
-                        "direct": (
-                            "mean absolute interpolated attribution across explained blind events, "
-                            "separately for each detector and sample"
-                        ),
-                        "shared": (
-                            "mean absolute interpolated attribution across explained blind events "
-                            "and both detectors at each sample"
-                        ),
-                        "paired": (
-                            "mean absolute joint-occlusion attribution across explained blind events; "
-                            "the same pair-level curve is displayed on both waveforms without channel-specific scores"
-                        ),
-                        "direct_signed_windows": (
-                            "sum the two raw signed detector scores per event and window, then "
-                            "average positive and negative parts separately"
-                        ),
+                        "pair": "mean absolute joint-occlusion attribution across explained blind events",
+                        "signed_windows": "mean positive and negative parts of the single pair-level signed prediction difference",
                         "normalization": (
-                            "Importance values are unnormalized; waveform colours use a shared "
+                            "Importance values are unnormalized; both waveform colours use one shared "
                             "PowerNorm(gamma=1.6) scale and the colourbar retains ps/sample units."
                         ),
                     },
@@ -1927,33 +1874,14 @@ def explain_tshap(
                         "waveform_dispersion": (
                             "mean +/- one population standard deviation across explained blind events (mV)"
                         ),
-                        "layout": (
-                            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, "
-                            "paired joint-occlusion histogram), with a common time axis"
-                            if paired_occlusion
-                            else (
-                                "three vertically stacked panels (detector 1 waveform, detector 2 waveform, "
-                                "shared signed histogram), with a common time axis"
-                                if str(spec.estimator_formulation).lower() == "shared"
-                                else "detector waveforms side by side, detector-specific signed histograms below, "
-                                "and a full-width aggregated signed histogram at the bottom"
-                            )
-                        ),
+                        "layout": "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis",
                         "onishi_interval_ns": [-1.5, 2.0],
                         "importance_colour_scale": (
                             "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in ps/sample"
                         ),
                         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
                         "histogram_bar_width_samples": int(window_samples),
-                        "detector_identity": (
-                            "one joint pair-importance curve displayed on both waveform panels; no channel-specific importance"
-                            if paired_occlusion
-                            else (
-                                "shared pooled attribution"
-                                if str(spec.estimator_formulation).lower() == "shared"
-                                else "detector-specific and aggregated signed contributions"
-                            )
-                        ),
+                        "detector_identity": "one pair-level importance curve displayed identically on both waveform panels; no channel-specific importance is calculated",
                     },
                     "prediction_equivalence_max_error_ps": float(
                         np.max(np.abs(original - replay))
