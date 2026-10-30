@@ -531,7 +531,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
             sample = np.asarray(input_sample, np.float32)
-            if sample.shape != (2, sample.shape[-1]):
+            if sample.ndim != 2 or sample.shape[0] != 2:
                 raise ValueError("Expected one two-detector waveform")
             original = np.asarray(fnc(sample[None]), np.float64)
             if original.shape != (1,):
@@ -1082,7 +1082,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 12
+LOCAL_PLOT_VERSION = 13
 
 
 def _detector_difference(values):
