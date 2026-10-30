@@ -44,3 +44,34 @@ Domain manifests remain inside immutable product directories where they describe
 The batch result tree contains compact model references and prepared-product references. Final model weights are stored under `products/final-models`; frozen transforms and feature matrices are shared products. The runtime resolves these references through the artifact store, including diagnostics and TSHAP. Prepared datasets are not modified after publication to attach sample masks; masks are separate immutable products.
 
 Historical result import is not part of this runtime. New experiments should start in a fresh result root.
+
+
+## Importing fitted transforms from historical results
+
+Historical canonical result trees can populate a new portable cache without refitting
+MiniRocket, MultiRocket, RDST, Hydra, or combined MultiRocket/RDST transforms:
+
+```bash
+python -m waveform_analysis.cli migrate-transforms \
+  --results /path/to/old/results \
+  --cache-root /path/to/shared-cache \
+  --models direct_minirocket shared_minirocket direct_multirocket
+```
+
+The command reads the saved model's fitted transform and sample mask, records its
+original training seed and control-population identity, and publishes the complete
+transform payload under the same semantic alias used by `prepare-cache`. It does
+not fit or regenerate transformations. For models stored in a separate historical
+artifact store, also pass `--source-artifact-root /path/to/old/artifact_store`.
+
+Run with `--dry-run` first to validate and list proposed imports without writing.
+Existing aliases are never silently replaced; `--overwrite` explicitly retargets
+a conflicting alias. Use separate cache roots when importing different historical
+fits that share the same human-readable dataset/model/window alias.
+
+When TSHAP is run against an old result tree with the new `--cache-root`, the
+model loader prefers a matching shared transform and falls back to the run-local
+copy if no shared alias exists. Imported transform provenance (model, transform,
+fit role, control population, seed, mode, window, and sample mask) is checked
+before the shared artifact is used. Keep the original results and artifact store
+until the imported cache has been verified in the intended TSHAP workflow.
