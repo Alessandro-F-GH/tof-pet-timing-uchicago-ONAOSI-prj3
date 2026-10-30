@@ -86,6 +86,14 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
         first.impute_segment_batch(waves[:3], 0, 20, 20),
         second.impute_segment_batch(waves[:3], 0, 20, 20),
         rtol=1e-12, atol=1e-12)
+    third, third_meta = t._cached_hermite_ppca_imputer(
+        control, "energy_to_energy", config, baseline_ids=np.asarray([1, 2]), **options)
+    assert third_meta["cache_hit"] is False
+    assert third_meta["cache_identity"] != first_meta["cache_identity"]
+    fourth, fourth_meta = t._cached_hermite_ppca_imputer(
+        control, "energy_to_energy", config, baseline_ids=np.asarray([1, 2]), **options)
+    assert fourth_meta["cache_hit"] is True
+    assert fourth_meta["cache_identity"] == third_meta["cache_identity"]
 
 
 def test_event_selection_is_reproducible():
