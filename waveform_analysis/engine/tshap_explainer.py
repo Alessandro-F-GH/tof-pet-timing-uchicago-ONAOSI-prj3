@@ -1987,7 +1987,7 @@ def explain_tshap(
 
 def explain_tshap_local(
     results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
-    extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
+    extreme_margin=0.05, window_samples=20, stride_samples=20,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
     imputer_tuning_events=300, imputer_slope_points=5,
@@ -2000,7 +2000,6 @@ def explain_tshap_local(
     """
     for name, value in (
         ("events_per_group", events_per_group),
-        ("n_baselines", n_baselines),
         ("window_samples", window_samples),
         ("stride_samples", stride_samples),
         ("predict_batch_size", predict_batch_size),
@@ -2068,7 +2067,6 @@ def explain_tshap_local(
             settings = dict(
                 events_per_group=events_per_group,
                 extreme_margin=float(extreme_margin),
-                n_baselines=n_baselines,
                 window_samples=window_samples,
                 stride_samples=stride_samples,
                 predict_batch_size=predict_batch_size,
@@ -2130,19 +2128,12 @@ def explain_tshap_local(
             if targets.shape != (blind.n_events,) or not np.all(np.isfinite(targets)):
                 raise ValueError("Blind targets must be finite and match the event population")
 
-            baseline_ids = _choose_indices(
-                control.n_events, n_baselines,
-                _selection_seed(int(seed), "control_baselines"),
-            )
-            baselines = waveform_view(control, config["mode"], baseline_ids).materialize()
-            if baselines.shape[1:] != (2, time_ps.size) or not np.all(np.isfinite(baselines)):
-                raise ValueError("TSHAP control baselines must be finite [events, 2, samples] arrays")
             imputer, imputer_metadata = _cached_hermite_ppca_imputer(
                 control, config["mode"], config,
                 window_samples=window_samples, stride_samples=stride_samples,
                 components=imputer_components, fit_events=imputer_fit_events,
                 tuning_events=imputer_tuning_events, slope_points=imputer_slope_points,
-                batch_size=predict_batch_size, seed=int(seed), baseline_ids=baseline_ids,
+                batch_size=predict_batch_size, seed=int(seed),
             )
 
             parent = destination.parent
@@ -2241,13 +2232,22 @@ def explain_tshap_local(
                         explainer = _new_explainer(
                             window_samples, stride_samples, roi=False,
                             predict_batch_size=predict_batch_size, imputer=imputer,
+                            sample_mask=sample_mask,
                         )
                         local_maps = np.empty_like(waves, dtype=np.float64)
+                        local_scores = []
+                        window_starts = None
                         for i, pair in enumerate(waves):
                             window_map, _ = explainer.explain(
-                                pair[None, ...], baselines, predict
+                                pair[None, ...], pair[None, ...], predict
                             )
                             local_maps[i] = window_map[0]
+                            starts, scores = _raw_window_data(explainer)
+                            if window_starts is None:
+                                window_starts = starts
+                            elif not np.array_equal(window_starts, starts):
+                                raise ValueError("Inconsistent local window positions")
+                            local_scores.append(scores)
                             if logger:
                                 logger.info(
                                     "TSHAP local | %s | %d/%d | %s | event=%s",
@@ -2292,6 +2292,9 @@ def explain_tshap_local(
                             prediction_ps=prediction_ps,
                             improvement_ps=improvement_ps,
                             led_threshold_mv=led_threshold_mv,
+                            window_starts=window_starts,
+                            window_scores=local_scores[i],
+                            window_samples=window_samples,
                         )
                         plot_names.append(plot_name)
                         writer.writerow([
@@ -2314,11 +2317,14 @@ def explain_tshap_local(
                     led_threshold_mv=np.asarray(led_threshold_mv, dtype=np.float64),
                     led_time_ps=selected_led_times_ps,
                     attribution_ps_per_sample=local_maps,
+                    raw_window_scores_ps=np.asarray(local_scores, dtype=np.float64),
+                    window_starts=window_starts,
+                    window_samples=np.asarray(window_samples, dtype=np.int64),
                     target_correction_ps=selected_targets,
                     predicted_correction_ps=selected_predictions,
                     residual_ps=selected_targets - selected_predictions,
                     signed_improvement_ps=selected_improvements,
-                    control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
+                    control_event_id=np.empty(0, dtype=np.int64),
                     median_predicted_correction_ps=np.asarray(median_prediction, dtype=np.float64),
                 )
                 group_counts = {
@@ -2332,8 +2338,10 @@ def explain_tshap_local(
                     "n_explained_events": len(event_ids),
                     "n_events_per_group": events_per_group,
                     "imputer_cache_identity": imputer_metadata["cache_identity"],
-                    "n_reference_baselines": int(len(baseline_ids)),
-                    "reference_baseline_seed": int(_selection_seed(int(seed), "control_baselines")),
+                    "n_control_baselines": 0,
+                    "sample_mask_window_filter": _sample_mask_window_summary(
+                        sample_mask, len(time_ps), window_samples, stride_samples, window_starts
+                    ),
                     "imputer_cache_file": imputer_metadata["cache_file"],
                     "waveform_samples": int(time_ps.size),
                     "median_predicted_correction_ps": median_prediction,
