@@ -2096,6 +2096,7 @@ def explain_tshap_local(
     lookup = PreparedCacheLookup()
     outputs, failures = [], []
     selected_runs = 0
+    window_imputers = {}
     for run in runs:
         manifest = run["manifest"]
         if models is not None and manifest["model"] not in models:
