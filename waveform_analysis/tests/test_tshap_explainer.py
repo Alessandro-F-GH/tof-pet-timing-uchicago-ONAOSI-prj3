@@ -7,6 +7,7 @@ import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
     _choose_indices, _complete, _explanation_destination, _get_window_imputer,
+    _load_materialized_local_predictions,
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
@@ -172,6 +173,58 @@ def test_blind_event_sampling_seed_is_fixed():
         _choose_indices(1000, 100, _selection_seed(seed + 1)),
         _choose_indices(1000, 100, first),
     )
+
+
+
+
+def test_local_selection_loads_materialized_predictions_and_aligns_event_ids(tmp_path):
+    from types import SimpleNamespace
+
+    payload = {
+        "event_id": np.asarray([30, 10, 20]),
+        "prediction_ps": np.asarray([3.0, 1.0, 2.0]),
+        "corrected_ps": np.asarray([27.0, 9.0, 18.0]),
+        "led_residual_ps": np.asarray([30.0, 10.0, 20.0]),
+        "final_fit_fingerprint": np.asarray("final-fit-v1"),
+        "analysis_protocol_identity": np.asarray("blind-protocol-v1"),
+    }
+    path = tmp_path / "predictions.npz"
+    np.savez(path, **payload)
+    store = SimpleNamespace(predictions_path=path, load_predictions=lambda: payload)
+    blind = SimpleNamespace(
+        n_events=3, event_index=np.asarray([10, 20, 30]),
+        manifest={"analysis_protocol_identity": "blind-protocol-v1"},
+    )
+    manifest = {"stage_fingerprints": {"final_fit": "final-fit-v1"}}
+
+    predictions, targets = _load_materialized_local_predictions(store, blind, manifest)
+
+    np.testing.assert_array_equal(predictions, [1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(targets, [10.0, 20.0, 30.0])
+
+
+def test_local_selection_rejects_stale_materialized_predictions(tmp_path):
+    from types import SimpleNamespace
+
+    payload = {
+        "event_id": np.asarray([10, 20]),
+        "prediction_ps": np.asarray([1.0, 2.0]),
+        "corrected_ps": np.asarray([9.0, 18.0]),
+        "led_residual_ps": np.asarray([10.0, 20.0]),
+        "final_fit_fingerprint": np.asarray("old-fit"),
+        "analysis_protocol_identity": np.asarray("blind-protocol-v1"),
+    }
+    path = tmp_path / "predictions.npz"
+    np.savez(path, **payload)
+    store = SimpleNamespace(predictions_path=path, load_predictions=lambda: payload)
+    blind = SimpleNamespace(
+        n_events=2, event_index=np.asarray([10, 20]),
+        manifest={"analysis_protocol_identity": "blind-protocol-v1"},
+    )
+    manifest = {"stage_fingerprints": {"final_fit": "current-fit"}}
+
+    with pytest.raises(ValueError, match="different final model"):
+        _load_materialized_local_predictions(store, blind, manifest)
 
 
 def test_local_selection_returns_two_nonoverlapping_events_per_group_and_trims_extremes():
