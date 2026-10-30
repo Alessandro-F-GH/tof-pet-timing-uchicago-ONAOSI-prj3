@@ -89,7 +89,7 @@ python -m waveform_analysis.cli explain-tshap \
   --stride-samples 20
 ```
 
-TSHAP supports two perturbation modes: `--imputation reference` performs symmetric two-player window substitution against a reproducible sample of independent control waveforms; `--imputation hermite_ppca` reconstructs each masked segment from that waveform's own observed context using detector-specific Hermite-PPCA models. The latter is the default. Both modes use multi-baseline scoring and the upstream temporal aggregation/ROI implementation. The control reference count is configurable with `--n-baselines` (default: 8).
+TSHAP supports two perturbation modes: `--imputation reference` performs symmetric two-player window substitution against a reproducible sample of independent control waveforms; `--imputation hermite_ppca` reconstructs each masked segment from that waveform's own observed context using detector-specific Hermite-PPCA models. Reference substitution is the default; select Hermite-PPCA explicitly when desired. Both modes use multi-baseline scoring and the upstream temporal aggregation/ROI implementation. The control reference count is configurable with `--n-baselines` (default: 8).
 
 The imputer cache stores fitted detector-specific PPCA models and position-dependent blend weights as immutable ArtifactStore products, exposed through a stable named alias. Its identity includes the control population, board, channel/mode, time grid, window configuration, and selected reference-baseline cohort. Changes in baseline selection therefore cannot silently reuse an incompatible imputer. Global and local TSHAP outputs remain in the dedicated XAI tree, separate from run results.
 
