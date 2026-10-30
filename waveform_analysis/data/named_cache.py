@@ -1,32 +1,34 @@
-"""Human-readable aliases for reusable waveform-analysis cache products.
+"""Stable, human-readable cache paths for reusable scientific products.
 
-The underlying ArtifactStore remains content-addressed for integrity and model
-references. This module exposes stable, semantic paths so users never need to
-know or select a product hash. Existing aliases are trusted by name: choosing
-the correct dataset/window/model combination is the caller's responsibility.
+ArtifactStore hashes remain internal integrity/provenance identifiers. Users and
+pipeline stages select products by dataset, channel, window, model and role.
+An existing named alias is deliberately reused without comparing recipe hashes:
+the caller owns the choice of semantic name.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 import re
+import shutil
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def safe_component(value: Any) -> str:
     """Convert a scientific label into one safe, readable path component."""
     text = str(value).strip()
     text = re.sub(r"[\\/]+", "_", text)
-    text = re.sub(r"[^A-Za-z0-9_.+-]+", "_", text)
-    text = text.strip("._")
+    text = re.sub(r"[^A-Za-z0-9_.+-]+", "_", text).strip("._")
     if not text:
         raise ValueError(f"Empty cache path component from {value!r}")
     return text
 
 
 def dataset_name(dataset: dict[str, Any]) -> str:
-    """Use an explicit dataset label when available, otherwise the ROOT stem."""
+    """Prefer an explicit dataset label; otherwise use only the ROOT filename."""
     label = dataset.get("name") or dataset.get("dataset_name")
     if not label:
         source = dataset.get("root_file")
@@ -37,12 +39,10 @@ def dataset_name(dataset: dict[str, Any]) -> str:
 
 
 def mode_name(mode: str) -> str:
-    value = str(mode)
-    if value == "energy_to_energy":
-        return "energy"
-    if value == "timing_to_timing":
-        return "timing"
-    raise ValueError(f"Unsupported cache channel mode: {mode}")
+    try:
+        return {"energy_to_energy": "energy", "timing_to_timing": "timing"}[str(mode)]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported cache channel mode: {mode}") from exc
 
 
 def window_name(config: dict[str, Any]) -> str:
@@ -56,7 +56,7 @@ def window_name(config: dict[str, Any]) -> str:
 
 
 def cache_root_from_config(config: dict[str, Any], fallback=None) -> Path:
-    """Resolve the human-readable cache root from a resolved run configuration."""
+    """Resolve the bundle root, not its preprocessing/ or artifact_store child."""
     preprocessing = config.get("preprocessing", config)
     named = preprocessing.get("named_cache_root")
     if named:
@@ -67,10 +67,14 @@ def cache_root_from_config(config: dict[str, Any], fallback=None) -> Path:
         if artifact_path.name == "artifact_store":
             return artifact_path.parent
     if fallback is not None:
-        return Path(fallback).expanduser().resolve()
+        fallback_path = Path(fallback).expanduser().resolve()
+        if fallback_path.name == "preprocessing":
+            return fallback_path.parent
+        return fallback_path
     cache_dir = preprocessing.get("cache_dir")
     if cache_dir:
-        return Path(cache_dir).expanduser().resolve()
+        cache_path = Path(cache_dir).expanduser().resolve()
+        return cache_path.parent if cache_path.name == "preprocessing" else cache_path
     raise ValueError("Cannot resolve named cache root")
 
 
@@ -78,8 +82,9 @@ def alias_path(root, *parts) -> Path:
     return Path(root).expanduser().resolve().joinpath(*(safe_component(p) for p in parts))
 
 
-def control_alias(root, control_dataset) -> Path:
-    return alias_path(root, "control", dataset_name(control_dataset))
+def control_alias(root, control_dataset, modes) -> Path:
+    mode_key = "_".join(sorted(mode_name(mode) for mode in modes))
+    return alias_path(root, "control", dataset_name(control_dataset), mode_key)
 
 
 def selection_alias(root, dataset, control_dataset, mode) -> Path:
@@ -116,10 +121,25 @@ def transform_alias(root, config, model_name: str, fit_role: str) -> Path:
     )
 
 
-def feature_alias(root, config, model_name: str, dataset, role: str) -> Path:
+def feature_alias(root, config, model_name: str, dataset, role: str, block="combined") -> Path:
     return alias_path(
         root, "features", model_name, dataset_name(config["control"]),
-        dataset_name(dataset), mode_name(config["mode"]), window_name(config), role,
+        dataset_name(dataset), mode_name(config["mode"]), window_name(config), role, block,
+    )
+
+
+def imputer_alias(
+    root, config, *, window_samples, stride_samples, components,
+    fit_events, tuning_events, slope_points, seed,
+) -> Path:
+    settings = (
+        f"w{int(window_samples)}_s{int(stride_samples)}_k{int(components)}"
+        f"_fit{int(fit_events)}_tune{int(tuning_events)}"
+        f"_slope{int(slope_points)}_seed{int(seed)}"
+    )
+    return alias_path(
+        root, "imputers", "hermite_ppca", dataset_name(config["control"]),
+        mode_name(config["mode"]), window_name(config), settings,
     )
 
 
@@ -129,7 +149,7 @@ def alias_exists(path) -> bool:
 
 
 def resolve_alias(path) -> Path:
-    """Resolve a directory symlink or a portable JSON pointer to its product."""
+    """Resolve a directory symlink or a portable JSON pointer."""
     path = Path(path).expanduser()
     if path.is_symlink():
         return path.resolve()
@@ -144,11 +164,7 @@ def resolve_alias(path) -> Path:
 
 
 def publish_alias(alias, target, *, replace: bool = False) -> Path:
-    """Publish a stable readable alias to an ArtifactStore product.
-
-    On systems where directory symlinks are unavailable, a small relative
-    pointer file is used and resolved by resolve_alias().
-    """
+    """Atomically publish a readable alias without duplicating large payloads."""
     alias = Path(alias).expanduser().resolve()
     target = Path(target).expanduser().resolve()
     if not target.is_dir():
@@ -159,18 +175,11 @@ def publish_alias(alias, target, *, replace: bool = False) -> Path:
         if alias.is_symlink() or alias.is_file():
             alias.unlink()
         else:
-            import shutil
             shutil.rmtree(alias)
     alias.parent.mkdir(parents=True, exist_ok=True)
     relative = os.path.relpath(target, alias.parent)
-    temporary = alias.with_name(f".{alias.name}.linking")
+    temporary = alias.with_name(f".{alias.name}.{uuid.uuid4().hex}.linking")
     try:
-        if temporary.exists() or temporary.is_symlink():
-            if temporary.is_symlink() or temporary.is_file():
-                temporary.unlink()
-            else:
-                import shutil
-                shutil.rmtree(temporary)
         try:
             os.symlink(relative, temporary, target_is_directory=True)
         except (OSError, NotImplementedError):
@@ -183,17 +192,81 @@ def publish_alias(alias, target, *, replace: bool = False) -> Path:
         if temporary.is_symlink() or temporary.is_file():
             temporary.unlink(missing_ok=True)
         elif temporary.exists():
-            import shutil
             shutil.rmtree(temporary, ignore_errors=True)
     return alias
 
 
-def product_id_from_alias(path) -> str | None:
-    """Read the hidden ArtifactStore ID when an alias points to a stored product."""
-    product_manifest = resolve_alias(path) / ".artifact.json"
-    if not product_manifest.is_file():
-        return None
+def load_named_reference(store, alias, *, expected_type: str | None = None):
+    """Resolve an alias to its ArtifactStore reference without hashing large arrays."""
+    from waveform_analysis.data.artifact_store import ArtifactCorrupt
+
+    target = resolve_alias(alias)
+    manifest_path = target / ".artifact.json"
+    if not manifest_path.is_file():
+        raise ArtifactCorrupt(f"Named cache entry has no ArtifactStore manifest: {alias}")
     try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        product_type = str(manifest["product_type"])
+        product_id = str(manifest["product_id"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ArtifactCorrupt(f"Invalid named cache entry: {alias}") from exc
+    if expected_type is not None and product_type != expected_type:
+        raise ArtifactCorrupt(
+            f"Named cache entry {alias} contains {product_type}, expected {expected_type}"
+        )
+    reference = store.resolve(product_type, product_id, verify_payloads=False)
+    if reference.path.resolve() != target.resolve():
+        raise ArtifactCorrupt(f"Named cache alias does not resolve to its registered product: {alias}")
+    return reference
+
+
+def get_or_build_named(
+    store,
+    recipe,
+    alias,
+    builder: Callable,
+    *,
+    metadata=None,
+    rebuild: bool = False,
+):
+    """Load by semantic path first; recipe hashes are only internal fallbacks.
+
+    The builder receives (directory, effective_recipe). The second argument is
+    useful for payload metadata that embeds its own internal product reference.
+    Explicit rebuilds publish a new immutable product and atomically retarget the
+    same readable alias.
+    """
+    alias = Path(alias).expanduser().resolve()
+    if alias_exists(alias) and not rebuild:
+        return load_named_reference(store, alias, expected_type=recipe.product_type)
+
+    effective_recipe = recipe
+    if rebuild:
+        parameters = dict(recipe.parameters)
+        parameters["_explicit_rebuild"] = uuid.uuid4().hex
+        effective_recipe = replace(recipe, parameters=parameters)
+    elif not alias_exists(alias):
+        # Adopt a valid pre-existing content-addressed product without rebuilding it.
+        found = store.lookup(recipe, verify_payloads=False)
+        if found.status == "hit":
+            publish_alias(alias, found.reference.path)
+            return found.reference
+
+    reference = store.get_or_build(
+        effective_recipe,
+        lambda directory: builder(directory, effective_recipe),
+        metadata=metadata,
+    )
+    publish_alias(alias, reference.path, replace=rebuild)
+    return reference
+
+
+def product_id_from_alias(path) -> str | None:
+    """Read the internal ArtifactStore ID for provenance; never needed for lookup."""
+    try:
+        product_manifest = resolve_alias(path) / ".artifact.json"
+        if not product_manifest.is_file():
+            return None
         return str(json.loads(product_manifest.read_text(encoding="utf-8"))["product_id"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
