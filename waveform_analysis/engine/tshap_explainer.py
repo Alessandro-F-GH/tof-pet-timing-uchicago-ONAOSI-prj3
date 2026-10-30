@@ -129,7 +129,7 @@ def _selection_seed(seed, role="blind_events"):
     """Stable, model-independent seed for a named TSHAP sampling role."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
-    if role not in {"blind_events", "control_baselines"}:
+    if role != "blind_events":
         raise ValueError(f"Unknown TSHAP sampling role: {role}")
     return semantic_seed(seed, "tshap", role)
 
@@ -317,7 +317,6 @@ def _fit_hermite_ppca_imputer(control, mode, *, components,
         "components": int(components),
         "slope_points": int(slope_points),
         "explained_variance_ratio_by_detector": explained,
-        "training_and_tuning_are_disjoint": True,
         "training_and_tuning_are_disjoint": True,
     }
     return imputer, metadata
@@ -1578,34 +1577,37 @@ def _explanation_destination(output_root, run_directory):
     return Path(output_root).resolve() / batch.name / relative_run / "tshap"
 
 
-def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, max_events=100, n_baselines=8,
-                  window_samples=20, stride_samples=10, predict_batch_size=64, seed=42,
-                  roi=False, overwrite=False, imputation="reference",
-                  imputer_components=32, imputer_fit_events=2000,
-                  imputer_tuning_events=300, imputer_slope_points=5,
-                  logger=None):
-    """Explain saved regressors using reproducible blind/control subsets.
+def explain_tshap(
+    results=None, *, model_dir=None, models=None, ml_window=None,
+    cache_root=None, artifact_root=None, output_root=None, max_events=100,
+    window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
+    roi=False, overwrite=False, imputer_components=32,
+    imputer_fit_events=2000, imputer_tuning_events=300,
+    imputer_slope_points=5, logger=None,
+):
+    """Explain saved regressors with single-event Hermite-PPCA blend occlusions.
 
-    Identical requests reuse completed explanation artifacts without inference.
-    Changes in model, cohorts or settings produce separate, fingerprinted results.
-    The explicit overwrite flag recomputes/replaces only the matching identity.
+    Each detector/window is occluded exactly once. Its missing samples are
+    replaced by the conditional Hermite-PPCA blend imputation of the waveform
+    being explained; no reference-waveform or multi-baseline averaging is used.
+    The control cohort is used only to fit PPCA and calibrate blend weights.
     """
-    for name, value in (("max_events", max_events), ("n_baselines", n_baselines),
-                        ("window_samples", window_samples), ("stride_samples", stride_samples),
-                        ("predict_batch_size", predict_batch_size)):
+    for name, value in (
+        ("max_events", max_events),
+        ("window_samples", window_samples),
+        ("stride_samples", stride_samples),
+        ("predict_batch_size", predict_batch_size),
+        ("imputer_components", imputer_components),
+        ("imputer_fit_events", imputer_fit_events),
+        ("imputer_tuning_events", imputer_tuning_events),
+        ("imputer_slope_points", imputer_slope_points),
+    ):
         _validate_positive_int(name, value)
+    if imputer_slope_points < 2:
+        raise ValueError("imputer_slope_points must be >= 2")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("TSHAP seed must be an integer")
-    if imputation not in {"reference", "hermite_ppca"}:
-        raise ValueError("imputation must be 'reference' or 'hermite_ppca'")
-    if imputation == "hermite_ppca":
-        for name, value in (("imputer_components", imputer_components),
-                            ("imputer_fit_events", imputer_fit_events),
-                            ("imputer_tuning_events", imputer_tuning_events),
-                            ("imputer_slope_points", imputer_slope_points)):
-            _validate_positive_int(name, value)
-        if imputer_slope_points < 2:
-            raise ValueError("imputer_slope_points must be >= 2")
+
     ml_window = _effective_tshap_window(ml_window, model_dir=model_dir)
     tshap_version = version("tshap")
     runs, source_path = _tshap_run_inputs(results, model_dir)
@@ -1618,10 +1620,14 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
     else:
         output_root = Path(output_root).expanduser().resolve()
         if output_root == source_path or output_root.is_relative_to(source_path):
-            raise ValueError("TSHAP output-root must be outside the supplied results/model directory")
+            raise ValueError(
+                "TSHAP output-root must be outside the supplied results/model directory"
+            )
+
     available = {run["manifest"]["model"] for run in runs}
     if models is not None and set(models) - available:
         raise ValueError(f"Requested models not found: {sorted(set(models) - available)}")
+
     lookup = PreparedCacheLookup()
     outputs, failures = [], []
     for run in runs:
@@ -1644,42 +1650,52 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                         config.get("window_name"), ml_window, manifest["model"],
                     )
                 continue
+
             spec = get_model(manifest["model"])
             run_store = RunStore(
                 directory, artifact_root=config["preprocessing"]["artifact_root"]
             )
-            # An explicitly supplied local model directory is authoritative.
-            # Otherwise resolve the model product from the run's artifact reference.
             local_model = Path(directory) / "model"
             fitted_model_dir = (
-                local_model if model_dir is not None and saved_model_complete(spec, local_model)
+                local_model
+                if model_dir is not None and saved_model_complete(spec, local_model)
                 else run_store.model_dir
             )
             if not saved_model_complete(spec, fitted_model_dir):
-                raise FileNotFoundError(f"Saved model or frozen feature transform missing: {fitted_model_dir}")
+                raise FileNotFoundError(
+                    f"Saved model or frozen feature transform missing: {fitted_model_dir}"
+                )
+
             sampling_seed = int(seed)
-            settings = dict(max_events=max_events, n_baselines=n_baselines,
-                            window_samples=window_samples, stride_samples=stride_samples,
-                            predict_batch_size=predict_batch_size, seed=sampling_seed,
-                            roi=bool(roi), imputation=imputation)
-            if imputation == "hermite_ppca":
-                settings.update(imputer_components=imputer_components,
-                                imputer_fit_events=imputer_fit_events,
-                                imputer_tuning_events=imputer_tuning_events,
-                                imputer_slope_points=imputer_slope_points)
+            settings = {
+                "max_events": int(max_events),
+                "window_samples": int(window_samples),
+                "stride_samples": int(stride_samples),
+                "predict_batch_size": int(predict_batch_size),
+                "seed": sampling_seed,
+                "roi": bool(roi),
+                "imputer": {
+                    "method": "hermite_ppca_blend",
+                    "components": int(imputer_components),
+                    "fit_events": int(imputer_fit_events),
+                    "tuning_events": int(imputer_tuning_events),
+                    "slope_points": int(imputer_slope_points),
+                },
+            }
             identity = {
-                "method": ("tshap_hermite_ppca_imputation" if imputation == "hermite_ppca"
-                           else "tshap_reference_substitution"),
-                "baseline_sampling_seed": _selection_seed(sampling_seed, "control_baselines"),
-                "method_version": TSHAP_METHOD_VERSION, "upstream_version": tshap_version,
+                "method": "single_event_hermite_ppca_blend_window_occlusion",
+                "method_version": TSHAP_METHOD_VERSION,
+                "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
                 "blind": manifest["dataset_populations"]["blind"]["analysis_protocol_identity"],
-                "model": spec.name, "mode": config["mode"], "seed": sampling_seed, "settings": settings,
+                "model": spec.name,
+                "mode": config["mode"],
+                "seed": sampling_seed,
+                "settings": settings,
             }
             fingerprint = canonical_hash(identity)
             destination = _explanation_destination(output_root, directory)
-            # A matching flat cache is the canonical hit: no model inference.
             if _complete(destination, fingerprint) and not overwrite:
                 _refresh_presentation(destination)
                 if logger:
@@ -1687,107 +1703,169 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                 outputs.append(destination)
                 continue
 
-            # No matching cache: compute in a temporary directory and replace the
-            # stable tshap directory only after all artifacts have been written.
             control = lookup.find("control", config, manifest)
             blind = lookup.find("blind", config, manifest)
             time_ps = _check_prepared_grids(control, blind, config["mode"])
             if window_samples > time_ps.size:
                 raise ValueError("TSHAP window longer than input waveform")
-            baseline_ids = _choose_indices(
-                control.n_events, n_baselines,
-                _selection_seed(sampling_seed, "control_baselines"),
-            )
+
             event_ids = _choose_indices(
-                blind.n_events, max_events, _selection_seed(sampling_seed, "blind_events")
+                blind.n_events, max_events,
+                _selection_seed(sampling_seed, "blind_events"),
             )
-            baselines = waveform_view(control, config["mode"], baseline_ids).materialize()
             waves = waveform_view(blind, config["mode"], event_ids).materialize()
-            if (waves.shape[1] != 2 or not np.all(np.isfinite(waves))
-                    or baselines.shape[1:] != waves.shape[1:]
-                    or not np.all(np.isfinite(baselines))):
-                raise ValueError("TSHAP inputs must be finite matching [events, 2, samples] arrays")
-            imputer = None
-            imputer_metadata = None
-            if imputation == "hermite_ppca":
-                imputer, imputer_metadata = _cached_hermite_ppca_imputer(
-                    control, config["mode"], config,
-                    window_samples=window_samples, stride_samples=stride_samples,
-                    components=imputer_components, fit_events=imputer_fit_events,
-                    tuning_events=imputer_tuning_events,
-                    slope_points=imputer_slope_points, batch_size=predict_batch_size,
-                    seed=sampling_seed, baseline_ids=baseline_ids,
+            if waves.shape[1:] != (2, time_ps.size) or not np.all(np.isfinite(waves)):
+                raise ValueError(
+                    "Blind TSHAP waveforms must be finite [events, 2 detectors, samples] arrays"
                 )
-                if logger:
-                    logger.info(
-                        "TSHAP imputation | Hermite-PPCA | train=%d | tune=%d | components=%d",
-                        imputer_metadata["n_training_events"],
-                        imputer_metadata["n_tuning_events"], imputer_components,
-                    )
+
+            imputer, imputer_metadata = _cached_hermite_ppca_imputer(
+                control, config["mode"], config,
+                window_samples=window_samples,
+                stride_samples=stride_samples,
+                components=imputer_components,
+                fit_events=imputer_fit_events,
+                tuning_events=imputer_tuning_events,
+                slope_points=imputer_slope_points,
+                batch_size=predict_batch_size,
+                seed=sampling_seed,
+            )
             if logger:
-                logger.info("TSHAP | %s | imputation=%s | events=%d/%d | baselines=%d/%d | samples=%d | ROI=%s",
-                            spec.name, imputation, len(event_ids), blind.n_events,
-                            len(baseline_ids), control.n_events, time_ps.size, roi)
+                logger.info(
+                    "TSHAP blend imputer | train=%d | tune=%d | components=%d | cache_hit=%s",
+                    imputer_metadata["n_training_events"],
+                    imputer_metadata["n_tuning_events"],
+                    imputer_components,
+                    imputer_metadata["cache_hit"],
+                )
+                logger.info(
+                    "TSHAP single-window occlusion | %s | events=%d/%d | samples=%d | ROI=%s",
+                    spec.name, len(event_ids), blind.n_events, time_ps.size, roi,
+                )
+
             parent = destination.parent
             parent.mkdir(parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=".tshap-", dir=parent))
             try:
                 with diagnostic_random_state():
-                    fitted = load_fitted_model(spec, fitted_model_dir, run["best"]["parameters"], config)
+                    fitted = load_fitted_model(
+                        spec, fitted_model_dir, run["best"]["parameters"], config
+                    )
+                    sample_mask = (
+                        None if fitted.sample_mask is None
+                        else np.asarray(fitted.sample_mask, dtype=bool).copy()
+                    )
                     try:
-                        predict = lambda x: _predict_bounded(spec, fitted, x, predict_batch_size)
-                        # Preprocessing/masks, fitted feature map and clipping must be unchanged.
-                        # Deliberately omit frozen_features: TSHAP inference always starts
-                        # from original waveforms and reapplies the fitted transform.
-                        original = predict_indices(spec, fitted, blind, config["mode"], event_ids,
-                                                   chunk_size=predict_batch_size)
+                        predict = lambda x: _predict_bounded(
+                            spec, fitted, x, predict_batch_size
+                        )
+                        original = predict_indices(
+                            spec, fitted, blind, config["mode"], event_ids,
+                            chunk_size=predict_batch_size,
+                        )
                         replay = predict(waves)
                         if not np.allclose(original, replay, atol=1e-4, rtol=1e-6):
-                            raise ValueError("TSHAP model adapter does not reproduce saved inference")
-                        explainer = _new_explainer(window_samples, stride_samples, roi,
-                                                   predict_batch_size, imputer=imputer)
+                            raise ValueError(
+                                "TSHAP model adapter does not reproduce saved inference"
+                            )
+
+                        explainer = _new_explainer(
+                            window_samples, stride_samples, roi,
+                            predict_batch_size, imputer=imputer,
+                            sample_mask=sample_mask,
+                        )
                         window_maps = np.empty_like(waves, dtype=np.float64)
+                        raw_scores = []
+                        window_starts = None
                         roi_maps = np.empty_like(waves, dtype=np.float64) if roi else None
                         for i, pair in enumerate(waves):
-                            win, regions = explainer.explain(pair[None], baselines, predict)
+                            # The upstream API requires a reference argument, but the
+                            # conditional adapter ignores it and imputes this event itself.
+                            win, regions = explainer.explain(
+                                pair[None, ...], pair[None, ...], predict
+                            )
                             window_maps[i] = win[0]
+                            starts, scores = _raw_window_data(explainer)
+                            if window_starts is None:
+                                window_starts = starts
+                            elif not np.array_equal(window_starts, starts):
+                                raise ValueError("Inconsistent TSHAP window positions")
+                            raw_scores.append(scores)
                             if roi:
                                 roi_maps[i] = regions[0]
-                            if logger and (i == 0 or (i + 1) % 10 == 0 or i + 1 == len(waves)):
-                                logger.info("TSHAP | %s | %d/%d events", spec.name, i + 1, len(waves))
+                            if logger and (
+                                i == 0 or (i + 1) % 10 == 0 or i + 1 == len(waves)
+                            ):
+                                logger.info(
+                                    "TSHAP | %s | %d/%d events",
+                                    spec.name, i + 1, len(waves),
+                                )
                     finally:
                         del fitted
                         release_training_memory()
-                if not np.all(np.isfinite(window_maps)) or (roi and not np.all(np.isfinite(roi_maps))):
+
+                if (
+                    not np.all(np.isfinite(window_maps))
+                    or (roi and not np.all(np.isfinite(roi_maps)))
+                ):
                     raise ValueError("Non-finite TSHAP attribution")
-                win_abs = np.mean(np.abs(window_maps), axis=0)
+                raw_scores = np.asarray(raw_scores, dtype=np.float64)
+                if raw_scores.shape != (len(event_ids), 2, len(window_starts)):
+                    raise ValueError("Raw TSHAP scores have an invalid event/channel/window shape")
+                signed_positive, signed_negative = _signed_means(raw_scores)
+                if str(spec.estimator_formulation).lower() == "shared":
+                    aggregated_positive = aggregated_negative = None
+                else:
+                    # Sum detector scores event-by-event before separating signs,
+                    # preserving cancellation between the two detector contributions.
+                    aggregated_positive, aggregated_negative = _signed_means(
+                        raw_scores.sum(axis=1)
+                    )
+
+                mean_absolute = np.mean(np.abs(window_maps), axis=0)
                 waveform_transform = getattr(
                     blind, f"{mode_family(config['mode'])}_transform"
                 )
                 if waveform_transform is None:
                     raise ValueError("Missing frozen waveform normalization for mV plotting")
-                waveform_mv = np.asarray(waveform_transform.inverse(waves), dtype=np.float64)
+                waveform_mv = np.asarray(
+                    waveform_transform.inverse(waves), dtype=np.float64
+                )
                 if waveform_mv.shape != waves.shape or not np.all(np.isfinite(waveform_mv)):
-                    raise ValueError("Inverse-transformed blind waveforms must be finite and match TSHAP inputs")
+                    raise ValueError(
+                        "Inverse-transformed blind waveforms must be finite and match TSHAP inputs"
+                    )
                 mean_waveform_mv = np.mean(waveform_mv, axis=0)
+
                 payload = dict(
-                    event_id=np.asarray(blind.event_index[event_ids], np.int64),
-                    control_event_id=np.asarray(control.event_index[baseline_ids], np.int64),
+                    event_id=np.asarray(blind.event_index[event_ids], dtype=np.int64),
                     time_ps=time_ps,
                     window_attribution_ps=window_maps,
+                    raw_window_scores_ps=raw_scores,
+                    window_starts=np.asarray(window_starts, dtype=np.int64),
+                    window_samples=np.asarray(window_samples, dtype=np.int64),
                     mean_waveform_mv=mean_waveform_mv,
                     original_prediction_ps=original,
                 )
                 if roi:
                     payload["roi_attribution_ps"] = roi_maps
                 np.savez_compressed(temporary / "attributions.npz", **payload)
+
                 board_name = _find_board_label(directory, output_root)
                 window_name = str(config.get("window_name", directory.parent.name))
                 _write_global_importance_csv(
-                    temporary, time_ps, win_abs, spec.estimator_formulation, roi_maps
+                    temporary, time_ps, mean_absolute,
+                    spec.estimator_formulation, roi_maps,
+                )
+                _write_signed_csv(
+                    temporary, time_ps, window_starts,
+                    signed_positive, signed_negative, window_samples,
+                    spec.estimator_formulation,
+                    aggregated_positive=aggregated_positive,
+                    aggregated_negative=aggregated_negative,
                 )
                 _plot_global(
-                    temporary, time_ps, win_abs, payload["mean_waveform_mv"],
+                    temporary, time_ps, mean_absolute, mean_waveform_mv,
                     model_name=spec.name,
                     formulation=spec.estimator_formulation,
                     mode=config["mode"],
@@ -1795,76 +1873,101 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
                     board_name=board_name,
                     n_events=len(event_ids),
                     window_samples=window_samples,
+                    window_starts=window_starts,
+                    signed_positive=signed_positive,
+                    signed_negative=signed_negative,
+                    aggregated_positive=aggregated_positive,
+                    aggregated_negative=aggregated_negative,
                 )
+
                 atomic_json(temporary / "summary.json", {
-                    **identity, "identity_sha256": fingerprint, "plot_version": GLOBAL_PLOT_VERSION,
-                    "board": board_name, "window_name": window_name,
-                    "imputation": imputation,
-                    "n_reference_baselines": int(len(baseline_ids)),
-                    "reference_baseline_seed": int(_selection_seed(sampling_seed, "control_baselines")),
-                    "reference_baseline_source": "independent control population",
-                    **({"imputer": {
-                        "method": "position-specific Hermite baseline plus smooth-envelope PPCA correction",
+                    **identity,
+                    "identity_sha256": fingerprint,
+                    "plot_version": GLOBAL_PLOT_VERSION,
+                    "board": board_name,
+                    "window_name": window_name,
+                    "imputation": "hermite_ppca_blend",
+                    "imputer": {
+                        "method": "Hermite interpolation blended with conditional PPCA mean using a smooth envelope",
                         "components": int(imputer_components),
                         "slope_points": int(imputer_slope_points),
                         "training_events": int(imputer_metadata["n_training_events"]),
                         "tuning_events": int(imputer_metadata["n_tuning_events"]),
-                        "explained_variance_ratio_by_detector": imputer_metadata["explained_variance_ratio_by_detector"],
+                        "training_and_tuning_are_disjoint": True,
+                        "explained_variance_ratio_by_detector": imputer_metadata[
+                            "explained_variance_ratio_by_detector"
+                        ],
                         "cache_file": imputer_metadata["cache_file"],
                         "cache_identity": imputer_metadata["cache_identity"],
                         "cache_hit": imputer_metadata["cache_hit"],
+                        "mean_blend_weight_by_detector": imputer.mean_alpha_by_detector,
                         "blend_weights_by_detector_and_window": imputer.weight_rows,
-                    }} if imputer is not None else {}),
+                    },
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
-                    "waveform_samples": len(time_ps),
+                    "waveform_samples": int(len(time_ps)),
                     "formulation": spec.estimator_formulation,
-                    "attribution_units": "ps/sample (upstream window score redistributed across temporal samples)",
-                    "interpretation": (
-                        "Symmetric two-player window substitution averaged over independent control references; "
-                        "upstream temporal aggregation is not an exact sample-wise Shapley decomposition."
-                        if imputation == "reference" else
-                        "Symmetric two-player conditional window-occlusion prediction differences in ps; "
-                        "upstream temporal aggregation is not an exact sample-wise Shapley decomposition."
+                    "attribution_units": (
+                        "ps/sample (raw signed window prediction differences redistributed over samples)"
                     ),
-                    "cohort": "blind", "input_units": "mV (inverse of frozen prepared waveform normalization)",
+                    "interpretation": (
+                        "Each detector/window is occluded once per event. Missing samples are "
+                        "replaced by the same event's conditional Hermite-PPCA blend imputation; "
+                        "the signed window score is original prediction minus imputed prediction. "
+                        "Temporal interpolation is not an exact sample-wise Shapley decomposition."
+                    ),
+                    "cohort": "blind",
+                    "input_units": "mV (inverse of frozen prepared waveform normalization)",
+                    "sample_mask_window_filter": _sample_mask_window_summary(
+                        sample_mask, len(time_ps), window_samples, stride_samples,
+                        window_starts,
+                    ),
                     "global_importance_aggregation": {
-                        "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
-                        "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-                        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
+                        "direct": (
+                            "mean absolute interpolated attribution across explained blind events, "
+                            "separately for each detector and sample"
+                        ),
+                        "shared": (
+                            "mean absolute interpolated attribution across explained blind events "
+                            "and both detectors at each sample"
+                        ),
+                        "direct_signed_windows": (
+                            "sum the two raw signed detector scores per event and window, then "
+                            "average positive and negative parts separately"
+                        ),
+                        "normalization": (
+                            "Importance values are unnormalized; waveform colours use a shared "
+                            "PowerNorm(gamma=1.6) scale and the colourbar retains ps/sample units."
+                        ),
                     },
                     "global_plot": {
-                        "style": "separate physical detector waveforms with matched solid line styles and aligned importance histograms",
+                        "style": (
+                            "physical detector waveforms with saliency colouring and aligned signed-window histograms"
+                        ),
                         "layout": (
-                            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
-                            if spec.estimator_formulation == "shared"
-                            else "two-column grid with each detector waveform directly above its importance histogram"
+                            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, "
+                            "shared signed histogram), with a common time axis"
+                            if str(spec.estimator_formulation).lower() == "shared"
+                            else "detector waveforms side by side, detector-specific signed histograms below, "
+                            "and a full-width aggregated signed histogram at the bottom"
                         ),
                         "onishi_interval_ns": [-1.5, 2.0],
-                        "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
-                        "histogram_colour": "#4c78a8",
-        "histogram_y_scale": "direct models use a common upper limit based on the maximum bin importance across both detectors",
-        "detector_label_placement": "inside the upper-left corner of each waveform panel",
-                        "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
-                        "importance_histogram": {
-                            "bin_width_samples": int(window_samples),
-                            "bar_width_ns": float(window_samples * np.median(np.diff(time_ps)) / 1000.0),
-                            "bar_height": "sum of mean absolute sample attributions within each non-overlapping window-length bin",
-                            "unit": "ps",
-                        },
-                        "detector_identity": (
-                            "shared absolute-importance curve and pooled histogram for both signals"
-                            if spec.estimator_formulation == "shared"
-                            else "detector-specific absolute-importance curves and histograms"
+                        "importance_colour_scale": (
+                            "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in ps/sample"
                         ),
-                        "legend": "omitted; detector labels are placed inside waveform panels",
+                        "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
+                        "histogram_bar_width_samples": int(window_samples),
+                        "detector_identity": (
+                            "shared pooled attribution" if str(spec.estimator_formulation).lower() == "shared"
+                            else "detector-specific and aggregated signed contributions"
+                        ),
                     },
-                    "prediction_equivalence_max_error_ps": float(np.max(np.abs(original - replay))),
+                    "prediction_equivalence_max_error_ps": float(
+                        np.max(np.abs(original - replay))
+                    ),
                     "reference": "https://github.com/mlgig/tshap",
                 })
-                # Replace stale settings/incomplete artifacts in-place. The cache
-                # check above prevents recalculation when the fingerprint matches.
                 _publish_directory(temporary, destination, overwrite=True)
             finally:
                 if temporary.exists():
@@ -1874,11 +1977,13 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
             failures.append(f"{directory}: {exc}")
             if logger:
                 logger.exception("TSHAP failed | %s", directory)
-    if failures:
-        raise RuntimeError("Some TSHAP explanations failed; successful results retained:\n"
-                           + "\n".join(failures))
-    return outputs
 
+    if failures:
+        raise RuntimeError(
+            "Some TSHAP explanations failed; successful results retained:\n"
+            + "\n".join(failures)
+        )
+    return outputs
 
 def explain_tshap_local(
     results=None, *, model_dir=None, models=None, ml_window=None, cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
