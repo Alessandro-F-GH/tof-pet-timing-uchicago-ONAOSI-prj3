@@ -25,7 +25,7 @@
                       "shared_linear_ridge", "onishi_cnn", "direct_multirocket", 
                     "direct_rdst"],
             
-            "modes": ["timing_to_timing"], 
+            "modes": ["energy_to_energy","timing_to_timing"], 
 
   "windows": { "wide": {"start": -2.0, "end": 60.0}}}
 }
