@@ -34,8 +34,8 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 7
-GLOBAL_PLOT_VERSION = 18
+TSHAP_METHOD_VERSION = 8
+GLOBAL_PLOT_VERSION = 19
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -440,7 +440,7 @@ def _cached_hermite_ppca_imputer(
 
 
 def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None,
-                   sample_mask=None, paired_occlusion=False):
+                   sample_mask=None):
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
@@ -450,19 +450,20 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
         raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
 
     class BoundedTSHAP(TSHAPExplainer):
-        """Upstream temporal aggregation with mask-aware conditional occlusion."""
+        """Upstream temporal aggregation with paired, mask-aware conditional occlusion."""
 
         def __init__(self, *args, sample_mask=None, **kwargs):
             super().__init__(*args, **kwargs)
-            self.paired_occlusion = bool(paired_occlusion)
             self.sample_mask = (
                 None if sample_mask is None
                 else np.asarray(sample_mask, dtype=bool).reshape(-1).copy()
             )
 
         def _explain_instance(self, fnc, input_sample, baselines):
-            """Explain only windows retained by the model mask, without bridging gaps."""
+            """Occlude each retained temporal window in both detector signals together."""
             n_channels, series_length = input_sample.shape
+            if n_channels != 2:
+                raise ValueError("Paired TSHAP requires exactly two detector signals")
             self._last_series_length = series_length
             valid_starts, valid_at_start, _ = _valid_window_starts(
                 series_length, self.window_length, self.stride, self.sample_mask
@@ -471,32 +472,15 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                 raise ValueError(
                     "The model sample mask leaves no valid TSHAP windows at this window size"
                 )
-            positions = (
-                [(-1, start) for start in valid_starts]
-                if self.paired_occlusion
-                else [
-                    (channel, start)
-                    for channel in range(n_channels)
-                    for start in valid_starts
-                ]
-            )
+            positions = [(-1, start) for start in valid_starts]
             scores = self._calculate_window_attrib_scores(
                 fnc, input_sample, baselines, positions
             )
             reshaped = np.zeros(input_sample.shape, dtype=np.float64)
-            n_windows = len(valid_starts)
-            score_rows = (
-                [scores] * n_channels
-                if self.paired_occlusion
-                else [
-                    scores[channel * n_windows:(channel + 1) * n_windows]
-                    for channel in range(n_channels)
-                ]
-            )
-            for channel, channel_scores in enumerate(score_rows):
-                for j, (start, score) in enumerate(zip(valid_starts, channel_scores)):
+            for channel in range(n_channels):
+                for j, (start, score) in enumerate(zip(valid_starts, scores)):
                     reshaped[channel, start] = score
-                    if j + 1 >= n_windows:
+                    if j + 1 >= len(valid_starts):
                         continue
                     next_start = valid_starts[j + 1]
                     if (
@@ -504,7 +488,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                         and np.all(valid_at_start[start:next_start + 1])
                     ):
                         reshaped[channel, start:next_start + 1] = np.linspace(
-                            score, channel_scores[j + 1], next_start - start + 1
+                            score, scores[j + 1], next_start - start + 1
                         )
 
             window_exp = np.zeros(input_sample.shape, dtype=np.float64)
@@ -537,7 +521,6 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
             for roi in rois:
                 start, width = int(roi[1]), int(roi[2])
                 stop = min(start + width, keep.size)
-                # ROI windows must not cross the excluded boundaries or masked samples.
                 if (
                     start in allowed_starts
                     and 0 <= start < stop
@@ -548,7 +531,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
             sample = np.asarray(input_sample, np.float32)
-            if sample.ndim != 2 or sample.shape[0] != 2:
+            if sample.shape != (2, sample.shape[-1]):
                 raise ValueError("Expected one two-detector waveform")
             original = np.asarray(fnc(sample[None]), np.float64)
             if original.shape != (1,):
@@ -561,37 +544,34 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
                     channel, start = int(position[0]), int(position[1])
                     width = int(position[2]) if len(position) == 3 else self.window_length
                     stop = min(start + width, sample.shape[-1])
-                    if start < 0 or stop <= start:
-                        raise ValueError("Invalid temporal occlusion window")
-                    if self.paired_occlusion:
-                        if channel != -1:
-                            raise ValueError("Paired occlusion requires the joint-channel sentinel")
-                        for detector in range(2):
-                            imputed = imputer.impute_segment_batch(
-                                sample[None], detector, start, stop-start
-                            )[0]
-                            candidates[i, detector, start:stop] = imputed
-                    else:
-                        if not 0 <= channel < 2:
-                            raise ValueError("Invalid detector index for temporal occlusion")
+                    if channel != -1 or start < 0 or stop <= start:
+                        raise ValueError("Invalid paired temporal occlusion window")
+                    for detector in range(2):
                         imputed = imputer.impute_segment_batch(
-                            sample[None], channel, start, stop-start
+                            sample[None], detector, start, stop-start
                         )[0]
-                        candidates[i, channel, start:stop] = imputed
+                        candidates[i, detector, start:stop] = imputed
                 predicted = np.asarray(fnc(candidates), np.float64)
                 if predicted.shape != (len(part),):
                     raise ValueError("TSHAP returned an invalid prediction batch")
                 scores[first:first+len(part)] = original[0] - predicted
-            if window_positions and all(len(p) == 2 for p in window_positions):
-                self.last_window_positions = [(int(ch), int(st)) for ch, st in window_positions]
+            if window_positions and all(
+                len(position) in (2, 3) and int(position[0]) == -1
+                for position in window_positions
+            ):
+                self.last_window_positions = [
+                    (-1, int(position[1])) for position in window_positions
+                ]
                 self.last_window_scores = scores.copy()
             return scores
 
-    return BoundedTSHAP(window_length=window_samples, stride=stride_samples,
-                        interpolation=True, roi=roi, sample_mask=sample_mask)
-
-
-
+    return BoundedTSHAP(
+        window_length=window_samples,
+        stride=stride_samples,
+        interpolation=True,
+        roi=roi,
+        sample_mask=sample_mask,
+    )
 def _candidate_window_starts(series_length, window_samples, stride_samples):
     """Match upstream TSHAP's candidate-window grid, including its final partial window."""
     return list(range(
@@ -644,24 +624,18 @@ def _sample_mask_window_summary(sample_mask, series_length, window_samples, stri
     }
 
 def _raw_window_data(explainer):
+    """Return one pair-level signed score for each temporal window."""
     positions = getattr(explainer, "last_window_positions", None)
     scores = getattr(explainer, "last_window_scores", None)
     if positions is None or scores is None:
-        raise ValueError("Missing raw TSHAP window scores")
-    if bool(getattr(explainer, "paired_occlusion", False)):
-        starts = np.array(
-            [start for channel, start in positions if channel == -1], dtype=np.int64
-        )
-        if len(starts) == 0 or len(starts) != np.asarray(scores).size:
-            raise ValueError("Inconsistent paired TSHAP windows")
-        return starts, np.asarray(scores, dtype=np.float64).reshape(1, len(starts))
-    starts = np.array([start for channel, start in positions if channel == 0], dtype=np.int64)
-    other = np.array([start for channel, start in positions if channel == 1], dtype=np.int64)
-    if not np.array_equal(starts, other) or len(starts) == 0:
-        raise ValueError("Inconsistent detector windows")
-    values = np.asarray(scores, dtype=np.float64).reshape(2, len(starts))
+        raise ValueError("Missing raw paired TSHAP window scores")
+    starts = np.asarray(
+        [start for channel, start in positions if channel == -1], dtype=np.int64
+    )
+    values = np.asarray(scores, dtype=np.float64).reshape(1, -1)
+    if starts.size == 0 or values.shape[1] != starts.size:
+        raise ValueError("Inconsistent paired TSHAP windows")
     return starts, values
-
 def _signed_means(scores):
     scores = np.asarray(scores, dtype=np.float64)
     return np.maximum(scores, 0).mean(axis=0), np.minimum(scores, 0).mean(axis=0)
@@ -680,39 +654,30 @@ def _signed_histogram(ax, time_ps, starts, window_samples, positive, negative, *
     if label:
         ax.legend(loc="best", fontsize=8)
 
-def _write_signed_csv(
-    destination, time_ps, starts, positive, negative, window_samples, formulation,
-    *, paired_occlusion=False, aggregated_positive=None, aggregated_negative=None,
-):
-    dt = float(np.median(np.diff(time_ps)))
-    shared = str(formulation).lower() == "shared"
-    with (Path(destination) / "signed_window_importance.csv").open("w", newline="", encoding="utf-8") as stream:
+def _write_signed_csv(destination, time_ps, starts, positive, negative, window_samples):
+    """Write one signed pair-level contribution for every temporal window."""
+    dt = float(np.median(np.diff(np.asarray(time_ps, dtype=np.float64))))
+    positive = np.asarray(positive, dtype=np.float64)
+    negative = np.asarray(negative, dtype=np.float64)
+    expected = (1, len(starts))
+    if positive.shape != expected or negative.shape != expected:
+        raise ValueError("Paired signed contributions must have one score per window")
+    with (Path(destination) / "signed_window_importance.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as stream:
         writer = csv.writer(stream)
-        writer.writerow(("detector_or_shared", "window_start_ps", "window_end_ps",
-                         "mean_positive_contribution_ps", "mean_negative_contribution_ps"))
-        if paired_occlusion:
-            if positive.shape != (1, len(starts)) or negative.shape != (1, len(starts)):
-                raise ValueError("Paired signed contributions must have one score per window")
-            channels = [("paired", positive[0], negative[0])]
-        elif shared:
-            channels = [("shared", positive.mean(axis=0), negative.mean(axis=0))]
-        else:
-            if aggregated_positive is None or aggregated_negative is None:
-                raise ValueError("Direct-model signed CSV requires aggregated window contributions")
-            aggregated_positive = np.asarray(aggregated_positive, dtype=np.float64)
-            aggregated_negative = np.asarray(aggregated_negative, dtype=np.float64)
-            expected = (len(starts),)
-            if aggregated_positive.shape != expected or aggregated_negative.shape != expected:
-                raise ValueError("Aggregated signed contributions must have one value per window")
-            channels = [
-                (f"detector_{d+1}", positive[d], negative[d]) for d in range(2)
-            ]
-            channels.append(("aggregated", aggregated_positive, aggregated_negative))
-        for label, pos, neg in channels:
-            for j, start in enumerate(starts):
-                writer.writerow((label, float(time_ps[start]),
-                                 float(time_ps[start] + window_samples * dt),
-                                 float(pos[j]), float(neg[j])))
+        writer.writerow((
+            "importance_source", "window_start_ps", "window_end_ps",
+            "mean_positive_contribution_ps", "mean_negative_contribution_ps",
+        ))
+        for j, start in enumerate(starts):
+            writer.writerow((
+                "pair",
+                float(time_ps[start]),
+                float(time_ps[start] + window_samples * dt),
+                float(positive[0, j]),
+                float(negative[0, j]),
+            ))
 def _format_global_model_name(model_name):
     """Return publication-friendly model labels while preserving common acronyms."""
     known = {
@@ -750,14 +715,11 @@ def _find_board_label(*paths):
 
 
 def _global_plot_context(destination, summary):
-    """Recover plot labels from saved metadata and the stable XAI path."""
+    """Recover model and dataset labels from saved metadata."""
     identity = summary.get("identity", {})
     model_name = str(identity.get("model") or summary.get("model_name") or destination.parent.name)
     mode = str(identity.get("mode") or summary.get("mode") or "")
     window_name = str(summary.get("window_name") or destination.parent.parent.name)
-    formulation = str(summary.get("formulation") or (
-        "shared" if model_name.lower().startswith("shared_") else "direct"
-    )).lower()
     board_name = str(summary.get("board") or _find_board_label(destination))
     settings = summary.get("settings", {})
     window_samples = int(
@@ -767,74 +729,41 @@ def _global_plot_context(destination, summary):
         window_samples = 1
     return {
         "model_name": model_name,
-        "formulation": formulation,
         "mode": mode,
         "window_name": window_name,
         "board_name": board_name,
         "n_events": int(summary.get("n_explained_events", 0)),
         "window_samples": window_samples,
-        "paired_occlusion": bool(
-            summary.get("paired_occlusion", settings.get("paired_occlusion", False))
-        ),
     }
-
-
-def _write_global_importance_csv(
-    destination, time_ps, mean_absolute, formulation, roi_maps=None, *,
-    paired_occlusion=False,
-):
-    """Write only unnormalized absolute-importance summaries to the global CSV."""
+def _write_global_importance_csv(destination, time_ps, pair_importance, roi_importance=None):
+    """Write a single pair-level absolute-importance curve."""
     time_ps = np.asarray(time_ps, dtype=np.float64)
-    mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
-    if mean_absolute.shape != (2, time_ps.size):
-        raise ValueError("Global absolute importance must have shape [2 detectors, samples]")
-    roi_abs = None
-    if roi_maps is not None:
-        roi_maps = np.asarray(roi_maps, dtype=np.float64)
-        if roi_maps.ndim != 3 or roi_maps.shape[1:] != mean_absolute.shape:
-            raise ValueError("Global ROI attributions must have shape [events, 2 detectors, samples]")
-        roi_abs = np.mean(np.abs(roi_maps), axis=0)
-
-    shared = str(formulation).lower() == "shared"
-    if paired_occlusion:
-        curves = [(
-            "paired",
-            np.mean(mean_absolute, axis=0),
-            np.mean(roi_abs, axis=0) if roi_abs is not None else None,
-        )]
-    elif shared:
-        curves = [(
-            "shared",
-            np.mean(mean_absolute, axis=0),
-            np.mean(roi_abs, axis=0) if roi_abs is not None else None,
-        )]
-    else:
-        curves = [
-            (f"detector_{channel + 1}", mean_absolute[channel],
-             roi_abs[channel] if roi_abs is not None else None)
-            for channel in range(2)
-        ]
-
+    pair_importance = np.asarray(pair_importance, dtype=np.float64)
+    if pair_importance.shape != time_ps.shape:
+        raise ValueError("Pair importance must have one value per waveform sample")
+    if not np.all(np.isfinite(pair_importance)) or np.any(pair_importance < 0):
+        raise ValueError("Pair importance must be finite and non-negative")
+    if roi_importance is not None:
+        roi_importance = np.asarray(roi_importance, dtype=np.float64)
+        if roi_importance.shape != time_ps.shape:
+            raise ValueError("Pair ROI importance must have one value per waveform sample")
     with (Path(destination) / "global_importance.csv").open(
         "w", newline="", encoding="utf-8"
     ) as stream:
         writer = csv.writer(stream)
-        writer.writerow([
-            "detector_or_shared",
+        writer.writerow((
+            "importance_source",
             "time_ps",
             "mean_absolute_tshap_importance_ps_per_sample",
             "roi_mean_absolute_tshap_importance_ps",
-        ])
-        for label, values, roi_values in curves:
-            for index, time_value in enumerate(time_ps):
-                writer.writerow([
-                    label,
-                    float(time_value),
-                    float(values[index]),
-                    float(roi_values[index]) if roi_values is not None else "",
-                ])
-
-
+        ))
+        for index, time_value in enumerate(time_ps):
+            writer.writerow((
+                "pair",
+                float(time_value),
+                float(pair_importance[index]),
+                float(roi_importance[index]) if roi_importance is not None else "",
+            ))
 def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, linestyle):
     """Draw a physical waveform whose segment colours encode absolute importance."""
     from matplotlib.collections import LineCollection
@@ -858,18 +787,18 @@ def _add_saliency_line(ax, time_ns, waveform_mv, importance, *, norm, cmap, line
 
 
 def _plot_global(
-    destination, time_ps, mean_absolute, mean_waveform_mv, *,
-    model_name, formulation, mode, window_name, board_name, n_events,
-    window_samples, window_starts=None, signed_positive=None, signed_negative=None,
-    aggregated_positive=None, aggregated_negative=None, std_waveform_mv=None,
-    paired_occlusion=False,
+    destination, time_ps, pair_importance, mean_waveform_mv, *,
+    model_name, mode, window_name, board_name, n_events,
+    window_samples, window_starts, signed_positive, signed_negative,
+    std_waveform_mv=None,
 ):
-    """Plot mean physical waveforms, their event-wise dispersion and TSHAP saliency."""
+    """Plot both physical detector waveforms with one shared pair-importance curve."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap, PowerNorm
     from matplotlib.cm import ScalarMappable
+    from matplotlib.ticker import MaxNLocator
 
     with plt.rc_context({
         "font.family": "serif",
@@ -884,13 +813,13 @@ def _plot_global(
     }):
         time_ps = np.asarray(time_ps, dtype=np.float64)
         time_ns = time_ps / 1000.0
-        mean_absolute = np.asarray(mean_absolute, dtype=np.float64)
+        pair_importance = np.asarray(pair_importance, dtype=np.float64)
         mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
         std_waveform_mv = (
             None if std_waveform_mv is None
             else np.asarray(std_waveform_mv, dtype=np.float64)
         )
-        expected_shape = (2, time_ps.size)
+        expected_waveform_shape = (2, time_ps.size)
         if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
             raise ValueError("Global TSHAP time grid must contain at least two finite samples")
         time_steps = np.diff(time_ps)
@@ -902,12 +831,14 @@ def _plot_global(
         if isinstance(window_samples, bool) or int(window_samples) < 1:
             raise ValueError("window_samples must be an integer >= 1")
         window_samples = int(window_samples)
-        if mean_absolute.shape != expected_shape or mean_waveform_mv.shape != expected_shape:
-            raise ValueError("Global TSHAP arrays must have shape [2 detectors, samples]")
-        if std_waveform_mv is not None and std_waveform_mv.shape != expected_shape:
+        if pair_importance.shape != time_ps.shape:
+            raise ValueError("Pair importance must have one value per waveform sample")
+        if mean_waveform_mv.shape != expected_waveform_shape:
+            raise ValueError("Global physical waveforms must have shape [2 detectors, samples]")
+        if std_waveform_mv is not None and std_waveform_mv.shape != expected_waveform_shape:
             raise ValueError("Global waveform standard deviation must have shape [2 detectors, samples]")
-        if not np.all(np.isfinite(mean_absolute)) or np.any(mean_absolute < 0):
-            raise ValueError("Global absolute importance must be finite and non-negative")
+        if not np.all(np.isfinite(pair_importance)) or np.any(pair_importance < 0):
+            raise ValueError("Pair importance must be finite and non-negative")
         if not np.all(np.isfinite(mean_waveform_mv)):
             raise ValueError("Global physical waveforms must be finite")
         if std_waveform_mv is not None and (
@@ -915,14 +846,7 @@ def _plot_global(
         ):
             raise ValueError("Global waveform standard deviations must be finite and non-negative")
 
-        shared = str(formulation).lower() == "shared"
-        paired = bool(paired_occlusion)
-        pooled = shared or paired
-        saliency = np.mean(mean_absolute, axis=0) if pooled else mean_absolute
-        # Direct models use the maximum across BOTH detectors, preserving a common
-        # quantitative colour scale while PowerNorm(gamma > 1) suppresses weak
-        # attribution colours and improves separation of low and moderate importance.
-        vmax = float(np.max(saliency) if pooled else np.max(mean_absolute))
+        vmax = float(np.max(pair_importance))
         if not np.isfinite(vmax) or vmax <= 0.0:
             vmax = 1.0
         norm = PowerNorm(gamma=1.6, vmin=0.0, vmax=vmax, clip=True)
@@ -937,62 +861,23 @@ def _plot_global(
             N=256,
         )
 
-        window_width_ns = window_samples * dt_ps / 1000.0
-        bin_starts = list(range(0, time_ps.size, window_samples))
-        bin_centers_ns = np.asarray([
-            np.mean(time_ns[start:min(start + window_samples, time_ps.size)])
-            for start in bin_starts
-        ], dtype=np.float64)
-        detector_window_importance = np.asarray([
-            [
-                np.sum(mean_absolute[channel, start:min(start + window_samples, time_ps.size)])
-                for start in bin_starts
-            ]
-            for channel in range(2)
-        ], dtype=np.float64)
-        shared_window_importance = np.asarray([
-            np.sum(saliency[start:min(start + window_samples, time_ps.size)])
-            for start in bin_starts
-        ], dtype=np.float64)
-
-        if pooled:
-            # Stack both waveforms and the pooled or paired importance histogram in one
-            # column so every time axis has exactly the same horizontal extent.
-            fig = plt.figure(figsize=(12.2, 7.8), constrained_layout=True)
-            gs = fig.add_gridspec(
-                3, 2,
-                height_ratios=[1.0, 1.0, 0.62],
-                width_ratios=[1.0, 0.035],
-                hspace=0.025,
-                wspace=0.08,
-            )
-            ax_signal1 = fig.add_subplot(gs[0, 0])
-            ax_signal2 = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
-            ax_shared_hist = fig.add_subplot(gs[2, 0], sharex=ax_signal1)
-            colorbar_ax = fig.add_subplot(gs[0:2, 1])
-            hist_axes = [ax_shared_hist]
-        else:
-            fig = plt.figure(figsize=(13.2, 8.0), constrained_layout=True)
-            gs = fig.add_gridspec(
-                3, 2,
-                height_ratios=[2.35, 1.0, 1.0],
-                hspace=0.025,
-                wspace=0.12,
-            )
-            ax_signal1 = fig.add_subplot(gs[0, 0])
-            ax_signal2 = fig.add_subplot(gs[0, 1])
-            ax_detector1_hist = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
-            ax_detector2_hist = fig.add_subplot(gs[1, 1], sharex=ax_signal2)
-            ax_aggregated_hist = fig.add_subplot(gs[2, :], sharex=ax_signal1)
-            hist_axes = [ax_detector1_hist, ax_detector2_hist, ax_aggregated_hist]
-            colorbar_ax = None
+        fig = plt.figure(figsize=(12.2, 7.8), constrained_layout=True)
+        gs = fig.add_gridspec(
+            3, 2,
+            height_ratios=[1.0, 1.0, 0.62],
+            width_ratios=[1.0, 0.035],
+            hspace=0.025,
+            wspace=0.08,
+        )
+        ax_signal1 = fig.add_subplot(gs[0, 0])
+        ax_signal2 = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
+        ax_pair_hist = fig.add_subplot(gs[2, 0], sharex=ax_signal1)
+        colorbar_ax = fig.add_subplot(gs[0:2, 1])
         signal_axes = [ax_signal1, ax_signal2]
+        hist_axes = [ax_pair_hist]
 
-        title = f"Global TSHAP Saliency — {_format_global_model_name(model_name)}"
-        if paired_occlusion:
-            title += " (Paired Occlusion)"
+        title = f"Global TSHAP Pair Importance — {_format_global_model_name(model_name)}"
         fig.suptitle(title, fontsize=12.5, y=1.015)
-
         for ax in [*signal_axes, *hist_axes]:
             ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.25, linewidth=0, zorder=0)
 
@@ -1006,8 +891,8 @@ def _plot_global(
         high = float(np.max(waveform_high))
         span = high - low
         y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
+
         for channel, ax in enumerate(signal_axes):
-            importance = saliency if pooled else saliency[channel]
             if std_waveform_mv is not None:
                 ax.fill_between(
                     time_ns,
@@ -1023,7 +908,7 @@ def _plot_global(
                 color="#d8dadd", linewidth=3.8, linestyle="solid", zorder=2,
             )
             _add_saliency_line(
-                ax, time_ns, mean_waveform_mv[channel], importance,
+                ax, time_ns, mean_waveform_mv[channel], pair_importance,
                 norm=norm, cmap=cmap, linestyle="solid",
             )
             timing_channel = "timing" in str(mode).lower()
@@ -1044,72 +929,35 @@ def _plot_global(
             for spine in ax.spines.values():
                 spine.set_linewidth(0.7)
 
-        if window_starts is None or signed_positive is None or signed_negative is None:
-            raise ValueError("Raw signed window contributions required")
-        if paired:
-            if (
-                signed_positive is None or signed_negative is None
-                or np.asarray(signed_positive).shape != (1, len(window_starts))
-                or np.asarray(signed_negative).shape != (1, len(window_starts))
-            ):
-                raise ValueError("Paired global plot requires one signed contribution per window")
-            _signed_histogram(
-                ax_shared_hist, time_ps, window_starts, window_samples,
-                signed_positive[0], signed_negative[0],
-            )
-            ax_shared_hist.set_ylabel("Pair contribution (ps)")
-            ax_shared_hist.set_title(
-                "Joint contributions (both detector signals occluded together)",
-                loc="left", fontsize=9.5,
-            )
-        elif shared:
-            _signed_histogram(ax_shared_hist, time_ps, window_starts, window_samples,
-                              signed_positive.mean(axis=0), signed_negative.mean(axis=0))
-            ax_shared_hist.set_ylabel("Contribution (ps)")
-        else:
-            if aggregated_positive is None or aggregated_negative is None:
-                raise ValueError("Direct-model global plot requires aggregated signed contributions")
-            for d, ax in enumerate((ax_detector1_hist, ax_detector2_hist)):
-                _signed_histogram(ax, time_ps, window_starts, window_samples,
-                                  signed_positive[d], signed_negative[d], label=(d == 0))
-                ax.set_ylabel("Contribution (ps)")
-            limit = max(np.max(signed_positive), -np.min(signed_negative), 1e-6) * 1.05
-            ax_detector1_hist.set_ylim(-limit, limit)
-            ax_detector2_hist.set_ylim(-limit, limit)
-            _signed_histogram(
-                ax_aggregated_hist, time_ps, window_starts, window_samples,
-                aggregated_positive, aggregated_negative,
-            )
-            ax_aggregated_hist.set_ylabel("Combined\ncontribution (ps)")
-            ax_aggregated_hist.set_title(
-                "Aggregated signed contributions (Detector 1 + Detector 2)",
-                loc="left", fontsize=9.5,
-            )
-            aggregated_limit = max(
-                float(np.max(aggregated_positive)),
-                float(-np.min(aggregated_negative)),
-                1e-6,
-            ) * 1.05
-            ax_aggregated_hist.set_ylim(-aggregated_limit, aggregated_limit)
+        starts = np.asarray(window_starts, dtype=np.int64)
+        positive = np.asarray(signed_positive, dtype=np.float64)
+        negative = np.asarray(signed_negative, dtype=np.float64)
+        expected_scores = (1, starts.size)
+        if (
+            starts.ndim != 1 or starts.size == 0
+            or positive.shape != expected_scores or negative.shape != expected_scores
+            or np.any(starts < 0) or np.any(starts >= time_ps.size)
+            or not np.all(np.isfinite(positive)) or not np.all(np.isfinite(negative))
+        ):
+            raise ValueError("Global paired histogram requires one finite signed score per window")
+        _signed_histogram(
+            ax_pair_hist, time_ps, starts, window_samples,
+            positive[0], negative[0],
+        )
+        ax_pair_hist.set_ylabel("Pair contribution (ps)")
+        ax_pair_hist.set_title(
+            "Joint contributions (both detector signals occluded together)",
+            loc="left", fontsize=9.5,
+        )
+        ax_pair_hist.set_xlabel("Waveform time (ns)")
+        ax_pair_hist.tick_params(axis="both", length=3, width=0.6)
+        for spine in ax_pair_hist.spines.values():
+            spine.set_linewidth(0.7)
 
-        for ax in hist_axes:
-            ax.set_xlabel("Waveform time (ns)")
-            ax.tick_params(axis="both", length=3, width=0.6)
-            for spine in ax.spines.values():
-                spine.set_linewidth(0.7)
-
-        if pooled:
-            colorbar = fig.colorbar(
-                ScalarMappable(norm=norm, cmap=cmap),
-                cax=colorbar_ax,
-            )
-        else:
-            colorbar = fig.colorbar(
-                ScalarMappable(norm=norm, cmap=cmap),
-                ax=signal_axes, pad=0.015, fraction=0.025, location="right",
-            )
-        from matplotlib.ticker import MaxNLocator
-
+        colorbar = fig.colorbar(
+            ScalarMappable(norm=norm, cmap=cmap),
+            cax=colorbar_ax,
+        )
         tick_locator = MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10])
         colorbar_ticks = tick_locator.tick_values(0.0, vmax)
         colorbar_ticks = colorbar_ticks[
@@ -1118,7 +966,7 @@ def _plot_global(
         if colorbar_ticks.size == 0 or not np.isclose(colorbar_ticks[0], 0.0):
             colorbar_ticks = np.insert(colorbar_ticks, 0, 0.0)
         colorbar.set_ticks(colorbar_ticks)
-        colorbar.set_label("Absolute TSHAP importance (ps/sample)", fontsize=9)
+        colorbar.set_label("Absolute pair importance (ps/sample)", fontsize=9)
         colorbar.ax.tick_params(labelsize=8, width=0.6, length=3)
 
         destination = Path(destination)
@@ -1129,8 +977,6 @@ def _plot_global(
             metadata={"Title": title, "Creator": "Matplotlib"},
         )
         plt.close(fig)
-
-
 def _publish_directory(temporary, destination, overwrite):
     """Publish atomically on the same filesystem; restore an old result on failure."""
     if destination.exists() and not overwrite:
@@ -1236,7 +1082,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 11
+LOCAL_PLOT_VERSION = 12
 
 
 def _detector_difference(values):
@@ -1561,7 +1407,7 @@ def _complete_local(destination, fingerprint, expected_events):
 
 
 def _refresh_presentation(destination):
-    """Regenerate global CSV and plot from cached attributions, without SHAP inference."""
+    """Regenerate pair-level CSV and plot from cached attributions, without model inference."""
     destination = Path(destination)
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1580,17 +1426,9 @@ def _refresh_presentation(destination):
         window_maps = np.asarray(saved["window_attribution_ps"], dtype=np.float64)
         raw_scores = np.asarray(saved["raw_window_scores_ps"], dtype=np.float64)
         window_starts = np.asarray(saved["window_starts"], dtype=np.int64)
-        if "mean_waveform_mv" not in saved:
-            raise ValueError(
-                "Cannot refresh global TSHAP saliency plot: cached attributions.npz "
-                "does not contain mean_waveform_mv. TSHAP values were not recalculated."
-            )
-        mean_waveform_mv = np.asarray(saved["mean_waveform_mv"], dtype=np.float64)
-        if "std_waveform_mv" not in saved:
-            # Older results contain only the mean waveform. The event-wise
-            # dispersion cannot be recovered from it, so force a fresh TSHAP
-            # pass rather than silently publishing a plot without the band.
+        if "mean_waveform_mv" not in saved or "std_waveform_mv" not in saved:
             return False
+        mean_waveform_mv = np.asarray(saved["mean_waveform_mv"], dtype=np.float64)
         std_waveform_mv = np.asarray(saved["std_waveform_mv"], dtype=np.float64)
         roi_maps = (
             np.asarray(saved["roi_attribution_ps"], dtype=np.float64)
@@ -1598,105 +1436,74 @@ def _refresh_presentation(destination):
         )
 
     if window_maps.ndim != 3 or window_maps.shape[1:] != (2, time_ps.size):
-        raise ValueError("Cached TSHAP attribution array must have shape [events, 2 detectors, samples]")
-    mean_absolute = np.mean(np.abs(window_maps), axis=0)
+        raise ValueError("Cached paired TSHAP attribution array must have shape [events, 2 detectors, samples]")
+    if raw_scores.ndim != 3 or raw_scores.shape[1:] != (1, len(window_starts)):
+        raise ValueError("Cached raw paired TSHAP scores must have shape [events, 1, windows]")
+    pair_importance = np.mean(np.abs(window_maps), axis=(0, 1))
+    roi_importance = (
+        np.mean(np.abs(roi_maps), axis=(0, 1)) if roi_maps is not None else None
+    )
     signed_positive, signed_negative = _signed_means(raw_scores)
     context = _global_plot_context(destination, summary)
-    paired_occlusion = context["paired_occlusion"]
-    if paired_occlusion:
-        if raw_scores.ndim != 3 or raw_scores.shape[1] != 1:
-            raise ValueError("Cached paired TSHAP scores must contain one joint score per window")
-        aggregated_positive = aggregated_negative = None
-    elif context["formulation"] == "shared":
-        aggregated_positive = aggregated_negative = None
-    else:
-        # Sum each event's two raw signed detector scores before separating signs.
-        # This preserves cancellation between detectors within the same window.
-        aggregated_positive, aggregated_negative = _signed_means(raw_scores.sum(axis=1))
     _write_global_importance_csv(
-        destination, time_ps, mean_absolute, context["formulation"], roi_maps,
-        paired_occlusion=paired_occlusion,
+        destination, time_ps, pair_importance, roi_importance
     )
     _write_signed_csv(
         destination, time_ps, window_starts, signed_positive, signed_negative,
-        context["window_samples"], context["formulation"],
-        paired_occlusion=paired_occlusion,
-        aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
+        context["window_samples"],
     )
     _plot_global(
-        destination, time_ps, mean_absolute, mean_waveform_mv,
+        destination, time_ps, pair_importance, mean_waveform_mv,
         std_waveform_mv=std_waveform_mv,
         model_name=context["model_name"],
-        formulation=context["formulation"],
         mode=context["mode"],
         window_name=context["window_name"],
         board_name=context["board_name"],
         n_events=context["n_events"] or len(window_maps),
         window_samples=context["window_samples"],
         window_starts=window_starts,
-        signed_positive=signed_positive, signed_negative=signed_negative,
-        aggregated_positive=aggregated_positive, aggregated_negative=aggregated_negative,
-        paired_occlusion=paired_occlusion,
+        signed_positive=signed_positive,
+        signed_negative=signed_negative,
     )
 
-    summary["paired_occlusion"] = paired_occlusion
     summary["plot_version"] = GLOBAL_PLOT_VERSION
     summary["board"] = context["board_name"]
     summary["window_name"] = context["window_name"]
     summary["attribution_units"] = (
-        "ps/sample (upstream window score redistributed across temporal samples)"
+        "ps/sample (joint pair-level window score redistributed identically over both detector waveforms)"
     )
     summary["input_units"] = "mV (inverse of frozen prepared waveform normalization)"
     summary["waveform_dispersion"] = (
         "shaded mean +/- one population standard deviation (ddof=0) across explained blind events, in mV"
     )
+    summary["importance_protocol"] = (
+        "one joint temporal occlusion per window; both detector signals are imputed together and yield one pair-level score"
+    )
     summary["global_importance_aggregation"] = {
-        "direct": "mean(abs(attribution)) across explained blind events separately for each detector and sample",
-        "shared": "mean(abs(attribution)) across explained blind events and both detectors at each sample",
-        "paired": "mean absolute joint-occlusion attribution across explained blind events; the same pair-level curve is displayed on both detector waveforms, without channel-specific scores",
-        "direct_signed_windows": "sum the two raw signed detector scores per event and window, then average positive and negative parts separately",
-        "normalization": "importance values are unnormalized; waveform colours use a shared PowerNorm(gamma=1.6) scale and the colourbar retains original ps/sample units",
+        "pair": "mean absolute joint-occlusion attribution across explained blind events",
+        "signed_windows": "mean positive and negative parts of the single pair-level signed prediction difference",
+        "normalization": "importance values are unnormalized; both waveform colours use one shared PowerNorm(gamma=1.6) scale in ps/sample",
     }
     summary["tshap_window_samples"] = context["window_samples"]
     summary["global_plot"] = {
-        "style": "mean physical detector waveforms with shaded +/-1 standard deviation bands, saliency colouring and aligned importance histograms",
+        "style": "mean physical detector waveforms with shaded +/-1 standard deviation bands and the same pair-level saliency on both signals",
         "waveform_dispersion": "mean +/- one population standard deviation across explained blind events (mV)",
-        "layout": (
-            "three vertically stacked panels (detector 1 waveform, detector 2 waveform, paired joint-occlusion histogram), with a common time axis"
-            if paired_occlusion
-            else (
-                "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
-                if context["formulation"] == "shared"
-                else "three-row grid: detector waveforms side by side, detector-specific signed histograms below, and a full-width aggregated signed histogram (sum of per-event detector scores) at the bottom"
-            )
-        ),
+        "layout": "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis",
         "onishi_interval_ns": [-1.5, 2.0],
-        "importance_colour_scale": "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in original ps/sample units",
+        "importance_colour_scale": "one shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in ps/sample",
         "histogram_colour": "#4c78a8",
-        "histogram_y_scale": "direct models use a common upper limit based on the maximum bin importance across both detectors",
-        "detector_label_placement": "inside upper-right corner for timing channels and upper-left corner otherwise",
         "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
+        "histogram_bar_width_samples": context["window_samples"],
         "importance_histogram": {
             "bin_width_samples": context["window_samples"],
             "bar_width_ns": float(context["window_samples"] * np.median(np.diff(time_ps)) / 1000.0),
-            "bar_height": "sum of mean absolute sample attributions within each non-overlapping window-length bin",
+            "bar_height": "signed pair-level prediction difference for each jointly occluded temporal window",
             "unit": "ps",
         },
-        "detector_identity": (
-            "one joint pair-importance curve displayed on both waveform panels; no channel-specific importance is calculated"
-            if paired_occlusion
-            else (
-                "shared absolute-importance curve and pooled histogram for both signals"
-                if context["formulation"] == "shared"
-                else "detector-specific absolute-importance curves and signed histograms, plus an aggregated signed histogram formed by summing both detector scores per event and window"
-            )
-        ),
-        "legend": "omitted; detector labels are placed inside waveform panels according to channel type",
+        "detector_identity": "one pair-level importance curve displayed identically on both detector waveforms; no channel-specific importance is calculated",
     }
     atomic_json(summary_path, summary)
     return True
-
-
 def _explanation_destination(output_root, run_directory):
     """Return one stable TSHAP directory per run; fingerprints belong in metadata only."""
     batch = batch_root(run_directory)
