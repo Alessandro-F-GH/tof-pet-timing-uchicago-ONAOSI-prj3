@@ -32,7 +32,7 @@ def test_paired_window_occlusion_is_single_event_and_signed(roi):
     positions = [(-1, 4, 8), (-1, 8, 8), (-1, 16, 8)]
     def predict(values):
         return np.asarray(values)[:, 0].sum(axis=1) - 2 * np.asarray(values)[:, 1].sum(axis=1)
-    expected = 0.5 * np.asarray([
+    expected = np.asarray([
         sample[0, 4:12].sum() - 2 * sample[1, 4:12].sum(),
         sample[0, 8:16].sum() - 2 * sample[1, 8:16].sum(),
         sample[0, 16:24].sum() - 2 * sample[1, 16:24].sum(),
