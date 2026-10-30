@@ -10,7 +10,8 @@ from waveform_analysis.engine.tshap_explainer import (
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
-    _matches_tshap_window, _resolve_model_run_directory, _apply_tshap_cache,
+    _matches_tshap_window, _matches_tshap_mode, _normalize_tshap_windows,
+    _resolve_model_run_directory, _apply_tshap_cache,
     _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
     _selection_seed, _write_global_importance_csv, _write_signed_csv, _signed_means,
@@ -397,6 +398,18 @@ def test_tshap_window_selector_all_and_invalid():
     with pytest.raises(ValueError, match="ml_window"):
         _matches_tshap_window({"window_name": "wide"}, "invalid")
 
+def test_tshap_window_and_mode_lists_select_batch_runs():
+    windows = ["onishi", "wide"]
+    assert _normalize_tshap_windows(windows) == ("onishi", "wide")
+    assert _matches_tshap_window({"window_name": "onishi"}, windows)
+    assert _matches_tshap_window({"window_name": "wide"}, windows)
+    assert not _matches_tshap_window({"window_name": "other"}, windows)
+    assert _matches_tshap_mode({"mode": "energy_to_energy"}, "energy")
+    assert _matches_tshap_mode({"mode": "timing_to_timing"}, "timing")
+    assert not _matches_tshap_mode({"mode": "timing_to_timing"}, "energy")
+    with pytest.raises(ValueError, match="all"):
+        _normalize_tshap_windows(["all", "wide"])
+
 
 def test_tshap_model_directory_and_shared_cache_resolution(tmp_path):
     from waveform_analysis.engine.tshap_explainer import _effective_tshap_window
@@ -536,6 +549,9 @@ def test_cli_exposes_only_tshap_interpretability_commands():
             for option in action.option_strings
         }
         assert "--n-baselines" not in options
+        assert "--windows" in options
+        assert "--mode" in options
+        assert "--ml-window" not in options
     assert "--imputation" not in {
         option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
