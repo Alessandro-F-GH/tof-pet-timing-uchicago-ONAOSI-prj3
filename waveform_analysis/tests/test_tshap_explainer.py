@@ -43,6 +43,31 @@ def test_conditional_window_occlusion_is_single_event_and_signed(roi):
     np.testing.assert_allclose(other, observed, rtol=0, atol=0)
 
 
+def test_paired_occlusion_masks_both_detectors_once_and_returns_one_score():
+    sample = np.ones((2, 16), dtype=np.float32)
+    explainer = _new_explainer(
+        4, 4, False, predict_batch_size=4, imputer=_ZeroImputer(),
+        paired_occlusion=True,
+    )
+
+    def predict(values):
+        values = np.asarray(values)
+        return values[:, 0].sum(axis=1) + 2.0 * values[:, 1].sum(axis=1)
+
+    scores = explainer._calculate_window_attrib_scores(
+        predict, sample, np.zeros((3, 2, 16)), [(-1, 4, 4)]
+    )
+    np.testing.assert_allclose(scores, [12.0])
+    assert explainer.last_window_positions == [(-1, 4)]
+    np.testing.assert_allclose(explainer.last_window_scores, [12.0])
+
+    starts, raw = __import__(
+        "waveform_analysis.engine.tshap_explainer", fromlist=["_raw_window_data"]
+    )._raw_window_data(explainer)
+    np.testing.assert_array_equal(starts, [4])
+    np.testing.assert_allclose(raw, [[12.0]])
+
+
 def test_tshap_constant_prediction_is_zero():
     model = _new_explainer(6, 3, False, 4, imputer=_ZeroImputer())
     sample = np.ones((2, 24), dtype=np.float32)
@@ -519,6 +544,10 @@ def test_cli_exposes_only_tshap_interpretability_commands():
         option for action in commands["explain-tshap"]._actions
         for option in action.option_strings
     }
+    assert "--paired-occlusion" in {
+        option for action in commands["explain-tshap"]._actions
+        for option in action.option_strings
+    }
 
 
 
@@ -599,6 +628,26 @@ def test_reference_tshap_constant_prediction_is_zero():
     )
     for value in maps:
         np.testing.assert_allclose(value, 0)
+
+
+def test_paired_global_plot_uses_vertical_waveforms_and_one_pair_histogram(tmp_path):
+    pytest.importorskip("matplotlib")
+    time_ps = np.linspace(-2000.0, 60000.0, 64)
+    waveform = np.vstack([np.sin(time_ps / 1000), np.cos(time_ps / 1000)])
+    importance = np.ones_like(waveform)
+    starts = np.asarray([8, 16, 24], dtype=np.int64)
+    positive = np.asarray([[1.0, 2.0, 3.0]])
+    negative = np.asarray([[-0.5, -1.0, -1.5]])
+    _plot_global(
+        tmp_path, time_ps, importance, waveform,
+        model_name="direct_multirocket", formulation="direct",
+        mode="energy_to_energy", window_name="wide", board_name="UC",
+        n_events=8, window_samples=4, window_starts=starts,
+        signed_positive=positive, signed_negative=negative,
+        paired_occlusion=True,
+    )
+    assert (tmp_path / "global_importance.png").is_file()
+    assert (tmp_path / "global_importance.pdf").is_file()
 
 
 def test_global_plot_validates_waveform_dispersion(tmp_path):
