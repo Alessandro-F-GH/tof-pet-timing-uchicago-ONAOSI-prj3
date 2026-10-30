@@ -1413,9 +1413,15 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
             run_store = RunStore(
                 directory, artifact_root=config["preprocessing"]["artifact_root"]
             )
-            model_dir = run_store.model_dir
-            if not saved_model_complete(spec, model_dir):
-                raise FileNotFoundError(f"Saved model or frozen feature transform missing: {model_dir}")
+            # An explicitly supplied local model directory is authoritative.
+            # Otherwise resolve the model product from the run's artifact reference.
+            local_model = Path(directory) / "model"
+            fitted_model_dir = (
+                local_model if model_dir is not None and saved_model_complete(spec, local_model)
+                else run_store.model_dir
+            )
+            if not saved_model_complete(spec, fitted_model_dir):
+                raise FileNotFoundError(f"Saved model or frozen feature transform missing: {fitted_model_dir}")
             sampling_seed = int(seed)
             settings = dict(max_events=max_events, n_baselines=n_baselines,
                             window_samples=window_samples, stride_samples=stride_samples,
@@ -1482,7 +1488,7 @@ def explain_tshap(results=None, *, model_dir=None, models=None, ml_window=None, 
             temporary = Path(tempfile.mkdtemp(prefix=".tshap-", dir=parent))
             try:
                 with diagnostic_random_state():
-                    fitted = load_fitted_model(spec, model_dir, run["best"]["parameters"], config)
+                    fitted = load_fitted_model(spec, fitted_model_dir, run["best"]["parameters"], config)
                     try:
                         predict = lambda x: _predict_bounded(spec, fitted, x, predict_batch_size)
                         # Preprocessing/masks, fitted feature map and clipping must be unchanged.
@@ -1688,10 +1694,16 @@ def explain_tshap_local(
             run_store = RunStore(
                 directory, artifact_root=config["preprocessing"]["artifact_root"]
             )
-            model_dir = run_store.model_dir
-            if not saved_model_complete(spec, model_dir):
+            # An explicitly supplied local model directory is authoritative.
+            # Otherwise resolve the model product from the run's artifact reference.
+            local_model = Path(directory) / "model"
+            fitted_model_dir = (
+                local_model if model_dir is not None and saved_model_complete(spec, local_model)
+                else run_store.model_dir
+            )
+            if not saved_model_complete(spec, fitted_model_dir):
                 raise FileNotFoundError(
-                    f"Saved model or frozen feature transform missing: {model_dir}"
+                    f"Saved model or frozen feature transform missing: {fitted_model_dir}"
                 )
             settings = dict(
                 events_per_group=events_per_group,
@@ -1770,7 +1782,7 @@ def explain_tshap_local(
             temporary = Path(tempfile.mkdtemp(prefix=".tshap-local-", dir=parent))
             try:
                 with diagnostic_random_state():
-                    fitted = load_fitted_model(spec, model_dir, run["best"]["parameters"], config)
+                    fitted = load_fitted_model(spec, fitted_model_dir, run["best"]["parameters"], config)
                     try:
                         # Predictions over the full blind population are needed only
                         # to select cases; the expensive TSHAP stage explains 10 by default.
