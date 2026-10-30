@@ -18,6 +18,7 @@ from waveform_analysis.signal.photopeak import fit_photopeak
 from waveform_analysis.signal.peak import fit_histogram_peak
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import selection_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
     canonical_hash,
@@ -606,9 +607,11 @@ def apply_selection_rules(
             logger.info(
                 "Frozen selection | %s | %s | selected=%d/%d", root.name, mode, rows.size, n
             )
-    reference = store.get_or_build(
-        recipe,
-        build,
+    alias = selection_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
+    reference = get_or_build_named(
+        store, recipe, alias,
+        lambda directory, _recipe: build(directory),
+        rebuild=rebuild,
         metadata={
             "source": str(root),
             "mode": str(mode),
