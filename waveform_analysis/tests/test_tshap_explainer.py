@@ -477,6 +477,11 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
         tmp_path / "attributions.npz",
         time_ps=time_ps,
         window_attribution_ps=maps,
+        raw_window_scores_ps=np.asarray([
+            [[1.0, -0.5]], [[2.0, -1.0]],
+        ]),
+        window_starts=np.asarray([1, 3], dtype=np.int64),
+        window_samples=np.asarray(1, dtype=np.int64),
         mean_waveform_mv=waveform_mv,
         std_waveform_mv=np.full_like(waveform_mv, 0.5),
     )
@@ -503,7 +508,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     assert len(rows) == len(time_ps)
     np.testing.assert_allclose(
         [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
-        np.mean(np.abs(maps), axis=(0, 1, 2)),
+        np.mean(np.abs(maps), axis=(0, 1)),
     )
 
 
