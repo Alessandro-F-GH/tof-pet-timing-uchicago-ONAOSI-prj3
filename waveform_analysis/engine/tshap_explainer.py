@@ -1156,8 +1156,6 @@ def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
             "analysis_protocol_identity"
         ) or ""
     )
-    if not expected_protocol:
-        raise ValueError("Prepared blind dataset has no analysis-protocol identity")
 
     def metadata_text(name):
         value = np.asarray(materialized[name])
@@ -1189,18 +1187,26 @@ def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
                     f"the run's {stage!r} stage is not complete/current"
                 )
 
-        run_protocol = str(
+        # analysis_protocol_identity includes the prepared-cache fingerprint,
+        # which can change when preprocessing code is revised. PreparedCacheLookup
+        # intentionally allows such cache reuse. The stable event-population
+        # identity instead binds source, role, mode, window, and event IDs.
+        run_population = str(
             manifest.get("dataset_populations", {}).get("blind", {}).get(
-                "analysis_protocol_identity"
+                "event_population_identity"
             ) or ""
         )
-        prepared_protocol = str(
-            blind.manifest.get("analysis_protocol_identity") or ""
+        prepared_population = str(
+            blind.manifest.get("event_population_identity") or ""
         )
-        if not run_protocol or run_protocol != prepared_protocol:
+        if (
+            not run_population
+            or not prepared_population
+            or run_population != prepared_population
+        ):
             raise ValueError(
                 "Legacy blind predictions and prepared data have different or "
-                "unverifiable analysis-protocol identities"
+                "unverifiable event-population identities"
             )
         if mode is None:
             raise ValueError(
@@ -1214,6 +1220,8 @@ def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
                 "Legacy materialized blind targets do not match the prepared blind dataset"
             )
     else:
+        if not expected_protocol:
+            raise ValueError("Prepared blind dataset has no analysis-protocol identity")
         saved_final_fit = metadata_text("final_fit_fingerprint")
         if saved_final_fit != expected_final_fit:
             raise ValueError(
