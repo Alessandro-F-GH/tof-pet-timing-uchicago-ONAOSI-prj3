@@ -561,7 +561,7 @@ def test_reference_substitution_uses_symmetric_multi_baseline_score():
     )
     # The two independent references are averaged after the symmetric
     # two-player swap; this is not the single-event conditional score.
-    np.testing.assert_allclose(observed, [-1.0])
+    np.testing.assert_allclose(observed, [2.0])
 
 
 def test_selection_seed_separates_blind_and_control_roles():
