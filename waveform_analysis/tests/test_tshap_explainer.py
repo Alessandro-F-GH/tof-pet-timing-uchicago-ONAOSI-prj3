@@ -126,27 +126,19 @@ def test_explanation_destination_is_separate_and_collision_safe(tmp_path, monkey
     assert path.name == "tshap"  # Identity fingerprints stay in summary.json, not in path names.
 
 
-def test_sampling_seed_is_fixed_and_model_independent():
+def test_blind_event_sampling_seed_is_fixed():
     seed = 2026
-    blind_seed_1 = _selection_seed(seed, "blind_events")
-    blind_seed_2 = _selection_seed(seed, "blind_events")
-    baseline_seed_1 = _selection_seed(seed, "control_baselines")
-    baseline_seed_2 = _selection_seed(seed, "control_baselines")
+    first = _selection_seed(seed)
+    second = _selection_seed(seed)
 
-    assert blind_seed_1 == blind_seed_2
-    assert baseline_seed_1 == baseline_seed_2
-    assert blind_seed_1 != baseline_seed_1
+    assert first == second
     np.testing.assert_array_equal(
-        _choose_indices(1000, 100, blind_seed_1),
-        _choose_indices(1000, 100, blind_seed_2),
-    )
-    np.testing.assert_array_equal(
-        _choose_indices(500, 8, baseline_seed_1),
-        _choose_indices(500, 8, baseline_seed_2),
+        _choose_indices(1000, 100, first),
+        _choose_indices(1000, 100, second),
     )
     assert not np.array_equal(
-        _choose_indices(1000, 100, _selection_seed(seed + 1, "blind_events")),
-        _choose_indices(1000, 100, blind_seed_1),
+        _choose_indices(1000, 100, _selection_seed(seed + 1)),
+        _choose_indices(1000, 100, first),
     )
 
 
@@ -506,6 +498,12 @@ def test_cli_exposes_only_tshap_interpretability_commands():
     assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
                for group in local_args)
     assert "explain-regression" not in commands
+    assert "--n-baselines" not in {
+        option
+        for command in ("explain-tshap", "explain-tshap-local")
+        for action in commands[command]._actions
+        for option in action.option_strings
+    }
 
 
 
