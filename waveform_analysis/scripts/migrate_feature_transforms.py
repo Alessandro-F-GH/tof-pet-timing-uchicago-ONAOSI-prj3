@@ -69,8 +69,8 @@ def migrate_feature_transforms(
             config = __import__(
                 "waveform_analysis.data.results", fromlist=["resolve_run_config"]
             ).resolve_run_config(directory)
-            config["preprocessing"]["cache_dir"] = str(preprocessing_root)
-            config["preprocessing"]["artifact_root"] = str(artifact_root)
+            # Resolve legacy prepared datasets and model references using the
+            # source paths recorded in the run configuration.
             spec = get_model(model_name)
             if not uses_frozen_model_input(spec):
                 report["skipped"].append({"run": str(directory), "reason": "model has no fitted feature transform"})
@@ -85,8 +85,12 @@ def migrate_feature_transforms(
             development = lookup.find("development", config, manifest)
             if control is None or development is None:
                 raise FileNotFoundError(
-                    "Prepared control/development datasets are not available in the cache"
+                    "Prepared control/development datasets are not available in the source cache"
                 )
+            # Only redirect artifact creation after the source datasets/model have
+            # been resolved. This keeps migration read-only with respect to old caches.
+            config["preprocessing"]["cache_dir"] = str(preprocessing_root)
+            config["preprocessing"]["artifact_root"] = str(artifact_root)
 
             if logger:
                 logger.info(
@@ -100,10 +104,12 @@ def migrate_feature_transforms(
                 })
                 continue
 
-            before = (
-                cache_root / "transforms" / spec.feature_transform.name
+            from waveform_analysis.data.named_cache import transform_alias
+            alias = transform_alias(
+                cache_root, config, spec.feature_transform.name,
+                spec.feature_transform.fit_role,
             )
-            was_present = before.exists()
+            was_present = alias.exists() or alias.is_symlink()
             frozen = prepare_frozen_transform(
                 spec,
                 config["model"]["space"],
@@ -118,13 +124,7 @@ def migrate_feature_transforms(
                 raise RuntimeError("Expected a fitted transformation but none was returned")
             # Resolve the just-published semantic alias to verify the artifact is usable.
             from waveform_analysis.data.artifact_store import ArtifactStore
-            from waveform_analysis.data.named_cache import (
-                transform_alias, load_named_reference,
-            )
-            alias = transform_alias(
-                cache_root, config, spec.feature_transform.name,
-                spec.feature_transform.fit_role,
-            )
+            from waveform_analysis.data.named_cache import load_named_reference
             reference = load_named_reference(
                 ArtifactStore(artifact_root), alias, expected_type="feature-transforms"
             )
