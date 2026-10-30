@@ -422,6 +422,7 @@ def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_pa
         board_name="FBK",
         n_events=64,
         window_samples=80,
+        std_waveform_mv=np.full_like(waveform_mv, 0.5),
     )
     output = tmp_path / "global_importance.png"
     assert output.is_file()
@@ -597,3 +598,18 @@ def test_reference_tshap_constant_prediction_is_zero():
     )
     for value in maps:
         np.testing.assert_allclose(value, 0)
+
+
+def test_global_plot_validates_waveform_dispersion(tmp_path):
+    pytest.importorskip("matplotlib")
+    time_ps = np.linspace(-2000.0, 2000.0, 16)
+    waveform = np.vstack([np.sin(time_ps / 1000), np.cos(time_ps / 1000)])
+    importance = np.ones_like(waveform)
+    with pytest.raises(ValueError, match="standard deviation"):
+        _plot_global(
+            tmp_path, time_ps, importance, waveform,
+            std_waveform_mv=-np.ones_like(waveform),
+            model_name="direct_multirocket", formulation="direct",
+            mode="energy_to_energy", window_name="wide", board_name="UC",
+            n_events=8, window_samples=4,
+        )
