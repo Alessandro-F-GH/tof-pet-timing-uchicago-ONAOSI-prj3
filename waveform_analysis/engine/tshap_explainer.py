@@ -1577,6 +1577,7 @@ def explain_tshap_local(
     if not np.isfinite(extreme_margin) or not 0 < extreme_margin < 0.25:
         raise ValueError("extreme_margin must be greater than 0 and less than 0.25")
 
+    _matches_tshap_window({}, ml_window)
     tshap_version = version("tshap")
     results_path = Path(results).expanduser().resolve()
     if output_root is None:
