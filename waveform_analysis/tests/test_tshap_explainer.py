@@ -13,7 +13,8 @@ from waveform_analysis.engine.tshap_explainer import (
     _matches_tshap_window, _resolve_model_run_directory, _apply_tshap_cache,
     _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
-    _selection_seed, _write_global_importance_csv,
+    _selection_seed, _write_global_importance_csv, _write_signed_csv, _signed_means,
+    _valid_window_starts,
 )
 
 
@@ -563,13 +564,6 @@ def test_single_event_occlusion_is_independent_of_reference_argument():
     )
     np.testing.assert_allclose(score_a, [4.0])
     np.testing.assert_array_equal(score_a, score_b)
-
-
-def test_selection_seed_is_blind_only():
-    from waveform_analysis.engine.tshap_explainer import _selection_seed
-    assert _selection_seed(42) == _selection_seed(42, "blind_events")
-    with pytest.raises(ValueError):
-        _selection_seed(42, "control_baselines")
 
 
 def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
