@@ -47,10 +47,11 @@ def _validate_positive_int(name, value):
         raise ValueError(f"{name} must be an integer >= 1")
 
 
-def _is_excluded_tshap_window(config):
-    """Return whether a run uses the intentionally excluded Onishi window."""
-    name = str(config.get("window_name", "")).strip().lower()
-    return name == "onishi"
+def _matches_tshap_window(config, ml_window):
+    """Select an ML input window by its resolved run configuration name."""
+    if ml_window not in {"onishi", "wide", "all"}:
+        raise ValueError("ml_window must be 'onishi', 'wide', or 'all'")
+    return ml_window == "all" or str(config.get("window_name", "")).strip().lower() == ml_window
 
 
 def _choose_indices(n, cap, seed):
@@ -1277,7 +1278,7 @@ def _explanation_destination(output_root, run_directory):
     return Path(output_root).resolve() / batch.name / relative_run / "tshap"
 
 
-def explain_tshap(results, *, models=None, artifact_root=None, output_root=None, max_events=100, n_baselines=8,
+def explain_tshap(results, *, models=None, ml_window='wide', artifact_root=None, output_root=None, max_events=100, n_baselines=8,
                   window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
                   roi=False, overwrite=False, imputation="hermite_ppca",
                   imputer_components=32, imputer_fit_events=2000,
@@ -1305,6 +1306,7 @@ def explain_tshap(results, *, models=None, artifact_root=None, output_root=None,
             _validate_positive_int(name, value)
         if imputer_slope_points < 2:
             raise ValueError("imputer_slope_points must be >= 2")
+    _matches_tshap_window({}, ml_window)
     tshap_version = version("tshap")
     results_path = Path(results).expanduser().resolve()
     if output_root is None:
@@ -1332,11 +1334,11 @@ def explain_tshap(results, *, models=None, artifact_root=None, output_root=None,
             config = resolve_run_config(directory)
             if artifact_root is not None:
                 config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
-            if _is_excluded_tshap_window(config):
+            if not _matches_tshap_window(config, ml_window):
                 if logger:
                     logger.info(
-                        "TSHAP skipped | excluded window=%s | model=%s",
-                        config.get("window_name"), manifest["model"],
+                        "TSHAP skipped | unselected window=%s | requested=%s | model=%s",
+                        config.get("window_name"), ml_window, manifest["model"],
                     )
                 continue
             spec = get_model(manifest["model"])
@@ -1550,7 +1552,7 @@ def explain_tshap(results, *, models=None, artifact_root=None, output_root=None,
 
 
 def explain_tshap_local(
-    results, *, models=None, artifact_root=None, output_root=None, events_per_group=2,
+    results, *, models=None, ml_window='wide', artifact_root=None, output_root=None, events_per_group=2,
     extreme_margin=0.05, n_baselines=8, window_samples=20, stride_samples=10,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
@@ -1604,11 +1606,11 @@ def explain_tshap_local(
             config = resolve_run_config(directory)
             if artifact_root is not None:
                 config["preprocessing"]["artifact_root"] = str(Path(artifact_root).expanduser().resolve())
-            if _is_excluded_tshap_window(config):
+            if not _matches_tshap_window(config, ml_window):
                 if logger:
                     logger.info(
-                        "TSHAP local skipped | excluded window=%s | model=%s",
-                        config.get("window_name"), manifest["model"],
+                        "TSHAP local skipped | unselected window=%s | requested=%s | model=%s",
+                        config.get("window_name"), ml_window, manifest["model"],
                     )
                 continue
             spec = get_model(manifest["model"])
