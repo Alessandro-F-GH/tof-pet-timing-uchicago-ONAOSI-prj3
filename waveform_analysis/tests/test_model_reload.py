@@ -93,39 +93,52 @@ def test_run_store_pins_model_outside_result_tree(tmp_path):
 
 
 def test_saved_model_requires_its_bundled_feature_transform(tmp_path):
-    spec = get_model("direct_minirocket")
-    directory = tmp_path / "incomplete"
+    import pickle
+    from types import SimpleNamespace
+
+    from waveform_analysis.engine.train import FittedFeatureTransform
+
+    transform_spec = SimpleNamespace(
+        name="test-transform",
+        fit_role="control",
+        save=lambda artifact, path: (
+            path.mkdir(parents=True, exist_ok=True),
+            (path / "transform.pkl").write_bytes(
+                pickle.dumps(artifact, protocol=pickle.HIGHEST_PROTOCOL)
+            ),
+        ),
+        transform=lambda artifact, values: values,
+    )
+    spec = SimpleNamespace(
+        name="test-model",
+        artifact_format="pickle",
+        feature_transform=transform_spec,
+        save=lambda artifact, path: (
+            path.mkdir(parents=True, exist_ok=True),
+            (path / "model.pkl").write_bytes(
+                pickle.dumps(artifact, protocol=pickle.HIGHEST_PROTOCOL)
+            ),
+        ),
+    )
+    directory = tmp_path / "model"
     directory.mkdir()
     (directory / "model.pkl").write_bytes(b"placeholder")
     np.save(directory / "sample_mask.npy", np.ones(3, dtype=bool))
     assert not saved_model_complete(spec, directory)
 
-    # A model saved through the normal artifact path is self-contained.
-    import pickle
-    transform_artifact = spec.feature_transform.fit_transform(
-        {"num_kernels": 84, "n_jobs": 1},
-        np.random.default_rng(31).normal(size=(12, 2, 16)).astype(np.float32),
-        seed=9, config={},
-    )[0]
-    from waveform_analysis.engine.train import FittedFeatureTransform
-    model_artifact = spec.fit(
-        {"ridge_alpha": 0.1},
-        np.random.default_rng(32).normal(size=(12, 84)).astype(np.float32),
-        np.random.default_rng(33).normal(size=12),
-        seed=9, config={},
-    )
     fitted = FittedModel(
-        artifact=model_artifact, metadata={}, output_max_abs_ps=2000.0,
-        sample_mask=np.ones(16, dtype=bool),
+        artifact={"weights": np.arange(3)}, metadata={},
+        output_max_abs_ps=2000.0, sample_mask=np.ones(3, dtype=bool),
         feature_transform=FittedFeatureTransform(
-            spec.feature_transform, transform_artifact, "transform-id", {}, 9, {}
+            transform_spec, {"fitted": True}, "transform-id", {}, 9, {}
         ),
     )
-    save_model(spec, fitted, directory, {"ridge_alpha": 0.1})
+    save_model(spec, fitted, directory, {})
     assert (directory / "feature_transform" / "transform.pkl").is_file()
     assert saved_model_complete(spec, directory)
     loaded = load_fitted_model(
-        spec, directory, {"ridge_alpha": 0.1},
+        spec, directory, {},
         {"ml_output": {"max_abs_ps": 2000.0}, "runtime": {"prediction_chunk_size": 32}},
     )
     assert loaded.feature_transform is not None
+    assert loaded.feature_transform.artifact == {"fitted": True}
