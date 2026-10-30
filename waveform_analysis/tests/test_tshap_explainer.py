@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
-    _choose_indices, _complete, _explanation_destination,
+    _choose_indices, _complete, _explanation_destination, _get_window_imputer,
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
@@ -649,6 +649,65 @@ def test_paired_event_occlusion_is_independent_of_reference_argument():
     np.testing.assert_allclose(score_a, [12.0])
     np.testing.assert_array_equal(score_a, score_b)
 
+
+
+
+def test_tshap_imputer_is_built_once_and_reused_per_window(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.engine import tshap_explainer
+
+    control = SimpleNamespace(
+        manifest={
+            "analysis_protocol_identity": "control-protocol",
+            "event_population_identity": "control-population",
+        },
+        energy_time_ps=np.arange(16, dtype=np.float64),
+    )
+    config = {"mode": "energy_to_energy", "window_name": "wide"}
+    cache = {}
+    built = []
+    published = []
+
+    def build(*args, **kwargs):
+        fitted = object()
+        metadata = {
+            "cache_file": str(tmp_path / "imputer.npz"),
+            "cache_identity": "imputer-product",
+            "cache_hit": False,
+            "n_training_events": 100,
+            "n_tuning_events": 20,
+            "explained_variance_ratio_by_detector": [0.8, 0.9],
+        }
+        (tmp_path / "imputer.npz").write_bytes(b"artifact")
+        built.append((args, kwargs))
+        return fitted, metadata
+
+    monkeypatch.setattr(tshap_explainer, "_cached_hermite_ppca_imputer", build)
+    monkeypatch.setattr(
+        tshap_explainer, "_publish_window_imputer",
+        lambda destination, metadata, identity: published.append(destination),
+    )
+    monkeypatch.setattr(
+        tshap_explainer, "_window_imputer_destination",
+        lambda output_root, run_directory, config: tmp_path / "window" / "tshap_imputer",
+    )
+
+    kwargs = dict(
+        window_samples=20, stride_samples=20, components=3,
+        fit_events=100, tuning_events=20, slope_points=5,
+        batch_size=64, seed=42,
+    )
+    first = _get_window_imputer(
+        cache, control, config, tmp_path, tmp_path / "run-a", **kwargs
+    )
+    second = _get_window_imputer(
+        cache, control, config, tmp_path, tmp_path / "run-b", **kwargs
+    )
+
+    assert len(built) == 1
+    assert len(published) == 1
+    assert first[0] is second[0]
+    assert first[1] is second[1]
 
 def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
     from types import SimpleNamespace
