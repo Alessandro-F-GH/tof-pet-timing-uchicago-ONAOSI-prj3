@@ -23,6 +23,22 @@ from waveform_analysis.models import get_model
 from waveform_analysis.reporting.stats import paired_central_metrics, blind_event_bootstrap, paired_model_bootstrap, metric_values\nfrom waveform_analysis.data.shared_artifacts import SharedCVArtifacts
 
 
+def make_development_split(n_events, *, seed, stage1_fraction=0.25):
+    """Deterministic event-level partition; each paired detector event stays intact."""
+    n_events = int(n_events)
+    fraction = float(stage1_fraction)
+    if n_events < 2:
+        raise ValueError("At least two development events are required")
+    if not 0.05 <= fraction <= 0.95:
+        raise ValueError("stage1_fraction must lie in [0.05, 0.95]")
+    order = np.random.default_rng(int(seed)).permutation(n_events)
+    n_stage1 = min(max(1, int(round(fraction * n_events))), n_events - 1)
+    first, second = np.sort(order[:n_stage1]), np.sort(order[n_stage1:])
+    if np.intersect1d(first, second).size or np.union1d(first, second).size != n_events:
+        raise RuntimeError("Development split is not disjoint and exhaustive")
+    return first, second
+
+
 def _subset(dataset, indices, *, short_window=None):
     idx = np.asarray(indices, dtype=np.int64)
     changes = {"event_index": np.asarray(dataset.event_index[idx])}
@@ -139,10 +155,9 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
     if n < max(20, int(config["cross_validation"]["folds"]) * 5):
         raise ValueError(f"Development population too small for two-stage CV: n={n}")
     split_seed = semantic_seed(config["seed"], config.get("_board"), mode, "two-stage-25-75")
-    permutation = np.random.default_rng(split_seed).permutation(n)
-    n1 = int(round(float(split_fraction) * n))
-    n1 = min(max(1, n1), n - 1)
-    stage1_indices, stage2_indices = np.sort(permutation[:n1]), np.sort(permutation[n1:])
+    stage1_indices, stage2_indices = make_development_split(
+        n, seed=split_seed, stage1_fraction=split_fraction
+    )
     split_fp = canonical_hash({"population": wide.manifest["analysis_protocol_identity"],
                                "seed": split_seed, "fraction": float(split_fraction),
                                "stage1": stage1_indices.tolist(), "stage2": stage2_indices.tolist()})
