@@ -506,7 +506,8 @@ def _select(store, candidates, config):
     return out
 
 
-def _fit_final(spec, space, config, development, best, logger, frozen_development=None):
+def _fit_final(spec, space, config, development, best, logger, frozen_development=None,
+               target_override=None):
     seed = semantic_seed(
         config["seed"],
         config["mode"],
@@ -526,6 +527,7 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
         transform_seed_base=semantic_seed(seed, "transform"),
         logger=logger,
         frozen_features=frozen_development,
+        target_override=target_override,
     )
     return fitted, seed
 
@@ -566,7 +568,7 @@ def _model(
 
 
 def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
-                                frozen_transform, frozen_development):
+                                frozen_transform, frozen_development, target_override=None):
     shared = ExperimentArtifactStore(
         Path(config["batch_output_dir"]) / "artifacts"
     ).prepare_cv(development, config)
@@ -582,6 +584,9 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
+            "target_fingerprint": None if target_override is None else __import__(
+                "waveform_analysis.engine.train", fromlist=["target_fingerprint"]
+            ).target_fingerprint(target_override),
         },
     )
     if _sync(store, "cv", cv_fp, logger) != "complete":
@@ -594,6 +599,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             shared,
             logger,
             frozen_development,
+            target_override,
         )
         store.mark_stage(
             "cv", cv_fp, metadata={"candidates": len(store.read_candidate_rows())}
@@ -639,6 +645,9 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
+            "target_fingerprint": None if target_override is None else __import__(
+                "waveform_analysis.engine.train", fromlist=["target_fingerprint"]
+            ).target_fingerprint(target_override),
         },
         parents={"selection": selection_fp},
     )
@@ -659,6 +668,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             final_fp,
             logger,
             frozen_development,
+            target_override,
         )
         logger.info("Final fit complete | %s", _model_label(spec.name))
     else:
