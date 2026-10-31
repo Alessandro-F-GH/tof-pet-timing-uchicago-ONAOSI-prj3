@@ -453,12 +453,16 @@ def load_batch_config(
     if not protocol_required <= set(protocol):
         raise ConfigError(f"protocol requires {sorted(protocol_required)}")
     extra_protocol = set(protocol) - (
-        protocol_required | {"cross_validation", "ml_input", "runtime", "xai"}
+        protocol_required | {"cross_validation", "ml_input", "runtime", "xai", "reuse_prepared_inputs"}
     )
     if extra_protocol:
         raise ConfigError(f"Unsupported protocol fields: {sorted(extra_protocol)}")
+    reuse_prepared_inputs = protocol.get("reuse_prepared_inputs", False)
+    if not isinstance(reuse_prepared_inputs, bool):
+        raise ConfigError("protocol.reuse_prepared_inputs must be a boolean")
     normalized_protocol = {
         "seed": int(protocol["seed"]),
+        "reuse_prepared_inputs": reuse_prepared_inputs,
         "preprocessing_config": str(protocol["preprocessing_config"]),
         "cross_validation": _cross_validation(protocol["cross_validation"])
         if protocol.get("cross_validation") is not None
@@ -545,6 +549,7 @@ def load_batch_config(
                     "batch_output_dir": results["directory"],
                     "plot_config": copy.deepcopy(plot_config),
                     "save_model": bool(raw.get("save_model", True)),
+                    "reuse_prepared_inputs": normalized_protocol["reuse_prepared_inputs"],
                 }
                 validate_config(config)
                 config["_config_path"] = str(source)
