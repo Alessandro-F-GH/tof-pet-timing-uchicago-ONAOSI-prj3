@@ -717,8 +717,11 @@ def _analyze_run(run, board, output_root, *, cache_root=None,
     selected_event_ids = event_ids[rows]
     coefficients = np.asarray(fitted.artifact.regressor.coef_, dtype=np.float64).reshape(-1)
     intercept = float(np.asarray(fitted.artifact.regressor.intercept_).reshape(()))
-    if coefficients.size != expected_features:
-        raise ValueError("Saved Ridge coefficient count differs from cached feature matrix")
+    if coefficients.size != features.shape[1]:
+        raise ValueError(
+            f"Saved Ridge coefficient count ({coefficients.size}) differs from "
+            f"adapted feature count ({features.shape[1]})"
+        )
     groups = _build_temporal_groups(
         sample_indices, time_ps, full_time_ps, window_samples, stride_samples
     )
