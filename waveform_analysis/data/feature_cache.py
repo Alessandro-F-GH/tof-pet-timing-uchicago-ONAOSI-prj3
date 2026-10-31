@@ -181,6 +181,14 @@ def prepare_frozen_transform(
             os.fsync(stream.fileno())
 
     alias = transform_alias(cache_root_from_config(config, cache_root), config, spec.feature_transform.name, fit_role)
+    if config.get("reuse_prepared_inputs", False):
+        existing = store.lookup(recipe)
+        if existing.status != "hit":
+            raise FileNotFoundError(f"Missing cached frozen transform for {spec.feature_transform.name}")
+        if alias_exists(alias):
+            aliased = load_named_reference(store, alias, expected_type=recipe.product_type)
+            if aliased.product_id != existing.reference.product_id:
+                raise ValueError("Cached transform alias does not match requested configuration")
     reference = get_or_build_named(store, recipe, alias, build, metadata={
         "fit_role": fit_role, "model": spec.name, "transform": spec.feature_transform.name,
     })
@@ -230,6 +238,8 @@ def prepare_frozen_features(
     # Prefer a legacy combined matrix when one already exists. Its recipe is
     # intentionally unchanged so caches created before block storage remain valid.
     combined = store.lookup(recipe)
+    if config.get("reuse_prepared_inputs", False) and combined.status != "hit":
+        raise FileNotFoundError(f"Missing cached innovation feature matrix for {spec.name} ({role})")
     if combined.status == "hit":
         features = store.open_array(combined.reference, "features.npy")
         if features.shape[0] != int(dataset.n_events) or features.ndim != 2:
