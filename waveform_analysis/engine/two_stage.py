@@ -14,13 +14,13 @@ from waveform_analysis.core.dependencies import stage_fingerprint
 from waveform_analysis.data.results import discover_runs
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.data.view import model_target, waveform_view
-from waveform_analysis.data.splits import semantic_seed
+from waveform_analysis.data.splits import semantic_seed, make_cv_split
 from waveform_analysis.engine.preprocessing import fit_control, prepare_role_dataset
 from waveform_analysis.data.feature_cache import prepare_frozen_transform, prepare_frozen_features
 from waveform_analysis.engine.study import _outer_cv_selection_and_fit, _logger
 from waveform_analysis.engine.train import predict_indices, target_fingerprint, release_training_memory
 from waveform_analysis.models import get_model
-from waveform_analysis.reporting.stats import paired_central_metrics, blind_event_bootstrap, paired_model_bootstrap
+from waveform_analysis.reporting.stats import paired_central_metrics, blind_event_bootstrap, paired_model_bootstrap, metric_values\nfrom waveform_analysis.data.shared_artifacts import SharedCVArtifacts
 
 
 def _subset(dataset, indices, *, short_window=None):
