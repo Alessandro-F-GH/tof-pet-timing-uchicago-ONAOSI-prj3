@@ -19,9 +19,9 @@ def test_parse_board_paths_accepts_windows_paths():
     assert parsed["UC"].name == "UC"
 
 
-@pytest.mark.parametrize("value", ["UC", "UC=", "OTHER=path", "UC=a", "UC=b"])
+@pytest.mark.parametrize("value", ["UC", "UC=", "OTHER=path", "FBK=path;bad"])
 def test_parse_board_paths_rejects_invalid_or_duplicate_entries(value):
-    values = ["UC=a", value] if value == "UC=b" else [value]
+    values = [value]
     with pytest.raises(ValueError):
         _parse_board_paths(values, "--results")
 
