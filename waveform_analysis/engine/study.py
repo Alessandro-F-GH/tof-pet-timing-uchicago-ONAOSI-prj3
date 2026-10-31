@@ -162,9 +162,11 @@ def _candidate_log(logger, label, space, summary):
 
 
 def _fold_evaluator(
-    spec, space, config, development, shared, candidate, logger, frozen_development=None
+    spec, space, config, development, shared, candidate, logger, frozen_development=None,
+    target_override=None,
 ):
-    target = np.asarray(model_target(development, config["mode"]), dtype=np.float64)
+    from waveform_analysis.engine.train import resolve_target_vector
+    target = resolve_target_vector(development, config["mode"], target_override)
     chunk = int(config["runtime"]["prediction_chunk_size"])
 
     def evaluate(parameters, fold):
@@ -195,6 +197,7 @@ def _fold_evaluator(
                 fit_input_cache=input_cache,
                 logger=logger,
                 frozen_features=frozen_development,
+                target_override=target_override,
             )
             prediction = predict_indices(
                 spec,
@@ -244,6 +247,7 @@ def _evaluate_candidate(
     log_label,
     frozen_development=None,
     force_complete=False,
+    target_override=None,
 ):
     summary = store.candidate_row(identifier)
     folds = store.read_fold_rows(identifier)
@@ -275,6 +279,7 @@ def _evaluate_candidate(
             identifier,
             logger,
             frozen_development,
+            target_override,
         ),
         metric=config["cross_validation"]["metric"],
         pruning=config["cross_validation"]["pruning"],
@@ -291,7 +296,8 @@ def _evaluate_candidate(
 
 
 def _fixed_grid(
-    store, spec, space, config, development, shared, logger, frozen_development=None
+    store, spec, space, config, development, shared, logger, frozen_development=None,
+    target_override=None,
 ):
     opt = optimization_config(space)
     raw = (
@@ -323,6 +329,7 @@ def _fixed_grid(
             logger,
             log_label=label,
             frozen_development=frozen_development,
+            target_override=target_override,
         )
     return candidates
 
@@ -345,7 +352,8 @@ def _save_sampler(path, sampler):
 
 
 def _optuna(
-    store, spec, space, config, development, shared, logger, frozen_development=None
+    store, spec, space, config, development, shared, logger, frozen_development=None,
+    target_override=None,
 ):
     import optuna
 
