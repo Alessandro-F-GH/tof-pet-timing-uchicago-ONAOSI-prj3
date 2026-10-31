@@ -1,5 +1,6 @@
 """Verified prepared cache loading for TSHAP and waveform imputation."""
 from __future__ import annotations
+import json
 from pathlib import Path
 from typing import Any
 from waveform_analysis.data.dataset import PreparedDataset, load_prepared_dataset
@@ -21,7 +22,14 @@ class PreparedCacheLookup:
     def __init__(self):
         self.datasets: dict[Path, PreparedDataset] = {}
 
-    def find(self, role: str, config: dict[str, Any], manifest: dict[str, Any]) -> PreparedDataset:
+    def find(
+        self,
+        role: str,
+        config: dict[str, Any],
+        manifest: dict[str, Any],
+        *,
+        control_artifact: dict[str, Any] | None = None,
+    ) -> PreparedDataset:
         # Prefer the stable semantic path. Hash references remain a compatibility
         # fallback for old result manifests and caches without named aliases.
         alias = prepared_dataset_alias(
@@ -43,13 +51,46 @@ class PreparedCacheLookup:
         if dataset_path in self.datasets:
             return self.datasets[dataset_path]
         dataset = load_prepared_dataset(dataset_path)
-        if dataset.manifest.get("dataset_role") != role:
+        metadata = dataset.manifest
+        if metadata.get("dataset_role") != role:
             raise ValueError(f"Prepared artifact role mismatch for {role}")
         mode = str(config["mode"])
+        if metadata.get("mode") not in (None, mode):
+            raise ValueError(
+                f"Prepared artifact mode mismatch for {role}: "
+                f"{metadata.get('mode')} != {mode}"
+            )
+        if "window_ns" in metadata and metadata["window_ns"] != config.get("window_ns"):
+            raise ValueError(f"Prepared artifact window mismatch for {role}")
+        if "subsampling" in metadata and int(metadata["subsampling"]) != int(
+            config.get("ml_input", {}).get("subsampling", 1)
+        ):
+            raise ValueError(f"Prepared artifact subsampling mismatch for {role}")
+        expected_source = Path(config[role]["root_file"]).expanduser().resolve()
+        stored_source = metadata.get("dataset_source")
+        if stored_source and Path(stored_source).expanduser().resolve() != expected_source:
+            raise ValueError(
+                f"Prepared artifact source mismatch for {role}: {stored_source}"
+            )
+        if "true_tof_ps" in metadata and float(metadata["true_tof_ps"]) != float(
+            config[role]["true_tof_ps"]
+        ):
+            raise ValueError(f"Prepared artifact true_tof_ps mismatch for {role}")
+        if control_artifact is not None:
+            expected_control_fp = (
+                control_artifact.get("mode_fingerprints") or {}
+            ).get(mode)
+            stored_control_fp = metadata.get("control_mode_fingerprint")
+            if expected_control_fp and stored_control_fp != expected_control_fp:
+                raise ValueError(
+                    f"Prepared artifact control fingerprint mismatch for {role}"
+                )
         if role == "control":
             control_dataset = dataset if mode == "timing_to_timing" else None
         elif mode == "timing_to_timing":
-            control_dataset = self.find("control", config, manifest)
+            control_dataset = self.find(
+                "control", config, manifest, control_artifact=control_artifact
+            )
         else:
             control_dataset = None
         from waveform_analysis.data.sample_mask import attach_control_sample_mask
