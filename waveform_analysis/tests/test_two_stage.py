@@ -3,7 +3,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from waveform_analysis.engine.two_stage import make_development_split
+from waveform_analysis.engine.two_stage import make_development_split, make_residual_target
 from waveform_analysis.engine.train import resolve_target_vector, target_fingerprint
 
 
@@ -54,3 +54,19 @@ def test_target_override_rejects_wrong_length_and_nonfinite_values():
         resolve_target_vector(dataset, "energy_to_energy", [1.0, 2.0])
     with pytest.raises(ValueError):
         resolve_target_vector(dataset, "energy_to_energy", [1.0, np.nan, 3.0])
+
+
+
+def test_stage1_residual_target_is_event_aligned():
+    original = np.asarray([3.0, -2.0, 5.0])
+    prediction = np.asarray([1.0, 0.5, -1.0])
+    np.testing.assert_array_equal(
+        make_residual_target(original, prediction), [2.0, -2.5, 6.0]
+    )
+
+
+def test_stage1_residual_target_rejects_misalignment_and_nonfinite_values():
+    with pytest.raises(ValueError):
+        make_residual_target([1.0, 2.0], [1.0])
+    with pytest.raises(ValueError):
+        make_residual_target([1.0, np.nan], [0.0, 0.0])
