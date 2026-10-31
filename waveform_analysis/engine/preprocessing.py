@@ -2,7 +2,9 @@ from __future__ import annotations
 import json, shutil
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash
-from waveform_analysis.engine.control_preprocessing import fit_control_artifact
+from waveform_analysis.engine.control_preprocessing import fit_control_artifact, load_control_artifact
+from waveform_analysis.data.named_cache import alias_exists, cache_root_from_config, control_alias, product_id_from_alias, resolve_alias
+from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.preprocessing import preprocess_selected
 from waveform_analysis.engine.event_selection import apply_selection_rules
 from waveform_analysis.data.preparation import prepare_ml_dataset
@@ -36,6 +38,23 @@ def fit_control(config, *, rebuild=False, logger=None):
         rebuild=rebuild,
         logger=logger,
     )
+
+
+def load_cached_control(config):
+    """Load existing control artifact without raw preprocessing."""
+    modes = tuple(config.get("_control_modes") or [config["mode"]])
+    fit_by_mode = config.get("_control_fit_by_mode") or {config["mode"]: config["fit"]}
+    cache_root = cache_root_from_config(config["preprocessing"], config["preprocessing"]["cache_dir"])
+    alias = control_alias(cache_root, config["control"], modes)
+    if not alias_exists(alias):
+        raise FileNotFoundError(f"Missing cached control artifact: {alias}")
+    directory = resolve_alias(alias)
+    manifest = load_control_artifact(directory, config["control"]["root_file"], config["control"], config["preprocessing"], config["fit"], fit_by_mode=fit_by_mode, modes=modes)
+    manifest = dict(manifest)
+    product_id = product_id_from_alias(alias)
+    if product_id:
+        manifest["artifact_product_id"] = product_id
+    return manifest, directory
 
 
 def apply_frozen_preprocessing(
@@ -74,6 +93,14 @@ def apply_frozen_preprocessing(
 def prepare_role_dataset(
     config, role, control_artifact, *, rebuild=False, logger=None, allow_empty=False
 ):
+    if config.get("reuse_prepared_inputs", False):
+        lookup = config.setdefault("_prepared_cache_lookup", PreparedCacheLookup())
+        prepared = lookup.find(role, config, {}, control_artifact=control_artifact)
+        if not allow_empty and not prepared.n_events:
+            raise RuntimeError(f"Reused prepared dataset for {role} is empty")
+        if logger:
+            logger.info("Reusing prepared dataset | %s | events=%d", role, int(prepared.n_events))
+        return None, None, prepared
     cache = config.get('_prepared_datasets')
     key = canonical_hash({
         'role': role, 'allow_empty': allow_empty, 'dataset': config[role], 'mode': config['mode'],
