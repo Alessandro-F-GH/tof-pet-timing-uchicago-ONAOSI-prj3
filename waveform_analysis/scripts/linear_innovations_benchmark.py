@@ -91,7 +91,7 @@ def generate(
         preprocessing["artifact_root"] = str(artifact_root)
         preprocessing_path = output_root / f"preprocessing_{board}.json"
         preprocessing_path.write_text(
-            json.dumps(preprocessing, indent=2) + "\\n", encoding="utf-8"
+            json.dumps(preprocessing, indent=2) + "\n", encoding="utf-8"
         )
         batch["protocol"]["preprocessing_config"] = str(preprocessing_path)
 
@@ -102,7 +102,7 @@ def generate(
             {"name": model, "space": _space(model)} for model in models
         ]
         path = output_root / f"{board}.json"
-        path.write_text(json.dumps(batch, indent=2) + "\\n", encoding="utf-8")
+        path.write_text(json.dumps(batch, indent=2) + "\n", encoding="utf-8")
         print(
             f"{board} cache: {cache_root} "
             f"(preprocessing={preprocessing_root}, artifact_store={artifact_root})",
