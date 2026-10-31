@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import hashlib
 import pickle
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,27 @@ from waveform_analysis.data.view import model_target, model_sample_mask, wavefor
 
 
 _DEFAULT_PREDICTION_CHUNK_SIZE = 4096
+
+
+def resolve_target_vector(dataset, mode, target_override=None):
+    """Resolve the standard target or validate a full event-aligned override."""
+    if target_override is None:
+        return np.asarray(model_target(dataset, mode), dtype=np.float64)
+    target = np.asarray(target_override, dtype=np.float64).reshape(-1)
+    if target.size != int(dataset.n_events):
+        raise ValueError(
+            f"Target override must contain one value per dataset event: "
+            f"expected {int(dataset.n_events)}, got {target.size}"
+        )
+    if not np.all(np.isfinite(target)):
+        raise ValueError("Target override must contain only finite values")
+    return target
+
+
+def target_fingerprint(target):
+    """Hash target values independently of waveform/feature identities."""
+    values = np.ascontiguousarray(np.asarray(target, dtype=np.float64).reshape(-1))
+    return hashlib.sha256(values.view(np.uint8)).hexdigest()
 
 
 @dataclass
@@ -133,20 +155,22 @@ class FitInputCache:
     def clear(self):
         self._items.clear()
 
-    def prepare(self, spec, dataset, mode, indices):
+    def prepare(self, spec, dataset, mode, indices, *, target_override=None):
         idx = np.asarray(indices, np.int64)
+        target = resolve_target_vector(dataset, mode, target_override)
         protocol_identity = str(
             dataset.manifest.get("analysis_protocol_identity")
             or dataset.manifest["analysis_population_identity"]
         )
-        key = canonical_hash(
-            {
-                "protocol": protocol_identity,
-                "mode": mode,
-                "indices": idx.tolist(),
-                "sample_mask_identity": dataset.manifest.get("sample_mask_identity"),
-            }
-        )
+        key_payload = {
+            "protocol": protocol_identity,
+            "mode": mode,
+            "indices": idx.tolist(),
+            "sample_mask_identity": dataset.manifest.get("sample_mask_identity"),
+        }
+        if target_override is not None:
+            key_payload["target_fingerprint"] = target_fingerprint(target)
+        key = canonical_hash(key_payload)
         cached = self._items.get(key)
         if cached is not None:
             return cached
@@ -156,7 +180,7 @@ class FitInputCache:
         mask = model_sample_mask(dataset, mode)
         x = apply_sample_mask(xfull, mask)
         time = apply_sample_mask_to_time(view.time_ps, mask)
-        y = model_target(dataset, mode)[idx]
+        y = target[idx]
         scope_key = canonical_hash(
             {
                 "protocol": protocol_identity,
@@ -245,13 +269,16 @@ def fit_on_indices(
     fit_input_cache=None,
     logger=None,
     frozen_features=None,
+    target_override=None,
 ):
     if spec.requires_frozen_features and frozen_features is None:
         raise ValueError("This model requires frozen control-fitted features")
     idx = np.asarray(indices, np.int64)
+    target = resolve_target_vector(dataset, config["mode"], target_override)
+    target_id = target_fingerprint(target) if target_override is not None else None
     if frozen_features is not None:
         x = frozen_features.rows(idx)
-        y = np.asarray(model_target(dataset, config["mode"])[idx], dtype=np.float64)
+        y = np.asarray(target[idx], dtype=np.float64)
         mask = np.asarray(frozen_features.sample_mask, dtype=bool)
         time = apply_sample_mask_to_time(
             waveform_view(
@@ -262,7 +289,9 @@ def fit_on_indices(
         prepared = PreparedFitInput(x, y, time, mask, frozen_features.identity)
     else:
         cache = fit_input_cache if fit_input_cache is not None else FitInputCache()
-        prepared = cache.prepare(spec, dataset, config["mode"], idx)
+        prepared = cache.prepare(
+            spec, dataset, config["mode"], idx, target_override=target_override
+        )
         x = prepared.x
         y = prepared.y
         time = prepared.time_ps
@@ -341,6 +370,13 @@ def fit_on_indices(
                 "feature_transform_identity": feature_transform.identity,
                 "feature_transform_parameters": feature_transform.parameters,
                 "feature_transform_seed": int(feature_transform.seed),
+            }
+        )
+    if target_override is not None:
+        fitted.metadata.update(
+            {
+                "target_source": "explicit_override",
+                "target_fingerprint": target_id,
             }
         )
     return fitted
