@@ -64,6 +64,10 @@ def _parser() -> argparse.ArgumentParser:
     two_stage.add_argument("--board", choices=("UC", "FBK"), required=True)
     two_stage.add_argument("--cache-root", type=Path,
                            help="Prepared cache bundle (default: $HOME/<BOARD>_cache)")
+    two_stage.add_argument("--source-results", type=Path,
+                           help="Canonical completed single-stage result directory (defaults to waveform_analysis/results/<BOARD>/<MODEL_FAMILY>/<MODE>/wide/<MODEL>)")
+    two_stage.add_argument("--source-artifact-root", type=Path,
+                           help="Artifact store for externally stored source benchmark models")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -180,6 +184,18 @@ def main() -> None:
         config["_two_stage_spaces"] = {"shared_linear_ridge": stage1_space, stage2_name: stage2_space}
         config["model"] = {"name": stage2_name, "space": stage2_space}
         config["_board"] = args.board
+        source_model_family = "multirocket_rdst" if stage2_name == "direct_multirocket_rdst" else "multirocket"
+        source_mode = "energy" if args.mode == "energy_to_energy" else "timing"
+        config["_source_results"] = str(
+            args.source_results.expanduser().resolve()
+            if args.source_results is not None
+            else (PROJECT_ROOT / "results" / args.board / source_model_family
+                  / source_mode / "wide" / stage2_name).resolve()
+        )
+        config["_source_artifact_root"] = (
+            None if args.source_artifact_root is None
+            else str(args.source_artifact_root.expanduser().resolve())
+        )
         cache_root = (
             args.cache_root.expanduser().resolve()
             if args.cache_root is not None
