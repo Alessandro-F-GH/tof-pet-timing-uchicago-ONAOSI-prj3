@@ -1122,8 +1122,10 @@ def analyze_linear_innovations(
                for board, path in results.items()}
     if not results or set(results) - {"UC", "FBK"}:
         raise ValueError("Provide one or both result roots labelled UC and/or FBK")
-    if max_events < 0 or batch_size < 1:
-        raise ValueError("max_events must be >= 0 and batch_size must be >= 1")
+    if max_events not in (0,) and max_events < 5:
+        raise ValueError("max_events must be 0 (all events) or >= 5 for CTR estimation")
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
     if window_samples < 1 or stride_samples < 1 or stride_samples > window_samples:
         raise ValueError("Require 1 <= stride_samples <= window_samples")
     output_root = Path(output_root).expanduser().resolve()
