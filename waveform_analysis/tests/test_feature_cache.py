@@ -96,3 +96,42 @@ def test_minirocket_transform_is_defined_as_control_fitted():
         {"num_kernels": 10000},
         {"transform": {"n_jobs": -1}},
     ) == {"num_kernels": 10000, "n_jobs": -1}
+
+
+def test_linear_innovations_direct_and_shared_feature_caches_are_distinct(tmp_path):
+    direct = get_model("direct_linear_innovations")
+    shared = get_model("shared_linear_innovations")
+    space = {"parameters": {
+        "ridge_alpha": {"type": "fixed", "value": 1.0}
+    }}
+    control = DummyDataset(tmp_path / "control", "control", n_events=20, n_samples=16)
+    development = DummyDataset(tmp_path / "development", "development", n_events=12, n_samples=16)
+    config = _config(tmp_path)
+
+    direct_transform = prepare_frozen_transform(
+        direct, space, config, control_dataset=control,
+        development_dataset=development, cache_root=tmp_path,
+    )
+    shared_transform = prepare_frozen_transform(
+        shared, space, config, control_dataset=control,
+        development_dataset=development, cache_root=tmp_path,
+    )
+    # The whitening transform is formulation-independent and must be reused.
+    assert direct_transform.identity == shared_transform.identity
+
+    direct_features = prepare_frozen_features(
+        direct, direct_transform, config, development,
+        role="development", cache_root=tmp_path,
+    )
+    shared_features = prepare_frozen_features(
+        shared, shared_transform, config, development,
+        role="development", cache_root=tmp_path,
+    )
+    assert direct_features.shape == (development.n_events, 32)
+    assert shared_features.shape == (development.n_events, 16)
+    direct_pair = direct_features.features.reshape(development.n_events, 2, 16)
+    np.testing.assert_allclose(
+        shared_features.features, direct_pair[:, 0, :] - direct_pair[:, 1, :],
+        rtol=1e-6, atol=1e-6,
+    )
+    assert direct_features.identity != shared_features.identity
