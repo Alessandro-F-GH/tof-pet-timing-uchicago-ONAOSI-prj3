@@ -39,6 +39,7 @@ from waveform_analysis.engine.train import (
     release_training_memory,
     save_model,
     saved_model_complete,
+    target_fingerprint,
 )
 from waveform_analysis.engine.validation import (
     best_complete_candidate,
@@ -507,7 +508,7 @@ def _select(store, candidates, config):
 
 
 def _fit_final(spec, space, config, development, best, logger, frozen_development=None,
-               target_override=None):
+               target_override=None, fit_indices=None):
     seed = semantic_seed(
         config["seed"],
         config["mode"],
@@ -521,7 +522,10 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
         space,
         config,
         development,
-        np.arange(development.n_events, dtype=np.int64),
+        (
+            np.arange(development.n_events, dtype=np.int64)
+            if fit_indices is None else np.asarray(fit_indices, dtype=np.int64)
+        ),
         best["parameters"],
         seed=seed,
         transform_seed_base=semantic_seed(seed, "transform"),
@@ -535,17 +539,19 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
 def _model(
     store, spec, space, config, development, best, fp, logger, frozen_development=None,
     target_override=None,
+    fit_indices=None,
 ):
     status = _sync(store, "final_fit", fp)
     if status == "complete" and config["save_model"]:
         if saved_model_complete(spec, store.model_dir):
             return load_fitted_model(spec, store.model_dir, best["parameters"], config)
         logger.warning(
-            "Saved final model is incomplete or incompatible | retraining on full development set"
+            "Saved final model is incomplete or incompatible | retraining on configured development subset"
         )
         store.invalidate_stage("final_fit")
     fitted, seed = _fit_final(
-        spec, space, config, development, best, logger, frozen_development
+        spec, space, config, development, best, logger,
+        frozen_development, target_override, fit_indices,
     )
     if config["save_model"]:
         store.save_model_artifact(
@@ -556,7 +562,9 @@ def _model(
             "candidate_id": best["candidate_id"],
             "parameters": best["parameters"],
             "training_dataset_role": "development",
-            "n_train": int(development.n_events),
+            "n_train": int(
+                development.n_events if fit_indices is None else len(fit_indices)
+            ),
             "seed": int(seed),
             "model_saved": bool(config["save_model"]),
 
@@ -568,11 +576,19 @@ def _model(
     return fitted
 
 
-def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
-                                frozen_transform, frozen_development, target_override=None):
-    shared = ExperimentArtifactStore(
-        Path(config["batch_output_dir"]) / "artifacts"
-    ).prepare_cv(development, config)
+def _outer_cv_selection_and_fit(
+    store, spec, space, config, development, logger,
+    frozen_transform, frozen_development, target_override=None,
+    *, shared=None, fit_indices=None,
+):
+    if shared is None:
+        shared = ExperimentArtifactStore(
+            Path(config["batch_output_dir"]) / "artifacts"
+        ).prepare_cv(development, config)
+    fit_indices = (
+        np.arange(development.n_events, dtype=np.int64)
+        if fit_indices is None else np.asarray(fit_indices, dtype=np.int64)
+    )
     cv_fp = _stage(
         "cv",
         {
@@ -585,9 +601,10 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
-            "target_fingerprint": None if target_override is None else __import__(
-                "waveform_analysis.engine.train", fromlist=["target_fingerprint"]
-            ).target_fingerprint(target_override),
+            "target_fingerprint": None if target_override is None else target_fingerprint(target_override),
+            "fit_indices_fingerprint": __import__(
+                "waveform_analysis.core.io", fromlist=["canonical_hash"]
+            ).canonical_hash(fit_indices.tolist()),
         },
     )
     if _sync(store, "cv", cv_fp, logger) != "complete":
@@ -646,9 +663,10 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
-            "target_fingerprint": None if target_override is None else __import__(
-                "waveform_analysis.engine.train", fromlist=["target_fingerprint"]
-            ).target_fingerprint(target_override),
+            "target_fingerprint": None if target_override is None else target_fingerprint(target_override),
+            "fit_indices_fingerprint": __import__(
+                "waveform_analysis.core.io", fromlist=["canonical_hash"]
+            ).canonical_hash(fit_indices.tolist()),
         },
         parents={"selection": selection_fp},
     )
@@ -657,7 +675,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
         logger.info(
             "Final fit | %s | training on full development set | n=%d",
             _model_label(spec.name),
-            int(development.n_events),
+            int(fit_indices.size),
         )
         fitted = _model(
             store,
@@ -670,6 +688,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             logger,
             frozen_development,
             target_override,
+            fit_indices,
         )
         logger.info("Final fit complete | %s", _model_label(spec.name))
     else:
