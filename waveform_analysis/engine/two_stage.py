@@ -107,7 +107,6 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
     output_root = Path(config["batch_output_dir"]).resolve() / "two_stage" / str(config.get("_board") or "board") / mode
     output_root.mkdir(parents=True, exist_ok=True)
     logger = logger or _logger(output_root)
-    config["_two_stage_spaces"] = config["_two_stage_spaces"]
     control, _ = fit_control(config, rebuild=False, logger=logger)
     _, _, wide = prepare_role_dataset(config, "development", control, rebuild=False, logger=logger)
     target = np.asarray(model_target(wide, mode), dtype=np.float64)
@@ -173,8 +172,16 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
         development_dataset=wide, cache_root=config["preprocessing"]["cache_dir"],
         logger=logger, legacy_transform_path=source_path,
     )
-    frozen_stage2 = prepare_frozen_features(stage2_spec, frozen_transform, stage2_cfg, stage2_data,
-                                            role="two_stage_stage2", cache_root=config["preprocessing"]["cache_dir"], logger=logger)
+    frozen_full = prepare_frozen_features(stage2_spec, frozen_transform, stage2_cfg, wide,
+                                          role="development", cache_root=config["preprocessing"]["cache_dir"], logger=logger)
+    from waveform_analysis.data.feature_cache import FrozenFeatureSet
+    stage2_matrix = frozen_full.rows(stage2_indices)
+    frozen_stage2 = FrozenFeatureSet(
+        stage2_matrix, frozen_full.sample_mask, frozen_full.transform,
+        canonical_hash({"source_feature_matrix": frozen_full.identity,
+                        "stage2_indices": stage2_indices.tolist()}),
+        "two_stage_stage2",
+    )
     # Feature rows use the subset event order; target override has exactly the same order.
     stage2_store = RunStore(stage2_cfg["output_dir"], artifact_root=config["preprocessing"]["artifact_root"])
     s2_cv, s2_sel, s2_fp, s2_best, s2_model = _outer_cv_selection_and_fit(
