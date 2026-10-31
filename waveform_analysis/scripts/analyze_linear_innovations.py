@@ -28,10 +28,11 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import spearmanr
 
-from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.core.io import atomic_json, canonical_hash
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.feature_cache import _CACHE_VERSION
+from waveform_analysis.data.feature_cache import (
+    prepare_frozen_features,
+    prepare_frozen_transform,
+)
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.results import batch_root, discover_runs, resolve_run_config
 from waveform_analysis.data.splits import semantic_seed
@@ -82,55 +83,24 @@ def _apply_cache_root(config, cache_root):
     config["preprocessing"]["artifact_root"] = str(artifact_root)
 
 
-def _load_cached_feature_matrix(spec, fitted, blind, config):
-    """Open the already-materialized blind matrix; never silently rebuild it."""
-    if fitted.feature_transform is None:
-        raise ValueError(f"{spec.name} has no fitted feature transformation")
-    artifact = fitted.feature_transform.artifact
-    metadata = getattr(artifact, "metadata", {}) or {}
-    transform_identity = metadata.get("transform_identity")
-    if not transform_identity:
-        raise ValueError(
-            f"{spec.name} fitted transform has no transform_identity metadata; "
-            "cannot safely identify its cached blind feature matrix"
-        )
-    artifact_root = Path(config["preprocessing"]["artifact_root"]).expanduser().resolve()
-    if not artifact_root.is_dir():
-        raise FileNotFoundError(f"Artifact store not found: {artifact_root}")
-    recipe = ProductRecipe(
-        "feature-matrices",
-        {
-            "schema_version": FEATURE_CACHE_IMPLEMENTATION_VERSION,
-            "transform_identity": str(transform_identity),
-            "dataset_identity": str(blind.manifest["analysis_protocol_identity"]),
-            "role": "blind",
-            "mode": str(config["mode"]),
-        },
-        parents=(str(transform_identity),),
-        implementation=(
-            f"{spec.feature_transform.name}:feature-matrix-v"
-            f"{FEATURE_CACHE_IMPLEMENTATION_VERSION}"
-        ),
-    )
-    store = ArtifactStore(artifact_root)
-    # The artifact manifest and recipe are checked, but hashing a multi-GB
-    # feature matrix again would dominate this post-hoc analysis.
-    lookup = store.lookup(recipe, verify_payloads=False)
-    if lookup.status != "hit" or lookup.reference is None:
-        raise FileNotFoundError(
-            "The cached blind feature matrix is unavailable or incompatible "
-            f"({lookup.status}: {lookup.reason}). Expected product "
-            f"{recipe.product_id} under {artifact_root}. Re-run the innovations "
-            "benchmark with this cache bundle before running the analysis."
-        )
-    features = store.open_array(lookup.reference, "features.npy")
-    if features.ndim != 2 or features.shape[0] != int(blind.n_events):
-        raise ValueError(
-            f"Cached blind feature matrix has shape {features.shape}; "
-            f"expected ({blind.n_events}, n_features)"
-        )
-    return features, lookup.reference.product_id, str(transform_identity)
+def _load_cached_feature_matrix(spec, frozen_transform, blind, config, logger=None):
+    """Load or materialize blind features using the already-fitted frozen transform.
 
+    This writes/reuses only the blind feature matrix. The transform itself is
+    resolved separately and is never refitted by this helper.
+    """
+    if frozen_transform is None or frozen_transform.transform is None:
+        raise ValueError(f"{spec.name} has no resolved frozen feature transformation")
+    feature_set = prepare_frozen_features(
+        spec,
+        frozen_transform,
+        config,
+        blind,
+        role="blind",
+        cache_root=config["preprocessing"]["cache_dir"],
+        logger=logger,
+    )
+    return feature_set.features, feature_set.identity, frozen_transform.identity
 
 def _load_saved_predictions(run_store, blind, mode):
     if not run_store.predictions_path.is_file():
@@ -588,40 +558,77 @@ def _run_output_directory(output_root, board, run_directory):
     return Path(output_root) / board / batch.name / relative / "linear_innovation_analysis"
 
 
-def _analyze_run(run, board, output_root, *, cache_root=None, max_events=0,
+def _analyze_run(run, board, output_root, *, cache_root=None,
+                 source_artifact_root=None, max_events=0,
                  batch_size=256, window_samples=20, stride_samples=20,
                  seed=42, overwrite=False, tshap_profiles=(), logger=None):
     directory = Path(run["directory"]).resolve()
     manifest = run["manifest"]
     config = resolve_run_config(directory)
-    _apply_cache_root(config, cache_root)
+    configured_source = config["preprocessing"].get("artifact_root")
+    source_root = (
+        Path(source_artifact_root).expanduser().resolve()
+        if source_artifact_root is not None
+        else Path(configured_source).expanduser().resolve()
+        if configured_source and Path(configured_source).expanduser().is_dir()
+        else None
+    )
+    if source_artifact_root is not None and not source_root.is_dir():
+        raise FileNotFoundError(f"Source artifact store does not exist: {source_root}")
+
     spec = get_model(manifest["model"])
     if spec.name not in INNOVATION_MODELS or spec.feature_transform is None:
         raise ValueError(f"Expected a linear innovations model, got {spec.name}")
 
-    artifact_root = config["preprocessing"].get("artifact_root")
-    run_store = RunStore(directory, artifact_root=artifact_root)
-    model_directory = (
-        run_store.model_dir if run_store.model_reference_path.is_file()
-        else directory / "model"
-    )
+    # Saved model and blind predictions belong to the original run's artifact
+    # store, not the new cache being prepared for this post-hoc analysis.
+    run_store = RunStore(directory, artifact_root=source_root)
+    local_model_directory = directory / "model"
+    if run_store.model_reference_path.is_file() and source_root is not None:
+        model_directory = run_store.model_dir
+    elif saved_model_complete(spec, local_model_directory):
+        model_directory = local_model_directory
+    else:
+        raise FileNotFoundError(
+            f"Cannot resolve the saved model for {directory}. "
+            "Provide --source-artifact-root pointing to the original run artifact_store, "
+            "or ensure the run contains a local model/ directory."
+        )
     if not saved_model_complete(spec, model_directory):
-        raise FileNotFoundError(f"Saved innovations model/transform is incomplete: {model_directory}")
+        raise FileNotFoundError(f"Saved innovations model is incomplete: {model_directory}")
+
+    model_artifact_manifest = model_directory / ".artifact.json"
+    expected_transform_identity = None
+    if model_artifact_manifest.is_file():
+        try:
+            artifact_metadata = json.loads(model_artifact_manifest.read_text(encoding="utf-8"))
+            expected_transform_identity = (
+                artifact_metadata.get("recipe", {}).get("parameters", {})
+                .get("feature_transform_identity")
+            )
+        except (OSError, ValueError):
+            expected_transform_identity = None
+
     fitted = load_fitted_model(
         spec, model_directory, run["best"].get("parameters", {}), config
     )
-    if fitted.feature_transform is None:
-        raise ValueError(f"{spec.name} saved model has no fitted innovations transform")
+    if expected_transform_identity is None:
+        expected_transform_identity = fitted.metadata.get("feature_transform_identity")
+    if not expected_transform_identity:
+        raise ValueError(
+            f"Cannot verify the original frozen-transform identity for {spec.name}. "
+            "The saved model artifact manifest/metadata must be available; refusing "
+            "to analyse features generated by an unverified transform."
+        )
 
+    _apply_cache_root(config, cache_root)
     lookup = PreparedCacheLookup()
-    # The final Ridge artifact intentionally stores estimator weights only.
-    # Resolve the separately cached control-fitted transform through the same
-    # frozen-transform API used by training, then attach it for provenance and
-    # feature-matrix identity checks.
     control = lookup.find("control", config, manifest)
     development = lookup.find("development", config, manifest)
     blind = lookup.find("blind", config, manifest)
-    from waveform_analysis.data.feature_cache import prepare_frozen_transform
+    # Loads the cached transform. If the cache is absent it can deterministically
+    # reconstruct it from the same control cohort; identity must still match the
+    # transform used by the saved final model.
     frozen_transform = prepare_frozen_transform(
         spec,
         config["model"]["space"],
@@ -629,10 +636,17 @@ def _analyze_run(run, board, output_root, *, cache_root=None, max_events=0,
         control_dataset=control,
         development_dataset=development,
         cache_root=config["preprocessing"]["cache_dir"],
-        logger=None,
+        logger=logger,
     )
     if frozen_transform is None:
         raise ValueError(f"{spec.name} frozen innovations transform could not be resolved")
+    if frozen_transform.identity != str(expected_transform_identity):
+        raise ValueError(
+            f"Frozen-transform identity mismatch for {spec.name}: "
+            f"saved model={expected_transform_identity}, analysis cache={frozen_transform.identity}. "
+            "The analysis cache was built from different data/configuration or with a "
+            "different transform implementation. Do not proceed with this comparison."
+        )
     fitted.feature_transform = frozen_transform.transform
     family = mode_family(config["mode"])
     full_time_ps = np.asarray(getattr(blind, f"{family}_time_ps"), dtype=np.float64)
@@ -657,7 +671,7 @@ def _analyze_run(run, board, output_root, *, cache_root=None, max_events=0,
         raise ValueError("Innovations model has fewer than two retained waveform samples")
 
     features, feature_product_id, transform_identity = _load_cached_feature_matrix(
-        spec, fitted, blind, config
+        spec, frozen_transform, blind, config, logger=logger
     )
     formulation = "direct" if spec.name.startswith("direct_") else "shared"
     expected_features = 2 * n_samples if formulation == "direct" else n_samples
@@ -1138,7 +1152,7 @@ def _compare_boards(records, output_root):
 
 def analyze_linear_innovations(
     results, *, output_root, tshap_root=None, cache_roots=None,
-    windows=None, modes=None, max_events=0, batch_size=256,
+    source_artifact_roots=None, windows=None, modes=None, max_events=0, batch_size=256,
     window_samples=20, stride_samples=20, seed=42, overwrite=False,
     logger=None,
 ):
@@ -1160,6 +1174,7 @@ def analyze_linear_innovations(
             raise ValueError("Analysis output-root must be outside the supplied results roots")
     output_root.mkdir(parents=True, exist_ok=True)
     cache_roots = cache_roots or {}
+    source_artifact_roots = source_artifact_roots or {}
     selected_windows = None if windows is None else {str(x).lower() for x in windows}
     selected_modes = None if modes is None else {str(x).lower() for x in modes}
     tshap_profiles = _read_tshap_profiles(tshap_root)
@@ -1192,6 +1207,7 @@ def analyze_linear_innovations(
             record = _analyze_run(
                 run, board, output_root,
                 cache_root=cache_roots.get(board),
+                source_artifact_root=source_artifact_roots.get(board),
                 max_events=max_events, batch_size=batch_size,
                 window_samples=window_samples, stride_samples=stride_samples,
                 seed=seed, overwrite=overwrite,
@@ -1260,7 +1276,10 @@ def _parser():
     parser.add_argument("--results", nargs="+", required=True, metavar="BOARD=PATH")
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--tshap-root", type=Path)
-    parser.add_argument("--cache-root", nargs="*", default=[], metavar="BOARD=PATH")
+    parser.add_argument("--cache-root", nargs="*", default=[], metavar="BOARD=PATH",
+                        help="Prepared analysis cache bundle per board (preprocessing/ and artifact_store/)")
+    parser.add_argument("--source-artifact-root", nargs="*", default=[], metavar="BOARD=PATH",
+                        help="Original artifact store containing saved model/prediction products, if external")
     parser.add_argument("--windows", nargs="+", choices=("onishi", "wide"))
     parser.add_argument("--modes", nargs="+", choices=("energy", "timing"))
     parser.add_argument("--max-events", type=int, default=0,
@@ -1277,11 +1296,15 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     results = _parse_board_paths(args.results, "--results")
     cache_roots = _parse_board_paths(args.cache_root, "--cache-root")
+    source_artifact_roots = _parse_board_paths(
+        args.source_artifact_root, "--source-artifact-root"
+    )
     return analyze_linear_innovations(
         results,
         output_root=args.output_root,
         tshap_root=args.tshap_root,
         cache_roots=cache_roots,
+        source_artifact_roots=source_artifact_roots,
         windows=args.windows,
         modes=args.modes,
         max_events=args.max_events,
