@@ -151,20 +151,20 @@ def test_direct_mlp_innovations_reuses_direct_linear_feature_cache(tmp_path):
         linear, space, config, control_dataset=control,
         development_dataset=development, cache_root=tmp_path,
     )
-    mlp_transform = prepare_frozen_transform(
-        mlp, {"parameters": {}}, config, control_dataset=control,
-        development_dataset=development, cache_root=tmp_path,
-    )
-    assert linear_transform.identity == mlp_transform.identity
-
     linear_features = prepare_frozen_features(
         linear, linear_transform, config, development,
         role="development", cache_root=tmp_path,
+    )
+    config["reuse_prepared_inputs"] = True
+    mlp_transform = prepare_frozen_transform(
+        mlp, {"parameters": {}}, config, control_dataset=control,
+        development_dataset=development, cache_root=tmp_path,
     )
     mlp_features = prepare_frozen_features(
         mlp, mlp_transform, config, development,
         role="development", cache_root=tmp_path,
     )
+    assert linear_transform.identity == mlp_transform.identity
     assert linear_features.identity == mlp_features.identity
     assert linear_features.shape == mlp_features.shape == (12, 32)
     np.testing.assert_array_equal(linear_features.features, mlp_features.features)
