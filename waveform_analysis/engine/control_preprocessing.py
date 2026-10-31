@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import math
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
@@ -39,6 +40,20 @@ def _normalize_mode_fits(control_dataset, fit_cfg, fit_by_mode=None, modes=None)
             raise ValueError(
                 f"Missing control CTR fit configuration for modes: {missing}"
             )
+    # Canonicalize before fingerprinting. JSON hashes distinguish 10 from 10.0,
+    # although both describe the same CTR histogram bin width.
+    for mode, fit in mapping.items():
+        try:
+            width = float(fit["histogram_bin_width_ps"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid histogram_bin_width_ps for {mode}"
+            ) from exc
+        if not math.isfinite(width) or width <= 0:
+            raise ValueError(
+                f"histogram_bin_width_ps must be positive for {mode}"
+            )
+        fit["histogram_bin_width_ps"] = width
     return selected, mapping
 
 
