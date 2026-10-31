@@ -3,7 +3,7 @@ import copy, json, shutil
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash, write_csv
 from waveform_analysis.core.dependencies import planner_fingerprints as _planner_fingerprints
-from waveform_analysis.core.config import BatchConfig
+from waveform_analysis.core.config import BatchConfig, CHANNEL_MODES, _fit
 from waveform_analysis.data.results import write_run_config
 from waveform_analysis.engine.preprocessing import (
     fit_control,
@@ -21,6 +21,16 @@ def _read_json(path):
 
 def _mode_fit_map(batch):
     result = {}
+    # A focused sweep may run only one mode while retaining the full control
+    # calibration definition in protocol.fit. Reuse that complete definition
+    # so its control artifact and downstream selection/native caches keep the
+    # same fingerprint as a broader batch prepared earlier.
+    declared = batch.protocol.get("fit")
+    if isinstance(declared, dict) and any(mode in declared for mode in CHANNEL_MODES):
+        for mode in CHANNEL_MODES:
+            if mode in declared:
+                result[mode] = _fit(declared[mode])
+
     for config in batch.runs:
         mode = str(config["mode"])
         fit = dict(config["fit"])
