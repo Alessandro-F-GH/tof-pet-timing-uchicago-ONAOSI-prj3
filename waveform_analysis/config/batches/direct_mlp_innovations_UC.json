@@ -47,7 +47,7 @@
   },
   "results": {
     "root": "results",
-    "folder": "UC/direct_mlp_innovations"
+    "folder": "UC/direct_mlp_innovations_reusecache"
   },
   "save_model": true,
   "protocol": {
