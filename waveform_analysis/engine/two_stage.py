@@ -58,7 +58,7 @@ def _subset(dataset, indices, *, short_window=None):
     return replace(dataset, **changes, manifest=manifest)
 
 
-def _source_transform(config, model_name, logger):
+def _source_transform(config, model_name, development, control_dataset, stage2_space, logger):
     """Resolve the exact completed wide-window run; never fit a replacement transform."""
     runs = discover_runs(Path(config["batch_output_dir"]), complete=True)
     matches = [r for r in runs if r["manifest"].get("model") == model_name
@@ -70,16 +70,41 @@ def _source_transform(config, model_name, logger):
         )
     run = matches[0]
     source_config = run["manifest"]
-    for role in ("control", "development"):
-        current = config[role]["root_file"]
-        saved = source_config.get(f"{role}_dataset", {}).get("root_file")
-        if saved and Path(saved).name != Path(current).name:
-            raise ValueError(f"Source transform {role} dataset differs: {saved} vs {current}")
+    populations = source_config.get("dataset_populations") or {}
+    for role, dataset in (("development", development), ("control", control_dataset)):
+        saved_identity = (populations.get(role) or {}).get("analysis_protocol_identity")
+        current_identity = dataset.manifest.get("analysis_protocol_identity")
+        if not saved_identity or str(saved_identity) != str(current_identity):
+            raise ValueError(
+                f"Source transform {role} population identity does not match the current prepared dataset"
+            )
+    from waveform_analysis.data.results import resolve_run_config
+    from waveform_analysis.data.feature_cache import _transform_parameters
+    saved_config = resolve_run_config(run["directory"])
+    saved_spec = get_model(model_name)
+    expected_parameters = _transform_parameters(saved_spec, stage2_space)
+    saved_parameters = _transform_parameters(saved_spec, saved_config["model"]["space"])
+    if canonical_hash(expected_parameters) != canonical_hash(saved_parameters):
+        raise ValueError("Source fitted transformation parameters differ from the requested Stage-2 model space")
     source_store = RunStore(run["directory"], artifact_root=config["preprocessing"]["artifact_root"])
     model_dir = source_store.model_dir
     path = model_dir / "feature_transform" / "transform.pkl"
     if not path.is_file():
         raise FileNotFoundError(f"Source model does not contain its fitted transform: {path}")
+    import pickle
+    from waveform_analysis.data.splits import semantic_seed
+    with path.open("rb") as stream:
+        artifact = pickle.load(stream)
+    metadata = getattr(artifact, "metadata", {})
+    expected_seed = semantic_seed(
+        int(saved_config["seed"]), saved_config["mode"], saved_config.get("window_name"),
+        saved_spec.feature_transform.name, "frozen_transform",
+    )
+    actual_seed = metadata.get("training_seed")
+    if actual_seed is None or int(actual_seed) != int(expected_seed):
+        raise ValueError(
+            f"Source fitted transformation seed mismatch: expected {expected_seed}, found {actual_seed}"
+        )
     return path, run
 
 
@@ -164,11 +189,11 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
                         residual_target_ps=residual_s2, target_fingerprint=np.asarray(residual_fp))
 
     # Reuse the exact fitted transform from the existing original-target wide run.
-    source_path, source_run = _source_transform(config, stage2_model, logger)
+    control_prepared = prepare_role_dataset(config, "control", control, rebuild=False, logger=None)[2]\n    source_path, source_run = _source_transform(config, stage2_model, wide, control_prepared, stage2_cfg["model"]["space"], logger)
     stage2_spec = get_model(stage2_model)
     frozen_transform = prepare_frozen_transform(
         stage2_spec, stage2_cfg["model"]["space"], stage2_cfg,
-        control_dataset=prepare_role_dataset(config, "control", control, rebuild=False, logger=None)[2],
+        control_dataset=control_prepared,
         development_dataset=wide, cache_root=config["preprocessing"]["cache_dir"],
         logger=logger, legacy_transform_path=source_path,
     )
@@ -234,7 +259,7 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
         "blind_bootstrap": bootstrap, "paired_stage1_minus_combined_ctr": paired,
         "source_transform_run": str(source_run["directory"]),
         "source_transform_path": str(source_path),
-        "source_transform_identity": frozen_transform.identity,
+        "source_transform_identity": frozen_transform.identity,\n        "single_stage_full_development_benchmark": source_run.get("blind", {}),
         "blind_mean_residual_before_ps": float(np.mean(blind_target)),
         "blind_mean_residual_after_stage1_ps": float(np.mean(residual1)),
         "blind_mean_residual_after_stage2_ps": float(np.mean(corrected)),
