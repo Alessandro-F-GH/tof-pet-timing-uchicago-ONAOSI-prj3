@@ -72,6 +72,13 @@ def _subset(dataset, indices, *, short_window=None):
         changes[wave_name] = np.asarray(getattr(dataset, wave_name)[idx][:, :, keep])
         if dataset.sample_mask is not None:
             changes["sample_mask"] = np.asarray(dataset.sample_mask)[keep]
+            manifest["sample_mask_identity"] = canonical_hash({
+                "parent": dataset.manifest.get("sample_mask_identity"),
+                "sample_indices": keep.tolist(),
+                "mask": changes["sample_mask"].astype(bool).tolist(),
+            })
+            manifest["input_samples_before_mask"] = int(keep.size)
+            manifest["input_samples_after_mask"] = int(changes["sample_mask"].sum())
     return replace(dataset, **changes, manifest=manifest)
 
 
