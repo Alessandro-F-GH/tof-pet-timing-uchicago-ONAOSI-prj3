@@ -214,14 +214,14 @@ def prepare_frozen_features(
             "schema_version": _CACHE_VERSION,
             "transform_identity": frozen_transform.identity,
             "dataset_identity": dataset_identity,
-            "model": spec.name,
+            "model": spec.feature_cache_key or spec.name,
             "formulation": spec.estimator_formulation,
             "role": str(role),
             "mode": mode,
         },
         parents=(frozen_transform.identity,),
         implementation=(
-            f"{spec.feature_transform.name}:{spec.name}:feature-matrix-v{_CACHE_VERSION}"
+            f"{spec.feature_transform.name}:{spec.feature_cache_key or spec.name}:feature-matrix-v{_CACHE_VERSION}"
         ),
     )
     store = ArtifactStore(config["preprocessing"].get(
@@ -313,7 +313,7 @@ def prepare_frozen_features(
                         mmap.close()
                     del matrix
 
-            block_alias = feature_alias(cache_root_from_config(config, cache_root), config, spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role), block_name)
+            block_alias = feature_alias(cache_root_from_config(config, cache_root), config, (spec.feature_cache_key or spec.name), config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role), block_name)
             block_ref = get_or_build_named(
                 store, block_recipe, block_alias, build_block,
                 metadata={"model": spec.name, "block": block_name,
