@@ -11,7 +11,7 @@ from pathlib import Path
 
 FORMAT = 'waveform-results'
 ROLES = ('control', 'development', 'blind')
-BATCH_SETTINGS = ('preprocessing', 'seed', 'cross_validation', 'bootstrap', 'runtime', 'xai', 'save_model')
+BATCH_SETTINGS = ('preprocessing', 'seed', 'cross_validation', 'bootstrap', 'runtime', 'xai', 'save_model', 'reuse_prepared_inputs')
 CONTEXT_SETTINGS = ('fit', 'ml_input', 'ml_output')
 CONTEXT_METADATA = (
     'dataset_populations', 'control_artifact', 'led_control_mean_ps',
