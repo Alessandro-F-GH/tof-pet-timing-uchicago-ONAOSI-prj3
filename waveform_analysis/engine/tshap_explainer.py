@@ -94,7 +94,11 @@ def _resolve_model_run_directory(model_dir):
     control/blind cohort or experiment configuration.
     """
     path = Path(model_dir).expanduser().resolve()
-    for candidate in (path, path.parent):
+    # A two-stage experiment is a container with sibling stage1/ and stage2/
+    # standard runs. Accept its root as a convenience, but resolve specifically
+    # to Stage 2: that is the residual-correction model TSHAP must explain.
+    candidates = (path, path / "stage2", path.parent)
+    for candidate in candidates:
         if (candidate / "metadata" / "manifest.json").is_file():
             return candidate
     raise ValueError(
