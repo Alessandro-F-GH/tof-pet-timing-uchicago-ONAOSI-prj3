@@ -321,6 +321,18 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
                         stage1_prediction_ps=blind_s1, residual_after_stage1_ps=residual1,
                         stage2_prediction_ps=blind_s2, combined_prediction_ps=combined,
                         corrected_residual_ps=corrected)
+    config_snapshot = {key: value for key, value in config.items()
+                       if not str(key).startswith("_")}
+    config_snapshot.update({
+        "board": config.get("_board"),
+        "stage1_model": "shared_linear_ridge",
+        "stage1_model_space": config["_two_stage_spaces"]["shared_linear_ridge"],
+        "stage2_model": stage2_model,
+        "stage2_model_space": config["_two_stage_spaces"][stage2_model],
+        "split_fraction_stage1": float(split_fraction),
+        "split_seed": int(split_seed),
+    })
+    atomic_json(output_root / "resolved_config.json", config_snapshot)
     atomic_json(output_root / "results.json", {
         "status": "complete", "board": config.get("_board"), "mode": mode,
         "split_fraction_stage1": float(split_fraction), "split_seed": int(split_seed),
