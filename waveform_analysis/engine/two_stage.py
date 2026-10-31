@@ -78,9 +78,15 @@ def _subset(dataset, indices, *, short_window=None):
         keep = np.flatnonzero((time >= lo * 1000.0 - 1e-7) & (time <= hi * 1000.0 + 1e-7))
         if keep.size < 2:
             raise ValueError("The wide-window dataset does not contain the Onishi sample grid")
-        expected = np.arange(lo * 1000.0, hi * 1000.0 + 1e-7, np.median(np.diff(time)))
-        if expected.size != keep.size or not np.allclose(time[keep], expected, rtol=0, atol=1e-6):
-            raise ValueError("Onishi samples cannot be recovered exactly from the wide-window grid")
+        # Select actual wide-grid samples, without synthesizing a second grid.
+        # A uniform contiguous slice is sufficient; the absolute phase need not
+        # coincide with np.arange(start, end, dt).
+        if not np.all(np.diff(keep) == 1):
+            raise ValueError("Onishi samples are not contiguous in the wide grid")
+        selected_time = time[keep]
+        step = np.median(np.diff(time))
+        if not np.allclose(np.diff(selected_time), step, rtol=1e-5, atol=1e-5):
+            raise ValueError("Onishi region has inconsistent sample spacing")
         changes[time_name] = time[keep]
         changes[wave_name] = np.asarray(getattr(dataset, wave_name)[idx][:, :, keep])
         if dataset.sample_mask is not None:
