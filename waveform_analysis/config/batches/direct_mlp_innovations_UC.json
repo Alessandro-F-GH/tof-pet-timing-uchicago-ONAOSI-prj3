@@ -52,6 +52,7 @@
   "save_model": true,
   "protocol": {
     "seed": 1001,
+    "reuse_prepared_inputs": true,
     "preprocessing_config": "../preprocessing/UC.json",
     "cross_validation": {
       "folds": 3,
