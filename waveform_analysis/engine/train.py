@@ -593,11 +593,13 @@ def load_fitted_model(spec, directory, parameters, config):
 
         model = AntisymmetricMLP(n, p["architecture"], p["activation"])
         artifact_type = MLPArtifact
-    elif spec.name == "direct_mlp":
+    elif spec.name in {"direct_mlp", "direct_mlp_innovations"}:
         from waveform_analysis.engine.neural_training import MLPArtifact
         from waveform_analysis.models.neural.direct_mlp import DirectPairMLP
+        from waveform_analysis.models.neural.direct_mlp_innovations import DirectInnovationMLP
 
-        model = DirectPairMLP(n, p["architecture"], p["activation"])
+        cls = DirectInnovationMLP if spec.name == "direct_mlp_innovations" else DirectPairMLP
+        model = cls(n, p["architecture"], p["activation"])
         artifact_type = MLPArtifact
     elif spec.name == "locally_connected_mlp":
         from waveform_analysis.engine.neural_training import MLPArtifact
