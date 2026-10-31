@@ -607,7 +607,26 @@ def _analyze_run(run, board, output_root, *, cache_root=None, max_events=0,
         raise ValueError(f"{spec.name} saved model has no fitted innovations transform")
 
     lookup = PreparedCacheLookup()
+    # The final Ridge artifact intentionally stores estimator weights only.
+    # Resolve the separately cached control-fitted transform through the same
+    # frozen-transform API used by training, then attach it for provenance and
+    # feature-matrix identity checks.
+    control = lookup.find("control", config, manifest)
+    development = lookup.find("development", config, manifest)
     blind = lookup.find("blind", config, manifest)
+    from waveform_analysis.data.feature_cache import prepare_frozen_transform
+    frozen_transform = prepare_frozen_transform(
+        spec,
+        config["model"]["space"],
+        config,
+        control_dataset=control,
+        development_dataset=development,
+        cache_root=config["preprocessing"]["cache_dir"],
+        logger=None,
+    )
+    if frozen_transform is None:
+        raise ValueError(f"{spec.name} frozen innovations transform could not be resolved")
+    fitted.feature_transform = frozen_transform.transform
     family = mode_family(config["mode"])
     full_time_ps = np.asarray(getattr(blind, f"{family}_time_ps"), dtype=np.float64)
     sample_mask = np.asarray(fitted.sample_mask, dtype=bool).reshape(-1)
