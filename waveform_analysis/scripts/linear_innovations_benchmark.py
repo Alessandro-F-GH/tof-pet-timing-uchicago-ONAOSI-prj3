@@ -54,7 +54,7 @@ def generate(output_root: Path, boards: tuple[str, ...], models: tuple[str, ...]
             "root": str(output_root), "folder": f"{board}/linear_innovations_{order}"
         }
         batch["sweep"]["models"] = [
-            {"name": model, "space_config": _space(model, order)}
+            {"name": model, "space": _space(model, order)}
             for model in models
         ]
         path = output_root / f"{board}_{order}.json"
