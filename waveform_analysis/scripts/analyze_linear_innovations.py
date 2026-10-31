@@ -84,50 +84,20 @@ def _apply_cache_root(config, cache_root):
     config["preprocessing"]["artifact_root"] = str(artifact_root)
 
 
-def _adapt_feature_matrix(
-    features, formulation, n_samples, model_name, coefficient_count=None
-):
-    """Resolve the feature layout against both the saved estimator and cache.
-
-    Canonical shared innovations use z1-z2 (n_samples coefficients). Some
-    already-trained artifacts instead contain the paired [z1,z2] representation
-    (2*n_samples coefficients). Preserve that representation when the saved
-    Ridge actually has 2*n_samples coefficients; prediction replay below is
-    the final consistency check.
-    """
+def _adapt_feature_matrix(features, formulation, n_samples, model_name):
+    """Validate the canonical feature layout for the registered formulation."""
     values = np.asarray(features)
     if values.ndim != 2:
         raise ValueError(f"{model_name} feature cache must be a 2D matrix")
-    p = int(n_samples)
-    width = int(values.shape[1])
-    n_coef = None if coefficient_count is None else int(coefficient_count)
-
-    if formulation == "direct":
-        if width != 2 * p:
-            raise ValueError(
-                f"{model_name} direct feature cache has {width} columns; expected {2*p}"
-            )
-        return values, "paired_detector_innovations"
-
-    if formulation != "shared":
-        raise ValueError(f"Unsupported estimator formulation: {formulation}")
-
-    if width == p and (n_coef is None or n_coef == p):
-        return values, "shared_detector_difference"
-    if width == 2 * p:
-        if n_coef == 2 * p:
-            return values, "paired_detector_features_retained_for_saved_estimator"
-        if n_coef is None or n_coef == p:
-            paired = values.reshape(values.shape[0], 2, p)
-            difference = np.asarray(
-                paired[:, 0, :] - paired[:, 1, :], dtype=np.float32
-            )
-            return difference, "paired_detector_innovations_to_shared_difference"
-    expected = "n_samples (shared difference)" if n_coef == p else "2*n_samples (paired)"
-    raise ValueError(
-        f"{model_name} feature/coefficient mismatch: cache has {width} columns, "
-        f"Ridge has {n_coef} coefficients; expected {expected}"
-    )
+    expected = 2 * int(n_samples) if formulation == "direct" else int(n_samples)
+    if values.shape[1] != expected:
+        raise ValueError(
+            f"{model_name} feature cache has {values.shape[1]} columns; "
+            f"expected {expected} for {formulation} formulation. "
+            "This usually indicates a stale or incorrectly shared feature cache; "
+            "rebuild the formulation-specific feature matrix and retrain the model."
+        )
+    return values, "paired_detector_innovations" if formulation == "direct" else "shared_detector_difference"
 
 
 def _load_cached_feature_matrix(spec, frozen_transform, blind, config, logger=None):
@@ -725,17 +695,16 @@ def _analyze_run(run, board, output_root, *, cache_root=None,
         fitted.artifact.regressor.coef_, dtype=np.float64
     ).reshape(-1)
     features, feature_matrix_adapter = _adapt_feature_matrix(
-        features, formulation, n_samples, spec.name,
-        coefficient_count=coefficients.size,
+        features, formulation, n_samples, spec.name
     )
-    # A legacy shared-named artifact with 2p coefficients is mathematically a
-    # paired two-detector linear estimator. Decompose it detector-wise, while
-    # retaining its registered model name and checking exact prediction replay.
-    contribution_formulation = (
-        "direct" if formulation == "shared"
-        and feature_matrix_adapter == "paired_detector_features_retained_for_saved_estimator"
-        else formulation
-    )
+    if coefficients.size != features.shape[1]:
+        raise ValueError(
+            f"{spec.name} saved Ridge has {coefficients.size} coefficients, "
+            f"but its canonical {formulation} input has {features.shape[1]} features. "
+            "The saved model was trained with an incompatible feature layout; "
+            "retrain it before temporal analysis."
+        )
+    contribution_formulation = formulation
 
     event_ids, saved_prediction, target, corrected = _load_saved_predictions(
         run_store, blind, config["mode"]
