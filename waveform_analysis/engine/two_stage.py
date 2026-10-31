@@ -221,6 +221,7 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
 
     short_data = _subset(wide, np.arange(n), short_window=short_window)
     stage1_data = _subset(short_data, stage1_indices)
+    stage2_short_data = _subset(short_data, stage2_indices)
     stage2_data = _subset(wide, stage2_indices)
     stage1_cfg = _experiment_config(config, "stage1", "shared_linear_ridge", "onishi",
                                      short_window, output_root)
@@ -239,8 +240,11 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
     if s1_model is None:
         from waveform_analysis.engine.train import load_fitted_model
         s1_model = load_fitted_model(stage1_spec, stage1_store.model_dir, s1_best["parameters"], stage1_cfg)
-    p1_s2 = predict_indices(stage1_spec, s1_model, stage2_data, mode,
-                            np.arange(stage2_data.n_events), chunk_size=config["runtime"]["prediction_chunk_size"])
+    p1_s2 = predict_indices(
+        stage1_spec, s1_model, stage2_short_data, mode,
+        np.arange(stage2_short_data.n_events),
+        chunk_size=config["runtime"]["prediction_chunk_size"],
+    )
     residual_s2 = target[stage2_indices] - p1_s2
     if residual_s2.shape != (stage2_indices.size,) or not np.all(np.isfinite(residual_s2)):
         raise RuntimeError("Stage-1 residual target is invalid or misaligned")
