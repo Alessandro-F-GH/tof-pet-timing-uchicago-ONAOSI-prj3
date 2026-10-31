@@ -17,7 +17,6 @@
     }
   },
   "transform": {
-    "order": "forward",
     "shrinkage": 0.01,
     "relative_jitter": 0.000001,
     "max_fit_events": 4096,
