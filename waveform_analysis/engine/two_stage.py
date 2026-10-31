@@ -17,7 +17,9 @@ from waveform_analysis.data.view import model_target, waveform_view
 from waveform_analysis.data.splits import semantic_seed, make_cv_split
 from waveform_analysis.engine.preprocessing import fit_control, prepare_role_dataset
 from waveform_analysis.data.feature_cache import prepare_frozen_transform, prepare_frozen_features
-from waveform_analysis.engine.study import _outer_cv_selection_and_fit, _logger
+from waveform_analysis.engine.study import (
+    _outer_cv_selection_and_fit, _logger, _publish_run_metadata,
+)
 from waveform_analysis.engine.train import predict_indices, target_fingerprint, release_training_memory
 from waveform_analysis.models import get_model
 from waveform_analysis.reporting.stats import paired_central_metrics, blind_event_bootstrap, paired_model_bootstrap, metric_values
@@ -216,7 +218,7 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
     output_root = Path(config["batch_output_dir"]).resolve() / "two_stage" / str(config.get("_board") or "board") / mode
     output_root.mkdir(parents=True, exist_ok=True)
     logger = logger or _logger(output_root)
-    control, _ = fit_control(config, rebuild=False, logger=logger)
+    control, control_dir = fit_control(config, rebuild=False, logger=logger)
     _, _, wide = prepare_role_dataset(config, "development", control, rebuild=False, logger=logger)
     target = np.asarray(model_target(wide, mode), dtype=np.float64)
     n = int(wide.n_events)
@@ -339,6 +341,38 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
     blind_s2 = predict_indices(stage2_spec, s2_model, blind, mode, np.arange(blind.n_events),
                                chunk_size=config["runtime"]["prediction_chunk_size"], frozen_features=frozen_blind)
     blind_target = np.asarray(model_target(blind, mode), dtype=np.float64)
+
+    # Publish Stage 2 as a standard, independently explainable model run.
+    # Its model target remains the Stage-1 residual; TSHAP will load this model
+    # and apply the existing paired waveform occlusion unchanged.
+    tshap_stage2_cfg = copy.deepcopy(stage2_cfg)
+    tshap_stage2_cfg["batch_output_dir"] = str(Path(stage2_cfg["output_dir"]).resolve())
+    stage2_store.write_resolved_config(tshap_stage2_cfg)
+    stage2_blind_fp = stage_fingerprint(
+        "blind",
+        {
+            "blind": blind.manifest["analysis_protocol_identity"],
+            "fit": stage2_cfg["fit"],
+            "frozen_transform": frozen_transform.identity,
+            "target": "stage1_residual",
+        },
+        parents={"final_fit": s2_fp},
+    )
+    stage2_bootstrap_fp = stage_fingerprint(
+        "bootstrap",
+        {"bootstrap": stage2_cfg["bootstrap"], "seed": stage2_cfg["seed"]},
+        parents={"blind": stage2_blind_fp},
+    )
+    stage2_xai_fp = stage_fingerprint(
+        "xai", {"enabled": False, "method": None},
+        parents={"final_fit": s2_fp, "blind": stage2_blind_fp},
+    )
+    _publish_run_metadata(
+        stage2_store, stage2_spec, tshap_stage2_cfg, control, control_dir,
+        wide, blind, s2_model, s2_best, control_prepared,
+        s2_cv, s2_sel, s2_fp, stage2_blind_fp,
+        stage2_bootstrap_fp, stage2_xai_fp,
+    )
     combined = blind_s1 + blind_s2
     residual1 = blind_target - blind_s1
     corrected = blind_target - combined
