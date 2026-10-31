@@ -49,7 +49,7 @@ def transform_parameters(params, config):
     return {
         "max_fit_events": _positive_int(settings.get("max_fit_events", 4096), "max_fit_events"),
         "batch_size": _positive_int(settings.get("batch_size", 256), "batch_size"),
-        "max_samples": _positive_int(settings.get("max_samples", 2048), "max_samples"),
+        "max_samples": _positive_int(settings.get("max_samples", 6000), "max_samples"),
         "shrinkage": fraction,
         "relative_jitter": jitter,
         "version": 1,
