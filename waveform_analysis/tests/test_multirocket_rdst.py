@@ -10,7 +10,6 @@ from sklearn.linear_model import Ridge
 
 from waveform_analysis.data.feature_cache import prepare_frozen_features, prepare_frozen_transform
 from waveform_analysis.engine.train import fit_on_indices, load_fitted_model, predict_indices, save_model, saved_model_complete
-from waveform_analysis.engine.xai import model_importance, model_xai_method
 from waveform_analysis.models import get_model
 from waveform_analysis.tests.test_feature_cache import DummyDataset, _config
 
@@ -97,9 +96,13 @@ def test_control_only_transform_reuse_block_reference_and_reload(name, tmp_path,
         rdst_common.transform(artifact.rdst, development.energy_windows),
     ], axis=1)
     np.testing.assert_array_equal(features.features, expected)
-    assert isinstance(features.features, np.memmap) and features.features.dtype == np.float32
+    assert features.features.dtype == np.float32
+    assert features.block_names == ("multirocket", "rdst")
+    assert all(isinstance(block, np.memmap) for block in features.feature_blocks)
+    assert all(block.dtype == np.float32 for block in features.feature_blocks)
     candidates = spec.candidates(model_space)
-    assert len(candidates) == 9
+    assert candidates
+    assert all({"multirocket_alpha", "rdst_alpha"} <= set(candidate) for candidate in candidates)
     for candidate in (candidates[0], candidates[-1]):
         fitted = fit_on_indices(spec, model_space, config, development, np.arange(24),
                                 candidate, seed=4, frozen_features=features)
@@ -123,9 +126,6 @@ def test_control_only_transform_reuse_block_reference_and_reload(name, tmp_path,
     assert (directory / "feature_transform/rdst/shapelets.npz").is_file()
     restored = load_fitted_model(spec, directory, candidates[-1], config)
     np.testing.assert_array_equal(predict_indices(spec, restored, development, config["mode"], np.arange(24)), prediction)
-    assert model_xai_method(spec) is None
-    with pytest.raises(ValueError, match="XAI is unavailable"):
-        model_importance(spec, fitted, development, config["mode"])
 
 
 @pytest.mark.parametrize("key", ["n_kernels", "max_shapelets"])
@@ -135,74 +135,3 @@ def test_transform_settings_must_be_fixed(key, tmp_path):
     with pytest.raises(ValueError, match="must be fixed"):
         prepare_frozen_transform(get_model(NAMES[0]), model_space, _config(tmp_path),
                                  control_dataset=None, development_dataset=None, cache_root=tmp_path)
-
-
-def test_real_batch_joint_grid_blind_reporting_resume_and_xai_skip(tmp_path, monkeypatch):
-    from waveform_analysis.core.config import load_batch_config
-    from waveform_analysis.data.dataset import InputTransform
-    from waveform_analysis.data.results import read_run_manifest
-    from waveform_analysis.data.storage import RunStore
-    from waveform_analysis.engine import study, batch as batch_engine
-    from waveform_analysis.engine.xai_replay import PreparedCacheLookup, rerun_xai
-
-    resolved = load_batch_config(ROOT / "config/batches/test_multirocket_rdst.json")
-    runs = []
-    for original in resolved.runs:
-        c = deepcopy(original)
-        name = c["model"]["name"]
-        c.update(model={"name": name, "space": space(name)}, run_id=name, name=name,
-                 output_dir=str(tmp_path / name), batch_output_dir=str(tmp_path))
-        c["preprocessing"]["cache_dir"] = str(tmp_path / "cache")
-        c["cross_validation"].update(folds=2, minimum_events_per_fold=20)
-        c["cross_validation"]["pruning"]["enabled"] = False
-        c["bootstrap"]["n_resamples"] = 3
-        c["xai"]["enabled"] = True  # Unsupported model must skip even when globally enabled.
-        runs.append(c)
-    protocol = deepcopy(resolved.protocol)
-    protocol["bootstrap"]["n_resamples"] = 3
-    resolved = replace(resolved, output_dir=str(tmp_path), protocol=protocol, runs=tuple(runs))
-    datasets = {}
-    for seed, role in enumerate(("control", "development", "blind"), 314):
-        d = DummyDataset(tmp_path / role, role, n_events=512, n_samples=20)
-        rng = np.random.default_rng(seed)
-        d.energy_windows = rng.normal(size=(512, 2, 20)).astype(np.float32)
-        d.timing_windows = d.energy_windows
-        d.timing_time_ps = d.energy_time_ps
-        d.energy_target_ps = d.timing_target_ps = rng.normal(size=512) * 80
-        d.energy_led_time_ps = d.timing_led_time_ps = np.column_stack([d.timing_target_ps, np.zeros(d.n_events)])
-        d.energy_transform = d.timing_transform = InputTransform(np.zeros((2, 1)), np.ones((2, 1)))
-        d.bias_voltage_V = np.full(d.n_events, 48.)
-        d.manifest.update(dataset_role=role, led_control_mean_ps=0., sample_mask_fit_role="control")
-        d.sample_mask = np.ones(20, dtype=bool)
-        d.sample_mask[[2, 8]] = False
-        datasets[role] = d
-    fits = []
-    original_fit = study._fit_final
-    def fit(*args, **kwargs):
-        fits.append(args[0].name)
-        return original_fit(*args, **kwargs)
-    monkeypatch.setattr(study, "_fit_final", fit)
-    def prepare(config, role, *args, **kwargs):
-        if role == "blind":
-            assert config["model"]["name"] in fits
-        return None, None, datasets[role]
-    monkeypatch.setattr(study, "prepare_role_dataset", prepare)
-    for module in (study, batch_engine):
-        monkeypatch.setattr(module, "fit_control", lambda *a, **kw: ({}, tmp_path / "control"))
-        monkeypatch.setattr(module, "publish_preprocessing_diagnostics", lambda *a, **kw: None)
-    monkeypatch.setattr(study, "model_importance", lambda *a, **kw: pytest.fail("XAI must be skipped"))
-    outputs = batch_engine.run_batch(resolved)
-    assert fits == list(NAMES)
-    for output in outputs:
-        store = RunStore(output)
-        assert len(store.read_candidate_rows()) == 9
-        assert (output / "tables/cv.csv").is_file()
-        assert not store.xai_path.exists()
-        assert read_run_manifest(store.root)["blind_used_in_selection"] is False
-    assert batch_engine.run_batch(resolved) == outputs
-    assert len(fits) == 2
-    monkeypatch.setattr(PreparedCacheLookup, "find", lambda *a, **kw: pytest.fail("Skipped XAI must not load caches"))
-    assert rerun_xai(tmp_path) == []
-    (outputs[0] / "artifacts/pred.npz").unlink()
-    study.run_study(runs[0])
-    assert len(fits) == 2

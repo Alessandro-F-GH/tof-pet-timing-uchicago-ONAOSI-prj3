@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, shutil
+import copy, json, shutil
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash, write_csv
 from waveform_analysis.core.dependencies import planner_fingerprints as _planner_fingerprints
@@ -38,7 +38,7 @@ def _runtime_configs(batch):
     prepared = {}
     all_modes = tuple(sorted(fit_by_mode))
     for config in batch.runs:
-        item = dict(config)
+        item = copy.deepcopy(config)
         item['_board'] = next((p for p in Path(batch.results['folder']).parts if p in {'UC', 'FBK'}), None)
         item["_prepared_datasets"] = prepared
         item["_control_modes"] = all_modes
@@ -65,13 +65,29 @@ def _run_state(config, previous):
     if (
         old.get("preprocessing") != current["preprocessing"]
         or old.get("development") != current["development"]
-        or old.get("cv") != current["cv"]
     ):
-        return "rebuild", "cv", current
-    for stage in ("final_fit", "blind", "bootstrap", "xai", "plots"):
+        return "rebuild", "development", current
+    if old.get("cv") != current["cv"]:
+        return "resume", "cv", current
+    for stage in ("selection", "final_fit", "blind", "bootstrap", "xai", "plots"):
         if old.get(stage) != current[stage]:
             return "resume", stage, current
     if manifest is not None and manifest.get("status") == "complete":
+        artifact_root = config.get("preprocessing", {}).get("artifact_root")
+        if artifact_root:
+            from waveform_analysis.data.storage import RunStore
+            store = RunStore(path, artifact_root=artifact_root)
+            if not store.predictions_path.is_file():
+                return "resume", "blind", current
+            if not store.development_predictions_path.is_file():
+                return "resume", "development_diagnostic", current
+            if not store.bootstrap_path.is_file() or not store.bootstrap_draws_path.is_file():
+                return "resume", "bootstrap", current
+            if config.get("save_model", True):
+                from waveform_analysis.engine.train import saved_model_complete
+                from waveform_analysis.models import get_model
+                if not saved_model_complete(get_model(config["model"]["name"]), store.model_dir):
+                    return "resume", "final_fit", current
         return "keep", "complete", current
     return "resume", "incomplete", current
 

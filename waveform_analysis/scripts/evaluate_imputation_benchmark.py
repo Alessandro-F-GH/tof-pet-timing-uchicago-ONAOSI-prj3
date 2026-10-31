@@ -75,21 +75,25 @@ def physical_unit_scale(values):
     finite = np.asarray(values, dtype=np.float64)
     finite = finite[np.isfinite(finite) & (finite > 0)]
     largest = float(np.max(finite)) if finite.size else 1.0
-    return (1.0, "mV") if largest >= 1.0 else (1e3, "µV")
+    if largest >= 1.0:
+        return 1.0, "mV"
+    if largest >= 1e-3:
+        return 1e3, "µV"
+    if largest >= 1e-6:
+        return 1e6, "nV"
+    return 1e9, "pV"
 
 
 def format_rmse_label(value_mv):
-    """Use microvolts for individual bar labels below 1 mV."""
+    """Format an RMSE value in the most readable physical signal unit."""
     value_mv = float(value_mv)
-    if value_mv < 1.0:
-        return f"{value_mv * 1e3:.3g} µV"
-    return f"{value_mv:.3g} mV"
+    scale, unit = physical_unit_scale([value_mv])
+    return f"{value_mv * scale:.3g} {unit}"
 
 
 def save_position_plot(rows, output, label, channel):
-    # Keep position-wise log plots in a consistent physical unit across runs.
-    # A logarithmic axis does not require rescaling small values to microvolts.
-    scale, unit = 1.0, "mV"
+    # Use one readable physical unit across both detectors and all methods.
+    scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
     handles = []
     for detector, ax in enumerate(axes, start=1):

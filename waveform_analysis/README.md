@@ -76,13 +76,24 @@ any alternative XAI procedure.
 python -m waveform_analysis.cli explain-tshap \
   --results waveform_analysis/results/UC/benchmark_48V_final \
   --models direct_multirocket direct_rdst shared_linear_ridge \
-  --imputation hermite_ppca \
+  --cache-root /path/to/cache_bundle \
+  --ml-window wide \
+  --imputation hermite_ppca
+
+# Explain one saved-model run directly (no batch result-root scan).
+python -m waveform_analysis.cli explain-tshap \
+  --model-dir waveform_analysis/results/UC/benchmark_48V_final/energy/wide/direct_multirocket \
+  --cache-root /path/to/cache_bundle \
+  --max-events 100 \
   --window-samples 20 \
   --stride-samples 20
 ```
 
-The conditional imputer cache stores fitted detector-specific PPCA models and all position-dependent blend weights. Its identity includes the control population, board, channel/mode, time grid and 20-sample window configuration. Subsequent model explanations reuse it without fitting.\n\nConditional temporal occlusion retains signed prediction differences in ps. Window scores distributed over samples are
-densities in ps/sample, not exact individual-sample Shapley values. This conditional reconstruction approach is not mathematically equivalent to reference-baseline SHAP. The
+TSHAP supports two perturbation modes: `--imputation reference` performs symmetric two-player window substitution against a reproducible sample of independent control waveforms; `--imputation hermite_ppca` reconstructs each masked segment from that waveform's own observed context using detector-specific Hermite-PPCA models. Reference substitution is the default; select Hermite-PPCA explicitly when desired. Both modes use multi-baseline scoring and the upstream temporal aggregation/ROI implementation. The control reference count is configurable with `--n-baselines` (default: 8).
+
+The imputer cache stores fitted detector-specific PPCA models and position-dependent blend weights as immutable ArtifactStore products, exposed through a stable named alias. Its identity includes the control population, board, channel/mode, time grid, window configuration, and selected reference-baseline cohort. Changes in baseline selection therefore cannot silently reuse an incompatible imputer. Global and local TSHAP outputs remain in the dedicated XAI tree, separate from run results.
+
+Conditional temporal occlusion retains signed prediction differences in ps. Window scores distributed over samples are densities in ps/sample, not exact individual-sample Shapley values. This conditional reconstruction approach is not mathematically equivalent to reference-baseline SHAP. The
 existing absolute-importance plots are provisional, pending the final
 signed local, response-conditioned and global analyses. Use
 `explain-tshap-local` for the current local diagnostic.
@@ -114,3 +125,33 @@ python -m pytest waveform_analysis/tests
 ```
 
 The tests do not establish numerical reproduction of the original acquisition-based experiments. For research results, retain the exact batch configuration, package versions, source-data identities and saved evaluation artifacts.
+
+## Two-stage timing correction
+
+The two-stage experiment applies the existing shared linear Ridge correction to a
+short Onishi window on a fixed 25% development subset, then trains the prescribed
+direct MultiRocket model on the complete wide window and the out-of-sample residual
+target for the remaining 75%. The split is deterministic and saved per board/mode.
+The fitted wide-window transformation is loaded from the matching completed
+full-development benchmark run; it is never refitted for this experiment.
+
+Run one board and acquisition mode at a time, using the corresponding existing
+wide-window benchmark configuration:
+
+```bash
+python -m waveform_analysis.cli two-stage \
+  --config waveform_analysis/config/batches/benchmark_UC.json \
+  --board UC --mode energy_to_energy --split-fraction 0.25 \
+  --cache-root "$HOME/UC_cache"
+```
+
+For UC timing use `--mode timing_to_timing`; for FBK use
+`benchmark_FBK.json`, `--board FBK` and
+`--cache-root "$HOME/FBK_cache"`. The board-specific cache defaults are
+`$HOME/UC_cache` and `$HOME/FBK_cache`, respectively, so the explicit
+`--cache-root` option is only needed to override them. The command uses
+`preprocessing/` and `artifact_store/` inside that cache bundle. Results are written under a dedicated
+`two_stage/<board>/<mode>/` namespace and do not overwrite single-stage runs.
+The command requires a completed matching wide-window source run and its saved
+model/transform artifact in the configured artifact store. It stops if the source
+population, transformation parameters or seed do not match.

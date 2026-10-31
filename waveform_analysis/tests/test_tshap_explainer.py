@@ -6,13 +6,17 @@ import numpy as np
 import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
-    _choose_indices, _cleanup_legacy_result_tshap, _complete, _explanation_destination,
+    _choose_indices, _complete, _explanation_destination, _get_window_imputer,
+    _load_materialized_local_predictions,
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
     _native_led_baselines,
-    _is_excluded_tshap_window, _new_explainer, _plot_global, _plot_local_event,
+    _matches_tshap_window, _matches_tshap_mode, _normalize_tshap_windows,
+    _resolve_model_run_directory, _resolve_tshap_model_directory, _apply_tshap_cache,
+    _new_explainer, _plot_global, _plot_local_event,
     _publish_directory, _refresh_presentation, _select_local_events,
-    _selection_seed, _write_global_importance_csv,
+    _selection_seed, _write_global_importance_csv, _write_signed_csv, _signed_means,
+    _valid_window_starts,
 )
 
 
@@ -22,23 +26,49 @@ class _ZeroImputer:
 
 
 @pytest.mark.parametrize("roi", [False, True])
-def test_conditional_window_occlusion_is_signed_and_baseline_independent(roi):
+def test_paired_window_occlusion_is_single_event_and_signed(roi):
     rng = np.random.default_rng(47)
     sample = rng.uniform(0.1, 1, size=(2, 32)).astype(np.float32)
     explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
                               imputer=_ZeroImputer())
-    positions = [(0, 4, 8), (1, 8, 8), (0, 16, 8)]
+    positions = [(-1, 4, 8), (-1, 8, 8), (-1, 16, 8)]
     def predict(values):
         return np.asarray(values)[:, 0].sum(axis=1) - 2 * np.asarray(values)[:, 1].sum(axis=1)
-    expected = np.asarray([sample[0, 4:12].sum(),
-                           -2 * sample[1, 8:16].sum(),
-                           sample[0, 16:24].sum()])
+    expected = np.asarray([
+        sample[0, 4:12].sum() - 2 * sample[1, 4:12].sum(),
+        sample[0, 8:16].sum() - 2 * sample[1, 8:16].sum(),
+        sample[0, 16:24].sum() - 2 * sample[1, 16:24].sum(),
+    ])
     observed = explainer._calculate_window_attrib_scores(
         predict, sample, np.zeros((5, 2, 32)), positions)
     np.testing.assert_allclose(observed, expected, rtol=1e-6)
     other = explainer._calculate_window_attrib_scores(
-        predict, sample, rng.normal(size=(2, 2, 32)), positions)
+        predict, sample, np.full((1, 2, 32), 99.0), positions)
     np.testing.assert_allclose(other, observed, rtol=0, atol=0)
+
+
+def test_paired_occlusion_masks_both_detectors_once_and_returns_one_score():
+    sample = np.ones((2, 16), dtype=np.float32)
+    explainer = _new_explainer(
+        4, 4, False, predict_batch_size=4, imputer=_ZeroImputer(),
+    )
+
+    def predict(values):
+        values = np.asarray(values)
+        return values[:, 0].sum(axis=1) + 2.0 * values[:, 1].sum(axis=1)
+
+    scores = explainer._calculate_window_attrib_scores(
+        predict, sample, np.zeros((3, 2, 16)), [(-1, 4, 4)]
+    )
+    np.testing.assert_allclose(scores, [12.0])
+    assert explainer.last_window_positions == [(-1, 4)]
+    np.testing.assert_allclose(explainer.last_window_scores, [12.0])
+
+    starts, raw = __import__(
+        "waveform_analysis.engine.tshap_explainer", fromlist=["_raw_window_data"]
+    )._raw_window_data(explainer)
+    np.testing.assert_array_equal(starts, [4])
+    np.testing.assert_allclose(raw, [[12.0]])
 
 
 def test_tshap_constant_prediction_is_zero():
@@ -46,7 +76,7 @@ def test_tshap_constant_prediction_is_zero():
     sample = np.ones((2, 24), dtype=np.float32)
     values = model._calculate_window_attrib_scores(
         lambda values: np.full(len(values), 7.0), sample, sample[None],
-        [(0, 0, 6), (1, 8, 6)])
+        [(-1, 0, 6), (-1, 8, 6)])
     np.testing.assert_allclose(values, 0)
 
 
@@ -56,29 +86,38 @@ def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatc
     rng = np.random.default_rng(3)
     waves = rng.normal(0.5, .15, (70, 2, 60)).astype(np.float32)
     control = SimpleNamespace(
+        directory=tmp_path / "control",
         n_events=len(waves), event_index=np.arange(len(waves)),
         energy_windows=waves, energy_time_ps=np.arange(60)*12.5,
         manifest={"analysis_protocol_identity": "control-v1",
                   "event_population_identity": "population-v1"})
-    config = {"_board": "UC", "window_ns": {"start": -2, "end": 50},
-              "output_dir": str(tmp_path / "UC" / "test_ridge")}
+    config = {
+        "_board": "UC",
+        "window_ns": {"start": -2, "end": 50},
+        "output_dir": str(tmp_path / "UC" / "test_ridge"),
+        "preprocessing": {"artifact_root": str(tmp_path / "artifact_store")},
+    }
     options = dict(window_samples=20, stride_samples=20,
                    components=4, fit_events=30, tuning_events=12,
                    slope_points=5, batch_size=8, seed=42)
     first, first_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, tmp_path, **options)
+        control, "energy_to_energy", config, **options)
     assert first_meta["cache_hit"] is False
     def forbidden(*args, **kwargs):
         raise AssertionError("Imputer was refitted on cache hit")
     monkeypatch.setattr(t, "_fit_hermite_ppca_imputer", forbidden)
     second, second_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, tmp_path, **options)
+        control, "energy_to_energy", config, **options)
     assert second_meta["cache_hit"] is True
     assert second_meta["cache_identity"] == first_meta["cache_identity"]
     np.testing.assert_allclose(
         first.impute_segment_batch(waves[:3], 0, 20, 20),
         second.impute_segment_batch(waves[:3], 0, 20, 20),
         rtol=1e-12, atol=1e-12)
+    third, third_meta = t._cached_hermite_ppca_imputer(
+        control, "energy_to_energy", config, **options)
+    assert third_meta["cache_hit"] is True
+    assert third_meta["cache_identity"] == first_meta["cache_identity"]
 
 
 def test_event_selection_is_reproducible():
@@ -120,43 +159,72 @@ def test_explanation_destination_is_separate_and_collision_safe(tmp_path, monkey
     assert path.name == "tshap"  # Identity fingerprints stay in summary.json, not in path names.
 
 
-def test_cleanup_removes_only_legacy_tshap_outputs(tmp_path):
-    run = tmp_path / "run"
-    legacy = run / "explanations" / "tshap" / "old-hash"
-    legacy.mkdir(parents=True)
-    (legacy / "summary.json").write_text("{}")
-    unrelated = run / "explanations" / "other-xai"
-    unrelated.mkdir(parents=True)
-    (unrelated / "keep.txt").write_text("keep")
-
-    _cleanup_legacy_result_tshap(run)
-
-    assert not (run / "explanations" / "tshap").exists()
-    assert (unrelated / "keep.txt").read_text() == "keep"
-
-
-def test_sampling_seed_is_fixed_and_model_independent():
+def test_blind_event_sampling_seed_is_fixed():
     seed = 2026
-    blind_seed_1 = _selection_seed(seed, "blind_events")
-    blind_seed_2 = _selection_seed(seed, "blind_events")
-    baseline_seed_1 = _selection_seed(seed, "control_baselines")
-    baseline_seed_2 = _selection_seed(seed, "control_baselines")
+    first = _selection_seed(seed)
+    second = _selection_seed(seed)
 
-    assert blind_seed_1 == blind_seed_2
-    assert baseline_seed_1 == baseline_seed_2
-    assert blind_seed_1 != baseline_seed_1
+    assert first == second
     np.testing.assert_array_equal(
-        _choose_indices(1000, 100, blind_seed_1),
-        _choose_indices(1000, 100, blind_seed_2),
-    )
-    np.testing.assert_array_equal(
-        _choose_indices(500, 8, baseline_seed_1),
-        _choose_indices(500, 8, baseline_seed_2),
+        _choose_indices(1000, 100, first),
+        _choose_indices(1000, 100, second),
     )
     assert not np.array_equal(
-        _choose_indices(1000, 100, _selection_seed(seed + 1, "blind_events")),
-        _choose_indices(1000, 100, blind_seed_1),
+        _choose_indices(1000, 100, _selection_seed(seed + 1)),
+        _choose_indices(1000, 100, first),
     )
+
+
+
+
+def test_local_selection_loads_materialized_predictions_and_aligns_event_ids(tmp_path):
+    from types import SimpleNamespace
+
+    payload = {
+        "event_id": np.asarray([30, 10, 20]),
+        "prediction_ps": np.asarray([3.0, 1.0, 2.0]),
+        "corrected_ps": np.asarray([27.0, 9.0, 18.0]),
+        "led_residual_ps": np.asarray([30.0, 10.0, 20.0]),
+        "final_fit_fingerprint": np.asarray("final-fit-v1"),
+        "analysis_protocol_identity": np.asarray("blind-protocol-v1"),
+    }
+    path = tmp_path / "predictions.npz"
+    np.savez(path, **payload)
+    store = SimpleNamespace(predictions_path=path, load_predictions=lambda: payload)
+    blind = SimpleNamespace(
+        n_events=3, event_index=np.asarray([10, 20, 30]),
+        manifest={"analysis_protocol_identity": "blind-protocol-v1"},
+    )
+    manifest = {"stage_fingerprints": {"final_fit": "final-fit-v1"}}
+
+    predictions, targets = _load_materialized_local_predictions(store, blind, manifest)
+
+    np.testing.assert_array_equal(predictions, [1.0, 2.0, 3.0])
+    np.testing.assert_array_equal(targets, [10.0, 20.0, 30.0])
+
+
+def test_local_selection_rejects_stale_materialized_predictions(tmp_path):
+    from types import SimpleNamespace
+
+    payload = {
+        "event_id": np.asarray([10, 20]),
+        "prediction_ps": np.asarray([1.0, 2.0]),
+        "corrected_ps": np.asarray([9.0, 18.0]),
+        "led_residual_ps": np.asarray([10.0, 20.0]),
+        "final_fit_fingerprint": np.asarray("old-fit"),
+        "analysis_protocol_identity": np.asarray("blind-protocol-v1"),
+    }
+    path = tmp_path / "predictions.npz"
+    np.savez(path, **payload)
+    store = SimpleNamespace(predictions_path=path, load_predictions=lambda: payload)
+    blind = SimpleNamespace(
+        n_events=2, event_index=np.asarray([10, 20]),
+        manifest={"analysis_protocol_identity": "blind-protocol-v1"},
+    )
+    manifest = {"stage_fingerprints": {"final_fit": "current-fit"}}
+
+    with pytest.raises(ValueError, match="different final model"):
+        _load_materialized_local_predictions(store, blind, manifest)
 
 
 def test_local_selection_returns_two_nonoverlapping_events_per_group_and_trims_extremes():
@@ -344,13 +412,13 @@ def test_local_plot_accepts_millivolt_waveforms_and_led_threshold(tmp_path):
         prediction_ps=2.0,
         improvement_ps=2.0,
         led_threshold_mv=20.0,
+        window_starts=np.asarray([1, 3, 5]),
+        window_scores=np.asarray([[0.7, -0.1, 0.1]]),
+        window_samples=2,
     )
 
     assert output.is_file()
     assert output.stat().st_size > 0
-    pdf_output = tmp_path / "global_importance.pdf"
-    assert pdf_output.is_file()
-    assert pdf_output.stat().st_size > 0
 
 
 
@@ -366,92 +434,132 @@ def test_led_reference_line_stops_at_time_zero():
     )
 
 
-def test_native_led_baselines_use_original_trigger_relative_window(tmp_path):
+@pytest.mark.parametrize("window_name", ["onishi", "Onishi", "ONISHI"])
+def test_tshap_window_selector_accepts_onishi(window_name):
+    assert _matches_tshap_window({"window_name": window_name}, "onishi")
+    assert not _matches_tshap_window({"window_name": window_name}, "wide")
+
+
+@pytest.mark.parametrize("window_name", ["wide", "WIDE"])
+def test_tshap_window_selector_accepts_wide(window_name):
+    assert _matches_tshap_window({"window_name": window_name}, "wide")
+    assert not _matches_tshap_window({"window_name": window_name}, "onishi")
+
+
+def test_tshap_window_selector_all_and_invalid():
+    assert _matches_tshap_window({"window_name": "onishi"}, "all")
+    with pytest.raises(ValueError, match="windows"):
+        _matches_tshap_window({"window_name": "wide"}, "invalid")
+
+def test_tshap_window_and_mode_lists_select_batch_runs():
+    windows = ["onishi", "wide"]
+    assert _normalize_tshap_windows(windows) == ("onishi", "wide")
+    assert _matches_tshap_window({"window_name": "onishi"}, windows)
+    assert _matches_tshap_window({"window_name": "wide"}, windows)
+    assert not _matches_tshap_window({"window_name": "other"}, windows)
+    assert _matches_tshap_mode({"mode": "energy_to_energy"}, "energy")
+    assert _matches_tshap_mode({"mode": "timing_to_timing"}, "timing")
+    assert not _matches_tshap_mode({"mode": "timing_to_timing"}, "energy")
+    with pytest.raises(ValueError, match="all"):
+        _normalize_tshap_windows(["all", "wide"])
+
+
+def test_tshap_model_directory_and_shared_cache_resolution(tmp_path):
+    from waveform_analysis.engine.tshap_explainer import _effective_tshap_window
+
+    run = tmp_path / "results" / "energy" / "wide" / "direct_multirocket"
+    (run / "metadata").mkdir(parents=True)
+    (run / "metadata" / "manifest.json").write_text("{}", encoding="utf-8")
+    (run / "model").mkdir()
+    assert _resolve_model_run_directory(run) == run.resolve()
+    assert _resolve_model_run_directory(run / "model") == run.resolve()
+    assert _effective_tshap_window(None, model_dir=run) == "all"
+    assert _effective_tshap_window(None, model_dir=None) == "wide"
+
+    cache = tmp_path / "cache"
+    (cache / "artifact_store").mkdir(parents=True)
+    config = {"preprocessing": {"cache_dir": "old-cache", "artifact_root": "old-store"}}
+    _apply_tshap_cache(config, cache_root=cache)
+    assert config["preprocessing"]["cache_dir"] == str((cache / "preprocessing").resolve())
+    assert config["preprocessing"]["artifact_root"] == str((cache / "artifact_store").resolve())
+    with pytest.raises(ValueError, match="cache_root or artifact_root"):
+        _apply_tshap_cache(config, cache_root=cache, artifact_root=cache / "artifact_store")
+
+
+def test_tshap_model_directory_requires_run_metadata(tmp_path):
+    with pytest.raises(ValueError, match="metadata/manifest.json"):
+        _resolve_model_run_directory(tmp_path / "raw_model_artifact")
+
+
+def test_tshap_uses_complete_legacy_local_model_without_reference(tmp_path):
     from types import SimpleNamespace
 
-    native = tmp_path / "blind_native" / "native-a"
-    native.mkdir(parents=True)
-    (native / "manifest.json").write_text(json.dumps({
-        "source": "source.root",
-        "mode": "energy_to_energy",
-        "family": "energy",
-        "materialized_window_ns": {"before": 5.0, "after": 5.0},
-    }))
-    event_ids = np.asarray([101, 102, 103], dtype=np.int64)
-    waves = np.zeros((3, 2, 10), dtype=np.float32)
-    waves[0, 0, 3:5] = [1.0, 3.0]
-    waves[0, 1, 3:5] = [5.0, 7.0]
-    waves[1, 0, 3:5] = [10.0, 12.0]
-    waves[1, 1, 3:5] = [-2.0, 0.0]
-    waves[2] = 999.0
-    intervals = np.full((3, 2), 1e-9, dtype=np.float64)
-    np.save(native / "event_index.npy", event_ids)
-    np.save(native / "energy_windows_mV.npy", waves)
-    np.save(native / "energy_sample_interval_s.npy", intervals)
-
-    dataset = SimpleNamespace(
-        manifest={"analysis_source": "source.root"},
-        event_index=np.asarray([101, 102], dtype=np.int64),
-        n_events=2,
+    run = tmp_path / "run"
+    local = run / "model"
+    local.mkdir(parents=True)
+    (local / "model.pkl").write_bytes(b"model")
+    (local / "sample_mask.npy").write_bytes(b"mask")
+    reference_path = run / "metadata" / "model_reference.json"
+    reference_path.parent.mkdir()
+    store = SimpleNamespace(
+        model_reference_path=reference_path,
+        model_dir=tmp_path / "unresolved",
     )
-    baselines = _native_led_baselines(
-        tmp_path, dataset, "energy_to_energy", np.asarray([1, 0]),
-        baseline_window_ns=(-2.0, -1.0),
+    spec = SimpleNamespace(artifact_format="pickle", feature_transform=None)
+    assert _resolve_tshap_model_directory(spec, store, run) == local
+
+
+def test_tshap_prefers_registered_model_artifact_over_local_copy(tmp_path):
+    from types import SimpleNamespace
+
+    run = tmp_path / "run"
+    local = run / "model"
+    local.mkdir(parents=True)
+    (local / "model.pkl").write_bytes(b"model")
+    (local / "sample_mask.npy").write_bytes(b"mask")
+    reference_path = run / "metadata" / "model_reference.json"
+    reference_path.parent.mkdir()
+    reference_path.write_text("{}", encoding="utf-8")
+    external = tmp_path / "external_model"
+    store = SimpleNamespace(
+        model_reference_path=reference_path,
+        model_dir=external,
     )
-    np.testing.assert_allclose(baselines, [[11.0, -1.0], [2.0, 6.0]])
+    spec = SimpleNamespace(artifact_format="pickle", feature_transform=None)
+    assert _resolve_tshap_model_directory(spec, store, run) == external
 
 
 
-@pytest.mark.parametrize("window_name", ["onishi", "Onishi", "ONISHI"])
-def test_tshap_excludes_onishi_window(window_name):
-    assert _is_excluded_tshap_window({"window_name": window_name})
-
-
-@pytest.mark.parametrize("window_name", ["wide", "default", ""])
-def test_tshap_keeps_non_onishi_windows(window_name):
-    assert not _is_excluded_tshap_window({"window_name": window_name})
-
-
-
-@pytest.mark.parametrize("formulation", ["direct", "shared"])
-def test_global_saliency_plot_uses_physical_waveforms_and_onishi_interval(tmp_path, formulation):
+@pytest.mark.parametrize("model_name", ["direct_multirocket", "shared_linear_ridge"])
+def test_global_saliency_plot_uses_pair_importance_for_every_model(tmp_path, model_name):
     pytest.importorskip("matplotlib")
     time_ps = np.linspace(-2000.0, 60000.0, 125, dtype=np.float64)
     waveform_mv = np.vstack([
         20.0 * np.exp(-((time_ps / 1000.0 - 2.0) / 3.0) ** 2),
         18.0 * np.exp(-((time_ps / 1000.0 - 2.2) / 3.5) ** 2),
     ])
-    importance = np.vstack([
-        np.linspace(0.0, 2.0, time_ps.size),
-        np.linspace(1.0, 3.0, time_ps.size),
-    ])
+    pair_importance = np.linspace(0.0, 3.0, time_ps.size)
     _plot_global(
-        tmp_path, time_ps, importance, waveform_mv,
-        model_name="direct_multirocket" if formulation == "direct" else "shared_linear_ridge",
-        formulation=formulation,
-        mode="timing_to_timing",
-        window_name="wide",
-        board_name="FBK",
-        n_events=64,
-        window_samples=80,
+        tmp_path, time_ps, pair_importance, waveform_mv,
+        model_name=model_name, mode="timing_to_timing", window_name="wide",
+        board_name="FBK", n_events=64, window_samples=20,
+        window_starts=np.asarray([20, 40, 60]),
+        signed_positive=np.asarray([[1.0, 2.0, 3.0]]),
+        signed_negative=np.asarray([[-0.5, -1.0, -1.5]]),
+        std_waveform_mv=np.full_like(waveform_mv, 0.5),
     )
     output = tmp_path / "global_importance.png"
-    assert output.is_file()
-    assert output.stat().st_size > 0
+    assert output.is_file() and output.stat().st_size > 0
 
 
-def test_shared_global_importance_csv_pools_detector_curves(tmp_path):
+def test_pair_global_importance_csv_writes_one_curve(tmp_path):
     time_ps = np.asarray([-1000.0, 0.0, 1000.0])
-    importance = np.asarray([
-        [1.0, 2.0, 3.0],
-        [5.0, 6.0, 7.0],
-    ])
-    _write_global_importance_csv(tmp_path, time_ps, importance, "shared")
-    import csv
+    importance = np.asarray([3.0, 4.0, 5.0])
+    _write_global_importance_csv(tmp_path, time_ps, importance)
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 3
-    assert {row["detector_or_shared"] for row in rows} == {"shared"}
+    assert {row["importance_source"] for row in rows} == {"pair"}
     np.testing.assert_allclose(
         [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
         [3.0, 4.0, 5.0],
@@ -473,7 +581,13 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
         tmp_path / "attributions.npz",
         time_ps=time_ps,
         window_attribution_ps=maps,
+        raw_window_scores_ps=np.asarray([
+            [[1.0, -0.5]], [[2.0, -1.0]],
+        ]),
+        window_starts=np.asarray([1, 3], dtype=np.int64),
+        window_samples=np.asarray(1, dtype=np.int64),
         mean_waveform_mv=waveform_mv,
+        std_waveform_mv=np.full_like(waveform_mv, 0.5),
     )
     (tmp_path / "summary.json").write_text(json.dumps({
         "plot_version": 3,
@@ -486,10 +600,11 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 13
-    assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, shared importance histogram), with a common time axis"
+    assert summary["plot_version"] == 19
+    assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
+    assert summary["waveform_dispersion"].startswith("shaded mean +/- one population standard deviation")
     assert summary["global_plot"]["output_formats"] == ["PNG (240 dpi)", "PDF (vector)"]
     assert (tmp_path / "global_importance.png").is_file()
     with (tmp_path / "global_importance.csv").open(newline="", encoding="utf-8") as stream:
@@ -497,7 +612,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     assert len(rows) == len(time_ps)
     np.testing.assert_allclose(
         [float(row["mean_absolute_tshap_importance_ps_per_sample"]) for row in rows],
-        np.mean(np.mean(np.abs(maps), axis=0), axis=0),
+        np.mean(np.abs(maps), axis=(0, 1)),
     )
 
 
@@ -508,4 +623,188 @@ def test_cli_exposes_only_tshap_interpretability_commands():
     assert "explain-tshap" in commands
     assert "explain-tshap-local" in commands
     assert "xai" not in commands
+    global_args = commands["explain-tshap"]._mutually_exclusive_groups
+    local_args = commands["explain-tshap-local"]._mutually_exclusive_groups
+    assert any({"--results", "--model-dir"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in global_args)
+    assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in global_args)
+    assert any({"--results", "--model-dir"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in local_args)
+    assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
+               for group in local_args)
     assert "explain-regression" not in commands
+    for command in ("explain-tshap", "explain-tshap-local"):
+        options = {
+            option for action in commands[command]._actions
+            for option in action.option_strings
+        }
+        assert "--n-baselines" not in options
+        assert "--windows" in options
+        assert "--mode" in options
+        assert "--ml-window" not in options
+    assert "--imputation" not in {
+        option for action in commands["explain-tshap"]._actions
+        for option in action.option_strings
+    }
+    assert "--paired-occlusion" not in {
+        option for action in commands["explain-tshap"]._actions
+        for option in action.option_strings
+    }
+
+
+
+def test_tshap_recomputes_fitted_features_for_each_waveform():
+    from types import SimpleNamespace
+    from waveform_analysis.engine.tshap_explainer import _predict_bounded
+
+    transformed_inputs = []
+
+    class Transform:
+        def apply(self, values):
+            transformed_inputs.append(np.array(values, copy=True))
+            return np.asarray(values).reshape(len(values), -1)
+
+    class Spec:
+        @staticmethod
+        def predict(artifact, values):
+            return np.asarray(values).sum(axis=1)
+
+    fitted = SimpleNamespace(
+        sample_mask=np.ones(8, dtype=bool),
+        feature_transform=Transform(),
+        output_max_abs_ps=None,
+        artifact=object(),
+    )
+    original = np.ones((1, 2, 8), dtype=np.float32)
+    occluded = original.copy()
+    occluded[:, 0, 2:5] = 0
+
+    first = _predict_bounded(Spec, fitted, original, batch_size=8)
+    second = _predict_bounded(Spec, fitted, occluded, batch_size=8)
+
+    assert len(transformed_inputs) == 2
+    np.testing.assert_array_equal(transformed_inputs[0], original)
+    np.testing.assert_array_equal(transformed_inputs[1], occluded)
+    assert first[0] != second[0]
+
+
+def test_paired_event_occlusion_is_independent_of_reference_argument():
+    sample = np.ones((2, 16), dtype=np.float32)
+    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=_ZeroImputer())
+    predict = lambda values: np.asarray(values)[:, 0].sum(axis=1) + 2 * np.asarray(values)[:, 1].sum(axis=1)
+    score_a = explainer._calculate_window_attrib_scores(
+        predict, sample, sample[None], [(-1, 4, 4)]
+    )
+    score_b = explainer._calculate_window_attrib_scores(
+        predict, sample, np.zeros((8, 2, 16)), [(-1, 4, 4)]
+    )
+    np.testing.assert_allclose(score_a, [12.0])
+    np.testing.assert_array_equal(score_a, score_b)
+
+
+
+
+def test_tshap_imputer_is_built_once_and_reused_per_window(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.engine import tshap_explainer
+
+    control = SimpleNamespace(
+        manifest={
+            "analysis_protocol_identity": "control-protocol",
+            "event_population_identity": "control-population",
+        },
+        energy_time_ps=np.arange(16, dtype=np.float64),
+    )
+    config = {"mode": "energy_to_energy", "window_name": "wide"}
+    cache = {}
+    built = []
+    published = []
+
+    def build(*args, **kwargs):
+        fitted = object()
+        metadata = {
+            "cache_file": str(tmp_path / "imputer.npz"),
+            "cache_identity": "imputer-product",
+            "cache_hit": False,
+            "n_training_events": 100,
+            "n_tuning_events": 20,
+            "explained_variance_ratio_by_detector": [0.8, 0.9],
+        }
+        (tmp_path / "imputer.npz").write_bytes(b"artifact")
+        built.append((args, kwargs))
+        return fitted, metadata
+
+    monkeypatch.setattr(tshap_explainer, "_cached_hermite_ppca_imputer", build)
+    monkeypatch.setattr(
+        tshap_explainer, "_publish_window_imputer",
+        lambda destination, metadata, identity: published.append(destination),
+    )
+    monkeypatch.setattr(
+        tshap_explainer, "_window_imputer_destination",
+        lambda output_root, run_directory, config: tmp_path / "window" / "tshap_imputer",
+    )
+
+    kwargs = dict(
+        window_samples=20, stride_samples=20, components=3,
+        fit_events=100, tuning_events=20, slope_points=5,
+        batch_size=64, seed=42,
+    )
+    first = _get_window_imputer(
+        cache, control, config, tmp_path, tmp_path / "run-a", **kwargs
+    )
+    second = _get_window_imputer(
+        cache, control, config, tmp_path, tmp_path / "run-b", **kwargs
+    )
+
+    assert len(built) == 1
+    assert len(published) == 1
+    assert first[0] is second[0]
+    assert first[1] is second[1]
+
+def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
+    from types import SimpleNamespace
+    from waveform_analysis.engine.tshap_explainer import _fit_hermite_ppca_imputer
+    rng = np.random.default_rng(91)
+    waves = rng.normal(0.5, 0.1, size=(80, 2, 40)).astype(np.float32)
+    control = SimpleNamespace(
+        n_events=len(waves), event_index=np.arange(1000, 1000 + len(waves), dtype=np.int64),
+        energy_windows=waves, energy_time_ps=np.arange(40, dtype=np.float64),
+        directory=tmp_path / "control",
+    )
+    imputer, metadata = _fit_hermite_ppca_imputer(
+        control, "energy_to_energy", components=3, fit_events=30, tuning_events=10,
+        slope_points=3, batch_size=8, seed=42,
+    )
+    assert set(metadata["training_indices"]).isdisjoint(metadata["tuning_indices"])
+    assert metadata["training_and_tuning_are_disjoint"]
+    assert imputer is not None
+
+
+def test_reference_tshap_constant_prediction_is_zero():
+    explainer = _new_explainer(6, 3, True, 4, imputer=_ZeroImputer())
+    waveforms = np.ones((1, 2, 24), dtype=np.float32)
+    baselines = np.zeros((2, 2, 24), dtype=np.float32)
+    maps = explainer.explain(
+        waveforms, baselines, lambda values: np.full(len(values), 7.0)
+    )
+    for value in maps:
+        np.testing.assert_allclose(value, 0)
+
+
+def test_global_plot_validates_waveform_dispersion(tmp_path):
+    pytest.importorskip("matplotlib")
+    time_ps = np.linspace(-2000.0, 2000.0, 16)
+    waveform = np.vstack([np.sin(time_ps / 1000), np.cos(time_ps / 1000)])
+    importance = np.ones_like(waveform)
+    with pytest.raises(ValueError, match="standard deviation"):
+        _plot_global(
+            tmp_path, time_ps, np.ones(time_ps.size), waveform,
+            window_starts=np.asarray([4, 8]),
+            signed_positive=np.asarray([[1.0, 2.0]]),
+            signed_negative=np.asarray([[-1.0, -2.0]]),
+            std_waveform_mv=-np.ones_like(waveform),
+            model_name="direct_multirocket",
+            mode="energy_to_energy", window_name="wide", board_name="UC",
+            n_events=8, window_samples=4,
+        )

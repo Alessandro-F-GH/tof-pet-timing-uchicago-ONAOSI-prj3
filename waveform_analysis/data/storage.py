@@ -1,8 +1,10 @@
 from __future__ import annotations
-import csv, json, os, shutil, tempfile
+import csv, hashlib, json, os, shutil, tempfile
 from pathlib import Path
 import numpy as np
-from waveform_analysis.core.io import atomic_json, write_csv
+from waveform_analysis.core.io import atomic_json, write_csv, canonical_hash
+from waveform_analysis.core.artifact_identity import ProductRecipe
+from waveform_analysis.data.artifact_store import ArtifactStore
 
 
 
@@ -29,9 +31,13 @@ def _atomic_npz(path, **arrays):
 
 
 class RunStore:
-    def __init__(self, root):
+    def __init__(self, root, *, artifact_root=None):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.artifact_root = (
+            Path(artifact_root).expanduser().resolve()
+            if artifact_root is not None else None
+        )
     @property
     def metadata_dir(self):
         return self.root / "metadata"
@@ -81,24 +87,129 @@ class RunStore:
         return self.metadata_dir / "bootstrap.json"
 
     @property
+    def artifact_references_path(self):
+        return self.metadata_dir / "artifact_references.json"
+
+    def _artifact_references(self):
+        return self.read_json(self.artifact_references_path, {}) or {}
+
+    def _write_artifact_reference(self, key, reference):
+        references = self._artifact_references()
+        references[key] = {
+            "product_type": reference.product_type,
+            "product_id": reference.product_id,
+        }
+        atomic_json(self.artifact_references_path, references)
+
+    def _clear_artifact_references(self, keys):
+        references = self._artifact_references()
+        for key in keys:
+            references.pop(key, None)
+        if references:
+            atomic_json(self.artifact_references_path, references)
+        elif self.artifact_references_path.exists():
+            self.artifact_references_path.unlink()
+
+    def _artifact_payload_path(self, key, filename, fallback):
+        if self.artifact_root is None:
+            return fallback
+        reference = self._artifact_references().get(key)
+        if not reference:
+            # The external store is authoritative; never treat a local copy as registered.
+            return self.artifacts_dir / ".unresolved" / key / filename
+        return ArtifactStore(self.artifact_root).resolve(
+            reference["product_type"], reference["product_id"]
+        ).payload_path(filename)
+
+    @property
     def bootstrap_draws_path(self):
-        return self.artifacts_dir / "bootstrap.npz"
+        return self._artifact_payload_path(
+            "bootstrap_draws", "bootstrap.npz", self.artifacts_dir / "bootstrap.npz"
+        )
 
     @property
     def predictions_path(self):
-        return self.artifacts_dir / "pred.npz"
+        return self._artifact_payload_path(
+            "blind_predictions", "predictions.npz", self.artifacts_dir / "pred.npz"
+        )
 
     @property
     def development_predictions_path(self):
-        return self.artifacts_dir / "development_pred.npz"
+        return self._artifact_payload_path(
+            "development_predictions", "predictions.npz",
+            self.artifacts_dir / "development_pred.npz"
+        )
 
     @property
     def xai_path(self):
-        return self.artifacts_dir / "xai.npz"
+        return self._artifact_payload_path("xai", "xai.npz", self.artifacts_dir / "xai.npz")
+
+    @property
+    def model_reference_path(self):
+        return self.metadata_dir / "model_reference.json"
 
     @property
     def model_dir(self):
-        return self.root / "model"
+        """Resolve the authoritative model artifact; never fall back across stores."""
+        if self.artifact_root is None:
+            return self.root / "model"
+        reference = self.read_json(self.model_reference_path)
+        if not reference:
+            return self.artifacts_dir / ".unresolved" / "final-model"
+        return ArtifactStore(self.artifact_root).resolve(
+            reference["product_type"], reference["product_id"]
+        ).path
+
+    def save_model_artifact(self, spec, fitted, parameters, *, final_fit_fingerprint):
+        """Persist fitted weights once outside result views and record a stable reference."""
+        if self.artifact_root is None:
+            raise RuntimeError("An artifact_root is required to persist model artifacts")
+        from waveform_analysis.engine.train import save_model
+        compatibility = {
+            "python_major_minor": f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}",
+            "numpy_version": np.__version__,
+            "artifact_format": spec.artifact_format,
+        }
+        transform_identity = (
+            getattr(fitted.feature_transform, "identity", None)
+            if fitted.feature_transform is not None else None
+        )
+        recipe = ProductRecipe(
+            "final-models",
+            {
+                "model": spec.name,
+                "parameters": dict(parameters or {}),
+                "final_fit_fingerprint": str(final_fit_fingerprint),
+                "sample_mask": np.asarray(fitted.sample_mask, dtype=bool).tolist()
+                    if fitted.sample_mask is not None else None,
+                "feature_transform_identity": transform_identity,
+                "output_max_abs_ps": fitted.output_max_abs_ps,
+                "training_events": fitted.metadata.get("training_events"),
+            },
+            parents=(str(final_fit_fingerprint),) + (
+                (str(transform_identity),) if transform_identity else ()
+            ),
+            # v2 bundles the fitted feature transform beside the estimator.
+            implementation=f"{spec.name}:{spec.artifact_format}:model-v2",
+            compatibility=compatibility,
+        )
+        store = ArtifactStore(self.artifact_root)
+        reference = store.get_or_build(
+            recipe,
+            lambda directory: save_model(
+                spec, fitted, directory, parameters, include_feature_transform=True
+            ),
+            metadata={
+                "model": spec.name,
+                "final_fit_fingerprint": str(final_fit_fingerprint),
+                "pinned": True,
+            },
+        )
+        atomic_json(self.model_reference_path, {
+            "product_type": reference.product_type,
+            "product_id": reference.product_id,
+        })
+        return reference
 
     @property
     def plots_dir(self):
@@ -157,29 +268,58 @@ class RunStore:
         }
         atomic_json(self.state_path, state)
 
-    def invalidate_from(self, stage):
-        from waveform_analysis.core.dependencies import INVALIDATES
-        files = {
-            "cv": [
-                self.folds_path,
-                self.cv_path,
-                self.candidates_path,
-                self.root / "optuna.db",
-                self.root / "optuna_sampler.pkl",
-            ],
+    def _stage_output_paths(self):
+        return {
+            "cv": [self.folds_path, self.cv_path, self.candidates_path,
+                   self.root / "optuna.db", self.root / "optuna_sampler.pkl"],
             "selection": [self.best_path],
-            "final_fit": [self.final_fit_path, self.model_dir, self.development_predictions_path],
-            "blind": [self.blind_path, self.predictions_path],
-            "bootstrap": [self.bootstrap_path, self.bootstrap_draws_path],
-            "xai": [self.xai_path],
+            "final_fit": [self.final_fit_path, self.model_reference_path]
+                + ([] if self.artifact_root is not None else [self.development_predictions_path]),
+            "blind": [self.blind_path]
+                + ([] if self.artifact_root is not None else [self.predictions_path]),
+            "bootstrap": [self.bootstrap_path]
+                + ([] if self.artifact_root is not None else [self.bootstrap_draws_path]),
+            "xai": [] if self.artifact_root is not None else [self.xai_path],
             "plots": [self.plots_dir],
         }
+
+    @staticmethod
+    def _stage_reference_keys(stage):
+        return {
+            "final_fit": {"development_predictions"},
+            "blind": {"blind_predictions"},
+            "bootstrap": {"bootstrap_draws"},
+            "xai": {"xai"},
+        }.get(stage, set())
+
+    def _remove_stage_outputs(self, stage):
+        if self.artifact_root is not None:
+            self._clear_artifact_references(self._stage_reference_keys(stage))
+        for path in self._stage_output_paths()[stage]:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+
+    def invalidate_stage(self, stage):
+        """Invalidate one stage while retaining downstream records until parent checks."""
+        from waveform_analysis.core.dependencies import INVALIDATES
+
+        if stage not in INVALIDATES:
+            raise ValueError(f"Unknown pipeline stage: {stage}")
+        self._remove_stage_outputs(stage)
+        state = self.read_state()
+        state["stages"].pop(stage, None)
+        atomic_json(self.state_path, state)
+
+    def invalidate_from(self, stage):
+        """Explicitly invalidate a stage and all descendants in the dependency graph."""
+        from waveform_analysis.core.dependencies import INVALIDATES
+
+        if stage not in INVALIDATES:
+            raise ValueError(f"Unknown pipeline stage: {stage}")
         for current in INVALIDATES[stage]:
-            for path in files[current]:
-                if path.is_dir():
-                    shutil.rmtree(path, ignore_errors=True)
-                elif path.exists():
-                    path.unlink()
+            self._remove_stage_outputs(current)
         state = self.read_state()
         for current in INVALIDATES[stage]:
             state["stages"].pop(current, None)
@@ -235,28 +375,145 @@ class RunStore:
     ):
         if dataset_role not in {"blind", "development"}:
             raise ValueError(f"Unsupported prediction dataset role: {dataset_role}")
-        path = (self.predictions_path if dataset_role == "blind"
-                else self.development_predictions_path)
-        _atomic_npz(
-            path,
-            event_id=np.asarray(event_id, dtype=np.int64),
-            prediction_ps=np.asarray(prediction_ps, dtype=np.float64),
-            corrected_ps=np.asarray(corrected_ps, dtype=np.float64),
-            led_residual_ps=np.asarray(led_residual_ps, dtype=np.float64),
+        payload = {
+            "event_id": np.asarray(event_id, dtype=np.int64),
+            "prediction_ps": np.asarray(prediction_ps, dtype=np.float64),
+            "corrected_ps": np.asarray(corrected_ps, dtype=np.float64),
+            "led_residual_ps": np.asarray(led_residual_ps, dtype=np.float64),
             **(metadata or {}),
+        }
+        if self.artifact_root is None:
+            path = (self.predictions_path if dataset_role == "blind"
+                    else self.development_predictions_path)
+            _atomic_npz(path, **payload)
+            return path
+
+        metadata_identity = {}
+        for key, value in (metadata or {}).items():
+            array = np.asarray(value)
+            metadata_identity[str(key)] = (
+                array.item() if array.ndim == 0
+                else array.tolist() if array.size <= 128
+                else {"shape": list(array.shape), "dtype": array.dtype.str}
+            )
+        role = str(dataset_role)
+        final_fit_fingerprint = str(
+            metadata_identity.get("final_fit_fingerprint", "unspecified")
         )
-        return path
+        protocol_identity = str(
+            metadata_identity.get("analysis_protocol_identity", "unspecified")
+        )
+        model_reference = self.read_json(self.model_reference_path, {}) or {}
+        parents = tuple(
+            str(value) for value in (
+                model_reference.get("product_id"),
+                final_fit_fingerprint if final_fit_fingerprint != "unspecified" else None,
+            ) if value
+        )
+        payload_identity = {}
+        for key, value in payload.items():
+            array = np.ascontiguousarray(np.asarray(value))
+            if array.dtype.hasobject:
+                raise TypeError(
+                    f"Prediction payload {key!r} uses an unsupported object dtype"
+                )
+            payload_identity[str(key)] = {
+                "shape": list(array.shape),
+                "dtype": array.dtype.str,
+                "sha256": hashlib.sha256(array.tobytes()).hexdigest(),
+            }
+        recipe = ProductRecipe(
+            "predictions",
+            {
+                "dataset_role": role,
+                "final_fit_fingerprint": final_fit_fingerprint,
+                "analysis_protocol_identity": protocol_identity,
+                "event_count": int(payload["event_id"].size),
+                "event_ids_hash": canonical_hash(payload["event_id"].tolist()),
+                "metadata": metadata_identity,
+                # Manifest labels and event IDs alone do not identify target values.
+                # Include all arrays so changed source data or predictions cannot
+                # resolve to a stale immutable artifact with the same run identity.
+                "payload_arrays": payload_identity,
+            },
+            parents=parents,
+            implementation="paired-tof-predictions-v2",
+        )
+        store = ArtifactStore(self.artifact_root)
+        reference = store.get_or_build(
+            recipe,
+            lambda directory: _atomic_npz(directory / "predictions.npz", **payload),
+            metadata={
+                "dataset_role": role,
+                "final_fit_fingerprint": final_fit_fingerprint,
+                "analysis_protocol_identity": protocol_identity,
+            },
+        )
+        key = "blind_predictions" if role == "blind" else "development_predictions"
+        self._write_artifact_reference(key, reference)
+        return reference.payload_path("predictions.npz")
 
     def load_predictions(self):
         with np.load(self.predictions_path) as data:
             return {k: np.asarray(data[k]) for k in data.files}
 
-    def save_bootstrap_draws(self, draws):
-        _atomic_npz(
-            self.bootstrap_draws_path,
-            **{k: np.asarray(v, dtype=np.float64) for k, v in draws.items()},
+    def save_bootstrap_draws(self, draws, *, fingerprint=None, blind_fingerprint=None):
+        arrays = {k: np.asarray(v, dtype=np.float64) for k, v in draws.items()}
+        if self.artifact_root is None:
+            _atomic_npz(self.bootstrap_draws_path, **arrays)
+            return self.bootstrap_draws_path
+        recipe = ProductRecipe(
+            "bootstrap-draws",
+            {
+                "bootstrap_fingerprint": str(fingerprint or "unspecified"),
+                "blind_fingerprint": str(blind_fingerprint or "unspecified"),
+                "draws": {
+                    key: {"shape": list(value.shape), "dtype": value.dtype.str}
+                    for key, value in sorted(arrays.items())
+                },
+            },
+            parents=tuple(
+                value for value in (fingerprint, blind_fingerprint) if value
+            ),
+            implementation="blind-event-bootstrap-v1",
         )
+        reference = ArtifactStore(self.artifact_root).get_or_build(
+            recipe,
+            lambda directory: _atomic_npz(directory / "bootstrap.npz", **arrays),
+            metadata={"bootstrap_fingerprint": str(fingerprint or "unspecified")},
+        )
+        self._write_artifact_reference("bootstrap_draws", reference)
+        return reference.payload_path("bootstrap.npz")
 
     def save_xai(self, **arrays):
-        _atomic_npz(self.xai_path, **arrays)
-        return self.xai_path
+        if self.artifact_root is None:
+            _atomic_npz(self.xai_path, **arrays)
+            return self.xai_path
+        payload_identity = {}
+        for name, value in sorted(arrays.items()):
+            array = np.asarray(value)
+            if array.dtype.hasobject:
+                raise TypeError(f"XAI payload {name!r} uses an object dtype")
+            contiguous = np.ascontiguousarray(array)
+            payload_identity[name] = {
+                "shape": list(contiguous.shape),
+                "dtype": contiguous.dtype.str,
+                "sha256": hashlib.sha256(contiguous.tobytes()).hexdigest(),
+            }
+        recipe = ProductRecipe(
+            "xai-products",
+            {
+                "run_identity": str(self.read_json(self.final_fit_path, {}).get(
+                    "fingerprint", self.root.name
+                )),
+                "arrays": payload_identity,
+            },
+            implementation="post-training-xai-v1",
+        )
+        reference = ArtifactStore(self.artifact_root).get_or_build(
+            recipe,
+            lambda directory: _atomic_npz(directory / "xai.npz", **arrays),
+            metadata={"pinned": True, "run_id": self.root.name},
+        )
+        self._write_artifact_reference("xai", reference)
+        return reference.payload_path("xai.npz")

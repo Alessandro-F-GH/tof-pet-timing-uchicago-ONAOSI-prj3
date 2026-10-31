@@ -9,13 +9,16 @@ from waveform_analysis.signal.pulses import (
 from waveform_analysis.signal.baseline import (
     baseline_quality_metrics as _baseline_quality_metrics,
 )
-import csv, json, shutil
-from dataclasses import dataclass
+import csv, json
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 import numpy as np
 from waveform_analysis.signal.photopeak import fit_photopeak
 from waveform_analysis.signal.peak import fit_histogram_peak
+from waveform_analysis.core.artifact_identity import ProductRecipe
+from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import selection_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
     canonical_hash,
@@ -498,102 +501,149 @@ def apply_selection_rules(
     mode,
     *,
     cache_dir,
+    artifact_root=None,
     rebuild=False,
     logger=None,
 ):
+    """Apply frozen control rules and persist selected events in the shared store."""
     root = Path(root_file).resolve()
     family = {"energy_to_energy": "energy", "timing_to_timing": "timing"}[str(mode)]
-    base = (
-        Path(cache_dir).resolve()
-        / canonical_hash(
-            {"source": str(root), "rules": rules["fingerprint"], "mode": mode}
-        )[:16]
+    fingerprint = application_fingerprint(root, dataset, preprocessing, rules, mode)
+    recipe = ProductRecipe(
+        "selected-events",
+        {
+            "application_fingerprint": fingerprint,
+            "rules_fingerprint": rules["fingerprint"],
+            "mode": str(mode),
+        },
+        parents=(str(rules["fingerprint"]),),
+        implementation=f"selection-application-v{SELECTION_APPLY_VERSION}",
     )
-    if base.is_dir() and not rebuild:
-        try:
-            return load_selection(base, root, dataset, preprocessing, rules, mode)
-        except (ValueError, FileNotFoundError):
-            pass
-    if base.exists():
-        shutil.rmtree(base)
-    base.mkdir(parents=True)
-    total = energy_event_count(root)
-    mx = int(preprocessing.get("io", {}).get("max_events", 0))
-    n = min(total, mx) if mx > 0 else total
-    event_index, amps = _scan_amplitudes(root, dataset, preprocessing, n)
-    photo = _photo_mask(amps, rules)
-    hits = _scan_hits(root, dataset, preprocessing, photo, n, (family,))
-    main, chosen, triggers, stops = _choose_hits(
-        hits, photo, family, rules.get("timing_tot") if family == "timing" else None
+    resolved_artifact_root = (
+        Path(artifact_root).expanduser().resolve()
+        if artifact_root is not None
+        else Path(cache_dir).resolve().parent / "artifact_store"
     )
-    rms, clipped, clearance = _scan_baseline(
-        root, dataset, preprocessing, main, triggers, n, family
-    )
-    lim = np.asarray(rules["baseline_noise_limits_mV"][family], float)
-    noise = main & np.all(np.isfinite(rms) & (rms <= lim[None, :]), axis=1)
-    final = noise & ~np.any(clipped, axis=1)
-    if not np.any(final):
-        raise RuntimeError("No events remain after frozen preprocessing")
-    rows = np.flatnonzero(final)
-    entries = np.arange(n, dtype=np.int64)
-    np.save(base / "entry_index.npy", entries[rows])
-    np.save(base / "event_index.npy", event_index[rows])
-    np.save(base / "main_trigger.npy", triggers[rows])
-    np.save(base / "main_hit.npy", chosen[rows])
-    np.save(base / "main_stop.npy", stops[rows])
-    clipping_margin = float(rules["baseline_clipping_rule"]["margin_mV"])
-    plot_photopeak(
-        amps,
-        rules["photopeak_intervals_mV"],
-        base / "photopeak_selection.png",
-        "Analysis photopeak with frozen reference limits",
-    )
-    plot_baseline_noise(
-        rms,
-        main,
-        lim,
-        base / "baseline_noise.png",
-        "Analysis baseline noise with frozen reference limits",
-    )
-    plot_baseline_clipping(
-        clearance,
-        main,
-        clipping_margin,
-        base / "baseline_clipping.png",
-        "Analysis baseline clipping",
-    )
-    if family == "timing" and rules.get("timing_tot") is not None:
-        plot_tot(
-            hits["timing"],
-            photo,
-            rules["timing_tot"]["limits_ns"],
-            base / "timing_tot_selection.png",
-            "Analysis timing ToT with frozen reference limits",
+    store = ArtifactStore(resolved_artifact_root)
+
+    def build(base):
+        base.mkdir(parents=True, exist_ok=True)
+        total = energy_event_count(root)
+        mx = int(preprocessing.get("io", {}).get("max_events", 0))
+        n = min(total, mx) if mx > 0 else total
+        event_index, amps = _scan_amplitudes(root, dataset, preprocessing, n)
+        photo = _photo_mask(amps, rules)
+        hits = _scan_hits(root, dataset, preprocessing, photo, n, (family,))
+        main, chosen, triggers, stops = _choose_hits(
+            hits, photo, family, rules.get("timing_tot") if family == "timing" else None
         )
-    counts = {
-        "initial_valid": int(np.all(np.isfinite(amps), axis=1).sum()),
-        "photopeak": int(photo.sum()),
-        "main_hit_tot" if family == "timing" else "main_hit": int(main.sum()),
-        "baseline_noise": int(noise.sum()),
-        "baseline_clipping": int(final.sum()),
-    }
-    _summary(base / "selection_summary.csv", counts, n)
-    manifest = {
-        "format_version": SELECTION_APPLY_VERSION,
-        "fingerprint": application_fingerprint(
-            root, dataset, preprocessing, rules, mode
-        ),
-        "source": str(root),
-        "mode": mode,
-        "family": family,
-        "rules_fingerprint": rules["fingerprint"],
-        "n_raw": n,
-        "n_selected": int(rows.size),
-        "stage_counts": counts,
-    }
-    atomic_json(base / "manifest.json", manifest)
-    if logger:
-        logger.info(
-            "Frozen selection | %s | %s | selected=%d/%d", root.name, mode, rows.size, n
+        rms, clipped, clearance = _scan_baseline(
+            root, dataset, preprocessing, main, triggers, n, family
         )
-    return load_selection(base, root, dataset, preprocessing, rules, mode)
+        lim = np.asarray(rules["baseline_noise_limits_mV"][family], float)
+        noise = main & np.all(np.isfinite(rms) & (rms <= lim[None, :]), axis=1)
+        final = noise & ~np.any(clipped, axis=1)
+        if not np.any(final):
+            raise RuntimeError("No events remain after frozen preprocessing")
+        rows = np.flatnonzero(final)
+        entries = np.arange(n, dtype=np.int64)
+        np.save(base / "entry_index.npy", entries[rows])
+        np.save(base / "event_index.npy", event_index[rows])
+        np.save(base / "main_trigger.npy", triggers[rows])
+        np.save(base / "main_hit.npy", chosen[rows])
+        np.save(base / "main_stop.npy", stops[rows])
+        clipping_margin = float(rules["baseline_clipping_rule"]["margin_mV"])
+        plot_photopeak(
+            amps,
+            rules["photopeak_intervals_mV"],
+            base / "photopeak_selection.png",
+            "Analysis photopeak with frozen reference limits",
+        )
+        plot_baseline_noise(
+            rms,
+            main,
+            lim,
+            base / "baseline_noise.png",
+            "Analysis baseline noise with frozen reference limits",
+        )
+        plot_baseline_clipping(
+            clearance,
+            main,
+            clipping_margin,
+            base / "baseline_clipping.png",
+            "Analysis baseline clipping",
+        )
+        if family == "timing" and rules.get("timing_tot") is not None:
+            plot_tot(
+                hits["timing"],
+                photo,
+                rules["timing_tot"]["limits_ns"],
+                base / "timing_tot_selection.png",
+                "Analysis timing ToT with frozen reference limits",
+            )
+        counts = {
+            "initial_valid": int(np.all(np.isfinite(amps), axis=1).sum()),
+            "photopeak": int(photo.sum()),
+            "main_hit_tot" if family == "timing" else "main_hit": int(main.sum()),
+            "baseline_noise": int(noise.sum()),
+            "baseline_clipping": int(final.sum()),
+        }
+        _summary(base / "selection_summary.csv", counts, n)
+        manifest = {
+            "format_version": SELECTION_APPLY_VERSION,
+            "fingerprint": application_fingerprint(
+                root, dataset, preprocessing, rules, mode
+            ),
+            "source": str(root),
+            "mode": mode,
+            "family": family,
+            "rules_fingerprint": rules["fingerprint"],
+            "n_raw": n,
+            "n_selected": int(rows.size),
+            "stage_counts": counts,
+        }
+        atomic_json(base / "manifest.json", manifest)
+        if logger:
+            logger.info(
+                "Frozen selection | %s | %s | selected=%d/%d", root.name, mode, rows.size, n
+            )
+    alias = selection_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
+    reference = get_or_build_named(
+        store, recipe, alias,
+        lambda directory, _recipe: build(directory),
+        rebuild=rebuild,
+        metadata={
+            "source": str(root),
+            "mode": str(mode),
+            "rules_fingerprint": rules["fingerprint"],
+        },
+    )
+    try:
+        selected = load_selection(reference.path, root, dataset, preprocessing, rules, mode)
+    except ValueError as exc:
+        if str(exc) != "selection cache stale" or rebuild:
+            raise
+        # A semantic alias may point to a valid immutable product created
+        # under an older selection fingerprint. Rebuild only this selected-
+        # events product, then atomically retarget its readable alias.
+        if logger:
+            logger.warning(
+                "Stale selection cache | %s | %s | rebuilding selected events",
+                root.name, mode,
+            )
+        reference = get_or_build_named(
+            store, recipe, alias,
+            lambda directory, _recipe: build(directory),
+            rebuild=True,
+            metadata={
+                "source": str(root),
+                "mode": str(mode),
+                "rules_fingerprint": rules["fingerprint"],
+            },
+        )
+        selected = load_selection(
+            reference.path, root, dataset, preprocessing, rules, mode
+        )
+    manifest = dict(selected.manifest)
+    manifest["artifact_product_id"] = reference.product_id
+    return replace(selected, manifest=manifest)

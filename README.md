@@ -41,6 +41,25 @@ To run a batch **after providing the referenced acquisition files and configurin
 python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/benchmark_UC.json
 ```
 
+To prepare reusable preprocessing and feature caches on one machine before running
+experiments elsewhere, use a dedicated cache bundle:
+
+```bash
+python -m waveform_analysis.cli prepare-cache --config waveform_analysis/config/batches/benchmark_UC.json --cache-root /path/to/cache_bundle
+```
+
+Copy the cache bundle to the destination machine, then point the batch run at it:
+
+```bash
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/benchmark_UC.json --cache-root /path/to/cache_bundle
+```
+
+The preparation command does not run cross-validation, hyperparameter selection,
+supervised model fitting, blind evaluation or reporting. The cache bundle does not
+include the original ROOT acquisitions or Python dependencies; those must be
+available on the destination machine. Keep the software versions compatible with
+the environment used to generate the cache.
+
 See the [waveform analysis guide](waveform_analysis/README.md) for models, configuration files, saved-result reporting and TSHAP commands. [`ARCHITECTURE.md`](waveform_analysis/ARCHITECTURE.md) describes the software internals for maintainers.
 
 ## Reproducibility scope

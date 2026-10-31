@@ -1,83 +1,67 @@
 """Verified prepared cache loading for TSHAP and waveform imputation."""
 from __future__ import annotations
-import json
-from pathlib import Path, PureWindowsPath
-import re
+from pathlib import Path
 from typing import Any
 from waveform_analysis.data.dataset import PreparedDataset, load_prepared_dataset
+from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import prepared_dataset_alias, resolve_alias, alias_exists
 
 def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _cache_root(config: dict[str, Any], run: Path, override: Path | None, *, roles=("control", "blind")) -> Path:
-    if override is not None:
-        return override.expanduser().resolve()
-    configured = Path(config["preprocessing"]["cache_dir"]).expanduser()
-    candidates = [configured]
-    parts = PureWindowsPath(str(configured)).parts
-    anchors = [i for i, part in enumerate(parts) if part.lower() == "waveform_analysis"]
-    if anchors:
-        suffix = Path(*parts[anchors[-1] + 1:])
-        roots = [parent for parent in run.parents if parent.name.lower() == "waveform_analysis"]
-        roots.append(Path(__file__).resolve().parents[1])
-        candidates.extend(root / suffix for root in roots)
-    for candidate in candidates:
-        if all((candidate / f"{role}_ml" / "prepared").is_dir() for role in roles):
-            return candidate.resolve()
-    return configured.resolve()
-
-
 class PreparedCacheLookup:
-    """Index metadata once and reuse memory-mapped datasets across saved models."""
+    """Resolve prepared datasets by semantic cache name, with legacy-ref fallback.
+
+    The selected cache is authoritative: historical run fingerprints are not
+    compared with current prepared-cache protocol fingerprints. Role and
+    waveform-grid compatibility are still checked by the consumer.
+    """
 
     def __init__(self):
-        self.index: dict[tuple[Path, str], list[tuple[Path, dict[str, Any]]]] = {}
         self.datasets: dict[Path, PreparedDataset] = {}
 
-    def find(self, root: Path, role: str, config: dict[str, Any], manifest: dict[str, Any]) -> PreparedDataset:
-        key = root, role
-        if key not in self.index:
-            entries = []
-            for path in (root / f"{role}_ml" / "prepared").glob("*/manifest.json"):
-                try:
-                    entries.append((path.parent, _read(path)))
-                except (OSError, ValueError):
-                    continue
-            self.index[key] = entries
-        population = manifest.get("dataset_populations", {}).get(role, {})
-        expected_protocol = population.get("analysis_protocol_identity")
-        expected_population = population.get("population_identity")
-        control_prefix = PureWindowsPath(manifest.get("control_artifact", "")).name
-        matches = []
-        for path, cached in self.index[key]:
-            if not (
-                cached.get("dataset_role") == role
-                and cached.get("dataset_source") == config[role]["root_file"]
-                and cached.get("mode") == config["mode"]
-                and cached.get("window_ns") == config["window_ns"]
-                and cached.get("subsampling") == config["ml_input"]["subsampling"]
-                and cached.get("true_tof_ps") == config[role]["true_tof_ps"]
-                and (expected_population is None or cached.get("event_population_identity") == expected_population)
-            ):
-                continue
-            if expected_protocol is not None:
-                verified = cached.get("analysis_protocol_identity") == expected_protocol
-            else:
-                verified = (re.fullmatch(r"[0-9a-f]{16}", control_prefix) is not None
-                            and str(cached.get("control_fingerprint", "")).startswith(control_prefix))
-            if verified:
-                matches.append(path)
-        if len(matches) != 1:
-            raise ValueError(
-                f"Expected one verified {role} cache, found {len(matches)} in "
-                f"{root / f'{role}_ml' / 'prepared'}. Retain the original prepared "
-                f"{role} arrays or supply their location with --cache-root."
+    def find(self, role: str, config: dict[str, Any], manifest: dict[str, Any]) -> PreparedDataset:
+        # Prefer the stable semantic path. Hash references remain a compatibility
+        # fallback for old result manifests and caches without named aliases.
+        alias = prepared_dataset_alias(
+            Path(config["preprocessing"].get("named_cache_root") or
+                 Path(config["preprocessing"]["artifact_root"]).resolve().parent),
+            config, role,
+        )
+        reference_data = manifest.get("prepared_artifact_refs", {}).get(role)
+        if alias_exists(alias):
+            dataset_path = resolve_alias(alias)
+        elif reference_data:
+            store = ArtifactStore(config["preprocessing"]["artifact_root"])
+            reference = store.resolve(str(reference_data["product_type"]), str(reference_data["product_id"]))
+            dataset_path = reference.path
+        else:
+            raise FileNotFoundError(
+                f"No named prepared cache or legacy artifact reference for {role}: {alias}"
             )
-        path = matches[0]
-        if path not in self.datasets:
-            # Read legacy full-grid arrays without changing their input policy;
-            # saved models supply their original masks and fitted transforms.
-            self.datasets[path] = load_prepared_dataset(path)
-        return self.datasets[path]
-
+        if dataset_path in self.datasets:
+            return self.datasets[dataset_path]
+        dataset = load_prepared_dataset(dataset_path)
+        if dataset.manifest.get("dataset_role") != role:
+            raise ValueError(f"Prepared artifact role mismatch for {role}")
+        mode = str(config["mode"])
+        if role == "control":
+            control_dataset = dataset if mode == "timing_to_timing" else None
+        elif mode == "timing_to_timing":
+            control_dataset = self.find("control", config, manifest)
+        else:
+            control_dataset = None
+        from waveform_analysis.data.sample_mask import attach_control_sample_mask
+        dataset = attach_control_sample_mask(
+            dataset,
+            control_dataset,
+            cache_root=Path(config["preprocessing"]["cache_dir"]),
+            artifact_root=Path(config["preprocessing"]["artifact_root"]),
+        )
+        # Do not compare analysis_protocol_identity with the historical run
+        # manifest. Named cache selection is intentional and user-controlled;
+        # code-version/fingerprint changes must not make reusable waveforms
+        # inaccessible. Structural role and time-grid checks remain in place.
+        self.datasets[dataset_path] = dataset
+        return dataset

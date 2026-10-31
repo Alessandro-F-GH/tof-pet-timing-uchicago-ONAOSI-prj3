@@ -1,8 +1,11 @@
 from __future__ import annotations
-import json, shutil
+import json
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
+from waveform_analysis.core.artifact_identity import ProductRecipe
+from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.named_cache import control_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.reporting.preprocessing_plots import plot_led_selection
 from waveform_analysis.engine.event_selection import (
     fit_selection_rules,
@@ -42,12 +45,16 @@ def _normalize_mode_fits(control_dataset, fit_cfg, fit_by_mode=None, modes=None)
 def _artifact_fingerprint(
     control_file, control_dataset, preprocessing, fit_by_mode, modes
 ):
+    preprocessing_identity = {
+        key: value for key, value in preprocessing.items()
+        if key not in {"cache_dir", "artifact_root"}
+    }
     return canonical_hash(
         {
             "format_version": CONTROL_ARTIFACT_VERSION,
             "control": source_signature(control_file),
             "dataset": control_dataset,
-            "preprocessing": preprocessing,
+            "preprocessing": preprocessing_identity,
             "modes": list(modes),
             "led_fit_by_mode": fit_by_mode,
         }
@@ -55,12 +62,16 @@ def _artifact_fingerprint(
 
 
 def _mode_fingerprint(control_file, control_dataset, preprocessing, mode, fit_cfg):
+    preprocessing_identity = {
+        key: value for key, value in preprocessing.items()
+        if key not in {"cache_dir", "artifact_root"}
+    }
     return canonical_hash(
         {
             "format_version": CONTROL_ARTIFACT_VERSION,
             "control": source_signature(control_file),
             "dataset": control_dataset,
-            "preprocessing": preprocessing,
+            "preprocessing": preprocessing_identity,
             "mode": mode,
             "led_fit": fit_cfg,
         }
@@ -139,105 +150,125 @@ def fit_control_artifact(
     rebuild=False,
     logger=None,
 ):
+    """Fit frozen control rules and LED calibration as one shared artifact."""
     selected_modes, mode_fits = _normalize_mode_fits(
         control_dataset, fit_cfg, fit_by_mode, modes
     )
-    fp = _artifact_fingerprint(
+    fingerprint = _artifact_fingerprint(
         control_file, control_dataset, preprocessing, mode_fits, selected_modes
     )
-    directory = Path(cache_root).resolve() / "control" / fp[:16]
-    if directory.is_dir() and not rebuild:
-        try:
-            manifest = load_control_artifact(
-                directory,
+    recipe = ProductRecipe(
+        "control-preprocessing",
+        {
+            "control_fingerprint": fingerprint,
+            "modes": list(selected_modes),
+            "fit_by_mode": mode_fits,
+        },
+        implementation=f"control-preprocessing-v{CONTROL_ARTIFACT_VERSION}",
+    )
+    store = ArtifactStore(preprocessing.get(
+        "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
+    ))
+
+    def build(directory, effective_recipe=None):
+        directory.mkdir(parents=True, exist_ok=True)
+        rules = fit_selection_rules(
+            control_file,
+            control_dataset,
+            preprocessing,
+            output_dir=directory / "diagnostics",
+            logger=logger,
+        )
+        selected = {}
+        control_means = {}
+        led = {}
+        mode_fingerprints = {}
+        for mode in selected_modes:
+            selection = apply_selection_rules(
                 control_file,
                 control_dataset,
                 preprocessing,
-                fit_cfg,
-                fit_by_mode=mode_fits,
-                modes=selected_modes,
+                rules,
+                mode,
+                cache_dir=Path(cache_root) / "control_selection",
+                artifact_root=preprocessing.get("artifact_root"),
+                rebuild=rebuild,
+                logger=logger,
+            )
+            prepared = preprocess_selected(
+                control_file,
+                selection,
+                control_dataset,
+                preprocessing,
+                mode,
+                cache_dir=Path(cache_root) / "control_native",
+                rebuild=rebuild,
+                logger=logger,
+            )
+            threshold, scan = _select_led(
+                prepared, mode, control_dataset, preprocessing, mode_fits[mode]
+            )
+            selected[mode] = threshold
+            # Freeze calibration before any ML-window selection or dataset splitting.
+            selected_row = next(row for row in scan if row["threshold_mV"] == threshold)
+            control_means[mode] = float(selected_row["control_mean_ps"])
+            led[mode] = {
+                "selected_threshold_mV": threshold,
+                "candidates": scan,
+                "fit": mode_fits[mode],
+            }
+            mode_fingerprints[mode] = _mode_fingerprint(
+                control_file, control_dataset, preprocessing, mode, mode_fits[mode]
+            )
+            plot_led_selection(
+                scan,
+                threshold,
+                directory / "diagnostics" / f"{mode}_led_selection.png",
+                f"Control LED selection: {mode}",
             )
             if logger:
-                logger.info("Control preprocessing loaded from cache | %s", directory)
-            return manifest, directory
-        except (ValueError, FileNotFoundError):
-            pass
-    if directory.exists():
-        shutil.rmtree(directory)
-    directory.mkdir(parents=True)
-    rules = fit_selection_rules(
+                logger.info(
+                    "Control LED selected | %s | %.6g mV | residual mean=%.6g ps",
+                    mode, threshold, control_means[mode],
+                )
+        manifest = {
+            "format_version": CONTROL_ARTIFACT_VERSION,
+            "fingerprint": fingerprint,
+            "control_dataset": control_dataset,
+            "control_source": str(Path(control_file).resolve()),
+            "preprocessing_fingerprint": canonical_hash(preprocessing),
+            "modes": list(selected_modes),
+            "led_fit_by_mode": mode_fits,
+            "mode_fingerprints": mode_fingerprints,
+            "selection_rules": rules,
+            "selected_led_threshold_mV": selected,
+            "led_control_mean_ps": control_means,
+            "led_centering_population": "finite control LED coincidences before ML-window selection",
+            "led_selection": led,
+            "criteria_fit_role": "control",
+        }
+        atomic_json(directory / "manifest.json", manifest)
+    alias = control_alias(cache_root_from_config(preprocessing, cache_root), control_dataset, selected_modes)
+    reference = get_or_build_named(
+        store, recipe, alias, build,
+        rebuild=rebuild,
+        metadata={
+            "control_fingerprint": fingerprint,
+            "modes": list(selected_modes),
+            "fit_role": "control",
+        },
+    )
+    manifest = load_control_artifact(
+        reference.path,
         control_file,
         control_dataset,
         preprocessing,
-        output_dir=directory / "diagnostics",
-        logger=logger,
+        fit_cfg,
+        fit_by_mode=mode_fits,
+        modes=selected_modes,
     )
-    selected = {}
-    control_means = {}
-    led = {}
-    mode_fingerprints = {}
-    for mode in selected_modes:
-        selection = apply_selection_rules(
-            control_file,
-            control_dataset,
-            preprocessing,
-            rules,
-            mode,
-            cache_dir=Path(cache_root) / "control_selection",
-            rebuild=rebuild,
-            logger=logger,
-        )
-        prepared = preprocess_selected(
-            control_file,
-            selection,
-            control_dataset,
-            preprocessing,
-            mode,
-            cache_dir=Path(cache_root) / "control_native",
-            rebuild=rebuild,
-            logger=logger,
-        )
-        threshold, scan = _select_led(
-            prepared, mode, control_dataset, preprocessing, mode_fits[mode]
-        )
-        selected[mode] = threshold
-        # Freeze calibration before any ML-window selection or dataset splitting.
-        selected_row = next(row for row in scan if row["threshold_mV"] == threshold)
-        control_means[mode] = float(selected_row["control_mean_ps"])
-        led[mode] = {
-            "selected_threshold_mV": threshold,
-            "candidates": scan,
-            "fit": mode_fits[mode],
-        }
-        mode_fingerprints[mode] = _mode_fingerprint(
-            control_file, control_dataset, preprocessing, mode, mode_fits[mode]
-        )
-        plot_led_selection(
-            scan,
-            threshold,
-            directory / "diagnostics" / f"{mode}_led_selection.png",
-            f"Control LED selection: {mode}",
-        )
-        if logger:
-            logger.info(
-                "Control LED selected | %s | %.6g mV | residual mean=%.6g ps",
-                mode, threshold, control_means[mode],
-            )
-    manifest = {
-        "format_version": CONTROL_ARTIFACT_VERSION,
-        "fingerprint": fp,
-        "control_dataset": control_dataset,
-        "control_source": str(Path(control_file).resolve()),
-        "preprocessing_fingerprint": canonical_hash(preprocessing),
-        "modes": list(selected_modes),
-        "led_fit_by_mode": mode_fits,
-        "mode_fingerprints": mode_fingerprints,
-        "selection_rules": rules,
-        "selected_led_threshold_mV": selected,
-        "led_control_mean_ps": control_means,
-        "led_centering_population": "finite control LED coincidences before ML-window selection",
-        "led_selection": led,
-        "criteria_fit_role": "control",
-    }
-    atomic_json(directory / "manifest.json", manifest)
-    return manifest, directory
+    if logger:
+        logger.info("Control preprocessing artifact | id=%s", reference.product_id[:12])
+    manifest = dict(manifest)
+    manifest["artifact_product_id"] = reference.product_id
+    return manifest, reference.path

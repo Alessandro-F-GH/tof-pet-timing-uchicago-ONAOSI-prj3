@@ -1,9 +1,14 @@
+"""Shared cross-validation products backed by the canonical artifact store."""
 from __future__ import annotations
-import json, os, tempfile
+
+import json
 from dataclasses import dataclass
 from pathlib import Path
+
 import numpy as np
-from waveform_analysis.core.io import atomic_json, canonical_hash
+
+from waveform_analysis.core.artifact_identity import ProductRecipe
+from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.splits import (
     cv_split_from_assignment,
     fold_assignment,
@@ -13,7 +18,8 @@ from waveform_analysis.data.splits import (
 from waveform_analysis.reporting.stats import metric_values
 from waveform_analysis.data.view import model_target
 
-CV_ARTIFACT_VERSION = 1
+
+CV_ARTIFACT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -24,110 +30,100 @@ class SharedCVArtifacts:
     fingerprint: str
 
 
-def _atomic_npz(path, **arrays):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            np.savez_compressed(stream, **arrays)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+def _write_npz(path, **arrays):
+    with Path(path).open("wb") as stream:
+        np.savez_compressed(stream, **arrays)
+        stream.flush()
 
 
 class ExperimentArtifactStore:
+    """Own CV split assignments and LED fold metrics as one immutable product."""
+
     def __init__(self, root):
-        self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.store = ArtifactStore(root)
 
     def prepare_cv(self, dataset, config):
         cv = config["cross_validation"]
-        identity = str(dataset.manifest["event_population_identity"])
-        fp = canonical_hash(
-            {
-                "version": CV_ARTIFACT_VERSION,
-                "event_population_identity": identity,
-                "mode": config["mode"],
-                "window": config["window_ns"],
-                "seed": int(config["seed"]),
-                "folds": int(cv["folds"]),
-                "shuffle": bool(cv["shuffle"]),
-                "fit": config["fit"],
-            }
+        population_id = str(dataset.manifest["event_population_identity"])
+        parameters = {
+            "version": CV_ARTIFACT_VERSION,
+            "event_population_identity": population_id,
+            "mode": config["mode"],
+            "window_ns": config["window_ns"],
+            "seed": int(config["seed"]),
+            "folds": int(cv["folds"]),
+            "shuffle": bool(cv["shuffle"]),
+            "fit": config["fit"],
+            "minimum_events_per_fold": int(cv["minimum_events_per_fold"]),
+        }
+        recipe = ProductRecipe(
+            "cross-validation",
+            parameters,
+            parents=(population_id,),
+            implementation=f"cv-split-and-led-metrics-v{CV_ARTIFACT_VERSION}",
         )
-        mode = "energy" if config["mode"] == "energy_to_energy" else "timing"
-        window = str(config.get("window_name") or "window")
-        directory = self.root / mode / window / fp[:16]
-        manifest_path = directory / "manifest.json"
-        split_path = directory / "folds.npz"
-        metrics_path = directory / "led_folds.json"
-        if manifest_path.is_file() and split_path.is_file() and metrics_path.is_file():
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("fingerprint") == fp:
-                with np.load(split_path) as data:
-                    split = cv_split_from_assignment(
-                        np.asarray(data["assignment"], dtype=np.int64),
-                        seed=int(data["seed"]),
-                        shuffle=bool(int(data["shuffle"])),
-                    )
-                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-                return SharedCVArtifacts(
-                    directory, split, {int(k): v for k, v in metrics.items()}, fp
+
+        def build(directory):
+            split = make_cv_split(
+                dataset.n_events,
+                population_identity=population_id,
+                batch_seed=int(config["seed"]),
+                n_folds=int(cv["folds"]),
+                shuffle=bool(cv["shuffle"]),
+            )
+            minimum = int(cv["minimum_events_per_fold"])
+            too_small = [
+                fold.fold_id for fold in split.folds
+                if len(fold.validation) < minimum
+            ]
+            if too_small:
+                raise RuntimeError(
+                    f"CV validation folds {too_small} violate minimum_events_per_fold={minimum}"
                 )
-        directory.mkdir(parents=True, exist_ok=True)
-        split = make_cv_split(
-            dataset.n_events,
-            population_identity=identity,
-            batch_seed=int(config["seed"]),
-            n_folds=int(cv["folds"]),
-            shuffle=bool(cv["shuffle"]),
-        )
-        minimum = int(cv["minimum_events_per_fold"])
-        too_small = [f.fold_id for f in split.folds if len(f.validation) < minimum]
-        if too_small:
-            raise RuntimeError(
-                f"CV validation folds {too_small} violate minimum_events_per_fold={minimum}"
+            target = np.asarray(model_target(dataset, config["mode"]), dtype=np.float64)
+            metrics = {}
+            for fold in split.folds:
+                validation = np.asarray(fold.validation, dtype=np.int64)
+                score = metric_values(
+                    target[validation],
+                    config["fit"],
+                    seed=semantic_seed(split.seed, "led", int(fold.fold_id)),
+                )
+                metrics[int(fold.fold_id)] = {
+                    "fold_id": int(fold.fold_id),
+                    "n_validation": int(validation.size),
+                    "led_ctr_ps": float(score["ctr_ps"]),
+                    "led_rmse_ps": float(score["rmse_ps"]),
+                }
+            _write_npz(
+                directory / "folds.npz",
+                assignment=fold_assignment(split),
+                seed=np.asarray(split.seed, dtype=np.int64),
+                shuffle=np.asarray(int(split.shuffle), dtype=np.int8),
             )
-        target = np.asarray(model_target(dataset, config["mode"]), dtype=np.float64)
-        metrics = {}
-        for fold in split.folds:
-            val = np.asarray(fold.validation, dtype=np.int64)
-            score = metric_values(
-                target[val],
-                config["fit"],
-                seed=semantic_seed(split.seed, "led", int(fold.fold_id)),
+            (directory / "led_folds.json").write_text(
+                json.dumps({str(key): value for key, value in metrics.items()},
+                           sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
             )
-            metrics[int(fold.fold_id)] = {
-                "fold_id": int(fold.fold_id),
-                "n_validation": int(val.size),
-                "led_ctr_ps": float(score["ctr_ps"]),
-                "led_rmse_ps": float(score["rmse_ps"]),
-            }
-        _atomic_npz(
-            split_path,
-            assignment=fold_assignment(split),
-            seed=np.asarray(split.seed, dtype=np.int64),
-            shuffle=np.asarray(int(split.shuffle), dtype=np.int8),
-        )
-        atomic_json(metrics_path, {str(k): v for k, v in metrics.items()})
-        atomic_json(
-            manifest_path,
-            {
-                "schema_version": CV_ARTIFACT_VERSION,
-                "fingerprint": fp,
-                "event_population_identity": identity,
-                "mode": config["mode"],
-                "window_name": config.get("window_name"),
-                "window_ns": config["window_ns"],
+
+        reference = self.store.get_or_build(
+            recipe,
+            build,
+            metadata={
+                "event_population_identity": population_id,
                 "folds": int(cv["folds"]),
-                "shuffle": bool(cv["shuffle"]),
-                "seed": int(split.seed),
-                "n_events": int(dataset.n_events),
-                "minimum_events_per_fold": minimum,
+                "seed": int(config["seed"]),
             },
         )
-        return SharedCVArtifacts(directory, split, metrics, fp)
+        with np.load(reference.payload_path("folds.npz"), allow_pickle=False) as data:
+            split = cv_split_from_assignment(
+                np.asarray(data["assignment"], dtype=np.int64),
+                seed=int(data["seed"]),
+                shuffle=bool(int(data["shuffle"])),
+            )
+        raw_metrics = json.loads(
+            reference.payload_path("led_folds.json").read_text(encoding="utf-8")
+        )
+        metrics = {int(key): value for key, value in raw_metrics.items()}
+        return SharedCVArtifacts(reference.path, split, metrics, reference.product_id)
