@@ -5,7 +5,7 @@ import copy
 import json
 import logging
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 
@@ -127,12 +127,17 @@ def _source_transform(config, model_name, development, control_dataset, stage2_s
     # the development event population. Population fingerprints can legitimately
     # differ across cache/schema versions, so compare the actual source datasets
     # and retain the stronger sample-mask/time-grid/parameter checks below.
+    def _portable_basename(value):
+        # Result configurations can be moved between Windows and POSIX hosts.
+        raw = str(value)
+        return Path(raw).name if "/" in raw and "\\" not in raw else PureWindowsPath(raw).name
+
     for role in ("development", "control"):
-        current_file = Path(config[role]["root_file"]).name
-        saved_file = Path(saved_config[role]["root_file"]).name
+        current_file = _portable_basename(config[role]["root_file"])
+        saved_file = _portable_basename(saved_config[role]["root_file"])
         if current_file != saved_file:
             raise ValueError(
-                f"Source benchmark {role} file differs: {saved_file!r} vs {current_file!r}"
+                f"Source benchmark {role} ROOT filename differs: {saved_file!r} vs {current_file!r}"
             )
 
     saved_spec = get_model(model_name)
