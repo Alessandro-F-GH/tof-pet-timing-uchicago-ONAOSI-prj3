@@ -1,0 +1,115 @@
+{
+  "name": "direct_mlp_innovations_UC",
+  "control_dataset": "../datasets/control.json",
+  "development_dataset": {
+    "root_file": "processed_data/10-03/48V-R1.root",
+    "true_tof_ps": 0,
+    "channels": {
+      "energy": [
+        1,
+        2
+      ],
+      "polarities": [
+        1,
+        1
+      ],
+      "timing": [
+        3,
+        4
+      ],
+      "timing_polarities": [
+        1,
+        1
+      ]
+    }
+  },
+  "blind_dataset": {
+    "root_file": "processed_data/10-03/48V-R2.root",
+    "true_tof_ps": 0,
+    "channels": {
+      "energy": [
+        1,
+        2
+      ],
+      "polarities": [
+        1,
+        1
+      ],
+      "timing": [
+        3,
+        4
+      ],
+      "timing_polarities": [
+        1,
+        1
+      ]
+    }
+  },
+  "results": {
+    "root": "results",
+    "folder": "UC/direct_mlp_innovations"
+  },
+  "save_model": true,
+  "protocol": {
+    "seed": 1001,
+    "preprocessing_config": "../preprocessing/UC.json",
+    "cross_validation": {
+      "folds": 3,
+      "shuffle": true,
+      "metric": "ctr",
+      "minimum_events_per_fold": 50,
+      "pruning": {
+        "enabled": true,
+        "startup_complete_candidates": 3,
+        "min_folds_before_prune": 1,
+        "max_degradation_ps": 5,
+        "prune_if_worse_than_led": true,
+        "led_max_degradation_ps": 0
+      }
+    },
+    "bootstrap": {
+      "n_resamples": 100
+    },
+    "fit": {
+      "energy_to_energy": {
+        "histogram_bin_width_ps": 10
+      },
+      "timing_to_timing": {
+        "histogram_bin_width_ps": 5
+      }
+    },
+    "ml_input": {
+      "subsampling": 1
+    },
+    "ml_output": {
+      "max_abs_ps": 2000
+    },
+    "runtime": {
+      "prediction_chunk_size": 4096
+    },
+    "xai": {
+      "enabled": false,
+      "group_size_samples": 8,
+      "max_events": 4096
+    }
+  },
+  "sweep": {
+    "models": [
+      "direct_mlp_innovations"
+    ],
+    "modes": [
+      "energy_to_energy",
+      "timing_to_timing"
+    ],
+    "windows": {
+      "onishi": {
+        "start": -1.5,
+        "end": 2
+      },
+      "wide": {
+        "start": -2,
+        "end": 50
+      }
+    }
+  }
+}
