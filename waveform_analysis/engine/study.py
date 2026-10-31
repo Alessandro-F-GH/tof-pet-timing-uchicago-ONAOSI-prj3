@@ -601,10 +601,10 @@ def _outer_cv_selection_and_fit(
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
-            "target_fingerprint": None if target_override is None else target_fingerprint(target_override),
-            "fit_indices_fingerprint": __import__(
-                "waveform_analysis.core.io", fromlist=["canonical_hash"]
-            ).canonical_hash(fit_indices.tolist()),
+            **(
+                {} if target_override is None
+                else {"target_fingerprint": target_fingerprint(target_override)}
+            ),
         },
     )
     if _sync(store, "cv", cv_fp, logger) != "complete":
@@ -663,10 +663,10 @@ def _outer_cv_selection_and_fit(
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
-            "target_fingerprint": None if target_override is None else target_fingerprint(target_override),
-            "fit_indices_fingerprint": __import__(
-                "waveform_analysis.core.io", fromlist=["canonical_hash"]
-            ).canonical_hash(fit_indices.tolist()),
+            **(
+                {} if target_override is None
+                else {"target_fingerprint": target_fingerprint(target_override)}
+            ),
         },
         parents={"selection": selection_fp},
     )
