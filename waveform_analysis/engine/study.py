@@ -533,7 +533,8 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
 
 
 def _model(
-    store, spec, space, config, development, best, fp, logger, frozen_development=None
+    store, spec, space, config, development, best, fp, logger, frozen_development=None,
+    target_override=None,
 ):
     status = _sync(store, "final_fit", fp)
     if status == "complete" and config["save_model"]:
