@@ -15,7 +15,7 @@ from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
-_CACHE_VERSION = 4
+_CACHE_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,8 @@ def prepare_frozen_transform(
         "feature-transforms",
         {
             "schema_version": _CACHE_VERSION,
-            "model": spec.name,
+            # Direct/shared estimators consume different model inputs, but the
+            # fitted whitening transform itself is common to both formulations.
             "transform": spec.feature_transform.name,
             "parameters": transform_parameters,
             "seed": int(seed),
@@ -213,11 +214,15 @@ def prepare_frozen_features(
             "schema_version": _CACHE_VERSION,
             "transform_identity": frozen_transform.identity,
             "dataset_identity": dataset_identity,
+            "model": spec.name,
+            "formulation": spec.estimator_formulation,
             "role": str(role),
             "mode": mode,
         },
         parents=(frozen_transform.identity,),
-        implementation=f"{spec.feature_transform.name}:feature-matrix-v{_CACHE_VERSION}",
+        implementation=(
+            f"{spec.feature_transform.name}:{spec.name}:feature-matrix-v{_CACHE_VERSION}"
+        ),
     )
     store = ArtifactStore(config["preprocessing"].get(
         "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
@@ -258,12 +263,16 @@ def prepare_frozen_features(
                     "schema_version": 1,
                     "transform_identity": frozen_transform.identity,
                     "dataset_identity": dataset_identity,
+                    "model": spec.name,
+                    "formulation": spec.estimator_formulation,
                     "role": str(role),
                     "mode": mode,
                     "block": block_name,
                 },
                 parents=(frozen_transform.identity,),
-                implementation=f"{transform_spec.name}:{block_name}:feature-block-v1",
+                implementation=(
+                    f"{transform_spec.name}:{spec.name}:{block_name}:feature-block-v2"
+                ),
             )
 
             def build_block(directory, effective_recipe=None, block_name=block_name):
@@ -304,7 +313,7 @@ def prepare_frozen_features(
                         mmap.close()
                     del matrix
 
-            block_alias = feature_alias(cache_root_from_config(config, cache_root), config, transform_spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role), block_name)
+            block_alias = feature_alias(cache_root_from_config(config, cache_root), config, spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role), block_name)
             block_ref = get_or_build_named(
                 store, block_recipe, block_alias, build_block,
                 metadata={"model": spec.name, "block": block_name,
@@ -373,7 +382,7 @@ def prepare_frozen_features(
                 mmap.close()
             del matrix
 
-    alias = feature_alias(cache_root_from_config(config, cache_root), config, transform_spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role))
+    alias = feature_alias(cache_root_from_config(config, cache_root), config, spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role))
     reference = get_or_build_named(store, recipe, alias, build, metadata={
         "model": spec.name, "role": str(role), "events": int(dataset.n_events),
         "dataset_identity": dataset_identity,
