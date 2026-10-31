@@ -98,14 +98,9 @@
       "direct_mlp_innovations"
     ],
     "modes": [
-      "energy_to_energy",
-      "timing_to_timing"
+      "energy_to_energy"
     ],
     "windows": {
-      "onishi": {
-        "start": -1.5,
-        "end": 2
-      },
       "wide": {
         "start": -2,
         "end": 50
