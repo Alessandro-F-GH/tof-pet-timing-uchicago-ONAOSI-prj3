@@ -40,6 +40,19 @@ def make_development_split(n_events, *, seed, stage1_fraction=0.25):
     return first, second
 
 
+def make_residual_target(original_target, stage1_prediction):
+    original = np.asarray(original_target, dtype=np.float64).reshape(-1)
+    prediction = np.asarray(stage1_prediction, dtype=np.float64).reshape(-1)
+    if original.shape != prediction.shape:
+        raise ValueError("Stage-1 prediction and original target must have identical event ordering and length")
+    if not np.all(np.isfinite(original)) or not np.all(np.isfinite(prediction)):
+        raise ValueError("Stage-1 residual target inputs must be finite")
+    residual = original - prediction
+    if not np.all(np.isfinite(residual)):
+        raise ValueError("Stage-1 residual target is non-finite")
+    return residual
+
+
 def _subset(dataset, indices, *, short_window=None):
     idx = np.asarray(indices, dtype=np.int64)
     changes = {"event_index": np.asarray(dataset.event_index[idx])}
