@@ -10,7 +10,7 @@ import numpy as np
 from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import transform_alias, feature_alias, get_or_build_named, cache_root_from_config
+from waveform_analysis.data.named_cache import (alias_exists, load_named_reference, transform_alias, feature_alias, get_or_build_named, cache_root_from_config)
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
