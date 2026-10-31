@@ -129,6 +129,20 @@ def _source_transform(config, model_name, development, control_dataset, stage2_s
         raise ValueError(
             f"Source fitted transformation seed mismatch: expected {expected_seed}, found {actual_seed}"
         )
+    from waveform_analysis.data.view import model_sample_mask, waveform_view
+    expected_mask = np.asarray(model_sample_mask(development, config["mode"]), dtype=bool)
+    expected_indices = np.flatnonzero(expected_mask)
+    if not np.array_equal(np.asarray(getattr(artifact, "sample_indices", []), dtype=np.int64),
+                          expected_indices):
+        raise ValueError("Source transform sample mask differs from the current control-derived mask")
+    expected_time = np.asarray(waveform_view(
+        development, config["mode"], np.asarray([0], dtype=np.int64)
+    ).time_ps, dtype=np.float64)[expected_mask]
+    saved_time = np.asarray(getattr(artifact, "time_ps", []), dtype=np.float64)
+    if saved_time.shape != expected_time.shape or not np.array_equal(saved_time, expected_time):
+        raise ValueError("Source transform time grid differs from the current wide-window dataset")
+    if int(metadata.get("input_samples", -1)) != int(expected_mask.sum()):
+        raise ValueError("Source transform retained-sample count differs from the current model input")
     return path, run
 
 
