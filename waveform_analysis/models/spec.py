@@ -54,6 +54,8 @@ class ModelSpec:
     explain: ModelExplain | None = None
     estimator_formulation: str = "shared"
     feature_transform: FeatureTransformSpec | None = None
+    # Optional shared cache identity for models consuming the same frozen features.
+    feature_cache_key: str | None = None
     selection_method: str = "development_cv"
     artifact_format: str = "torch"
     requires_frozen_features: bool = False
@@ -69,3 +71,8 @@ class ModelSpec:
                 "estimator_formulation must be either 'shared' or 'direct'"
             )
         object.__setattr__(self, "estimator_formulation", formulation)
+        if self.feature_cache_key is not None:
+            cache_key = str(self.feature_cache_key).strip()
+            if not cache_key:
+                raise ValueError("feature_cache_key cannot be empty")
+            object.__setattr__(self, "feature_cache_key", cache_key)
