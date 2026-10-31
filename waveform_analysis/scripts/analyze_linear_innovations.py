@@ -1,4 +1,4 @@
-"""Post-hoc temporal analysis of forward linear innovations Ridge models.
+r"""Post-hoc temporal analysis of forward linear innovations Ridge models.
 
 The analysis reuses the saved blind feature-matrix artifacts. It does not fit
 models, refit transformations, or alter any result files.
@@ -30,6 +30,7 @@ from scipy.stats import spearmanr
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.data.feature_cache import (
+    _CACHE_VERSION,
     prepare_frozen_features,
     prepare_frozen_transform,
 )
