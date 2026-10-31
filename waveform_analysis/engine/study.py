@@ -569,6 +569,9 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
+            "frozen_model_input": None
+            if frozen_development is None
+            else frozen_development.identity,
         },
     )
     if _sync(store, "cv", cv_fp, logger) != "complete":
@@ -626,6 +629,9 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
+            "frozen_model_input": None
+            if frozen_development is None
+            else frozen_development.identity,
         },
         parents={"selection": selection_fp},
     )
