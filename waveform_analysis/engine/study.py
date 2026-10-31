@@ -11,6 +11,7 @@ from waveform_analysis.data.feature_cache import (
 from waveform_analysis.models import get_model
 from waveform_analysis.engine.preprocessing import (
     fit_control,
+    load_cached_control,
     prepare_role_dataset,
     publish_preprocessing_diagnostics,
 )
@@ -665,9 +666,10 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
     _, _, blind = prepare_role_dataset(
         config, "blind", control, rebuild=False, logger=logger
     )
-    publish_preprocessing_diagnostics(
-        config, "blind", control, config["batch_output_dir"], logger=logger
-    )
+    if not config.get("reuse_prepared_inputs", False):
+        publish_preprocessing_diagnostics(
+            config, "blind", control, config["batch_output_dir"], logger=logger
+        )
     frozen_blind = (
         prepare_frozen_features(
             spec,
@@ -908,16 +910,21 @@ def run_study(config, *, logger=None):
     spec = get_model(config["model"]["name"])
     space = config["model"]["space"]
     store.write_resolved_config(config)
-    control, control_dir = fit_control(config, rebuild=False, logger=logger)
+    if config.get("reuse_prepared_inputs", False):
+        control, control_dir = load_cached_control(config)
+        logger.info("Reusing existing control preprocessing artifact")
+    else:
+        control, control_dir = fit_control(config, rebuild=False, logger=logger)
     _, _, development = prepare_role_dataset(
         config, "development", control, rebuild=False, logger=logger
     )
-    publish_preprocessing_diagnostics(
-        config, "control", control, config["batch_output_dir"], logger=logger
-    )
-    publish_preprocessing_diagnostics(
-        config, "development", control, config["batch_output_dir"], logger=logger
-    )
+    if not config.get("reuse_prepared_inputs", False):
+        publish_preprocessing_diagnostics(
+            config, "control", control, config["batch_output_dir"], logger=logger
+        )
+        publish_preprocessing_diagnostics(
+            config, "development", control, config["batch_output_dir"], logger=logger
+        )
     frozen_transform = None
     frozen_development = None
     control_prepared = None
