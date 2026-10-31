@@ -15,7 +15,7 @@ from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
-_CACHE_VERSION = 5
+_CACHE_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -127,8 +127,7 @@ def prepare_frozen_transform(
         "feature-transforms",
         {
             "schema_version": _CACHE_VERSION,
-            # Direct/shared estimators consume different model inputs, but the
-            # fitted whitening transform itself is common to both formulations.
+            "model": spec.feature_cache_key or spec.name,
             "transform": spec.feature_transform.name,
             "parameters": transform_parameters,
             "seed": int(seed),
@@ -221,7 +220,7 @@ def prepare_frozen_features(
         },
         parents=(frozen_transform.identity,),
         implementation=(
-            f"{spec.feature_transform.name}:{spec.feature_cache_key or spec.name}:feature-matrix-v{_CACHE_VERSION}"
+            f"{spec.feature_transform.name}:feature-matrix-v{_CACHE_VERSION}"
         ),
     )
     store = ArtifactStore(config["preprocessing"].get(
