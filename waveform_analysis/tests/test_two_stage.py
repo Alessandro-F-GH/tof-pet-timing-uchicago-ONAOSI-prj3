@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from waveform_analysis.engine.two_stage import make_development_split
+from types import SimpleNamespace\n\nfrom waveform_analysis.engine.two_stage import make_development_split\nfrom waveform_analysis.engine.train import resolve_target_vector, target_fingerprint
 
 
 def test_two_stage_split_is_deterministic_disjoint_and_exhaustive():
@@ -30,3 +30,24 @@ def test_two_stage_split_rejects_invalid_fraction(fraction):
 def test_two_stage_split_requires_two_events():
     with pytest.raises(ValueError):
         make_development_split(1, seed=1)
+
+
+
+def test_target_override_is_event_aligned_and_does_not_mutate_dataset():
+    dataset = SimpleNamespace(
+        n_events=3,
+        energy_target_ps=np.asarray([1.0, 2.0, 3.0]),
+    )
+    override = np.asarray([0.5, 1.5, 2.5])
+    resolved = resolve_target_vector(dataset, "energy_to_energy", override)
+    np.testing.assert_array_equal(resolved, override)
+    np.testing.assert_array_equal(dataset.energy_target_ps, [1.0, 2.0, 3.0])
+    assert target_fingerprint(override) != target_fingerprint(dataset.energy_target_ps)
+
+
+def test_target_override_rejects_wrong_length_and_nonfinite_values():
+    dataset = SimpleNamespace(n_events=3, energy_target_ps=np.asarray([1.0, 2.0, 3.0]))
+    with pytest.raises(ValueError):
+        resolve_target_vector(dataset, "energy_to_energy", [1.0, 2.0])
+    with pytest.raises(ValueError):
+        resolve_target_vector(dataset, "energy_to_energy", [1.0, np.nan, 3.0])
