@@ -20,7 +20,8 @@ from waveform_analysis.data.feature_cache import prepare_frozen_transform, prepa
 from waveform_analysis.engine.study import _outer_cv_selection_and_fit, _logger
 from waveform_analysis.engine.train import predict_indices, target_fingerprint, release_training_memory
 from waveform_analysis.models import get_model
-from waveform_analysis.reporting.stats import paired_central_metrics, blind_event_bootstrap, paired_model_bootstrap, metric_values\nfrom waveform_analysis.data.shared_artifacts import SharedCVArtifacts
+from waveform_analysis.reporting.stats import paired_central_metrics, blind_event_bootstrap, paired_model_bootstrap, metric_values
+from waveform_analysis.data.shared_artifacts import SharedCVArtifacts
 
 
 def make_development_split(n_events, *, seed, stage1_fraction=0.25):
@@ -204,7 +205,8 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
                         residual_target_ps=residual_s2, target_fingerprint=np.asarray(residual_fp))
 
     # Reuse the exact fitted transform from the existing original-target wide run.
-    control_prepared = prepare_role_dataset(config, "control", control, rebuild=False, logger=None)[2]\n    source_path, source_run = _source_transform(config, stage2_model, wide, control_prepared, stage2_cfg["model"]["space"], logger)
+    control_prepared = prepare_role_dataset(config, "control", control, rebuild=False, logger=None)[2]
+    source_path, source_run = _source_transform(config, stage2_model, wide, control_prepared, stage2_cfg["model"]["space"], logger)
     stage2_spec = get_model(stage2_model)
     frozen_transform = prepare_frozen_transform(
         stage2_spec, stage2_cfg["model"]["space"], stage2_cfg,
@@ -274,7 +276,8 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
         "blind_bootstrap": bootstrap, "paired_stage1_minus_combined_ctr": paired,
         "source_transform_run": str(source_run["directory"]),
         "source_transform_path": str(source_path),
-        "source_transform_identity": frozen_transform.identity,\n        "single_stage_full_development_benchmark": source_run.get("blind", {}),
+        "source_transform_identity": frozen_transform.identity,
+        "single_stage_full_development_benchmark": source_run.get("blind", {}),
         "blind_mean_residual_before_ps": float(np.mean(blind_target)),
         "blind_mean_residual_after_stage1_ps": float(np.mean(residual1)),
         "blind_mean_residual_after_stage2_ps": float(np.mean(corrected)),
