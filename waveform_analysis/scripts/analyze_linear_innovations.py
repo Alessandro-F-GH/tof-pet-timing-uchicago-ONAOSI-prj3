@@ -84,6 +84,30 @@ def _apply_cache_root(config, cache_root):
     config["preprocessing"]["artifact_root"] = str(artifact_root)
 
 
+def _adapt_feature_matrix(features, formulation, n_samples, model_name):
+    """Enforce the estimator's actual feature convention.
+
+    Some existing feature-cache products contain the paired detector innovations
+    [z1, z2] even for a shared model. The shared estimator consumes z1 - z2.
+    Adapt that legacy/raw representation explicitly and let prediction replay
+    below verify that it matches the saved estimator.
+    """
+    values = np.asarray(features)
+    expected = 2 * int(n_samples) if formulation == "direct" else int(n_samples)
+    if values.ndim != 2:
+        raise ValueError(f"{model_name} feature cache must be a 2D matrix")
+    if formulation == "shared" and values.shape[1] == 2 * int(n_samples):
+        paired = values.reshape(values.shape[0], 2, int(n_samples))
+        values = np.asarray(paired[:, 0, :] - paired[:, 1, :], dtype=np.float32)
+        return values, "paired_detector_innovations_to_shared_difference"
+    if values.shape[1] != expected:
+        raise ValueError(
+            f"{model_name} feature cache has {values.shape[1]} columns; "
+            f"expected {expected} for {formulation} formulation"
+        )
+    return values, "native_model_features"
+
+
 def _load_cached_feature_matrix(spec, frozen_transform, blind, config, logger=None):
     """Load or materialize blind features using the already-fitted frozen transform.
 
@@ -675,11 +699,9 @@ def _analyze_run(run, board, output_root, *, cache_root=None,
         spec, frozen_transform, blind, config, logger=logger
     )
     formulation = "direct" if spec.name.startswith("direct_") else "shared"
-    expected_features = 2 * n_samples if formulation == "direct" else n_samples
-    if features.shape[1] != expected_features:
-        raise ValueError(
-            f"{spec.name} feature cache has {features.shape[1]} columns; expected {expected_features}"
-        )
+    features, feature_matrix_adapter = _adapt_feature_matrix(
+        features, formulation, n_samples, spec.name
+    )
 
     event_ids, saved_prediction, target, corrected = _load_saved_predictions(
         run_store, blind, config["mode"]
@@ -780,6 +802,7 @@ def _analyze_run(run, board, output_root, *, cache_root=None,
     summary_extra = {
         "formulation": formulation,
         "feature_matrix_product_id": feature_product_id,
+        "feature_matrix_adapter": feature_matrix_adapter,
         "transform_identity": transform_identity,
         "prediction_replay_max_abs_error_ps": replay_error,
         "n_output_clipped_events": int(np.count_nonzero(
@@ -806,9 +829,10 @@ def _analyze_run(run, board, output_root, *, cache_root=None,
     )
     if logger:
         logger.info(
-            "Innovation analysis | %s | %s | %s | events=%d | samples=%d | groups=%d | cache=%s",
+            "Innovation analysis | %s | %s | %s | events=%d | samples=%d | groups=%d | cache=%s | feature_adapter=%s",
             spec.name, config["mode"], config["window_name"], len(rows),
             n_samples, len(groups), "written" if written else "hit",
+            feature_matrix_adapter,
         )
     record = _load_run_record(destination)
 
