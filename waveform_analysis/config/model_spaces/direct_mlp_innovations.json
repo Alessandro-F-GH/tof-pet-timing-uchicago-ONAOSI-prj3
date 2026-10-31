@@ -56,5 +56,12 @@
   "diagnostics": {
     "detector_swap": false
   },
-  "verbose": false
+  "verbose": false,
+  "transform": {
+    "shrinkage": 0.01,
+    "relative_jitter": 0.000001,
+    "max_fit_events": 4096,
+    "batch_size": 256,
+    "max_samples": 6000
+  }
 }
