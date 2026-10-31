@@ -31,7 +31,12 @@ def transform_parameters(params, config):
     settings = config.get("transform", {})
     if not isinstance(settings, dict):
         raise ValueError("linear innovations transform must be an object")
-    allowed = {"max_fit_events", "batch_size", "shrinkage", "relative_jitter", "max_samples"}
+    # Accept the old forward-only setting so already-generated batch JSON
+    # remains usable after upgrading. Reverse ordering is no longer supported.
+    legacy_order = settings.get("order", "forward")
+    if legacy_order != "forward":
+        raise ValueError("linear innovations supports forward ordering only")
+    allowed = {"max_fit_events", "batch_size", "shrinkage", "relative_jitter", "max_samples", "order"}
     unknown = set(settings) - allowed
     if unknown:
         raise ValueError(f"Unknown linear innovations settings: {sorted(unknown)}")
