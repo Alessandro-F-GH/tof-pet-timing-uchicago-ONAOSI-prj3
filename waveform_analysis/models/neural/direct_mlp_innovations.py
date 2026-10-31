@@ -15,7 +15,7 @@ class DirectInnovationMLP(BaseTorchModel):
 
     def __init__(self, input_samples: int, architecture, activation: str):
         super().__init__()
-        self.regressor = DenseStack(2 * int(input_samples), architecture, activation)
+        self.regressor = DenseStack(int(input_samples), architecture, activation)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         if features.ndim != 2 or features.shape[1] % 2:
