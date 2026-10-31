@@ -98,9 +98,14 @@ def _subset(dataset, indices, *, short_window=None):
 def _source_transform(config, model_name, development, control_dataset, stage2_space, logger):
     """Resolve the exact completed wide-window run; never fit a replacement transform."""
     runs = discover_runs(Path(config["batch_output_dir"]), complete=True)
-    matches = [r for r in runs if r["manifest"].get("model") == model_name
-               and r["manifest"].get("mode") == config["mode"]
-               and r["manifest"].get("window_name") == "wide"]
+    two_stage_root = (Path(config["batch_output_dir"]).resolve() / "two_stage").resolve()
+    matches = [
+        r for r in runs
+        if r["manifest"].get("model") == model_name
+        and r["manifest"].get("mode") == config["mode"]
+        and r["manifest"].get("window_name") == "wide"
+        and two_stage_root not in Path(r["directory"]).resolve().parents
+    ]
     if len(matches) != 1:
         raise FileNotFoundError(
             f"Expected exactly one completed wide/{model_name} source run for {config['mode']}; found {len(matches)}"
