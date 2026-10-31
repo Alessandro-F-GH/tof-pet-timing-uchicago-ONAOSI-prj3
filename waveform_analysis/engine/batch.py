@@ -231,6 +231,8 @@ def run_batch(batch, *, logger=None):
             statuses[run_id] = "complete"
             _write(batch, plan, "running", statuses)
             mode = str(config["mode"])
+            if config.get("reuse_prepared_inputs", False):
+                continue
             if mode not in published:
                 control, _ = fit_control(config, rebuild=False, logger=None)
                 publish_preprocessing_diagnostics(
@@ -241,7 +243,10 @@ def run_batch(batch, *, logger=None):
                 )
                 published.add(mode)
         for mode in sorted({str(c["mode"]) for c in configs.values()}):
-            config = next(c for c in configs.values() if str(c["mode"]) == mode)
+            mode_configs = [c for c in configs.values() if str(c["mode"]) == mode]
+            if all(c.get("reuse_prepared_inputs", False) for c in mode_configs):
+                continue
+            config = mode_configs[0]
             control, _ = fit_control(config, rebuild=False, logger=None)
             publish_preprocessing_diagnostics(
                 config, "blind", control, batch.output_dir, logger=logger
