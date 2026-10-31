@@ -102,19 +102,19 @@ def _subset(dataset, indices, *, short_window=None):
 
 
 def _source_transform(config, model_name, development, control_dataset, stage2_space, logger):
-    """Resolve the exact completed wide-window run; never fit a replacement transform."""
-    runs = discover_runs(Path(config["batch_output_dir"]), complete=True)
-    two_stage_root = (Path(config["batch_output_dir"]).resolve() / "two_stage").resolve()
+    """Resolve and validate the original completed benchmark run."""
+    source_root = Path(config["_source_results"]).expanduser().resolve()
+    runs = discover_runs(source_root, complete=True)
     matches = [
-        r for r in runs
-        if r["manifest"].get("model") == model_name
-        and r["manifest"].get("mode") == config["mode"]
-        and r["manifest"].get("window_name") == "wide"
-        and two_stage_root not in Path(r["directory"]).resolve().parents
+        run for run in runs
+        if run["manifest"].get("model") == model_name
+        and run["manifest"].get("mode") == config["mode"]
+        and run["manifest"].get("window_name") == "wide"
     ]
     if len(matches) != 1:
         raise FileNotFoundError(
-            f"Expected exactly one completed wide/{model_name} source run for {config['mode']}; found {len(matches)}"
+            f"Expected exactly one completed wide/{model_name} source run under "
+            f"{source_root} for {config['mode']}; found {len(matches)}"
         )
     run = matches[0]
     source_config = run["manifest"]
@@ -126,45 +126,59 @@ def _source_transform(config, model_name, development, control_dataset, stage2_s
             raise ValueError(
                 f"Source transform {role} population identity does not match the current prepared dataset"
             )
+
     from waveform_analysis.data.results import resolve_run_config
     from waveform_analysis.data.feature_cache import _transform_parameters
+    from waveform_analysis.engine.transform_migration import _model_directory, _transform_source, _training_seed
+
     saved_config = resolve_run_config(run["directory"])
     saved_spec = get_model(model_name)
     expected_parameters = _transform_parameters(saved_spec, stage2_space)
     saved_parameters = _transform_parameters(saved_spec, saved_config["model"]["space"])
     if canonical_hash(expected_parameters) != canonical_hash(saved_parameters):
         raise ValueError("Source fitted transformation parameters differ from the requested Stage-2 model space")
-    source_store = RunStore(run["directory"], artifact_root=config["preprocessing"]["artifact_root"])
-    model_dir = source_store.model_dir
-    path = model_dir / "feature_transform" / "transform.pkl"
-    if not path.is_file():
-        raise FileNotFoundError(f"Source model does not contain its fitted transform: {path}")
+
+    source_artifact_root = config.get("_source_artifact_root")
+    model_dir = _model_directory(
+        Path(run["directory"]),
+        None if source_artifact_root is None else Path(source_artifact_root),
+    )
+    path = _transform_source(
+        model_dir,
+        None if source_artifact_root is None else Path(source_artifact_root),
+    )
     import pickle
     from waveform_analysis.data.splits import semantic_seed
     with path.open("rb") as stream:
         artifact = pickle.load(stream)
-    metadata = getattr(artifact, "metadata", {})
+    actual_seed = _training_seed(artifact)
     expected_seed = semantic_seed(
         int(saved_config["seed"]), saved_config["mode"], saved_config.get("window_name"),
         saved_spec.feature_transform.name, "frozen_transform",
     )
-    actual_seed = metadata.get("training_seed")
-    if actual_seed is None or int(actual_seed) != int(expected_seed):
+    if int(actual_seed) != int(expected_seed):
         raise ValueError(
             f"Source fitted transformation seed mismatch: expected {expected_seed}, found {actual_seed}"
         )
     from waveform_analysis.data.view import model_sample_mask, waveform_view
     expected_mask = np.asarray(model_sample_mask(development, config["mode"]), dtype=bool)
     expected_indices = np.flatnonzero(expected_mask)
-    if not np.array_equal(np.asarray(getattr(artifact, "sample_indices", []), dtype=np.int64),
-                          expected_indices):
-        raise ValueError("Source transform sample mask differs from the current control-derived mask")
-    expected_time = np.asarray(waveform_view(
-        development, config["mode"], np.asarray([0], dtype=np.int64)
-    ).time_ps, dtype=np.float64)[expected_mask]
+    saved_mask_path = model_dir / "sample_mask.npy"
+    if not saved_mask_path.is_file():
+        raise FileNotFoundError(f"Source model sample mask is missing: {saved_mask_path}")
+    saved_mask = np.asarray(np.load(saved_mask_path, allow_pickle=False), dtype=bool)
+    if not np.array_equal(saved_mask, expected_mask):
+        raise ValueError("Source model sample mask differs from the current control-derived mask")
+    if not np.array_equal(np.asarray(getattr(artifact, "sample_indices", []), dtype=np.int64), expected_indices):
+        raise ValueError("Source transform sample indices differ from the current model input")
+    expected_time = np.asarray(
+        waveform_view(development, config["mode"], np.asarray([0], dtype=np.int64)).time_ps,
+        dtype=np.float64,
+    )[expected_mask]
     saved_time = np.asarray(getattr(artifact, "time_ps", []), dtype=np.float64)
     if saved_time.shape != expected_time.shape or not np.array_equal(saved_time, expected_time):
         raise ValueError("Source transform time grid differs from the current wide-window dataset")
+    metadata = getattr(artifact, "metadata", {})
     if int(metadata.get("input_samples", -1)) != int(expected_mask.sum()):
         raise ValueError("Source transform retained-sample count differs from the current model input")
     return path, run
