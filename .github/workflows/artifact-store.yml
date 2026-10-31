@@ -1,12 +1,7 @@
 name: Artifact store validation
 
 on:
-  push:
-    branches:
-      - codex/artifact-store-refactor
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   artifact-store:
