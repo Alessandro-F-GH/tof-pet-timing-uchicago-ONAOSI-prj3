@@ -226,9 +226,33 @@ def run_two_stage(config, *, split_fraction=0.25, logger=None):
     )
     # Feature rows use the subset event order; target override has exactly the same order.
     stage2_store = RunStore(stage2_cfg["output_dir"], artifact_root=config["preprocessing"]["artifact_root"])
+    s2_split = make_cv_split(
+        stage2_data.n_events,
+        population_identity=stage2_data.manifest["event_population_identity"],
+        batch_seed=stage2_cfg["seed"],
+        n_folds=int(stage2_cfg["cross_validation"]["folds"]),
+        shuffle=bool(stage2_cfg["cross_validation"]["shuffle"]),
+    )
+    s2_led_metrics = {}
+    for fold in s2_split.folds:
+        vals = residual_s2[np.asarray(fold.validation, dtype=np.int64)]
+        score = metric_values(
+            vals, stage2_cfg["fit"],
+            seed=semantic_seed(s2_split.seed, "stage2-residual-reference", fold.fold_id),
+        )
+        s2_led_metrics[int(fold.fold_id)] = {
+            "fold_id": int(fold.fold_id), "n_validation": int(vals.size),
+            "led_ctr_ps": score["ctr_ps"], "led_rmse_ps": score["rmse_ps"],
+        }
+    s2_shared = SharedCVArtifacts(
+        Path(stage2_cfg["batch_output_dir"]) / "artifacts",
+        s2_split, s2_led_metrics,
+        canonical_hash({"split_seed": s2_split.seed, "residual_target": residual_fp}),
+    )
     s2_cv, s2_sel, s2_fp, s2_best, s2_model = _outer_cv_selection_and_fit(
         stage2_store, stage2_spec, stage2_cfg["model"]["space"], stage2_cfg,
         stage2_data, logger, frozen_transform, frozen_stage2, residual_s2,
+        shared=s2_shared,
     )
     if s2_model is None:
         from waveform_analysis.engine.train import load_fitted_model
