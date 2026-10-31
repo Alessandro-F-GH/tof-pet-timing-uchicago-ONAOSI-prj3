@@ -26,6 +26,8 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+
+from waveform_analysis.core.logging import configure_logging
 from scipy.stats import spearmanr
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
@@ -1325,6 +1327,8 @@ def _parser():
 
 def main(argv=None):
     args = _parser().parse_args(argv)
+    logger = configure_logging()
+    logger.info("Linear innovations analysis starting")
     results = _parse_board_paths(args.results, "--results")
     cache_roots = _parse_board_paths(args.cache_root, "--cache-root")
     source_artifact_roots = _parse_board_paths(
@@ -1344,6 +1348,7 @@ def main(argv=None):
         stride_samples=args.stride_samples,
         seed=args.seed,
         overwrite=args.overwrite,
+        logger=logger,
     )
 
 
