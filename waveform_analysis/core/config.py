@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 from .settings import (
@@ -142,8 +143,15 @@ def _fit(raw: dict[str, Any]) -> dict[str, Any]:
         raise ConfigError(
             "fit.bootstrap_samples is not supported; use protocol.bootstrap"
         )
-    if float(fit["histogram_bin_width_ps"]) <= 0:
+    try:
+        width = float(fit["histogram_bin_width_ps"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("fit.histogram_bin_width_ps must be a positive number") from exc
+    if not math.isfinite(width) or width <= 0:
         raise ConfigError("fit.histogram_bin_width_ps must be positive")
+    # Canonicalize numeric representation before hashing/persisting fingerprints:
+    # JSON distinguishes 10 from 10.0 although they represent the same bin width.
+    fit["histogram_bin_width_ps"] = width
     return fit
 
 
