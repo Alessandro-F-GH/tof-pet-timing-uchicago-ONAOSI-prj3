@@ -1,0 +1,28 @@
+{
+  "model": "direct_linear_innovations",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "ridge_alpha": {
+      "type": "categorical",
+      "choices": [
+        0.00001,
+        0.001,
+        0.1,
+        1,
+        10,
+        100
+      ]
+    }
+  },
+  "transform": {
+    "order": "forward",
+    "shrinkage": 0.01,
+    "relative_jitter": 0.000001,
+    "max_fit_events": 4096,
+    "batch_size": 256,
+    "max_samples": 2048
+  },
+  "verbose": false
+}
