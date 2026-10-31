@@ -5,6 +5,7 @@ from waveform_analysis.models.spec import ModelSpec
 _MODULES = {
     'antisymmetric_mlp': 'neural.antisymmetric_mlp',
     'direct_mlp': 'neural.direct_mlp',
+    'direct_mlp_innovations': 'neural.direct_mlp_innovations',
     'locally_connected_mlp': 'neural.locally_connected_mlp',
     'independent_cnn1d': 'neural.independent_cnn1d',
     'shared_cnn1d': 'neural.shared_cnn1d',
