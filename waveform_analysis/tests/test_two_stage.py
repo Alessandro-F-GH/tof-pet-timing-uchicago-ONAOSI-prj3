@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from types import SimpleNamespace\n\nfrom waveform_analysis.engine.two_stage import make_development_split\nfrom waveform_analysis.engine.train import resolve_target_vector, target_fingerprint
+from types import SimpleNamespace
+
+from waveform_analysis.engine.two_stage import make_development_split
+from waveform_analysis.engine.train import resolve_target_vector, target_fingerprint
 
 
 def test_two_stage_split_is_deterministic_disjoint_and_exhaustive():
