@@ -135,3 +135,36 @@ def test_linear_innovations_direct_and_shared_feature_caches_are_distinct(tmp_pa
         rtol=1e-6, atol=1e-6,
     )
     assert direct_features.identity != shared_features.identity
+
+
+def test_direct_mlp_innovations_reuses_direct_linear_feature_cache(tmp_path):
+    linear = get_model("direct_linear_innovations")
+    mlp = get_model("direct_mlp_innovations")
+    space = {"parameters": {
+        "ridge_alpha": {"type": "fixed", "value": 1.0}
+    }}
+    control = DummyDataset(tmp_path / "control", "control", n_events=20, n_samples=16)
+    development = DummyDataset(tmp_path / "development", "development", n_events=12, n_samples=16)
+    config = _config(tmp_path)
+
+    linear_transform = prepare_frozen_transform(
+        linear, space, config, control_dataset=control,
+        development_dataset=development, cache_root=tmp_path,
+    )
+    mlp_transform = prepare_frozen_transform(
+        mlp, {"parameters": {}}, config, control_dataset=control,
+        development_dataset=development, cache_root=tmp_path,
+    )
+    assert linear_transform.identity == mlp_transform.identity
+
+    linear_features = prepare_frozen_features(
+        linear, linear_transform, config, development,
+        role="development", cache_root=tmp_path,
+    )
+    mlp_features = prepare_frozen_features(
+        mlp, mlp_transform, config, development,
+        role="development", cache_root=tmp_path,
+    )
+    assert linear_features.identity == mlp_features.identity
+    assert linear_features.shape == mlp_features.shape == (12, 32)
+    np.testing.assert_array_equal(linear_features.features, mlp_features.features)
