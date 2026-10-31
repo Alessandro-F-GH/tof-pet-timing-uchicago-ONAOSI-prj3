@@ -57,6 +57,11 @@ def _parser() -> argparse.ArgumentParser:
                          help="Retarget conflicting transform aliases to the selected historical fit")
     migrate.add_argument("--dry-run", action="store_true",
                          help="Validate and list imports without writing artifacts")
+    two_stage = sub.add_parser("two-stage", help="Run the fixed-split two-stage timing-correction experiment")
+    two_stage.add_argument("--config", type=Path, required=True)
+    two_stage.add_argument("--mode", choices=("energy_to_energy", "timing_to_timing"), required=True)
+    two_stage.add_argument("--split-fraction", type=float, default=0.25)
+    two_stage.add_argument("--board", choices=("UC", "FBK"), required=True)
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -155,6 +160,30 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
+    if args.command == "two-stage":
+        from .engine.two_stage import run_two_stage
+        import json
+        batch = load_batch_config(_config_path(args.config), PROJECT_ROOT)
+        candidates = [item for item in batch.runs
+                      if item["mode"] == args.mode and item.get("window_name") == "wide"]
+        if not candidates:
+            raise SystemExit(f"No wide-window run configured for {args.mode}")
+        config = candidates[0]
+        stage2_name = ("direct_multirocket_rdst" if args.mode == "energy_to_energy"
+                       else "direct_multirocket")
+        model_space_dir = PROJECT_ROOT / "config" / "model_spaces"
+        with (model_space_dir / "shared_linear_ridge.json").open(encoding="utf-8") as stream:
+            stage1_space = json.load(stream)
+        with (model_space_dir / f"{stage2_name}.json").open(encoding="utf-8") as stream:
+            stage2_space = json.load(stream)
+        config["_two_stage_spaces"] = {"shared_linear_ridge": stage1_space, stage2_name: stage2_space}
+        config["model"] = {"name": stage2_name, "space": stage2_space}
+        config["_board"] = args.board
+        config["batch_output_dir"] = str(Path(batch.output_dir).resolve())
+        config["name"] = batch.name
+        print(run_two_stage(config, split_fraction=args.split_fraction, logger=logger))
+        return
+
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
         for output in explain_tshap(args.results, model_dir=args.model_dir, models=args.models,
