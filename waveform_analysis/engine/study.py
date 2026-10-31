@@ -393,6 +393,7 @@ def _optuna(
             logger,
             log_label=f"Trial {int(number) + 1}/{int(opt.n_trials)}",
             frozen_development=frozen_development,
+            target_override=target_override,
         )
         if _bool(summary.get("pruned", False)):
             study.tell(int(number), state=optuna.trial.TrialState.PRUNED)
@@ -430,7 +431,8 @@ def _optuna(
 
 
 def _search(
-    store, spec, space, config, development, shared, logger, frozen_development=None
+    store, spec, space, config, development, shared, logger, frozen_development=None,
+    target_override=None,
 ):
     opt = optimization_config(space)
     optimized = _optimized_parameter_names(space)
@@ -450,11 +452,13 @@ def _search(
     )
     candidates = (
         _fixed_grid(
-            store, spec, space, config, development, shared, logger, frozen_development
+            store, spec, space, config, development, shared, logger, frozen_development,
+            target_override,
         )
         if opt.strategy in {"fixed", "grid"}
         else _optuna(
-            store, spec, space, config, development, shared, logger, frozen_development
+            store, spec, space, config, development, shared, logger, frozen_development,
+            target_override,
         )
     )
 
@@ -475,6 +479,7 @@ def _search(
             store, spec, space, config, development, shared, identifier,
             candidates[identifier], logger, log_label="Fallback candidate",
             frozen_development=frozen_development, force_complete=True,
+            target_override=target_override,
         )
     return candidates
 
