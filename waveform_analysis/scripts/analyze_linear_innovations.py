@@ -6,8 +6,13 @@ models, refit transformations, or alter any result files.
 Example:
   python -m waveform_analysis.scripts.analyze_linear_innovations ^
     --results "UC=C:\results\UC" "FBK=C:\results\FBK" ^
+    --cache-root "UC=C:\cache\UC_cache" "FBK=C:\cache\FBK_cache" ^
     --output-root "C:\results\linear_innovation_analysis" ^
     --tshap-root "C:\results\xai"
+
+Cache roots are optional only when the artifact-store paths recorded in the
+result configurations are already valid on this machine. Each cache root must
+contain preprocessing/ and artifact_store/.
 """
 from __future__ import annotations
 
@@ -534,7 +539,9 @@ def _write_run_artifacts(destination, identity, fingerprint, board, config, spec
             ],
             "interpretation": {
                 "contribution": "Per-sample additive contribution of the standardized forward linear innovation to the fitted Ridge correction; pair contribution sums detector contributions in the direct formulation.",
-                "deletion": "Fixed-model deletion: set both detector innovations to zero over a group, equivalently subtract the group's additive contribution before output clipping. No retraining is performed.",
+                "deletion": ("Fixed-model deletion: subtract the group's additive contribution before output clipping. "
+                         "For direct models this sets both detector innovations to zero at those positions; "
+                         "for shared models it removes the detector-difference innovation feature. No retraining is performed."),
                 "conditioning": "Each innovation is conditional on preceding retained samples in the forward Cholesky ordering; it is not conditional on future samples.",
                 "cohort": "Blind evaluation cohort; this post-hoc analysis is descriptive and is not used for model selection.",
                 "masked_samples": "Temporal groups are built separately within contiguous runs of retained original sample indices and never cross masked gaps.",
