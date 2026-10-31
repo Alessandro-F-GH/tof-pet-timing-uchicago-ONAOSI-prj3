@@ -3,15 +3,14 @@
 The experimental models `direct_linear_innovations` and
 `shared_linear_innovations` use the standard feature-transform pipeline.
 For each acquisition mode/window, a fixed transform is fitted **only** to
-control waveforms, pooled across detectors, independently of timing targets.
-It is then applied separately to both detectors.
+control waveforms, pooling the two detectors to estimate one covariance. The
+same factor is then applied independently to each detector.
 
-The transform subtracts the control mean, orders samples chronologically
-(or in reverse), and solves the lower-triangular Cholesky system of a
-shrinkage-regularized control covariance. Each output represents a normalized
-linear innovation with respect to the preceding samples in that order.
-Features are written in original temporal order. Neither detector mixing nor
-feature selection is performed.
+The transform subtracts the control mean and solves the lower-triangular
+Cholesky system of a shrinkage-regularized control covariance in chronological
+(forward) sample order. Each output is a normalized linear innovation
+conditioned on preceding samples. No detector mixing or feature selection is
+performed.
 
 The transform is invertible under positive diagonal regularization. Thus
 unregularized OLS on the complete raw and transformed feature sets has
@@ -33,15 +32,14 @@ python -m waveform_analysis.scripts.linear_innovations_benchmark \
 The generated batch files cover UC/FBK, energy/timing and their configured
 Onishi/Wide windows, using the standard control/development/blind pipeline.
 Both original Ridge and transformed variants are compared. Original batches
-and datasets are not modified. To assess ordering dependence, use a separate
-output root and `--order reverse`. Adjust input ROOT paths if required.
+and datasets are not modified. Adjust input ROOT paths if required.
 
 Fast smoke test:
 
 ```bash
 python -m pytest waveform_analysis/tests/test_linear_innovations.py -q
 python -m waveform_analysis.cli check-batch \
-  --config "$HOME/linear_innovations/UC_forward.json"
+  --config "$HOME/linear_innovations/UC.json"
 ```
 
 ## TSHAP
@@ -54,7 +52,7 @@ Example:
 
 ```bash
 python -m waveform_analysis.cli explain-tshap \
-  --results "$HOME/linear_innovations/UC/linear_innovations_forward" \
+  --results "$HOME/linear_innovations/UC/linear_innovations" \
   --models direct_linear_innovations shared_linear_innovations \
   --windows wide --mode energy \
   --max-events 100 --window-samples 20 --stride-samples 20 \
@@ -67,14 +65,11 @@ protocol. Predictions are made from the original occlusion and then transformed.
 
 ## Scientific interpretation
 
-TShap profiles obtained by occluding raw waveform regions represent the
+TSHAP profiles obtained by occluding raw waveform regions represent the
 sensitivity of the complete *raw-input predictor*. They are **not direct
-importance measurements of individual innovations**. Changing the feature
-representation while retaining the same linear prediction function should not
-change raw-input occlusion effects; changes observed after refitting Ridge can
-reflect the new regularization geometry. Comparing forward and reverse
-transformations is therefore mainly a test of estimator sensitivity, not an
-independent localization of nonredundant physical timing information.
+importance measurements of individual innovations**. Changes after refitting
+Ridge can reflect the new regularization geometry, not a change in the
+underlying information in the original waveform.
 
 The covariance matrix requires O(p²) memory and a Cholesky factorization
 requires O(p³) time. `max_samples` prevents accidentally processing excessive
