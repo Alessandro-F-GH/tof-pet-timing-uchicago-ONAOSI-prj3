@@ -62,6 +62,8 @@ def _parser() -> argparse.ArgumentParser:
     two_stage.add_argument("--mode", choices=("energy_to_energy", "timing_to_timing"), required=True)
     two_stage.add_argument("--split-fraction", type=float, default=0.25)
     two_stage.add_argument("--board", choices=("UC", "FBK"), required=True)
+    two_stage.add_argument("--cache-root", type=Path,
+                           help="Prepared cache bundle (default: $HOME/<BOARD>_cache)")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -179,6 +181,13 @@ def main() -> None:
         config["_two_stage_spaces"] = {"shared_linear_ridge": stage1_space, stage2_name: stage2_space}
         config["model"] = {"name": stage2_name, "space": stage2_space}
         config["_board"] = args.board
+        cache_root = (
+            args.cache_root.expanduser().resolve()
+            if args.cache_root is not None
+            else (Path.home() / f"{args.board}_cache").resolve()
+        )
+        config["preprocessing"]["cache_dir"] = str(cache_root / "preprocessing")
+        config["preprocessing"]["artifact_root"] = str(cache_root / "artifact_store")
         config["batch_output_dir"] = str(Path(batch.output_dir).resolve())
         config["name"] = batch.name
         print(run_two_stage(config, split_fraction=args.split_fraction, logger=logger))
