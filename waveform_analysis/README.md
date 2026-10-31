@@ -141,11 +141,16 @@ wide-window benchmark configuration:
 ```bash
 python -m waveform_analysis.cli two-stage \
   --config waveform_analysis/config/batches/benchmark_UC.json \
-  --board UC --mode energy_to_energy --split-fraction 0.25
+  --board UC --mode energy_to_energy --split-fraction 0.25 \
+  --cache-root "$HOME/UC_cache"
 ```
 
 For UC timing use `--mode timing_to_timing`; for FBK use
-`benchmark_FBK.json` and `--board FBK`. Results are written under a dedicated
+`benchmark_FBK.json`, `--board FBK` and
+`--cache-root "$HOME/FBK_cache"`. The board-specific cache defaults are
+`$HOME/UC_cache` and `$HOME/FBK_cache`, respectively, so the explicit
+`--cache-root` option is only needed to override them. The command uses
+`preprocessing/` and `artifact_store/` inside that cache bundle. Results are written under a dedicated
 `two_stage/<board>/<mode>/` namespace and do not overwrite single-stage runs.
 The command requires a completed matching wide-window source run and its saved
 model/transform artifact in the configured artifact store. It stops if the source
