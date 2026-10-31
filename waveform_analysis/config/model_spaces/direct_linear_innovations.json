@@ -21,7 +21,7 @@
     "relative_jitter": 0.000001,
     "max_fit_events": 4096,
     "batch_size": 256,
-    "max_samples": 2048
+    "max_samples": 6000
   },
   "verbose": false
 }
