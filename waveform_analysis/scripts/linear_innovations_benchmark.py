@@ -1,12 +1,8 @@
-"""Build/run UC and FBK energy/timing comparisons without modifying original batches.
+"""Build/run UC and FBK linear-innovation comparisons without modifying source batches.
 
 Run from the repository root:
   python -m waveform_analysis.scripts.linear_innovations_benchmark --output-root /tmp/innovations
   python -m waveform_analysis.scripts.linear_innovations_benchmark --output-root /tmp/innovations --execute
-
-Generated batches run the standard preprocessing, development CV, blind CTR
-and saved-model workflow. TSHAP can be applied afterwards to saved models,
-occluding ORIGINAL waveforms before applying the frozen linear transformation.
 """
 from __future__ import annotations
 
@@ -28,7 +24,12 @@ MODELS = (
 )
 
 
-def generate(output_root: Path, boards: tuple[str, ...], models: tuple[str, ...], order: str):
+def _space(model):
+    path = ROOT / "config/model_spaces" / f"{model}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def generate(output_root: Path, boards: tuple[str, ...], models: tuple[str, ...]):
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     configs = []
@@ -36,9 +37,9 @@ def generate(output_root: Path, boards: tuple[str, ...], models: tuple[str, ...]
         original_path = SOURCE[board]
         original = json.loads(original_path.read_text(encoding="utf-8"))
         batch = copy.deepcopy(original)
-        batch["name"] = f"{board}_linear_innovations_{order}"
-        # Preserve real source paths: the relative paths in the original config
-        # resolve relative to waveform_analysis/, not to the generated file.
+        batch["name"] = f"{board}_linear_innovations"
+
+        # Resolve source paths against the original configuration location.
         for role in ("control_dataset", "development_dataset", "blind_dataset"):
             entry = batch[role]
             if role == "control_dataset" and isinstance(entry, str):
@@ -51,24 +52,15 @@ def generate(output_root: Path, boards: tuple[str, ...], models: tuple[str, ...]
             (original_path.parent / original["protocol"]["preprocessing_config"]).resolve()
         )
         batch["results"] = {
-            "root": str(output_root), "folder": f"{board}/linear_innovations_{order}"
+            "root": str(output_root), "folder": f"{board}/linear_innovations"
         }
         batch["sweep"]["models"] = [
-            {"name": model, "space": _space(model, order)}
-            for model in models
+            {"name": model, "space": _space(model)} for model in models
         ]
-        path = output_root / f"{board}_{order}.json"
+        path = output_root / f"{board}.json"
         path.write_text(json.dumps(batch, indent=2) + "\n", encoding="utf-8")
         configs.append(path)
     return configs
-
-
-def _space(model, order):
-    path = ROOT / "config/model_spaces" / f"{model}.json"
-    space = json.loads(path.read_text(encoding="utf-8"))
-    if "transform" in space:
-        space["transform"]["order"] = order
-    return space
 
 
 def main(argv=None):
@@ -76,10 +68,9 @@ def main(argv=None):
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--boards", nargs="+", choices=tuple(SOURCE), default=list(SOURCE))
     parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
-    parser.add_argument("--order", choices=("forward", "reverse"), default="forward")
     parser.add_argument("--execute", action="store_true", help="Run standard batch CLI after generating configs")
     args = parser.parse_args(argv)
-    paths = generate(args.output_root, tuple(args.boards), tuple(args.models), args.order)
+    paths = generate(args.output_root, tuple(args.boards), tuple(args.models))
     for path in paths:
         print(path, flush=True)
         if args.execute:
