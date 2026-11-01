@@ -143,9 +143,18 @@ def _parser() -> argparse.ArgumentParser:
     cpa_source.add_argument("--model-dir", type=Path, help="One saved-model result directory")
     cpa.add_argument("--models", nargs="+", help="Override default best/Onishi/Ridge models")
     cpa.add_argument("--mode", choices=("energy", "timing"))
-    cpa.add_argument("--board", help="Board label (UC or FBK); one board per invocation")
-    cpa.add_argument("--cache-root", type=Path, required=True,
-                     help="Prepared base waveform cache (no feature cache needed)")
+    cpa_board = cpa.add_mutually_exclusive_group()
+    cpa_board.add_argument("--board", choices=("UC", "FBK"),
+                           help="Run one board (legacy single-board invocation)")
+    cpa_board.add_argument("--boards", nargs="+", choices=("UC", "FBK"),
+                           metavar="BOARD",
+                           help="Process UC and/or FBK sequentially; --results is their parent directory")
+    cpa.add_argument("--cache-root", type=Path,
+                     help="Prepared base waveform cache for single-board invocation")
+    cpa.add_argument("--uc-cache-root", type=Path,
+                     help="UC prepared cache for --boards (e.g. $HOME/UC_cache)")
+    cpa.add_argument("--fbk-cache-root", type=Path,
+                     help="FBK prepared cache for --boards (e.g. $HOME/FBK_cache)")
     cpa.add_argument("--artifact-root", type=Path,
                      help="Optional artifact store for newer externally referenced models")
     cpa.add_argument("--output-root", type=Path, default=Path("cpa_results"))
@@ -168,6 +177,43 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cpa_jobs(args):
+    """Resolve per-board result trees and prepared caches before any computation.
+
+    Explicit per-board cache arguments prevent accidentally evaluating an
+    FBK model against UC prepared waveforms or vice versa. The execution
+    remains sequential; each board is handled by the existing CPA engine.
+    """
+    if args.boards is None:
+        if args.cache_root is None:
+            raise ValueError("Single-board CPA requires --cache-root")
+        if args.uc_cache_root is not None or args.fbk_cache_root is not None:
+            raise ValueError("Use --uc-cache-root/--fbk-cache-root only with --boards")
+        return [(args.results, args.model_dir, args.board, args.cache_root)]
+
+    if args.model_dir is not None:
+        raise ValueError("--boards requires --results pointing to the parent of UC/FBK")
+    if args.cache_root is not None:
+        raise ValueError("For --boards provide --uc-cache-root/--fbk-cache-root, not --cache-root")
+    if len(set(args.boards)) != len(args.boards):
+        raise ValueError("Each board may be listed only once")
+    cache_roots = {"UC": args.uc_cache_root, "FBK": args.fbk_cache_root}
+    jobs = []
+    # Validate both trees before starting a potentially expensive all-events run.
+    for board in args.boards:
+        result_tree = args.results.expanduser().resolve() / board
+        cache = cache_roots[board]
+        if cache is None:
+            raise ValueError(f"--{board.lower()}-cache-root is required for --boards {board}")
+        cache = cache.expanduser().resolve()
+        if not result_tree.is_dir():
+            raise FileNotFoundError(f"CPA {board} results directory not found: {result_tree}")
+        if not cache.is_dir():
+            raise FileNotFoundError(f"CPA {board} prepared cache not found: {cache}")
+        jobs.append((result_tree, None, board, cache))
+    return jobs
+
+
 def main() -> None:
     args = _parser().parse_args()
     if args.command == "check-batch":
@@ -181,20 +227,27 @@ def main() -> None:
     logger = configure_logging()
     if args.command == "explain-cpa":
         from .engine.cpa_explainer import explain_cpa
-        for output in explain_cpa(
-            args.results, model_dir=args.model_dir, models=args.models,
-            mode=args.mode, board=args.board, cache_root=args.cache_root,
-            artifact_root=args.artifact_root, output_root=args.output_root,
-            max_events=args.max_events, fit_events=args.fit_events,
-            validation_events=args.validation_events,
-            bootstrap=args.bootstrap, seed=args.seed,
-            predict_batch_size=args.predict_batch_size,
-            orders=tuple(sorted(set(args.orders))),
-            local_samples=args.local_samples, ridge_alpha=args.ridge_alpha,
-            train_stride=args.train_stride, overwrite=args.overwrite,
-            logger=logger,
-        ):
-            print(output)
+        try:
+            jobs = _cpa_jobs(args)
+        except (ValueError, FileNotFoundError) as exc:
+            raise SystemExit(str(exc)) from exc
+        for result_tree, model_dir, board, cache_root in jobs:
+            logger.info("CPA board %s | results=%s | prepared cache=%s",
+                        board or "auto", result_tree or model_dir, cache_root)
+            for output in explain_cpa(
+                result_tree, model_dir=model_dir, models=args.models,
+                mode=args.mode, board=board, cache_root=cache_root,
+                artifact_root=args.artifact_root, output_root=args.output_root,
+                max_events=args.max_events, fit_events=args.fit_events,
+                validation_events=args.validation_events,
+                bootstrap=args.bootstrap, seed=args.seed,
+                predict_batch_size=args.predict_batch_size,
+                orders=tuple(sorted(set(args.orders))),
+                local_samples=args.local_samples, ridge_alpha=args.ridge_alpha,
+                train_stride=args.train_stride, overwrite=args.overwrite,
+                logger=logger,
+            ):
+                print(output)
         return
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
