@@ -120,7 +120,7 @@ def dense_cutoffs(mean, interval, max_order, count=10):
         raise ValueError("Need >=4 cutoffs and enough valid samples")
     rise = lo + int(np.argmax(np.diff(mean[lo:hi])))
     width = hi - lo
-    dense = np.linspace(rise - .08 * width, rise + .12 * width, count - 3)
+    dense = np.linspace(rise - .02 * width, rise + .06 * width, count - 3)
     candidates = [lo + .03 * width, *dense, lo + .66 * width, lo + .86 * width]
     chosen = {int(np.clip(round(t), first, last)) for t in candidates}
     if len(chosen) < count:
