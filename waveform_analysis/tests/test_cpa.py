@@ -186,3 +186,36 @@ def test_draw_all_blind_events_with_zero_limit():
     ids = _draw_indices(32, 0, 123)
     np.testing.assert_array_equal(ids, np.arange(32))
     np.testing.assert_array_equal(_draw_indices(32, 32, 123), ids)
+
+
+def test_cpa_multi_board_cli_jobs(tmp_path):
+    from waveform_analysis.cli import _parser, _cpa_jobs
+    results = tmp_path / "results"
+    uc_cache = tmp_path / "uc_cache"
+    fbk_cache = tmp_path / "fbk_cache"
+    for p in (results / "UC", results / "FBK", uc_cache, fbk_cache):
+        p.mkdir(parents=True)
+    cmd = ["explain-cpa", "--results", str(results),
+           "--boards", "UC", "FBK", "--uc-cache-root", str(uc_cache),
+           "--fbk-cache-root", str(fbk_cache), "--max-events", "0"]
+    args = _parser().parse_args(cmd)
+    jobs = _cpa_jobs(args)
+    assert [(board, root) for _, _, board, root in jobs] == [
+        ("UC", uc_cache.resolve()), ("FBK", fbk_cache.resolve())]
+    assert [result for result, _, _, _ in jobs] == [
+        (results / "UC").resolve(), (results / "FBK").resolve()]
+    assert args.max_events == 0
+
+
+def test_cpa_multi_board_rejects_missing_cache_and_preserves_single_board(tmp_path):
+    from waveform_analysis.cli import _parser, _cpa_jobs
+    import pytest
+    results = tmp_path / "results"
+    (results / "UC").mkdir(parents=True)
+    args = _parser().parse_args(["explain-cpa", "--results", str(results),
+                                "--boards", "UC"])
+    with pytest.raises(ValueError, match="uc-cache-root"):
+        _cpa_jobs(args)
+    args = _parser().parse_args(["explain-cpa", "--results", str(results / "UC"),
+                                "--board", "UC", "--cache-root", str(tmp_path)])
+    assert _cpa_jobs(args) == [(results / "UC", None, "UC", tmp_path)]
