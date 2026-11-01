@@ -179,3 +179,10 @@ def test_timing_cutoffs_do_not_mix_absolute_and_relative_grids():
         assert np.any(np.isclose(actual, expected, atol=.0001))
     for forbidden in (2., 4., 6., 8., 10., 15., 20., 25., 30., 35., 40., 45.):
         assert not np.any(np.isclose(actual, forbidden, atol=.0001))
+
+
+def test_draw_all_blind_events_with_zero_limit():
+    from waveform_analysis.engine.cpa_explainer import _draw_indices
+    ids = _draw_indices(32, 0, 123)
+    np.testing.assert_array_equal(ids, np.arange(32))
+    np.testing.assert_array_equal(_draw_indices(32, 32, 123), ids)
