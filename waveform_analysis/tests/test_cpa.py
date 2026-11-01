@@ -323,3 +323,17 @@ def test_capped_energy_kernel_models_share_event_seed():
     assert len(set(seeds)) == 1
     indices = [_draw_indices(200, 3, value) for value in seeds]
     assert all(np.array_equal(indices[0], v) for v in indices[1:])
+
+
+def test_cpa_cohort_identity_ignores_result_folder():
+    from types import SimpleNamespace
+    from pathlib import Path
+    from waveform_analysis.engine.cpa_explainer import _cohort_identity, _identity
+    dev = SimpleNamespace(directory=Path("/cache/development"),
+                          manifest={"event_population_identity": "dev-cohort"})
+    blind = SimpleNamespace(directory=Path("/cache/blind"),
+                            manifest={"event_population_identity": "blind-cohort"})
+    assert _cohort_identity(dev, blind, "UC", "energy") == _cohort_identity(
+        dev, blind, "UC", "energy")
+    assert _cohort_identity(dev, blind, "UC", "energy") != _cohort_identity(
+        dev, blind, "FBK", "energy")
