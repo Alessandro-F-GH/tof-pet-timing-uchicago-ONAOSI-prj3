@@ -16,7 +16,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from waveform_analysis.data.results import batch_root, read_json
+from waveform_analysis.data.results import (batch_root, read_json, read_run, resolve_run_config)
 from waveform_analysis.data.named_cache import safe_component
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, model_target, waveform_view
@@ -25,7 +25,6 @@ from waveform_analysis.engine.train import (
 )
 from waveform_analysis.engine.tshap_explainer import (
     _predict_bounded, _resolve_tshap_model_directory,
-    _tshap_run_inputs,
 )
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.storage import RunStore
@@ -396,6 +395,71 @@ def _guard_dataset_identity(destination, identity):
     return True
 
 
+def _cpa_run_inputs(results, model_dir, *, models=None, mode=None, logger=None):
+    """Discover usable CPA runs without letting unrelated partial runs abort scans.
+
+    Unlike the batch-wide result reader, discovery reads the small model label
+    before inspecting its manifest. This is deliberately CPA-local: the
+    training pipeline and reporting keep their stricter completeness rules.
+    An incomplete run is eligible once its required *saved model* exists; its
+    final blind metrics and training-stage status are not prerequisites.
+    """
+    explicit = model_dir is not None
+    if explicit:
+        selected = Path(model_dir).expanduser().resolve()
+        if selected.name == "model" and (selected.parent / "metadata").is_dir():
+            selected = selected.parent
+        paths = [selected]
+    else:
+        root = Path(results).expanduser().resolve()
+        paths = [p.parent.parent for p in sorted(root.rglob("metadata/config.json"))]
+
+    eligible = []
+    for directory in paths:
+        config_path = directory / "metadata" / "config.json"
+        try:
+            local = read_json(config_path)
+            model_name = local["model"]
+            if models is not None and model_name not in models:
+                continue
+            config = resolve_run_config(directory)
+            if str(config.get("window_name", "")).lower() != "wide":
+                continue
+            family = mode_family(config["mode"])
+            if mode is not None and family != mode:
+                continue
+            if models is None and model_name not in DEFAULT_MODELS[family]:
+                continue
+
+            # Saved models may be available before the run has reached the
+            # metadata/manifest stage. For a named base cache the canonical
+            # run config is sufficient for locating development/blind inputs.
+            manifest_path = directory / "metadata" / "manifest.json"
+            if manifest_path.is_file():
+                run = read_run(directory)
+            else:
+                population_path = directory.parent / "population.json"
+                population = read_json(population_path, {})
+                run = {
+                    "directory": directory,
+                    "manifest": {"model": model_name, **population},
+                    "best": read_json(directory / "metadata" / "best.json", {}),
+                    "blind": {},
+                    "bootstrap": {},
+                }
+            # Do not require the pipeline's status == complete: CPA only
+            # needs fitted-model artifacts and prepared waveforms.
+            eligible.append(run)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            if explicit:
+                raise
+            if logger:
+                logger.warning("CPA skipped unreadable or partial run | %s | %s",
+                               directory, exc)
+            continue
+    return eligible
+
+
 def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 board=None, cache_root=None, artifact_root=None, output_root=None,
                 max_events=1024, fit_events=1024, validation_events=128,
@@ -411,9 +475,9 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
         raise ValueError("Invalid AR orders, horizon, stride or prediction batch size")
     if max_events < 2 or fit_events < 0 or validation_events < 2 or bootstrap < 0:
         raise ValueError("Invalid event count or bootstrap repetitions")
-    runs, _ = _tshap_run_inputs(results, model_dir)
+    runs = _cpa_run_inputs(results, model_dir, models=models, mode=mode, logger=logger)
     if not runs:
-        raise ValueError("No complete saved-model runs discovered")
+        raise ValueError("No matching wide-window model runs with readable configurations found")
     output_root = Path(output_root or "cpa_results").expanduser().resolve()
     source_root = Path(results or model_dir).expanduser().resolve()
     if output_root == source_root or output_root.is_relative_to(source_root):
@@ -427,7 +491,6 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
         name = run["manifest"].get("model")
         config = None
         try:
-            from waveform_analysis.data.results import resolve_run_config
             config = resolve_run_config(run["directory"])
             if str(config.get("window_name", "")).lower() != "wide":
                 continue
@@ -458,7 +521,12 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
             model_path = _resolve_tshap_model_directory(
                 spec, store, run["directory"], explicit_model_dir=model_dir is not None)
             if not saved_model_complete(spec, model_path):
-                raise FileNotFoundError(f"Saved model/transform missing: {model_path}")
+                if model_dir is not None:
+                    raise FileNotFoundError(f"Saved model/transform missing: {model_path}")
+                if logger:
+                    logger.warning("CPA skipped run without a complete fitted model | %s",
+                                   run["directory"])
+                continue
             development = prepared.find("development", config, run["manifest"])
             blind = prepared.find("blind", config, run["manifest"])
             times = np.asarray(getattr(blind, f"{family}_time_ps"), np.float64)
@@ -608,5 +676,5 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 logger.exception("CPA failed | %s", run["directory"])
             raise
     if not outputs:
-        raise ValueError("No matching complete wide-window runs were found")
+        raise ValueError("No matching wide-window runs with usable saved models were found")
     return outputs
