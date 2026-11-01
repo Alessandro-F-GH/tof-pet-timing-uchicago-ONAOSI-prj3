@@ -270,6 +270,33 @@ def forecast_suffix(prefix, mean, std, coeff, cutoff, end, standardized=False):
     return predictions
 
 
+def damped_ar_forecast(ar_forecast, mean, time_ps, cutoff, half_life_ns):
+    """Blend a raw recursive AR forecast toward the mean at long horizons.
+
+    Decay is postprocessing ONLY. The AR state itself retains its original
+    recursion, so varying half-life does not change AR coefficients/history.
+    The first predicted sample has weight one and is never altered.
+    """
+    raw = np.asarray(ar_forecast, np.float64)
+    if raw.ndim != 2:
+        raise ValueError("Expected [events, forecast_samples]")
+    if half_life_ns is None:
+        return raw.copy()
+    half_life_ns = float(half_life_ns)
+    if not np.isfinite(half_life_ns) or half_life_ns <= 0:
+        raise ValueError("Decay half-life in ns must be positive and finite")
+    times = np.asarray(time_ps, np.float64)
+    end = int(cutoff) + raw.shape[1]
+    if times.ndim != 1 or cutoff < 0 or end > len(times):
+        raise ValueError("Forecast range lies outside aligned time grid")
+    elapsed_ns = (times[cutoff:end] - times[cutoff]) / 1000.
+    if np.any(elapsed_ns < 0) or np.any(np.diff(elapsed_ns) <= 0):
+        raise ValueError("Aligned forecast times must be strictly increasing")
+    weight = np.exp2(-elapsed_ns / half_life_ns)
+    baseline = np.asarray(mean, np.float64)[None, cutoff:end]
+    return np.clip(baseline + weight[None, :] * (raw - baseline), 0., 1.)
+
+
 def metric_row(truth, pred, mv_scale):
     error = np.asarray(pred, np.float64) - np.asarray(truth, np.float64)
     mse = float(np.mean(error**2))
@@ -298,7 +325,8 @@ def plot_summary(rows, out, title):
     order = max(r["order"] for r in rows)
     for method in METHODS:
         series = sorted((r for r in rows if r["method"] == method and
-                         (r["order"] == order or method == "mean")),
+                         (r["order"] == order or method == "mean")
+                         and r.get("half_life_ns") in (None, "none", "mean")),
                         key=lambda r: r["cutoff_sample"])
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
@@ -308,6 +336,37 @@ def plot_summary(rows, out, title):
     ax.legend(title=f"AR order {order}")
     fig.tight_layout()
     fig.savefig(out / "rmse_vs_cutoff.png", dpi=160)
+    plt.close(fig)
+
+
+def plot_decay_comparison(rows, path, title, orders, half_lives_ns):
+    """Compare full valid-suffix errors for standardized AR at fixed order."""
+    order = max(orders)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    choices = [
+        ("mean", "mean", "Mean baseline"),
+        ("standardized_ar", "none", f"AR({order}) no decay"),
+    ] + [
+        ("standardized_ar", float(h), f"AR({order}) half-life {h:g} ns")
+        for h in half_lives_ns
+    ]
+    for method, half_life, label in choices:
+        series = sorted(
+            (row for row in rows
+             if row["method"] == method and row["half_life_ns"] == half_life
+             and (method == "mean" or row["order"] == order)),
+            key=lambda row: row["cutoff_ns"],
+        )
+        if series:
+            ax.plot([row["cutoff_ns"] for row in series],
+                    [row["rmse_mV"] for row in series],
+                    "-o", markersize=3, label=label)
+    ax.set(xlabel="Aligned input cutoff (ns)",
+           ylabel="Full valid-suffix reconstruction RMSE (mV)", title=title)
+    ax.grid(alpha=.25)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
     plt.close(fig)
 
 
@@ -433,6 +492,11 @@ def parse_args(argv=None):
     parser.add_argument("--ar-orders", nargs="+", type=int,
                         default=[8, 16, 32, 64, 128])
     parser.add_argument("--n-cutoffs", type=int, default=10)
+    parser.add_argument("--decay-half-lives-ns", nargs="+", type=float,
+                        default=[0.5, 1., 2., 5., 10.],
+                        help="Fade AR residual toward mean after these half-lives (ns)")
+    parser.add_argument("--local-horizon-samples", type=int, default=100,
+                        help="Also score the first N AR-predicted samples (default: 100)")
     parser.add_argument("--ridge-alpha", type=float, default=1e-3,
                         help="Ridge penalty relative to mean Gram diagonal")
     parser.add_argument("--train-stride", type=int, default=4)
@@ -445,6 +509,12 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     args.output_root = args.output_root.expanduser().resolve()
     args.ar_orders = sorted(set(args.ar_orders))
+    args.decay_half_lives_ns = sorted(set(args.decay_half_lives_ns))
+    if (not args.decay_half_lives_ns or
+            any(not np.isfinite(h) or h <= 0 for h in args.decay_half_lives_ns)):
+        parser.error("Provide positive finite decay half-lives in ns")
+    if args.local_horizon_samples < 1:
+        parser.error("--local-horizon-samples must be positive")
     if not args.ar_orders or min(args.ar_orders) < 1:
         parser.error("AR orders must be positive")
     if args.ridge_alpha < 0 or args.train_stride < 1 or args.batch_events < 1:
