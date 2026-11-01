@@ -521,7 +521,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
     orders = tuple(sorted(set(int(p) for p in orders)))
     if not orders or min(orders) < 1 or local_samples < 1 or train_stride < 1 or predict_batch_size < 1:
         raise ValueError("Invalid AR orders, horizon, stride or prediction batch size")
-    if max_events < 2 or fit_events < 0 or validation_events < 2 or bootstrap < 0:
+    if (max_events != 0 and max_events < 2) or fit_events < 0 or validation_events < 2 or bootstrap < 0:
         raise ValueError("Invalid event count or bootstrap repetitions")
     runs = _cpa_run_inputs(results, model_dir, models=models, mode=mode, logger=logger)
     if not runs:
@@ -610,7 +610,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 if already_complete and not overwrite:
                     previous = read_json(dest / "summary.json")
                     expected = {
-                        "n_blind_events": min(int(max_events), int(blind.n_events)),
+                        "n_blind_events": (int(blind.n_events) if int(max_events) == 0
+                                           else min(int(max_events), int(blind.n_events))),
                         "bootstrap": int(bootstrap),
                         "seed": int(seed),
                         "orders": list(orders),
