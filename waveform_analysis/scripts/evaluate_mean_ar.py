@@ -409,9 +409,55 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     evaluation[:, :cutoff], mean, std, model["coefficients"],
                     cutoff, stop, standardized=(method == "standardized_ar")
                 )
+                # One raw AR recursion supports every decay horizon.
+                for half_life in (None, *args.decay_half_lives_ns):
+                    faded = damped_ar_forecast(
+                        prediction, mean, time_ps, cutoff, half_life)
+                    full_prediction = baseline_full.copy()
+                    full_prediction[:, :stop-cutoff] = faded
+                    metric = metric_row(
+                        truth, full_prediction[:, future_valid], mv_scale)
+                    n_local = min(stop-cutoff, args.local_horizon_samples)
+                    local = metric_row(
+                        evaluation[:, cutoff:cutoff+n_local],
+                        faded[:, :n_local], mv_scale)
+                    local_base = metric_row(
+                        evaluation[:, cutoff:cutoff+n_local],
+                        np.broadcast_to(mean[cutoff:cutoff+n_local],
+                                        (len(evaluation), n_local)), mv_scale)
+                    rows.append({
+                        **metric, "method": method, "order": order,
+                        "half_life_ns": ("none" if half_life is None
+                                         else float(half_life)),
+                        "cutoff_sample": cutoff,
+                        "cutoff_ns": float(time_ps[cutoff]/1000),
+                        "n_missing": int(np.count_nonzero(future_valid)),
+                        "ar_predicted_samples": stop-cutoff,
+                        "n_eval_events": len(eval_ids),
+                        "local_rmse_mV": local["rmse_mV"],
+                        "local_mse_improvement_percent": (
+                            100 * (1 - local["mse_normalized"] /
+                                   local_base["mse_normalized"])
+                            if local_base["mse_normalized"] > 0 else 0.),
+                        "first_step_jump_mV": float(np.mean(abs(
+                            faded[:, 0] - evaluation[:, cutoff-1])) * mv_scale),
+                        "natural_step_mV": float(np.mean(abs(
+                            evaluation[:, cutoff] - evaluation[:, cutoff-1])) * mv_scale),
+                        "mse_improvement_percent": (
+                            100 * (1 - metric["mse_normalized"] /
+                                   base["mse_normalized"])
+                            if base["mse_normalized"] > 0 else 0.),
+                        "stable": model["stable"],
+                        "root_radius": model["root_radius"],
+                    })
+                # Retain the original example plot without changing its semantics.
                 full_prediction = baseline_full.copy()
                 full_prediction[:, :stop-cutoff] = prediction
-                metric = metric_row(truth, full_prediction[:, future_valid], mv_scale)
+                if (example is None and method == "standardized_ar" and
+                        order == args.ar_orders[-1]):
+                    example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
+                               baseline_full[0].copy(), int(eval_ids[0]))
+                continue
                 rows.append({
                     **metric, "method": method, "order": order,
                     "cutoff_sample": cutoff,
@@ -430,7 +476,12 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
                                baseline_full[0].copy(), int(eval_ids[0]))
         rows.append({
-            **base, "method": "mean", "order": 0,
+            **base, "method": "mean", "order": 0, "half_life_ns": "mean",
+            "local_rmse_mV": float("nan"), "local_mse_improvement_percent": 0.,
+            "first_step_jump_mV": float(np.mean(abs(
+                baseline_full[:, 0] - evaluation[:, cutoff-1])) * mv_scale),
+            "natural_step_mV": float(np.mean(abs(
+                evaluation[:, cutoff] - evaluation[:, cutoff-1])) * mv_scale),
             "cutoff_sample": cutoff, "cutoff_ns": float(time_ps[cutoff]/1000),
             "n_missing": int(np.count_nonzero(future_valid)),
             "ar_predicted_samples": stop-cutoff,
@@ -452,12 +503,16 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
+        "decay_half_lives_ns": args.decay_half_lives_ns,
+        "local_horizon_samples": args.local_horizon_samples,
         "models": {method: {str(p): {
             **{k:v for k,v in fitted[method][p].items() if k != "coefficients"},
             "coefficients": fitted[method][p]["coefficients"].tolist()
         } for p in args.ar_orders} for method in fitted},
     }, indent=2), encoding="utf-8")
     plot_summary(rows, out, name)
+    plot_decay_comparison(rows, out / "decay_comparison.png", name,
+                          args.ar_orders, args.decay_half_lives_ns)
     if example is not None:
         cutoff, original, prediction, baseline, event_id = example
         ns = np.asarray(time_ps) / 1000
