@@ -281,3 +281,32 @@ def test_cpa_shared_feature_blocks_and_incompatible_fallback(monkeypatch):
     assert calls == [3, 2]
     np.testing.assert_allclose(pred["direct_multirocket_rdst"], 4.)
     np.testing.assert_allclose(pred["direct_multirocket"], 2.)
+
+
+def test_cpa_component_compatibility_diagnostic_reports_reason():
+    from types import SimpleNamespace as Obj
+    from waveform_analysis.engine.cpa_feature_sharing import component_compatibility
+
+    class Transformer:
+        parameter = (np.array([1.,2.]),)
+        parameter1 = (np.array([3.,4.]),)
+        def get_params(self, deep=False):
+            return {"n_kernels": 42, "random_state": 3, "n_jobs": 1}
+    class Scaler:
+        def __init__(self, scale):
+            self.scale_ = np.array([scale])
+            self.mean_ = np.array([0.])
+            self.var_ = np.array([scale**2])
+            self.n_features_in_ = 1
+
+    def component(scale):
+        return Obj(transformer=Transformer(), scaler=Scaler(scale), shared=False,
+                   metadata={"input_samples": 10, "normalise": False,
+                             "feature_count": 2})
+    combined = Obj(feature_transform=Obj(artifact=Obj(multirocket=component(1.))))
+    same = Obj(feature_transform=Obj(artifact=component(1.)))
+    different = Obj(feature_transform=Obj(artifact=component(2.)))
+    ok, reason = component_compatibility(combined, same, "multirocket")
+    assert ok and "match" in reason
+    ok, reason = component_compatibility(combined, different, "multirocket")
+    assert not ok and "scaler" in reason
