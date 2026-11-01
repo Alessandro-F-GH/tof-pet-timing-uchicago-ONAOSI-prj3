@@ -1,0 +1,68 @@
+"""Synthetic CPA regression checks; no real waveforms or model artifacts needed."""
+import numpy as np
+from waveform_analysis.engine.cpa_explainer import (
+    cutoff_samples, cutoff_schedule_ns, segment_for_cutoff,
+    suffix_with_imputer, reconstruct_pair, summarize_predictions, select_imputers,
+)
+
+
+def test_cutoffs_skip_masked_samples_without_moving_them():
+    time = np.arange(-2., 26., .5)*1000.
+    mask = np.ones(len(time), dtype=bool)
+    mask[(time >= 4000.) & (time <= 6000.)] = False
+    kept, omitted = cutoff_samples(time, mask, [-1., 0., 2., 4., 6., 8., 20.])
+    assert 4. in [v for v, reason in omitted if reason == "masked"]
+    assert 6. in [v for v, reason in omitted if reason == "masked"]
+    assert np.all(mask[kept])
+    assert 8. in (time[kept]/1000.).tolist()
+    assert cutoff_schedule_ns(20) == [-1., 0., 2., 4., 6., 8., 10., 15., 20.]
+
+
+def test_ar_never_crosses_gap_and_never_reveals_hidden_suffix():
+    mean = np.full(22, .4)
+    std = np.ones(22)
+    mask = np.ones(22, bool)
+    mask[9:13] = False
+    waves = np.full((3, 22), .6, np.float32)
+    assert segment_for_cutoff(mask, 7) == (0, 9)
+    assert segment_for_cutoff(mask, 15) == (13, 22)
+    choice = {"method": "mean_ar", "coefficients": np.array([.9])}
+    recon = suffix_with_imputer(waves, mean, std, mask, 7, choice)
+    np.testing.assert_allclose(recon[:, :7], waves[:, :7])
+    assert recon[0, 7] > .4
+    np.testing.assert_allclose(recon[:, 9:], .4)
+    altered = waves.copy()
+    altered[:, 8:] = .99
+    np.testing.assert_allclose(
+        suffix_with_imputer(altered, mean, std, mask, 7, choice), recon,
+    )
+
+
+def test_mean_fallback_and_paired_cutoff():
+    rng = np.random.default_rng(9)
+    pair = rng.uniform(size=(3, 2, 30)).astype(np.float32)
+    model = {"detectors": [{"mean": np.full(30,.25), "std":np.ones(30)},
+                           {"mean": np.full(30,.75), "std":np.ones(30)}],
+             "selected": {(d,10): {"method":"mean","order":0} for d in range(2)}}
+    predicted = reconstruct_pair(pair, model, np.ones(30, bool), 10)
+    np.testing.assert_allclose(predicted[:,:,:10], pair[:,:,:10])
+    np.testing.assert_allclose(predicted[:,0,10:], .25)
+    np.testing.assert_allclose(predicted[:,1,10:], .75)
+
+
+def test_reproducible_centered_width_and_zero_bootstrap():
+    predictions = np.array([[3.,4.,7.,8.],[1.,2.,3.,4.]])
+    target = np.array([1.,2.,3.,4.])
+    rows = summarize_predictions(predictions, target, seed=12, bootstrap=0)
+    assert len(rows) == 2
+    assert rows[-1]["centered_rmse_ps"] == 0.
+    assert np.isfinite(rows[0]["centered_rmse_ps"])
+
+
+def test_candidate_selection_falls_back_to_mean_on_constant_signals():
+    data = np.full((40,2,90), .5, np.float32)
+    selected = select_imputers(data, np.ones(90,bool), [15,30],
+                               seed=7, fit_events=24, validation_events=8,
+                               orders=(4,8), local_samples=10)
+    assert all(c["method"] == "mean" for c in selected["selected"].values())
+    assert set(selected["selected"]) == {(0,15),(1,15),(0,30),(1,30)}
