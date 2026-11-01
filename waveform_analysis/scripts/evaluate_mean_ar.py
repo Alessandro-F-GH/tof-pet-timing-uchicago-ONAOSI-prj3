@@ -370,6 +370,55 @@ def plot_decay_comparison(rows, path, title, orders, half_lives_ns):
     plt.close(fig)
 
 
+def plot_waveform_example(path, *, time_ps, cutoff, original,
+                          prediction_suffix, baseline_suffix, mean, mask,
+                          event_id, title, decay_half_lives_ns):
+    """Plot suffix arrays against the suffix time grid exactly once.
+
+    Both `prediction_suffix` and `baseline_suffix` start at `cutoff`.
+    They must NOT be indexed by cutoff again; this routine checks shapes
+    before matplotlib to catch accidental double slicing.
+    """
+    ns = np.asarray(time_ps, np.float64) / 1000.
+    original = np.asarray(original, np.float64)
+    predicted = np.asarray(prediction_suffix, np.float64)
+    baseline = np.asarray(baseline_suffix, np.float64)
+    k = int(cutoff)
+    if not 0 <= k < len(ns):
+        raise ValueError("Example cutoff is outside the waveform")
+    expected = (len(ns)-k,)
+    if original.shape != (len(ns),) or predicted.shape != expected or baseline.shape != expected:
+        raise ValueError(
+            "Waveform example expects a full original and suffix-only "
+            f"predictions of shape {expected}; got {original.shape}, "
+            f"{predicted.shape}, {baseline.shape}"
+        )
+
+    stop = local_forecast_end(mask, k)
+    horizon = stop-k
+    half_life = min(decay_half_lives_ns, key=lambda h: abs(h-1.))
+    faded = damped_ar_forecast(
+        predicted[None, :horizon], mean, time_ps, k, half_life)[0]
+    faded_suffix = baseline.copy()
+    faded_suffix[:horizon] = faded
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
+    ax.plot(ns[k:], baseline, color="#C98740", label="Mean replacement")
+    ax.plot(ns[k:], predicted, color="#2B9C74",
+            label="Standardized AR (no decay)")
+    ax.plot(ns[k:], faded_suffix, color="#9352AE",
+            label=f"Damped AR (half-life {half_life:g} ns)")
+    ax.axvline(ns[k], color="gray", ls="--")
+    ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
+           title=f"{title}, blind row {event_id}, cutoff {ns[k]:.3f} ns")
+    ax.legend()
+    ax.grid(alpha=.25)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
 def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                  mask, provenance, args):
     name = f"{board}/{mode}/detector_{detector+1}"
@@ -497,32 +546,13 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                           args.ar_orders, args.decay_half_lives_ns)
     if example is not None:
         cutoff, original, prediction, baseline, event_id = example
-        ns = np.asarray(time_ps) / 1000
-        fig, ax = plt.subplots(figsize=(10, 4.5))
-        ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
-        ax.plot(ns[cutoff:], baseline, color="#C98740",
-                label="Mean replacement")
-        ax.plot(ns[cutoff:], prediction[cutoff:], color="#2B9C74",
-                label="Standardized AR (no decay)")
-        # Illustrate one representative half-life without another AR recursion.
-        selected_half_life = min(args.decay_half_lives_ns,
-                                 key=lambda h: abs(h-1.))
-        stop = local_forecast_end(mask, cutoff)
-        faded = damped_ar_forecast(
-            prediction[None, cutoff:stop], mean, time_ps, cutoff,
-            selected_half_life)[0]
-        faded_suffix = baseline.copy()
-        faded_suffix[cutoff:stop] = faded
-        ax.plot(ns[cutoff:], faded_suffix[cutoff:], color="#9352AE",
-                label=f"Damped AR (half-life {selected_half_life:g} ns)")
-        ax.axvline(ns[cutoff], color="gray", ls="--")
-        ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
-               title=f"{name}, blind row {event_id}, cutoff {ns[cutoff]:.3f} ns")
-        ax.legend()
-        ax.grid(alpha=.25)
-        fig.tight_layout()
-        fig.savefig(out / "waveform_example.png", dpi=160)
-        plt.close(fig)
+        plot_waveform_example(
+            out / "waveform_example.png", time_ps=time_ps,
+            cutoff=cutoff, original=original,
+            prediction_suffix=prediction, baseline_suffix=baseline,
+            mean=mean, mask=mask, event_id=event_id, title=name,
+            decay_half_lives_ns=args.decay_half_lives_ns,
+        )
     print(f"[{name}] train={len(train_ids)} blind={len(eval_ids)} "
           f"valid_regions={valid_intervals(mask)} cutoffs={len(cutoffs)} "
           f"orders={args.ar_orders} -> {out}", flush=True)
