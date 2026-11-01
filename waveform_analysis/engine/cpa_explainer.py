@@ -599,8 +599,28 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 )
                 already_complete = _guard_dataset_identity(dest, identity)
                 if already_complete and not overwrite:
-                    outputs.append(dest)
-                    continue
+                    previous = read_json(dest / "summary.json")
+                    expected = {
+                        "n_blind_events": min(int(max_events), int(blind.n_events)),
+                        "bootstrap": int(bootstrap),
+                        "seed": int(seed),
+                        "orders": list(orders),
+                        "local_samples": int(local_samples),
+                        "fit_events_requested": int(fit_events),
+                        "validation_events_requested": int(validation_events),
+                        "ridge_alpha": float(ridge_alpha),
+                        "train_stride": int(train_stride),
+                        "cutoff_samples": [int(k) for k in cutoffs],
+                        "performance_only_version": 2,
+                    }
+                    if all(previous.get(k) == v for k,v in expected.items()) and all(
+                        (dest / p).is_file() for p in
+                        ("metrics.csv", "timing_resolution.png", "predictions.npz")
+                    ):
+                        outputs.append(dest)
+                        continue
+                    if logger:
+                        logger.info("CPA settings/results changed; recomputing %s", dest)
                 cache_key = (identity, mask.tobytes(), tuple(cutoffs),
                              int(seed), int(fit_events), int(validation_events),
                              tuple(orders), int(local_samples), float(ridge_alpha),
@@ -692,6 +712,12 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     "validation_events": int(len(imputer["validation_ids"])),
                     "refit_events": int(len(imputer["refit_ids"])),
                     "local_samples": local_samples, "orders": list(orders),
+                    "fit_events_requested": int(fit_events),
+                    "validation_events_requested": int(validation_events),
+                    "ridge_alpha": float(ridge_alpha),
+                    "train_stride": int(train_stride),
+                    "cutoff_samples": [int(k) for k in cutoffs],
+                    "performance_only_version": 2,
                     "cutoffs": axis, "omitted_cutoffs": omitted,
                     "masked_intervals_ns": masked_time_intervals(times, mask),
                     "selected_imputers": selected,
