@@ -457,24 +457,6 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                         order == args.ar_orders[-1]):
                     example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
                                baseline_full[0].copy(), int(eval_ids[0]))
-                continue
-                rows.append({
-                    **metric, "method": method, "order": order,
-                    "cutoff_sample": cutoff,
-                    "cutoff_ns": float(time_ps[cutoff]/1000),
-                    "n_missing": int(np.count_nonzero(future_valid)),
-                    "ar_predicted_samples": stop-cutoff,
-                    "n_eval_events": len(eval_ids),
-                    "mse_improvement_percent": (
-                        100 * (1 - metric["mse_normalized"]/base["mse_normalized"])
-                        if base["mse_normalized"] > 0 else 0.),
-                    "stable": model["stable"],
-                    "root_radius": model["root_radius"],
-                })
-                if (example is None and method == "standardized_ar" and
-                        order == args.ar_orders[-1]):
-                    example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
-                               baseline_full[0].copy(), int(eval_ids[0]))
         rows.append({
             **base, "method": "mean", "order": 0, "half_life_ns": "mean",
             "local_rmse_mV": float("nan"), "local_mse_improvement_percent": 0.,
