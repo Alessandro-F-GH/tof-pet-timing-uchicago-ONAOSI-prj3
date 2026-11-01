@@ -270,33 +270,6 @@ def forecast_suffix(prefix, mean, std, coeff, cutoff, end, standardized=False):
     return predictions
 
 
-def damped_ar_forecast(ar_forecast, mean, time_ps, cutoff, half_life_ns):
-    """Blend a raw recursive AR forecast toward the mean at long horizons.
-
-    Decay is postprocessing ONLY. The AR state itself retains its original
-    recursion, so varying half-life does not change AR coefficients/history.
-    The first predicted sample has weight one and is never altered.
-    """
-    raw = np.asarray(ar_forecast, np.float64)
-    if raw.ndim != 2:
-        raise ValueError("Expected [events, forecast_samples]")
-    if half_life_ns is None:
-        return raw.copy()
-    half_life_ns = float(half_life_ns)
-    if not np.isfinite(half_life_ns) or half_life_ns <= 0:
-        raise ValueError("Decay half-life in ns must be positive and finite")
-    times = np.asarray(time_ps, np.float64)
-    end = int(cutoff) + raw.shape[1]
-    if times.ndim != 1 or cutoff < 0 or end > len(times):
-        raise ValueError("Forecast range lies outside aligned time grid")
-    elapsed_ns = (times[cutoff:end] - times[cutoff]) / 1000.
-    if np.any(elapsed_ns < 0) or np.any(np.diff(elapsed_ns) <= 0):
-        raise ValueError("Aligned forecast times must be strictly increasing")
-    weight = np.exp2(-elapsed_ns / half_life_ns)
-    baseline = np.asarray(mean, np.float64)[None, cutoff:end]
-    return np.clip(baseline + weight[None, :] * (raw - baseline), 0., 1.)
-
-
 def metric_row(truth, pred, mv_scale):
     error = np.asarray(pred, np.float64) - np.asarray(truth, np.float64)
     mse = float(np.mean(error**2))
@@ -325,8 +298,7 @@ def plot_summary(rows, out, title):
     order = max(r["order"] for r in rows)
     for method in METHODS:
         series = sorted((r for r in rows if r["method"] == method and
-                         (r["order"] == order or method == "mean")
-                         and r.get("half_life_ns") in (None, "none", "mean")),
+                         (r["order"] == order or method == "mean")),
                         key=lambda r: r["cutoff_sample"])
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
@@ -336,86 +308,6 @@ def plot_summary(rows, out, title):
     ax.legend(title=f"AR order {order}")
     fig.tight_layout()
     fig.savefig(out / "rmse_vs_cutoff.png", dpi=160)
-    plt.close(fig)
-
-
-def plot_decay_comparison(rows, path, title, orders, half_lives_ns):
-    """Compare full valid-suffix errors for standardized AR at fixed order."""
-    order = max(orders)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    choices = [
-        ("mean", "mean", "Mean baseline"),
-        ("standardized_ar", "none", f"AR({order}) no decay"),
-    ] + [
-        ("standardized_ar", float(h), f"AR({order}) half-life {h:g} ns")
-        for h in half_lives_ns
-    ]
-    for method, half_life, label in choices:
-        series = sorted(
-            (row for row in rows
-             if row["method"] == method and row["half_life_ns"] == half_life
-             and (method == "mean" or row["order"] == order)),
-            key=lambda row: row["cutoff_ns"],
-        )
-        if series:
-            ax.plot([row["cutoff_ns"] for row in series],
-                    [row["rmse_mV"] for row in series],
-                    "-o", markersize=3, label=label)
-    ax.set(xlabel="Aligned input cutoff (ns)",
-           ylabel="Full valid-suffix reconstruction RMSE (mV)", title=title)
-    ax.grid(alpha=.25)
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-
-
-def plot_waveform_example(path, *, time_ps, cutoff, original,
-                          prediction_suffix, baseline_suffix, mean, mask,
-                          event_id, title, decay_half_lives_ns):
-    """Plot suffix arrays against the suffix time grid exactly once.
-
-    Both `prediction_suffix` and `baseline_suffix` start at `cutoff`.
-    They must NOT be indexed by cutoff again; this routine checks shapes
-    before matplotlib to catch accidental double slicing.
-    """
-    ns = np.asarray(time_ps, np.float64) / 1000.
-    original = np.asarray(original, np.float64)
-    predicted = np.asarray(prediction_suffix, np.float64)
-    baseline = np.asarray(baseline_suffix, np.float64)
-    k = int(cutoff)
-    if not 0 <= k < len(ns):
-        raise ValueError("Example cutoff is outside the waveform")
-    expected = (len(ns)-k,)
-    if original.shape != (len(ns),) or predicted.shape != expected or baseline.shape != expected:
-        raise ValueError(
-            "Waveform example expects a full original and suffix-only "
-            f"predictions of shape {expected}; got {original.shape}, "
-            f"{predicted.shape}, {baseline.shape}"
-        )
-
-    stop = local_forecast_end(mask, k)
-    horizon = stop-k
-    half_life = min(decay_half_lives_ns, key=lambda h: abs(h-1.))
-    faded = damped_ar_forecast(
-        predicted[None, :horizon], mean, time_ps, k, half_life)[0]
-    faded_suffix = baseline.copy()
-    faded_suffix[:horizon] = faded
-
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
-    ax.plot(ns[k:], baseline, color="#C98740", label="Mean replacement")
-    ax.plot(ns[k:], predicted, color="#2B9C74",
-            label="Standardized AR (no decay)")
-    ax.plot(ns[k:], faded_suffix, color="#9352AE",
-            label=f"Damped AR (half-life {half_life:g} ns)")
-    ax.axvline(ns[k], color="gray", ls="--")
-    ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
-           title=f"{title}, blind row {event_id}, cutoff {ns[k]:.3f} ns")
-    ax.legend()
-    ax.grid(alpha=.25)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
     plt.close(fig)
 
 
@@ -458,61 +350,28 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     evaluation[:, :cutoff], mean, std, model["coefficients"],
                     cutoff, stop, standardized=(method == "standardized_ar")
                 )
-                # One raw AR recursion supports every decay horizon.
-                for half_life in (None, *args.decay_half_lives_ns):
-                    faded = damped_ar_forecast(
-                        prediction, mean, time_ps, cutoff, half_life)
-                    full_prediction = baseline_full.copy()
-                    full_prediction[:, :stop-cutoff] = faded
-                    metric = metric_row(
-                        truth, full_prediction[:, future_valid], mv_scale)
-                    n_local = min(stop-cutoff, args.local_horizon_samples)
-                    local = metric_row(
-                        evaluation[:, cutoff:cutoff+n_local],
-                        faded[:, :n_local], mv_scale)
-                    local_base = metric_row(
-                        evaluation[:, cutoff:cutoff+n_local],
-                        np.broadcast_to(mean[cutoff:cutoff+n_local],
-                                        (len(evaluation), n_local)), mv_scale)
-                    rows.append({
-                        **metric, "method": method, "order": order,
-                        "half_life_ns": ("none" if half_life is None
-                                         else float(half_life)),
-                        "cutoff_sample": cutoff,
-                        "cutoff_ns": float(time_ps[cutoff]/1000),
-                        "n_missing": int(np.count_nonzero(future_valid)),
-                        "ar_predicted_samples": stop-cutoff,
-                        "n_eval_events": len(eval_ids),
-                        "local_rmse_mV": local["rmse_mV"],
-                        "local_mse_improvement_percent": (
-                            100 * (1 - local["mse_normalized"] /
-                                   local_base["mse_normalized"])
-                            if local_base["mse_normalized"] > 0 else 0.),
-                        "first_step_jump_mV": float(np.mean(abs(
-                            faded[:, 0] - evaluation[:, cutoff-1])) * mv_scale),
-                        "natural_step_mV": float(np.mean(abs(
-                            evaluation[:, cutoff] - evaluation[:, cutoff-1])) * mv_scale),
-                        "mse_improvement_percent": (
-                            100 * (1 - metric["mse_normalized"] /
-                                   base["mse_normalized"])
-                            if base["mse_normalized"] > 0 else 0.),
-                        "stable": model["stable"],
-                        "root_radius": model["root_radius"],
-                    })
-                # Retain the original example plot without changing its semantics.
                 full_prediction = baseline_full.copy()
                 full_prediction[:, :stop-cutoff] = prediction
+                metric = metric_row(truth, full_prediction[:, future_valid], mv_scale)
+                rows.append({
+                    **metric, "method": method, "order": order,
+                    "cutoff_sample": cutoff,
+                    "cutoff_ns": float(time_ps[cutoff]/1000),
+                    "n_missing": int(np.count_nonzero(future_valid)),
+                    "ar_predicted_samples": stop-cutoff,
+                    "n_eval_events": len(eval_ids),
+                    "mse_improvement_percent": (
+                        100 * (1 - metric["mse_normalized"]/base["mse_normalized"])
+                        if base["mse_normalized"] > 0 else 0.),
+                    "stable": model["stable"],
+                    "root_radius": model["root_radius"],
+                })
                 if (example is None and method == "standardized_ar" and
                         order == args.ar_orders[-1]):
                     example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
                                baseline_full[0].copy(), int(eval_ids[0]))
         rows.append({
-            **base, "method": "mean", "order": 0, "half_life_ns": "mean",
-            "local_rmse_mV": float("nan"), "local_mse_improvement_percent": 0.,
-            "first_step_jump_mV": float(np.mean(abs(
-                baseline_full[:, 0] - evaluation[:, cutoff-1])) * mv_scale),
-            "natural_step_mV": float(np.mean(abs(
-                evaluation[:, cutoff] - evaluation[:, cutoff-1])) * mv_scale),
+            **base, "method": "mean", "order": 0,
             "cutoff_sample": cutoff, "cutoff_ns": float(time_ps[cutoff]/1000),
             "n_missing": int(np.count_nonzero(future_valid)),
             "ar_predicted_samples": stop-cutoff,
@@ -534,25 +393,29 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
-        "decay_half_lives_ns": args.decay_half_lives_ns,
-        "local_horizon_samples": args.local_horizon_samples,
         "models": {method: {str(p): {
             **{k:v for k,v in fitted[method][p].items() if k != "coefficients"},
             "coefficients": fitted[method][p]["coefficients"].tolist()
         } for p in args.ar_orders} for method in fitted},
     }, indent=2), encoding="utf-8")
     plot_summary(rows, out, name)
-    plot_decay_comparison(rows, out / "decay_comparison.png", name,
-                          args.ar_orders, args.decay_half_lives_ns)
     if example is not None:
         cutoff, original, prediction, baseline, event_id = example
-        plot_waveform_example(
-            out / "waveform_example.png", time_ps=time_ps,
-            cutoff=cutoff, original=original,
-            prediction_suffix=prediction, baseline_suffix=baseline,
-            mean=mean, mask=mask, event_id=event_id, title=name,
-            decay_half_lives_ns=args.decay_half_lives_ns,
-        )
+        ns = np.asarray(time_ps) / 1000
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
+        ax.plot(ns[cutoff:], baseline, color="#C98740",
+                label="Mean replacement")
+        ax.plot(ns[cutoff:], prediction, color="#2B9C74",
+                label="Standardized AR")
+        ax.axvline(ns[cutoff], color="gray", ls="--")
+        ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
+               title=f"{name}, blind row {event_id}, cutoff {ns[cutoff]:.3f} ns")
+        ax.legend()
+        ax.grid(alpha=.25)
+        fig.tight_layout()
+        fig.savefig(out / "waveform_example.png", dpi=160)
+        plt.close(fig)
     print(f"[{name}] train={len(train_ids)} blind={len(eval_ids)} "
           f"valid_regions={valid_intervals(mask)} cutoffs={len(cutoffs)} "
           f"orders={args.ar_orders} -> {out}", flush=True)
@@ -570,11 +433,6 @@ def parse_args(argv=None):
     parser.add_argument("--ar-orders", nargs="+", type=int,
                         default=[8, 16, 32, 64, 128])
     parser.add_argument("--n-cutoffs", type=int, default=10)
-    parser.add_argument("--decay-half-lives-ns", nargs="+", type=float,
-                        default=[0.5, 1., 2., 5., 10.],
-                        help="Fade AR residual toward mean after these half-lives (ns)")
-    parser.add_argument("--local-horizon-samples", type=int, default=100,
-                        help="Also score the first N AR-predicted samples (default: 100)")
     parser.add_argument("--ridge-alpha", type=float, default=1e-3,
                         help="Ridge penalty relative to mean Gram diagonal")
     parser.add_argument("--train-stride", type=int, default=4)
@@ -587,12 +445,6 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     args.output_root = args.output_root.expanduser().resolve()
     args.ar_orders = sorted(set(args.ar_orders))
-    args.decay_half_lives_ns = sorted(set(args.decay_half_lives_ns))
-    if (not args.decay_half_lives_ns or
-            any(not np.isfinite(h) or h <= 0 for h in args.decay_half_lives_ns)):
-        parser.error("Provide positive finite decay half-lives in ns")
-    if args.local_horizon_samples < 1:
-        parser.error("--local-horizon-samples must be positive")
     if not args.ar_orders or min(args.ar_orders) < 1:
         parser.error("AR orders must be positive")
     if args.ridge_alpha < 0 or args.train_stride < 1 or args.batch_events < 1:
