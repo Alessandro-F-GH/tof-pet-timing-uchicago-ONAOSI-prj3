@@ -310,3 +310,16 @@ def test_cpa_component_compatibility_diagnostic_reports_reason():
     assert ok and "match" in reason
     ok, reason = component_compatibility(combined, different, "multirocket")
     assert not ok and "scaler" in reason
+
+
+def test_capped_energy_kernel_models_share_event_seed():
+    from waveform_analysis.data.splits import semantic_seed
+    from waveform_analysis.engine.cpa_explainer import _draw_indices
+    names = ("direct_multirocket_rdst", "direct_multirocket", "direct_rdst")
+    seeds = [
+        semantic_seed(1, "cpa-blind", "UC", "same-dataset",
+                      "direct_energy_kernels") for _ in names
+    ]
+    assert len(set(seeds)) == 1
+    indices = [_draw_indices(200, 3, value) for value in seeds]
+    assert all(np.array_equal(indices[0], v) for v in indices[1:])
