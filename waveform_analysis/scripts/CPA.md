@@ -14,10 +14,30 @@ their model artifact store; provide `--artifact-root` if it is not under the
 cache root. The script applies the frozen transformation to each new imputed
 waveform; it never reads or writes precomputed transformation-specific features.
 
-Run **one board at a time**; the board and actual prepared-dataset identities
+Run boards sequentially with a single command, or use the legacy single-board invocation; the board and actual prepared-dataset identities
 are included in output locations. Only wide-window models are considered.
 
-Example (Linux):
+Example for both boards (Linux), with independent prepared caches and shared outputs:
+
+```bash
+python -m waveform_analysis.cli explain-cpa \\
+  --results "$PWD/waveform_analysis/results" \\
+  --boards UC FBK \\
+  --uc-cache-root "$HOME/UC_cache" \\
+  --fbk-cache-root "$HOME/FBK_cache" \\
+  --output-root "$HOME/cpa_results" \\
+  --max-events 0 --bootstrap 100 --seed 1
+```
+
+Multi-board execution is **sequential**, not parallel. `--results` must contain
+`UC/` and `FBK/` subdirectories; `--boards UC` or `--boards FBK`
+runs just the requested board. Per-board cache roots are required only for
+selected boards. No dataset or cache is reused across boards. With
+`--max-events 0`, every available blind event is evaluated. Already complete
+results with matching settings are reused. You can interrupt and restart the
+same command without `--overwrite`; completed models are skipped.
+
+Single-board example (Linux):
 
 ```bash
 python -m waveform_analysis.cli explain-cpa \
@@ -59,30 +79,28 @@ The source correction models remain frozen.
    regions are skipped (not shifted), as are out-of-grid cutoffs.
 6. Recompute full-waveform predictions through the normal frozen-model
    inference adapter, including its fitted feature transform and mask.
-7. Report centered timing-residual RMSE (primary), CTR using the pipeline's
-   F1 histogram estimator, paired bootstrap intervals, signed and
-   absolute increments, and convergence to the full-input prediction.
+7. Report centered timing-residual RMSE and CTR using the pipeline's
+   F1 histogram estimator with paired bootstrap intervals. Compare both
+   against the full-input reference; no prediction increments are computed.
    Bootstrap resamples saved event predictions, not ML inference.
 
 Cutoffs in ns, relative to the aligned ML-input grid:
 `-1, 0, 2, 4, 6, 8, 10, 15, 20, 25, ...` until the window ends.
 For timing, the initial valid segment uses only its portion of the ordinary\nabsolute schedule. Subsequent valid segments use **only** cutoffs 1, 3, 5, 7,\n9, 14, 19, ... ns after their first retained sample. Absolute cutoffs must\nnot leak into later segments. Cutoffs inside masked regions are excluded, not\nshifted. The complete-waveform prediction is a separate final reference endpoint.
-At the first cutoff the incremental attribution is intentionally undefined.
 
 ## Outputs
 
 `<output-root>/<board>/<study-folder>/<mode>/<model>/` contains
 `metrics.csv`, `imputer_validation.csv`,
 `selected_imputers.csv`, `predictions.npz`, `imputer.npz`,
-`summary.json`, `timing_resolution.png` and
-`prediction_increments.png`. The study folder is the readable saved-result batch directory (for example
+`summary.json` and `timing_resolution.png`. The study folder is the readable saved-result batch directory (for example
 `benchmark_48V_final`). The full cohort fingerprint is stored in `summary.json`
 and checked before reusing or overwriting a result. If two distinct datasets
 share a study folder, CPA raises an explicit collision error instead of using
 opaque hashes as directory names. Change the study-folder name or the output
 root to store both.
 
-Imputer selection is a pragmatic approximation. Increments can reflect changes
-in the reconstruction rule as well as new observed samples. Mean-only prefix
+Imputer selection is a pragmatic approximation. Performance changes with
+cutoff may reflect both newly observed samples and altered reconstruction. Mean-only prefix
 predictions and complete candidate validation scores are retained as diagnostics
 without making imputer comparisons the scientific focus.
