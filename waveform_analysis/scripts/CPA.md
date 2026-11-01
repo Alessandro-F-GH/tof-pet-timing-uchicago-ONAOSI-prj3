@@ -71,13 +71,16 @@ At the first cutoff the incremental attribution is intentionally undefined.
 
 ## Outputs
 
-`<output-root>/<board>/<dataset-identity>/<mode>/<model>/` contains
+`<output-root>/<board>/<study-folder>/<mode>/<model>/` contains
 `metrics.csv`, `attribution.csv`, `imputer_validation.csv`,
 `selected_imputers.csv`, `predictions.npz`, `imputer.npz`,
 `summary.json`, `timing_resolution.png` and
-`prediction_increments.png`. The dataset identity derives from the actual
-prepared-cache population and run identity, avoiding collisions between UC
-and FBK or identically named datasets.
+`prediction_increments.png`. The study folder is the readable saved-result batch directory (for example
+`benchmark_48V_final`). The full cohort fingerprint is stored in `summary.json`
+and checked before reusing or overwriting a result. If two distinct datasets
+share a study folder, CPA raises an explicit collision error instead of using
+opaque hashes as directory names. Change the study-folder name or the output
+root to store both.
 
 Imputer selection is a pragmatic approximation. Increments can reflect changes
 in the reconstruction rule as well as new observed samples. Mean-only prefix
