@@ -85,3 +85,30 @@ def test_readable_cpa_path_and_collision_detection(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(ValueError, match="collision"):
         cpa._guard_dataset_identity(output, "cohortB")
+
+
+def test_cpa_discovery_ignores_unrelated_missing_manifest(tmp_path, monkeypatch):
+    import json
+    from waveform_analysis.engine import cpa_explainer as cpa
+    root = tmp_path / "results"
+    good = root / "energy" / "wide" / "onishi_cnn"
+    partial = root / "energy" / "wide" / "shared_multirocket_rdst"
+    for directory, model in ((good, "onishi_cnn"),
+                             (partial, "shared_multirocket_rdst")):
+        metadata = directory / "metadata"
+        metadata.mkdir(parents=True)
+        (metadata / "config.json").write_text(json.dumps({"model": model}))
+    (good / "metadata" / "manifest.json").write_text('{"status":"complete"}')
+    monkeypatch.setattr(cpa, "resolve_run_config", lambda p: {
+        "mode": "energy_to_energy", "window_name": "wide",
+    })
+    monkeypatch.setattr(cpa, "read_run", lambda p: {
+        "directory": p, "manifest": {"model": "onishi_cnn"},
+        "best": {"parameters": {}},
+    })
+    found = cpa._cpa_run_inputs(root, None, models=["onishi_cnn"])
+    assert [run["directory"] for run in found] == [good]
+    # A partial but relevant run can still be discovered without manifest.
+    found = cpa._cpa_run_inputs(root, None, models=["shared_multirocket_rdst"])
+    assert len(found) == 1
+    assert found[0]["manifest"]["model"] == "shared_multirocket_rdst"
