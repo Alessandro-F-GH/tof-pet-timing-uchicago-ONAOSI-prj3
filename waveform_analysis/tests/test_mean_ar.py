@@ -112,3 +112,29 @@ def test_decay_rejects_invalid_half_life_and_time_grid():
         damped_ar_forecast(raw, mean, np.arange(12)*100., 3, -1)
     with pytest.raises(ValueError, match="increasing"):
         damped_ar_forecast(raw, mean, np.zeros(12), 3, 1.)
+
+
+def test_waveform_example_suffix_coordinates(tmp_path):
+    from waveform_analysis.scripts.evaluate_mean_ar import plot_waveform_example
+    n, cutoff = 200, 35
+    mean = np.full(n, .25)
+    prediction_suffix = np.full(n-cutoff, .5)
+    baseline_suffix = np.full(n-cutoff, .25)
+    path = tmp_path / "example.png"
+    plot_waveform_example(
+        path, time_ps=np.arange(n)*100., cutoff=cutoff,
+        original=np.full(n, .35), prediction_suffix=prediction_suffix,
+        baseline_suffix=baseline_suffix, mean=mean, mask=np.ones(n, bool),
+        event_id=4, title="synthetic", decay_half_lives_ns=[1.],
+    )
+    assert path.is_file() and path.stat().st_size > 100
+    import pytest
+    with pytest.raises(ValueError, match="suffix-only"):
+        plot_waveform_example(
+            path, time_ps=np.arange(n)*100., cutoff=cutoff,
+            original=np.full(n, .35),
+            prediction_suffix=prediction_suffix[cutoff:],
+            baseline_suffix=baseline_suffix, mean=mean,
+            mask=np.ones(n, bool), event_id=4, title="synthetic",
+            decay_half_lives_ns=[1.],
+        )
