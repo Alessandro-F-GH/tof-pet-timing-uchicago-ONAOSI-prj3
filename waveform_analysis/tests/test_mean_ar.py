@@ -2,7 +2,8 @@
 import numpy as np
 
 from waveform_analysis.scripts.evaluate_mean_ar import (
-    active_interval, choose_indices, dense_cutoffs, distributed_cutoffs,\n    local_forecast_end, valid_intervals, fit_moments,
+    active_interval, choose_indices, dense_cutoffs, distributed_cutoffs,
+    local_forecast_end, valid_intervals, fit_moments,
     fit_ridge_orders, forecast_suffix, metric_row,
 )
 
