@@ -120,41 +120,70 @@ def load_pair(root, mode, window="wide", development_name=None, blind_name=None)
     return x_train, x_eval, np.asarray(t_train), transform, valid, source
 
 
-def active_interval(mask, mean, max_order):
-    """Choose a contiguous unmasked interval containing the strongest rising edge.
-
-    Never fit autoregression across, or forecast through, artificially cropped gaps.
-    """
+def valid_intervals(mask, max_order=0):
+    """All contiguous retained sample runs that can support the specified AR."""
     edges = np.diff(np.r_[False, np.asarray(mask, bool), False].astype(np.int8))
     intervals = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
-    intervals = [(int(a), int(b)) for a, b in intervals if b - a > max_order + 5]
+    return [(int(a), int(b)) for a, b in intervals if b-a > max_order+1]
+
+
+def active_interval(mask, mean, max_order):
+    """For backwards compatibility: most prominent rising-edge valid interval."""
+    intervals = valid_intervals(mask, max_order)
     if not intervals:
-        raise ValueError("No contiguous valid interval long enough for maximum AR order")
-
-    def score(pair):
-        a, b = pair
-        return float(np.max(np.diff(mean[a:b])))
-
-    return max(intervals, key=lambda pair: (score(pair), pair[1] - pair[0]))
+        raise ValueError("No unmasked interval long enough for maximum AR order")
+    return max(intervals, key=lambda pair: float(np.max(np.diff(mean[pair[0]:pair[1]]))))
 
 
 def dense_cutoffs(mean, interval, max_order, count=10):
-    """Use a few early/tail cutoffs and concentrate the remainder near the rising edge."""
+    """Cutoffs densely around the population-mean rising edge, plus edges/tail."""
     lo, hi = interval
     first, last = lo + max_order, hi - 1
-    if count < 4 or last - first + 1 < count:
-        raise ValueError("Need >=4 cutoffs and enough valid samples")
+    if count < 1 or last-first+1 < count:
+        raise ValueError("Insufficient valid samples for requested cutoffs")
     rise = lo + int(np.argmax(np.diff(mean[lo:hi])))
-    width = hi - lo
-    dense = np.linspace(rise - .02 * width, rise + .06 * width, count - 3)
-    candidates = [lo + .03 * width, *dense, lo + .66 * width, lo + .86 * width]
+    width = hi-lo
+    dense = np.linspace(rise-.02*width, rise+.06*width, max(1, count-3))
+    candidates = [lo+.03*width, *dense, lo+.66*width, lo+.86*width]
     chosen = {int(np.clip(round(t), first, last)) for t in candidates}
     if len(chosen) < count:
-        for t in np.linspace(first, last, max(count * 8, 100)):
+        for t in np.linspace(first, last, max(count*12, 120)):
             chosen.add(int(round(t)))
-            if len(chosen) == count:
+            if len(chosen) >= count:
                 break
     return np.asarray(sorted(chosen)[:count], dtype=np.int64)
+
+
+def distributed_cutoffs(mean, mask, max_order, count):
+    """Prefer rising-edge cutoffs; reserve some for valid post-mask segments."""
+    intervals = valid_intervals(mask, max_order)
+    if not intervals:
+        raise ValueError("No retained region can support the maximum AR order")
+    primary = active_interval(mask, mean, max_order)
+    later = [pair for pair in intervals if pair[0] > primary[1]]
+    # Cutoffs after cropped regions retain only their own contiguous history.
+    secondary = min(len(later)*2, max(0, count//3))
+    result = dense_cutoffs(mean, primary, max_order, count-secondary).tolist()
+    if secondary:
+        for j in range(secondary):
+            pair = later[j % len(later)]
+            start, stop = pair
+            fractions = (.20, .65)
+            cutoff = start + max_order + round(
+                fractions[j // len(later) % 2]*(stop-start-max_order-1))
+            result.append(int(min(cutoff, stop-1)))
+    return np.asarray(sorted(set(result)), dtype=np.int64)
+
+
+def local_forecast_end(mask, cutoff):
+    """AR terminates at the first masked sample; it never bridges a gap."""
+    mask = np.asarray(mask, bool)
+    if cutoff < 0 or cutoff >= len(mask) or not mask[cutoff]:
+        raise ValueError("Cutoff must be in a valid region")
+    end = cutoff
+    while end < len(mask) and mask[end]:
+        end += 1
+    return end
 
 
 def fit_moments(train):
@@ -173,7 +202,7 @@ def fit_ridge_orders(train, mean, std, interval, orders, alpha=1e-3,
     The same target rows are used across orders. Ridge alpha is relative to
     mean feature energy, making it insensitive to training-set size.
     """
-    lo, hi = interval
+    intervals = interval if isinstance(interval, list) else [interval]
     pmax = max(orders)
     fitted = {}
     for method in ("mean_ar", "standardized_ar"):
@@ -185,12 +214,16 @@ def fit_ridge_orders(train, mean, std, interval, orders, alpha=1e-3,
             residual = values - mean
             if method == "standardized_ar":
                 residual /= std
-            windows = sliding_window_view(residual[:, lo:hi], pmax + 1, axis=1)[:, ::stride]
-            design = windows[:, :, :-1][:, :, ::-1].reshape(-1, pmax)
-            target = windows[:, :, -1].reshape(-1)
-            gram += design.T @ design
-            cross += design.T @ target
-            n_rows += len(target)
+            for lo, hi in intervals:
+                if hi-lo <= pmax:
+                    continue
+                windows = sliding_window_view(
+                    residual[:, lo:hi], pmax + 1, axis=1)[:, ::stride]
+                design = windows[:, :, :-1][:, :, ::-1].reshape(-1, pmax)
+                target = windows[:, :, -1].reshape(-1)
+                gram += design.T @ design
+                cross += design.T @ target
+                n_rows += len(target)
         if not n_rows:
             raise ValueError("No AR training samples")
         models = {}
@@ -288,9 +321,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     training = np.asarray(x_train[train_ids, detector, :], np.float64)
     evaluation = np.asarray(x_eval[eval_ids, detector, :], np.float64)
     mean, std, std_floor = fit_moments(training)
-    interval = active_interval(mask, mean, max(args.ar_orders))
-    cutoffs = dense_cutoffs(mean, interval, max(args.ar_orders), args.n_cutoffs)
-    fitted = fit_ridge_orders(training, mean, std, interval, args.ar_orders,
+    intervals = valid_intervals(mask, max(args.ar_orders))
+    cutoffs = distributed_cutoffs(mean, mask, max(args.ar_orders), args.n_cutoffs)
+    fitted = fit_ridge_orders(training, mean, std, intervals, args.ar_orders,
                               alpha=args.ridge_alpha, stride=args.train_stride,
                               batch_events=args.batch_events)
     scale = np.asarray(transform.maximum - transform.minimum).reshape(-1)
@@ -298,9 +331,17 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     rows = []
     example = None
     for cutoff in cutoffs:
-        cutoff, stop = int(cutoff), interval[1]
-        truth = evaluation[:, cutoff:stop]
-        baseline = np.broadcast_to(np.clip(mean[cutoff:stop], 0., 1.), truth.shape)
+        cutoff = int(cutoff)
+        stop = local_forecast_end(mask, cutoff)
+        # All future samples are reconstructed: AR on the current valid run,
+        # population mean across/after the first gap. Masked samples are not
+        # scored, but later *valid* samples remain part of the full-suffix score.
+        future_valid = np.asarray(mask[cutoff:], dtype=bool)
+        truth = evaluation[:, cutoff:][:, future_valid]
+        baseline_full = np.broadcast_to(
+            np.clip(mean[cutoff:], 0., 1.),
+            (len(evaluation), len(mean)-cutoff)).copy()
+        baseline = baseline_full[:, future_valid]
         base = metric_row(truth, baseline, mv_scale)
         for order in args.ar_orders:
             for method in ("mean_ar", "standardized_ar"):
@@ -309,12 +350,15 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     evaluation[:, :cutoff], mean, std, model["coefficients"],
                     cutoff, stop, standardized=(method == "standardized_ar")
                 )
-                metric = metric_row(truth, prediction, mv_scale)
+                full_prediction = baseline_full.copy()
+                full_prediction[:, :stop-cutoff] = prediction
+                metric = metric_row(truth, full_prediction[:, future_valid], mv_scale)
                 rows.append({
                     **metric, "method": method, "order": order,
                     "cutoff_sample": cutoff,
                     "cutoff_ns": float(time_ps[cutoff]/1000),
-                    "n_missing": stop-cutoff,
+                    "n_missing": int(np.count_nonzero(future_valid)),
+                    "ar_predicted_samples": stop-cutoff,
                     "n_eval_events": len(eval_ids),
                     "mse_improvement_percent": (
                         100 * (1 - metric["mse_normalized"]/base["mse_normalized"])
@@ -324,12 +368,14 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                 })
                 if (example is None and method == "standardized_ar" and
                         order == args.ar_orders[-1]):
-                    example = (cutoff, evaluation[0].copy(), prediction[0].copy(),
-                               baseline[0].copy(), int(eval_ids[0]))
+                    example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
+                               baseline_full[0].copy(), int(eval_ids[0]))
         rows.append({
             **base, "method": "mean", "order": 0,
             "cutoff_sample": cutoff, "cutoff_ns": float(time_ps[cutoff]/1000),
-            "n_missing": stop-cutoff, "n_eval_events": len(eval_ids),
+            "n_missing": int(np.count_nonzero(future_valid)),
+            "ar_predicted_samples": stop-cutoff,
+            "n_eval_events": len(eval_ids),
             "mse_improvement_percent": 0., "stable": True, "root_radius": 0.,
         })
     with (out / "metrics.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -342,7 +388,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "train_events": len(train_ids), "eval_events": len(eval_ids),
         "train_indices": train_ids.tolist(), "eval_indices": eval_ids.tolist(),
         "mean": mean.tolist(), "std": std.tolist(), "std_floor": std_floor,
-        "valid_interval": list(interval), "cutoffs": cutoffs.tolist(),
+        "valid_intervals": [list(i) for i in valid_intervals(mask)],
+        "valid_scored_samples": int(np.count_nonzero(mask)),
+        "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
         "models": {method: {str(p): {
@@ -356,9 +404,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         ns = np.asarray(time_ps) / 1000
         fig, ax = plt.subplots(figsize=(10, 4.5))
         ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
-        ax.plot(ns[cutoff:interval[1]], baseline, color="#C98740",
+        ax.plot(ns[cutoff:], baseline, color="#C98740",
                 label="Mean replacement")
-        ax.plot(ns[cutoff:interval[1]], prediction, color="#2B9C74",
+        ax.plot(ns[cutoff:], prediction, color="#2B9C74",
                 label="Standardized AR")
         ax.axvline(ns[cutoff], color="gray", ls="--")
         ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
@@ -369,7 +417,7 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         fig.savefig(out / "waveform_example.png", dpi=160)
         plt.close(fig)
     print(f"[{name}] train={len(train_ids)} blind={len(eval_ids)} "
-          f"valid=[{interval[0]},{interval[1]}) cutoffs={len(cutoffs)} "
+          f"valid_regions={valid_intervals(mask)} cutoffs={len(cutoffs)} "
           f"orders={args.ar_orders} -> {out}", flush=True)
     return out
 
