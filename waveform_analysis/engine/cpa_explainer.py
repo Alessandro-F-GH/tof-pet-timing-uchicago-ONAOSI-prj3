@@ -640,6 +640,12 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                             logger.info(
                                 "CPA SKIP | %s/%s/%s | completed output matches settings | %s",
                                 board_name, family, name, dest)
+                            if family == "energy" and name == "direct_multirocket_rdst":
+                                logger.info(
+                                    "CPA FEATURE REUSE | %s/%s | NOT CHECKED | "
+                                    "combined output already complete; no new combined "
+                                    "features will be computed for standalone models",
+                                    board_name, name)
                         outputs.append(dest)
                         continue
                     if logger:
