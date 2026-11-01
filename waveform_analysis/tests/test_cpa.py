@@ -112,3 +112,51 @@ def test_cpa_discovery_ignores_unrelated_missing_manifest(tmp_path, monkeypatch)
     found = cpa._cpa_run_inputs(root, None, models=["shared_multirocket_rdst"])
     assert len(found) == 1
     assert found[0]["manifest"]["model"] == "shared_multirocket_rdst"
+
+
+def test_timing_cutoffs_restart_after_each_masked_region():
+    from waveform_analysis.engine.cpa_explainer import (
+        timing_cutoff_schedule_ns, masked_time_intervals, _plot_metrics,
+    )
+    t = np.arange(-2., 41., .1) * 1000
+    mask = np.ones(len(t), bool)
+    mask[(t >= 500.) & (t < 2500.)] = False
+    mask[(t >= 17500.) & (t < 19500.)] = False
+    cutoffs, omitted = cutoff_samples(
+        t, mask, timing_cutoff_schedule_ns(t, mask))
+    ns = t[cutoffs]/1000
+    # Segment starts at 2.5 and 19.5 ns; requested offsets are relative.
+    for expected in (3.5,5.5,7.5,9.5,11.5,16.5,20.5,22.5,24.5,26.5,28.5,33.5):
+        assert np.any(np.isclose(ns, expected))
+    assert np.all(mask[cutoffs])
+    assert not np.any((ns >= .5) & (ns < 2.5))
+    assert not np.any((ns >= 17.5) & (ns < 19.5))
+    intervals = masked_time_intervals(t, mask)
+    assert len(intervals) == 2
+
+
+def test_cpa_performance_plot_uses_two_axes_and_mask_shading(tmp_path, monkeypatch):
+    from waveform_analysis.engine import cpa_explainer as cpa
+    import matplotlib.axes
+    labels = []
+    original = matplotlib.axes.Axes.set_ylabel
+
+    def collect_label(self, label, *args, **kwargs):
+        labels.append(label)
+        return original(self, label, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "set_ylabel", collect_label)
+    rows = []
+    for cutoff, kind in ((0.0, "prefix"), (4.0, "prefix"), (20.0, "full")):
+        rows.append({
+            "cutoff_ns": cutoff, "kind": kind,
+            "centered_rmse_ps": 50., "centered_rmse_ci_low_ps": 48.,
+            "centered_rmse_ci_high_ps": 52., "ctr_ps": 75.,
+            "ctr_ci_low_ps": 70., "ctr_ci_high_ps": 80.,
+        })
+    path = tmp_path / "timing_resolution.png"
+    cpa._plot_metrics(path, rows, "test",
+                      masked_intervals=[(1., 2.)])
+    assert path.stat().st_size > 100
+    assert len(labels) == 2
+    assert "RMSE" in labels[0] and "CTR" in labels[1]
