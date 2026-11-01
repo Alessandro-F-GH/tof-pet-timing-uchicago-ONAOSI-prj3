@@ -39,7 +39,6 @@ from waveform_analysis.engine.train import (
     release_training_memory,
     save_model,
     saved_model_complete,
-    target_fingerprint,
 )
 from waveform_analysis.engine.validation import (
     best_complete_candidate,
@@ -163,11 +162,9 @@ def _candidate_log(logger, label, space, summary):
 
 
 def _fold_evaluator(
-    spec, space, config, development, shared, candidate, logger, frozen_development=None,
-    target_override=None,
+    spec, space, config, development, shared, candidate, logger, frozen_development=None
 ):
-    from waveform_analysis.engine.train import resolve_target_vector
-    target = resolve_target_vector(development, config["mode"], target_override)
+    target = np.asarray(model_target(development, config["mode"]), dtype=np.float64)
     chunk = int(config["runtime"]["prediction_chunk_size"])
 
     def evaluate(parameters, fold):
@@ -198,7 +195,6 @@ def _fold_evaluator(
                 fit_input_cache=input_cache,
                 logger=logger,
                 frozen_features=frozen_development,
-                target_override=target_override,
             )
             prediction = predict_indices(
                 spec,
@@ -248,7 +244,6 @@ def _evaluate_candidate(
     log_label,
     frozen_development=None,
     force_complete=False,
-    target_override=None,
 ):
     summary = store.candidate_row(identifier)
     folds = store.read_fold_rows(identifier)
@@ -280,7 +275,6 @@ def _evaluate_candidate(
             identifier,
             logger,
             frozen_development,
-            target_override,
         ),
         metric=config["cross_validation"]["metric"],
         pruning=config["cross_validation"]["pruning"],
@@ -297,8 +291,7 @@ def _evaluate_candidate(
 
 
 def _fixed_grid(
-    store, spec, space, config, development, shared, logger, frozen_development=None,
-    target_override=None,
+    store, spec, space, config, development, shared, logger, frozen_development=None
 ):
     opt = optimization_config(space)
     raw = (
@@ -330,7 +323,6 @@ def _fixed_grid(
             logger,
             log_label=label,
             frozen_development=frozen_development,
-            target_override=target_override,
         )
     return candidates
 
@@ -353,8 +345,7 @@ def _save_sampler(path, sampler):
 
 
 def _optuna(
-    store, spec, space, config, development, shared, logger, frozen_development=None,
-    target_override=None,
+    store, spec, space, config, development, shared, logger, frozen_development=None
 ):
     import optuna
 
@@ -394,7 +385,6 @@ def _optuna(
             logger,
             log_label=f"Trial {int(number) + 1}/{int(opt.n_trials)}",
             frozen_development=frozen_development,
-            target_override=target_override,
         )
         if _bool(summary.get("pruned", False)):
             study.tell(int(number), state=optuna.trial.TrialState.PRUNED)
@@ -432,8 +422,7 @@ def _optuna(
 
 
 def _search(
-    store, spec, space, config, development, shared, logger, frozen_development=None,
-    target_override=None,
+    store, spec, space, config, development, shared, logger, frozen_development=None
 ):
     opt = optimization_config(space)
     optimized = _optimized_parameter_names(space)
@@ -453,13 +442,11 @@ def _search(
     )
     candidates = (
         _fixed_grid(
-            store, spec, space, config, development, shared, logger, frozen_development,
-            target_override,
+            store, spec, space, config, development, shared, logger, frozen_development
         )
         if opt.strategy in {"fixed", "grid"}
         else _optuna(
-            store, spec, space, config, development, shared, logger, frozen_development,
-            target_override,
+            store, spec, space, config, development, shared, logger, frozen_development
         )
     )
 
@@ -480,7 +467,6 @@ def _search(
             store, spec, space, config, development, shared, identifier,
             candidates[identifier], logger, log_label="Fallback candidate",
             frozen_development=frozen_development, force_complete=True,
-            target_override=target_override,
         )
     return candidates
 
@@ -507,8 +493,7 @@ def _select(store, candidates, config):
     return out
 
 
-def _fit_final(spec, space, config, development, best, logger, frozen_development=None,
-               target_override=None, fit_indices=None):
+def _fit_final(spec, space, config, development, best, logger, frozen_development=None):
     seed = semantic_seed(
         config["seed"],
         config["mode"],
@@ -522,36 +507,29 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
         space,
         config,
         development,
-        (
-            np.arange(development.n_events, dtype=np.int64)
-            if fit_indices is None else np.asarray(fit_indices, dtype=np.int64)
-        ),
+        np.arange(development.n_events, dtype=np.int64),
         best["parameters"],
         seed=seed,
         transform_seed_base=semantic_seed(seed, "transform"),
         logger=logger,
         frozen_features=frozen_development,
-        target_override=target_override,
     )
     return fitted, seed
 
 
 def _model(
-    store, spec, space, config, development, best, fp, logger, frozen_development=None,
-    target_override=None,
-    fit_indices=None,
+    store, spec, space, config, development, best, fp, logger, frozen_development=None
 ):
     status = _sync(store, "final_fit", fp)
     if status == "complete" and config["save_model"]:
         if saved_model_complete(spec, store.model_dir):
             return load_fitted_model(spec, store.model_dir, best["parameters"], config)
         logger.warning(
-            "Saved final model is incomplete or incompatible | retraining on configured development subset"
+            "Saved final model is incomplete or incompatible | retraining on full development set"
         )
         store.invalidate_stage("final_fit")
     fitted, seed = _fit_final(
-        spec, space, config, development, best, logger,
-        frozen_development, target_override, fit_indices,
+        spec, space, config, development, best, logger, frozen_development
     )
     if config["save_model"]:
         store.save_model_artifact(
@@ -562,9 +540,7 @@ def _model(
             "candidate_id": best["candidate_id"],
             "parameters": best["parameters"],
             "training_dataset_role": "development",
-            "n_train": int(
-                development.n_events if fit_indices is None else len(fit_indices)
-            ),
+            "n_train": int(development.n_events),
             "seed": int(seed),
             "model_saved": bool(config["save_model"]),
 
@@ -576,19 +552,11 @@ def _model(
     return fitted
 
 
-def _outer_cv_selection_and_fit(
-    store, spec, space, config, development, logger,
-    frozen_transform, frozen_development, target_override=None,
-    *, shared=None, fit_indices=None,
-):
-    if shared is None:
-        shared = ExperimentArtifactStore(
-            Path(config["batch_output_dir"]) / "artifacts"
-        ).prepare_cv(development, config)
-    fit_indices = (
-        np.arange(development.n_events, dtype=np.int64)
-        if fit_indices is None else np.asarray(fit_indices, dtype=np.int64)
-    )
+def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
+                                frozen_transform, frozen_development):
+    shared = ExperimentArtifactStore(
+        Path(config["batch_output_dir"]) / "artifacts"
+    ).prepare_cv(development, config)
     cv_fp = _stage(
         "cv",
         {
@@ -601,10 +569,6 @@ def _outer_cv_selection_and_fit(
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
-            **(
-                {} if target_override is None
-                else {"target_fingerprint": target_fingerprint(target_override)}
-            ),
         },
     )
     if _sync(store, "cv", cv_fp, logger) != "complete":
@@ -617,7 +581,6 @@ def _outer_cv_selection_and_fit(
             shared,
             logger,
             frozen_development,
-            target_override,
         )
         store.mark_stage(
             "cv", cv_fp, metadata={"candidates": len(store.read_candidate_rows())}
@@ -663,10 +626,6 @@ def _outer_cv_selection_and_fit(
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
-            **(
-                {} if target_override is None
-                else {"target_fingerprint": target_fingerprint(target_override)}
-            ),
         },
         parents={"selection": selection_fp},
     )
@@ -675,7 +634,7 @@ def _outer_cv_selection_and_fit(
         logger.info(
             "Final fit | %s | training on full development set | n=%d",
             _model_label(spec.name),
-            int(fit_indices.size),
+            int(development.n_events),
         )
         fitted = _model(
             store,
@@ -687,8 +646,6 @@ def _outer_cv_selection_and_fit(
             final_fp,
             logger,
             frozen_development,
-            target_override,
-            fit_indices,
         )
         logger.info("Final fit complete | %s", _model_label(spec.name))
     else:
