@@ -636,6 +636,10 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         (dest / p).is_file() for p in
                         ("metrics.csv", "timing_resolution.png", "predictions.npz")
                     ):
+                        if logger:
+                            logger.info(
+                                "CPA SKIP | %s/%s/%s | completed output matches settings | %s",
+                                board_name, family, name, dest)
                         outputs.append(dest)
                         continue
                     if logger:
@@ -668,6 +672,11 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                               int(event_seed), int(len(indices)))
                 shared = shared_kernel_predictions.pop(shared_key, None)
                 companion_models = {}
+                if (shared is not None and logger):
+                    logger.info(
+                        "CPA FEATURE REUSE | %s/%s | REUSED combined fitted block; "
+                        "no standalone feature transformation needed",
+                        board_name, name)
                 if (shared is None and name == "direct_multirocket_rdst"
                         and family == "energy" and
                         (max_events == 0 or max_events >= blind.n_events)):
@@ -675,7 +684,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     # the combined transform concatenates MR and RDST blocks.
                     # Verify exact fitted kernels/shapelets and scalers first.
                     from waveform_analysis.engine.cpa_feature_sharing import (
-                        KERNEL_BLOCKS, compatible_component,
+                        KERNEL_BLOCKS, component_compatibility,
                     )
                     for other in runs:
                         other_name = other["manifest"].get("model")
@@ -696,6 +705,11 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                             other_identity = _identity(
                                 other, other_development, other_blind, board_name, family)
                             if other_identity != identity or other_blind.n_events != blind.n_events:
+                                if logger:
+                                    logger.info(
+                                        "CPA FEATURE REUSE | %s/%s | NOT REUSED | "
+                                        "dataset identity or event population differs",
+                                        board_name, other_name)
                                 continue
                             other_prep = other_cfg["preprocessing"]
                             other_prep["named_cache_root"] = str(root)
@@ -707,37 +721,61 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                                 other_spec, other_store, other["directory"],
                                 explicit_model_dir=False)
                             if not saved_model_complete(other_spec, other_path):
+                                if logger:
+                                    logger.info(
+                                        "CPA FEATURE REUSE | %s/%s | NOT REUSED | "
+                                        "standalone fitted model incomplete",
+                                        board_name, other_name)
                                 continue
                             other_fitted = load_fitted_model(
                                 other_spec, other_path,
                                 other.get("best", {}).get("parameters", {}),
                                 other_cfg)
                             block = KERNEL_BLOCKS[other_name]
-                            if (not np.array_equal(other_fitted.sample_mask, mask)
-                                    or not compatible_component(fitted, other_fitted, block)):
+                            matches, reason = component_compatibility(
+                                fitted, other_fitted, block)
+                            if not np.array_equal(other_fitted.sample_mask, mask):
+                                matches, reason = False, "sample masks differ"
+                            if not matches:
                                 if logger:
                                     logger.info(
-                                        "CPA separate transform required | %s | fitted %s block differs",
-                                        other_name, block)
+                                        "CPA FEATURE REUSE | %s/%s | NOT REUSED | %s | "
+                                        "standalone transformation required",
+                                        board_name, other_name, reason)
                                 continue
                             other_event_seed = semantic_seed(
                                 seed, "cpa-blind", board_name, other_identity, other_name)
                             other_indices = _draw_indices(
                                 blind.n_events, max_events, other_event_seed)
                             if not np.array_equal(other_indices, indices):
+                                if logger:
+                                    logger.info(
+                                        "CPA FEATURE REUSE | %s/%s | NOT REUSED | "
+                                        "blind event indices differ",
+                                        board_name, other_name)
                                 continue
                             companion_models[other_name] = (
                                 other_spec, other_fitted, block, other_event_seed)
                             other_fitted = None
                             if logger:
-                                logger.info("CPA reusing combined %s features for %s",
-                                            block, other_name)
+                                logger.info(
+                                    "CPA FEATURE REUSE | %s/%s | REUSED | %s | "
+                                    "same fitted transform and event indices",
+                                    board_name, other_name, reason)
                         except (ValueError, KeyError, FileNotFoundError) as exc:
                             if logger:
-                                logger.warning("CPA cannot share %s features: %s",
-                                               other_name, exc)
+                                logger.warning(
+                                    "CPA FEATURE REUSE | %s/%s | NOT REUSED | %s | "
+                                    "standalone transformation required",
+                                    board_name, other_name, exc)
                         finally:
                             del other_fitted
+                    if logger:
+                        logger.info(
+                            "CPA FEATURE REUSE | %s/%s | %d compatible standalone "
+                            "model(s) | %s",
+                            board_name, name, len(companion_models),
+                            ", ".join(sorted(companion_models)) or "none")
                     if companion_models:
                         for other_name, (_, _, _, other_seed) in companion_models.items():
                             other_key = (board_name, identity, other_name,
@@ -745,6 +783,14 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                             shared_kernel_predictions[other_key] = (
                                 np.empty_like(predictions),
                                 np.empty_like(mean_predictions))
+                if logger:
+                    logger.info(
+                        "CPA INFERENCE | %s/%s/%s | %s | events=%d | cutoffs=%d",
+                        board_name, family, name,
+                        ("REUSED combined feature predictions" if shared is not None
+                         else "SHARED combined+standalone transforms" if companion_models
+                         else "INDEPENDENT fitted transformation"),
+                        len(indices), len(cutoffs))
                 for j, cutoff in enumerate(cutoffs):
                     reconstructed = reconstruct_pair(waves, imputer, mask, cutoff)
                     mean_reconstructed = reconstruct_pair(
