@@ -37,11 +37,16 @@ not tune alpha against blind data.
 
 Cutoffs are derived from the **development population mean**, densely
 distributed near its largest positive slope, plus a small number of early and
-tail cutoffs. They are the same for all AR orders. The analyzed temporal
-region is a single contiguous interval of retained samples containing the
-strongest mean-waveform rising edge; artificially cropped timing regions are
-excluded. The script is therefore intentionally a **single-region** initial
-diagnostic, not an evaluation of every possible valid timing interval.
+tail cutoffs. They are the same for all AR orders. Ridge training pools lagged samples from each contiguous retained region,
+without creating training examples that cross masked boundaries. Cutoffs are
+concentrated around the strongest rising edge, with some cutoffs in valid
+post-mask intervals when those are long enough. For each cutoff, AR predicts
+only until the next masked boundary; from that boundary onward (including any
+later valid regions), the mean waveform is substituted. When a cutoff lies
+after a mask, the AR uses only the contiguous observed history in that region.
+Metrics cover the **entire valid suffix** after the cutoff, excluding
+artificially masked positions; `ar_predicted_samples` separately records the
+part actually handled by AR.
 
 The original prefix is never replaced. Missing samples are predicted
 recursively without reading the test suffix. Predicted voltage is clipped to
