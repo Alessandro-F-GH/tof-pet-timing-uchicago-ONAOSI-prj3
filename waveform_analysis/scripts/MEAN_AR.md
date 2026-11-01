@@ -14,9 +14,7 @@ python -m waveform_analysis.scripts.evaluate_mean_ar \
   --ar-orders 8 16 32 64 128 \
   --n-cutoffs 10 \
   --max-train-events 512 \
-  --max-eval-events 128 \
-  --decay-half-lives-ns 0.5 1 2 5 10 \
-  --local-horizon-samples 100
+  --max-eval-events 128
 ```
 
 Zero for either event limit selects all available events. Both cohorts are
@@ -81,38 +79,3 @@ Synthetic tests:
 ```bash
 python -m pytest -q waveform_analysis/tests/test_mean_ar.py
 ```
-
-
-## Long-horizon AR decay experiment
-
-To test whether recursive AR forecasts become unhelpful far beyond the cutoff,
-the standalone script now evaluates each fitted AR method/order with no decay
-AND with configurable exponential half-lives. The reconstruction is:
-
-```text
-raw = recursive_AR(prefix)  # unchanged; computed once
-w(t) = 2 ** (-(time_ps[t] - time_ps[cutoff]) / (1000 * half_life_ns))
-faded[t] = mean[t] + w(t) * (raw[t] - mean[t])
-```
-
-The fade happens **after** recursive forecasting, not inside the recurrence;
-the first predicted sample has AR weight 1, and distant predictions approach
-the mean. All variants share the same observed prefix, fitted coefficients,
-cutoff, held-out events, and valid sample mask. AR is still stopped at the
-next masked boundary. The mean-only baseline is retained.
-
-The new `--decay-half-lives-ns` argument defaults to `0.5 1 2 5 10`.
-`--local-horizon-samples` defaults to `100`. The extra columns in
-`metrics.csv` are `half_life_ns` (`none` for raw AR, `mean` for mean
-replacement), `local_rmse_mV`, `local_mse_improvement_percent`,
-`first_step_jump_mV`, and `natural_step_mV`. The long-horizon RMSE and
-relative mean-baseline MSE improvement remain available as before.
-`decay_comparison.png` shows the standardized AR at the maximum order for
-every half-life; `waveform_example.png` contrasts a damped continuation,
-raw AR, mean and the true signal.
-
-**Interpretation:** lower waveform reconstruction error on the held-out
-evaluation sample suggests that fading can help, but it does not prove it
-will improve downstream timing correction or remove transform-induced
-out-of-distribution artifacts. Select a fade policy on development validation
-before applying it to CPA/blind timing-resolution inference.
