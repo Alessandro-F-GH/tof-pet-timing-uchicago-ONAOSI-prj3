@@ -49,6 +49,44 @@ def cutoff_schedule_ns(last_ns):
     return [v for v in values if v <= last_ns + 1e-9]
 
 
+def timing_cutoff_schedule_ns(time_ps, mask):
+    """Restart a 1,3,5,7,9,14,19,... ns schedule after each masked gap.
+
+    The initial (pre-first-gap) segment retains the ordinary base schedule;
+    subsequent segments use their actual first valid sample as the origin.
+    All positions are quantized by cutoff_samples and never moved across gaps.
+    """
+    t = np.asarray(time_ps, np.float64) / 1000.
+    keep = np.asarray(mask, bool)
+    if t.shape != keep.shape or t.ndim != 1:
+        raise ValueError("Timing grid and mask must have matching dimensions")
+    requested = cutoff_schedule_ns(float(t[-1]))
+    from waveform_analysis.scripts.evaluate_mean_ar import valid_intervals
+    for start, end in valid_intervals(keep):
+        if start == 0:
+            continue
+        base = float(t[start])
+        offset = 1.
+        while base + offset <= float(t[end-1]) + 1e-9:
+            requested.append(base + offset)
+            offset += 2. if offset < 9. else 5.
+    return sorted(set(requested))
+
+
+def masked_time_intervals(time_ps, mask):
+    """Physical-time spans of excluded samples for plot shading."""
+    t = np.asarray(time_ps, np.float64) / 1000.
+    if len(t) < 2:
+        return []
+    dt = np.diff(t)
+    edges = np.r_[t[0]-dt[0]/2, (t[:-1]+t[1:])/2, t[-1]+dt[-1]/2]
+    missing = ~np.asarray(mask, bool)
+    transitions = np.diff(np.r_[False, missing, False].astype(np.int8))
+    return [(float(edges[a]), float(edges[b]))
+            for a,b in zip(np.flatnonzero(transitions == 1),
+                           np.flatnonzero(transitions == -1))]
+
+
 def cutoff_samples(time_ps, mask, requested_ns=None):
     """Do not shift cutoffs into or across masked timing regions."""
     t = np.asarray(time_ps, np.float64) / 1000.
@@ -305,34 +343,35 @@ def _csv(path, rows):
         writer.writerows(rows)
 
 
-def _plot_metrics(path, rows, title):
-    fig, ax = plt.subplots(figsize=(9, 5))
-    positions = [r["cutoff_ns"] for r in rows]
-    for key, label in (("centered_rmse_ps", "Centered timing RMSE"),
-                       ("ctr_ps", "CTR (F1 FWHM)")):
-        ax.plot(positions, [r[key] for r in rows], "-o", label=label)
-    ax.set(xlabel="Aligned ML-input cutoff (ns)", ylabel="Timing width (ps)",
-           title=title)
-    ax.grid(alpha=.25)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
-    plt.close(fig)
-
-
-def _plot_attribution(path, rows, title):
-    fig, ax = plt.subplots(figsize=(9, 5))
-    x = np.arange(len(rows))
-    ax.bar(x, [r["mean_absolute_increment_ps"] for r in rows],
-           label="Mean |increment|")
-    ax.plot(x, [r["mean_signed_increment_ps"] for r in rows],
-            "-o", label="Mean signed increment")
-    ax.set_xticks(x)
-    ax.set_xticklabels([f'{r["cutoff_ns"]:g}' for r in rows])
-    ax.set(xlabel="Aligned ML-input cutoff (ns)", ylabel="Prediction increment (ps)",
-           title=title)
-    ax.grid(alpha=.2, axis="y")
-    ax.legend()
+def _plot_metrics(path, rows, title, *, masked_intervals=()):
+    """Separate physical RMSE and CTR scales, with masked time shaded."""
+    ordered = sorted((r for r in rows if r["kind"] == "prefix"),
+                     key=lambda r: r["cutoff_ns"])
+    full = next(r for r in rows if r["kind"] == "full")
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    positions = np.asarray([r["cutoff_ns"] for r in ordered])
+    for ax, key, low, high, label in (
+        (axes[0], "centered_rmse_ps", "centered_rmse_ci_low_ps",
+         "centered_rmse_ci_high_ps", "Centered residual RMSE (ps)"),
+        (axes[1], "ctr_ps", "ctr_ci_low_ps", "ctr_ci_high_ps",
+         "CTR, F1 FWHM (ps)"),
+    ):
+        values = np.asarray([r[key] for r in ordered], float)
+        lower = np.asarray([r[low] for r in ordered], float)
+        upper = np.asarray([r[high] for r in ordered], float)
+        ax.plot(positions, values, "o-", markersize=3, label="Prefix")
+        if np.any(np.isfinite(lower) & np.isfinite(upper)):
+            ax.fill_between(positions, lower, upper, alpha=.15)
+        ax.axhline(full[key], linestyle="--", color="gray",
+                   label="Full waveform")
+        for index,(left,right) in enumerate(masked_intervals):
+            ax.axvspan(left, right, color="gray", alpha=.14,
+                       label="Masked samples" if index == 0 else None)
+        ax.set_ylabel(label)
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=8)
+    axes[-1].set_xlabel("Aligned waveform cutoff (ns)")
+    fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
@@ -549,7 +588,9 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         np.asarray(fitted.sample_mask, bool))
                 if mask.shape != times.shape:
                     raise ValueError("Fitted-model mask does not match ML-input grid")
-                cutoffs, omitted = cutoff_samples(times, mask)
+                schedule = (timing_cutoff_schedule_ns(times, mask)
+                            if family == "timing" else None)
+                cutoffs, omitted = cutoff_samples(times, mask, schedule)
                 if not cutoffs:
                     raise ValueError("No valid chronological cutoffs for this run")
                 identity = _identity(run, development, blind, board_name, family)
@@ -610,23 +651,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                      "kind": "prefix" if j < len(cutoffs) else "full",
                      "n_events": len(indices)} for j, row in enumerate(metrics)
                 ]
-                attribution_rows = []
-                for j in range(len(predictions)):
-                    increment = (predictions[j]-predictions[j-1]) if j else np.full(
-                        len(indices), np.nan)
-                    discrepancy = predictions[j]-predictions[-1]
-                    attribution_rows.append(dict(
-                        cutoff_sample=metric_rows[j]["cutoff_sample"],
-                        cutoff_ns=axis[j], kind=metric_rows[j]["kind"],
-                        mean_signed_increment_ps=float(np.nanmean(increment))
-                        if j else float("nan"),
-                        mean_absolute_increment_ps=float(np.nanmean(abs(increment)))
-                        if j else float("nan"),
-                        convergence_rmse_ps=float(np.sqrt(np.mean(discrepancy**2))),
-                    ))
                 dest.mkdir(parents=True, exist_ok=True)
                 _csv(dest / "metrics.csv", metric_rows)
-                _csv(dest / "attribution.csv", attribution_rows)
                 _csv(dest / "imputer_validation.csv", imputer["scores"])
                 selected = [
                     {"detector": d+1, "cutoff_sample": int(k),
@@ -667,13 +693,18 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     "refit_events": int(len(imputer["refit_ids"])),
                     "local_samples": local_samples, "orders": list(orders),
                     "cutoffs": axis, "omitted_cutoffs": omitted,
+                    "masked_intervals_ns": masked_time_intervals(times, mask),
                     "selected_imputers": selected,
                     "attribution_interpretation": "deterministic imputation, not exact conditional Shapley",
                 }), indent=2), encoding="utf-8")
-                _plot_metrics(dest/"timing_resolution.png", metric_rows,
-                              f"{board_name} {family} {name}")
-                _plot_attribution(dest/"prediction_increments.png", attribution_rows[1:],
-                                  f"{board_name} {family} {name}")
+                _plot_metrics(
+                    dest/"timing_resolution.png", metric_rows,
+                    f"{board_name} {family} {name}",
+                    masked_intervals=masked_time_intervals(times, mask),
+                )
+                # Clean up obsolete performance-unrelated outputs from old runs.
+                for obsolete in ("prediction_increments.png", "attribution.csv"):
+                    (dest / obsolete).unlink(missing_ok=True)
                 outputs.append(dest)
                 print(f"CPA complete | {board_name}/{family}/{name} | "
                       f"events={len(indices)} | {dest}", flush=True)
