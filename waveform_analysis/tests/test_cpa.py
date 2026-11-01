@@ -219,3 +219,65 @@ def test_cpa_multi_board_rejects_missing_cache_and_preserves_single_board(tmp_pa
     args = _parser().parse_args(["explain-cpa", "--results", str(results / "UC"),
                                 "--board", "UC", "--cache-root", str(tmp_path)])
     assert _cpa_jobs(args) == [(results / "UC", None, "UC", tmp_path)]
+
+
+def test_cpa_energy_kernel_defaults_only():
+    from waveform_analysis.engine.cpa_explainer import DEFAULT_MODELS
+    assert "direct_multirocket" in DEFAULT_MODELS["energy"]
+    assert "direct_rdst" in DEFAULT_MODELS["energy"]
+    assert "direct_multirocket_rdst" in DEFAULT_MODELS["energy"]
+    assert "direct_rdst" not in DEFAULT_MODELS["timing"]
+
+
+def test_cpa_shared_feature_blocks_and_incompatible_fallback(monkeypatch):
+    from types import SimpleNamespace as Obj
+    from waveform_analysis.engine.cpa_feature_sharing import (
+        compatible_component, predict_shared_energy_group,
+    )
+
+    class FakeTransformer:
+        def __init__(self, n):
+            self.n = n
+            self.parameter = (np.array([1., 2.]),)
+            self.parameter1 = (np.array([3., 4.]),)
+        def get_params(self, deep=False):
+            return {"n_kernels": self.n, "random_state": 42}
+    class Scaler:
+        scale_ = np.array([1.])
+        mean_ = np.array([0.])
+        var_ = np.array([1.])
+        n_features_in_ = 1
+
+    mr = Obj(transformer=FakeTransformer(4), scaler=Scaler(), shared=False,
+             metadata={"input_samples": 4, "normalise": False,
+                       "feature_count": 2})
+    same = Obj(transformer=FakeTransformer(4), scaler=Scaler(), shared=False,
+               metadata=dict(mr.metadata))
+    different = Obj(transformer=FakeTransformer(5), scaler=Scaler(), shared=False,
+                    metadata=dict(mr.metadata))
+    mask = np.ones(4, bool)
+    def fitted(transform):
+        return Obj(sample_mask=mask, output_max_abs_ps=1000.,
+                   feature_transform=Obj(artifact=transform))
+    combined = fitted(Obj(multirocket=mr,
+                          metadata={"batch_size": 8,
+                                    "feature_blocks": {"multirocket":[0,2],
+                                                       "rdst":[2,4]}}))
+    standalone = fitted(same)
+    assert compatible_component(combined, standalone, "multirocket")
+    assert not compatible_component(combined, fitted(different), "multirocket")
+    # Grouped inference evaluates one combined transform, sharing its first
+    # two feature columns with the standalone Ridge.
+    calls = []
+    combined.feature_transform.apply = lambda x: (
+        calls.append(len(x)) or np.ones((len(x),4), np.float32))
+    spec = Obj(predict=lambda model, features: np.sum(features, axis=1))
+    group = {
+        "direct_multirocket_rdst": (spec, combined, None),
+        "direct_multirocket": (spec, standalone, "multirocket"),
+    }
+    pred = predict_shared_energy_group(
+        group, np.ones((5,2,4), np.float32), chunk_size=3)
+    assert calls == [3, 2]
+    np.testing.assert_allclose(pred["direct_multirocket_rdst"], 4.)
+    np.testing.assert_allclose(pred["direct_multirocket"], 2.)
