@@ -630,7 +630,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         "ridge_alpha": float(ridge_alpha),
                         "train_stride": int(train_stride),
                         "cutoff_samples": [int(k) for k in cutoffs],
-                        "performance_only_version": 2,
+                        "performance_only_version": 3,
                     }
                     if all(previous.get(k) == v for k,v in expected.items()) and all(
                         (dest / p).is_file() for p in
@@ -665,8 +665,11 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         orders=orders, local_samples=local_samples,
                         ridge_alpha=ridge_alpha, train_stride=train_stride)
                 imputer = imputer_cache[cache_key]
-                event_seed = semantic_seed(seed, "cpa-blind", board_name,
-                                           identity, name)
+                kernel_group = (family == "energy" and name in (
+                    "direct_multirocket_rdst", "direct_multirocket", "direct_rdst"))
+                event_seed = semantic_seed(
+                    seed, "cpa-blind", board_name, identity,
+                    "direct_energy_kernels" if kernel_group else name)
                 indices = _draw_indices(blind.n_events, max_events, event_seed)
                 waves = waveform_view(blind, config["mode"], indices).materialize()
                 if not np.all(np.isfinite(waves)):
@@ -678,21 +681,13 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                               int(event_seed), int(len(indices)))
                 shared = shared_kernel_predictions.pop(shared_key, None)
                 companion_models = {}
-                if (name == "direct_multirocket_rdst" and family == "energy"
-                        and 0 < max_events < blind.n_events and logger):
-                    logger.info(
-                        "CPA FEATURE REUSE | %s/%s | NOT CHECKED | "
-                        "capped evaluation (%d/%d blind events); "
-                        "standalone models select model-specific subsets",
-                        board_name, name, len(indices), blind.n_events)
                 if (shared is not None and logger):
                     logger.info(
                         "CPA FEATURE REUSE | %s/%s | REUSED combined fitted block; "
                         "no standalone feature transformation needed",
                         board_name, name)
                 if (shared is None and name == "direct_multirocket_rdst"
-                        and family == "energy" and
-                        (max_events == 0 or max_events >= blind.n_events)):
+                        and family == "energy"):
                     # Saved transforms are *not* assumed identical just because
                     # the combined transform concatenates MR and RDST blocks.
                     # Verify exact fitted kernels/shapelets and scalers first.
@@ -757,7 +752,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                                         board_name, other_name, reason)
                                 continue
                             other_event_seed = semantic_seed(
-                                seed, "cpa-blind", board_name, other_identity, other_name)
+                                seed, "cpa-blind", board_name, other_identity,
+                                "direct_energy_kernels")
                             other_indices = _draw_indices(
                                 blind.n_events, max_events, other_event_seed)
                             if not np.array_equal(other_indices, indices):
@@ -928,7 +924,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     "ridge_alpha": float(ridge_alpha),
                     "train_stride": int(train_stride),
                     "cutoff_samples": [int(k) for k in cutoffs],
-                    "performance_only_version": 2,
+                    "performance_only_version": 3,
                     "cutoffs": axis, "omitted_cutoffs": omitted,
                     "masked_intervals_ns": masked_time_intervals(times, mask),
                     "selected_imputers": selected,
