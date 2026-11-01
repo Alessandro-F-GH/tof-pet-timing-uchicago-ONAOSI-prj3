@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 
 from waveform_analysis.data.dataset import load_prepared_dataset
 from waveform_analysis.data.named_cache import resolve_alias
+from waveform_analysis.signal.sample_mask import control_clipping_sample_mask
 
 METHODS = ("mean", "mean_ar", "standardized_ar")
 
@@ -74,12 +75,37 @@ def load_pair(root, mode, window="wide", development_name=None, blind_name=None)
     if mode == "timing":
         mask_alias = root / "sample_masks" / dev_path.parts[-5] / mode / window
         mask_file = resolve_alias(mask_alias) / "mask.npz"
-        if not mask_file.is_file():
-            raise FileNotFoundError(f"Timing-channel clipping sample mask missing: {mask_file}")
-        with np.load(mask_file) as data:
-            valid = np.asarray(data["mask"], dtype=bool)
-            if not np.array_equal(data["time_ps"], t_train):
-                raise ValueError("Timing sample mask uses a different time grid")
+        if mask_file.is_file():
+            with np.load(mask_file) as data:
+                valid = np.asarray(data["mask"], dtype=bool)
+                if not np.array_equal(data["time_ps"], t_train):
+                    raise ValueError("Timing sample mask uses a different time grid")
+        else:
+            # prepare-cache produces prepared waveforms but does not always
+            # materialize the separate, control-fitted timing sample mask.
+            # Derive the exact same mask without fitting on development/blind.
+            control_alias = (root / "datasets" / dev_path.parts[-5] /
+                             dev_path.parts[-5] / mode / window / "control")
+            if not control_alias.exists():
+                raise FileNotFoundError(
+                    f"Timing mask missing and no control cache at {control_alias}")
+            control = load_prepared_dataset(resolve_alias(control_alias))
+            if control.manifest.get("dataset_role") != "control":
+                raise ValueError("Invalid control dataset role for timing mask")
+            if not np.array_equal(control.timing_time_ps, t_train):
+                raise ValueError("Control/development timing grids differ")
+            if control.timing_windows is None:
+                raise ValueError("Control timing waveforms missing")
+            control_transform = control.timing_transform
+            if control_transform is None or any(
+                not np.array_equal(getattr(control_transform, attr), getattr(transform, attr))
+                for attr in ("minimum", "maximum")
+            ):
+                raise ValueError("Control/development timing transforms differ")
+            valid = control_clipping_sample_mask(control.timing_windows)
+            print(f"[{root.name}/timing] Derived control-based sample mask "
+                  f"({np.count_nonzero(valid)}/{valid.size} retained); "
+                  f"no stored sample mask was required.", flush=True)
     else:
         valid = np.ones(x_train.shape[-1], dtype=bool)
     if valid.shape != (x_train.shape[-1],):
