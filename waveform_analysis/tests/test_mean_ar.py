@@ -2,7 +2,7 @@
 import numpy as np
 
 from waveform_analysis.scripts.evaluate_mean_ar import (
-    active_interval, choose_indices, dense_cutoffs, fit_moments,
+    active_interval, choose_indices, dense_cutoffs, distributed_cutoffs,\n    local_forecast_end, valid_intervals, fit_moments,
     fit_ridge_orders, forecast_suffix, metric_row,
 )
 
@@ -69,3 +69,19 @@ def test_event_selection_is_reproducible():
     assert np.array_equal(choose_indices(100, 15, 123),
                           choose_indices(100, 15, 123))
     assert len(choose_indices(100, 0, 123)) == 100
+
+
+def test_cropped_regions_use_mean_after_gap_and_local_history_after_gap():
+    mask = np.zeros(430, dtype=bool)
+    mask[0:175] = True
+    mask[200:420] = True
+    mean = .05 + .7/(1+np.exp(-(np.arange(430)-147)/7))
+    intervals = valid_intervals(mask, 32)
+    assert intervals == [(0, 175), (200, 420)]
+    assert local_forecast_end(mask, 100) == 175
+    assert local_forecast_end(mask, 240) == 420
+    cutoffs = distributed_cutoffs(mean, mask, 32, 10)
+    assert len(cutoffs) == 10
+    assert np.any(cutoffs < 175)
+    assert np.any(cutoffs >= 232)
+    assert np.all(mask[cutoffs])
