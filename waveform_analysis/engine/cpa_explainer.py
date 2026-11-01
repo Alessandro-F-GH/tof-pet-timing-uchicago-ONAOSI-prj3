@@ -23,7 +23,7 @@ from waveform_analysis.engine.train import (
     load_fitted_model, predict_indices, release_training_memory, saved_model_complete,
 )
 from waveform_analysis.engine.tshap_explainer import (
-    _apply_tshap_cache, _predict_bounded, _resolve_tshap_model_directory,
+    _predict_bounded, _resolve_tshap_model_directory,
     _tshap_run_inputs,
 )
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup
@@ -369,6 +369,9 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
     """Run one board at a time, using only base prepared waveform cache + fitted models."""
     if (results is None) == (model_dir is None):
         raise ValueError("Pass exactly one of --results or --model-dir")
+    orders = tuple(sorted(set(int(p) for p in orders)))
+    if not orders or min(orders) < 1 or local_samples < 1 or train_stride < 1 or predict_batch_size < 1:
+        raise ValueError("Invalid AR orders, horizon, stride or prediction batch size")
     if max_events < 2 or fit_events < 0 or validation_events < 2 or bootstrap < 0:
         raise ValueError("Invalid event count or bootstrap repetitions")
     runs, _ = _tshap_run_inputs(results, model_dir)
@@ -396,9 +399,22 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 continue
             if name not in (models if models is not None else DEFAULT_MODELS[family]):
                 continue
-            _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
+            # Base waveforms plus frozen model/transform suffice: no feature cache.
+            prep = config["preprocessing"]
+            root = Path(cache_root).expanduser().resolve()
+            prep["named_cache_root"] = str(root)
+            prep["cache_dir"] = str(root / "preprocessing")
+            prep["artifact_root"] = str(
+                Path(artifact_root).expanduser().resolve()
+                if artifact_root is not None else root / "artifact_store"
+            )
             batch = read_json(batch_root(run["directory"]) / "config.json")
-            board_name = str(board or batch.get("board") or "unknown_board")
+            actual_board = str(batch.get("board") or "unknown_board")
+            if board is not None and actual_board != "unknown_board" and (
+                str(board).lower() != actual_board.lower()
+            ):
+                raise ValueError(f"Requested board {board!r} but run belongs to {actual_board!r}")
+            board_name = str(board or actual_board)
             spec = get_model(name)
             store = RunStore(run["directory"],
                              artifact_root=config["preprocessing"]["artifact_root"])
@@ -424,8 +440,9 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     raise ValueError("No valid chronological cutoffs for this run")
                 identity = _identity(run, development, blind, board_name, family)
                 dest = output_root / board_name / identity / family / name
-                if dest.exists() and not overwrite:
-                    raise FileExistsError(f"CPA output exists: {dest}; use --overwrite")
+                if (dest / "summary.json").exists() and not overwrite:
+                    outputs.append(dest)
+                    continue
                 cache_key = (identity, mask.tobytes(), tuple(cutoffs),
                              int(seed), int(fit_events), int(validation_events),
                              tuple(orders), int(local_samples), float(ridge_alpha),
