@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""Standalone deterministic prefix reconstruction on UC/FBK prepared caches.
+
+Each board, mode and detector is fitted independently. Development waveforms
+are used for fitting; blind waveforms only for evaluation. No XAI/model changes.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from pathlib import Path
+import sys
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from waveform_analysis.data.dataset import load_prepared_dataset
+from waveform_analysis.data.named_cache import resolve_alias
+
+METHODS = ("mean", "mean_ar", "standardized_ar")
+
+
+def _aliases(root, mode, window, role, dataset_name=None):
+    hits = sorted(Path(root).expanduser().resolve().glob(
+        f"datasets/*/*/{mode}/{window}/{role}"
+    ))
+    if dataset_name:
+        hits = [p for p in hits if p.parts[-4] == dataset_name]
+    return hits
+
+
+def load_pair(root, mode, window="wide", development_name=None, blind_name=None):
+    """Locate one matching named-cache development/blind pair without refitting."""
+    root = Path(root).expanduser().resolve()
+    dev = _aliases(root, mode, window, "development", development_name)
+    blind = _aliases(root, mode, window, "blind", blind_name)
+    combinations = [(a, b) for a in dev for b in blind if a.parts[-5] == b.parts[-5]]
+    if len(combinations) != 1:
+        raise ValueError(
+            f"{root}/{mode}/{window}: found {len(combinations)} matching development/"
+            f"blind pairs; specify --development-name and --blind-name. "
+            f"Development: {[str(p) for p in dev]}; blind: {[str(p) for p in blind]}"
+        )
+    dev_path, blind_path = combinations[0]
+    training = load_prepared_dataset(resolve_alias(dev_path))
+    evaluation = load_prepared_dataset(resolve_alias(blind_path))
+    if (training.manifest.get("dataset_role") != "development" or
+            evaluation.manifest.get("dataset_role") != "blind"):
+        raise ValueError("Prepared roles disagree with named cache paths")
+    x_train = getattr(training, f"{mode}_windows")
+    x_eval = getattr(evaluation, f"{mode}_windows")
+    t_train = getattr(training, f"{mode}_time_ps")
+    t_eval = getattr(evaluation, f"{mode}_time_ps")
+    transform = getattr(training, f"{mode}_transform")
+    eval_transform = getattr(evaluation, f"{mode}_transform")
+    if any(x is None for x in (x_train, x_eval, t_train, t_eval, transform, eval_transform)):
+        raise ValueError(f"Missing prepared {mode} waveforms/time grid/transform")
+    if (x_train.ndim != 3 or x_eval.ndim != 3 or x_train.shape[1] != 2 or
+            x_eval.shape[1:] != x_train.shape[1:]):
+        raise ValueError("Expected arrays [events, 2 detectors, samples] on identical grids")
+    if not np.array_equal(t_train, t_eval):
+        raise ValueError("Development and blind time grids differ")
+    for attr in ("minimum", "maximum"):
+        if not np.array_equal(getattr(transform, attr), getattr(eval_transform, attr)):
+            raise ValueError("Development and blind normalized-voltage transforms differ")
+    if mode == "timing":
+        mask_alias = root / "sample_masks" / dev_path.parts[-5] / mode / window
+        mask_file = resolve_alias(mask_alias) / "mask.npz"
+        if not mask_file.is_file():
+            raise FileNotFoundError(f"Timing-channel clipping sample mask missing: {mask_file}")
+        with np.load(mask_file) as data:
+            valid = np.asarray(data["mask"], dtype=bool)
+            if not np.array_equal(data["time_ps"], t_train):
+                raise ValueError("Timing sample mask uses a different time grid")
+    else:
+        valid = np.ones(x_train.shape[-1], dtype=bool)
+    if valid.shape != (x_train.shape[-1],):
+        raise ValueError("Invalid timing sample mask shape")
+    source = {
+        "development_alias": str(dev_path),
+        "blind_alias": str(blind_path),
+        "control": dev_path.parts[-5],
+        "development_fingerprint": training.manifest.get("fingerprint"),
+        "blind_fingerprint": evaluation.manifest.get("fingerprint"),
+    }
+    return x_train, x_eval, np.asarray(t_train), transform, valid, source
+
+
+def active_interval(mask, mean, max_order):
+    """Choose a contiguous unmasked interval containing the strongest rising edge.
+
+    Never fit autoregression across, or forecast through, artificially cropped gaps.
+    """
+    edges = np.diff(np.r_[False, np.asarray(mask, bool), False].astype(np.int8))
+    intervals = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
+    intervals = [(int(a), int(b)) for a, b in intervals if b - a > max_order + 5]
+    if not intervals:
+        raise ValueError("No contiguous valid interval long enough for maximum AR order")
+
+    def score(pair):
+        a, b = pair
+        return float(np.max(np.diff(mean[a:b])))
+
+    return max(intervals, key=lambda pair: (score(pair), pair[1] - pair[0]))
+
+
+def dense_cutoffs(mean, interval, max_order, count=10):
+    """Use a few early/tail cutoffs and concentrate the remainder near the rising edge."""
+    lo, hi = interval
+    first, last = lo + max_order, hi - 1
+    if count < 4 or last - first + 1 < count:
+        raise ValueError("Need >=4 cutoffs and enough valid samples")
+    rise = lo + int(np.argmax(np.diff(mean[lo:hi])))
+    width = hi - lo
+    dense = np.linspace(rise - .08 * width, rise + .12 * width, count - 3)
+    candidates = [lo + .03 * width, *dense, lo + .66 * width, lo + .86 * width]
+    chosen = {int(np.clip(round(t), first, last)) for t in candidates}
+    if len(chosen) < count:
+        for t in np.linspace(first, last, max(count * 8, 100)):
+            chosen.add(int(round(t)))
+            if len(chosen) == count:
+                break
+    return np.asarray(sorted(chosen)[:count], dtype=np.int64)
+
+
+def fit_moments(train):
+    values = np.asarray(train, dtype=np.float64)
+    mean = np.mean(values, axis=0)
+    std = np.std(values, axis=0)
+    positive = std[std > 0]
+    floor = max(1e-5, .02 * float(np.median(positive)) if positive.size else 1e-5)
+    return mean, np.maximum(std, floor), floor
+
+
+def fit_ridge_orders(train, mean, std, interval, orders, alpha=1e-3,
+                     stride=4, batch_events=8):
+    """One maximal-order Gram accumulation, separate fits for each AR order.
+
+    The same target rows are used across orders. Ridge alpha is relative to
+    mean feature energy, making it insensitive to training-set size.
+    """
+    lo, hi = interval
+    pmax = max(orders)
+    fitted = {}
+    for method in ("mean_ar", "standardized_ar"):
+        gram = np.zeros((pmax, pmax), np.float64)
+        cross = np.zeros(pmax, np.float64)
+        n_rows = 0
+        for offset in range(0, len(train), batch_events):
+            values = np.asarray(train[offset:offset + batch_events], np.float64)
+            residual = values - mean
+            if method == "standardized_ar":
+                residual /= std
+            windows = sliding_window_view(residual[:, lo:hi], pmax + 1, axis=1)[:, ::stride]
+            design = windows[:, :, :-1][:, :, ::-1].reshape(-1, pmax)
+            target = windows[:, :, -1].reshape(-1)
+            gram += design.T @ design
+            cross += design.T @ target
+            n_rows += len(target)
+        if not n_rows:
+            raise ValueError("No AR training samples")
+        models = {}
+        for p in orders:
+            block = gram[:p, :p]
+            ridge_scale = float(np.trace(block) / p)
+            penalty = alpha * max(ridge_scale, 1e-12)
+            coeff = np.linalg.solve(block + penalty * np.eye(p), cross[:p])
+            # np.roots([1,-a1,...,-ap]) returns characteristic eigenvalues.
+            radius = float(max(abs(np.roots(np.r_[1., -coeff]))))
+            models[p] = {
+                "coefficients": coeff,
+                "root_radius": radius,
+                "stable": bool(radius < 1.),
+                "ridge_penalty": penalty,
+                "training_rows": n_rows,
+            }
+        fitted[method] = models
+    return fitted
+
+
+def forecast_suffix(prefix, mean, std, coeff, cutoff, end, standardized=False):
+    """Predict recursively using strictly the prefix and already predicted samples."""
+    prefix = np.asarray(prefix, np.float64)
+    n_events, prefix_len = prefix.shape
+    if prefix_len != cutoff:
+        raise ValueError("Prefix length and cutoff disagree")
+    p = len(coeff)
+    if cutoff < p or end <= cutoff or end > len(mean):
+        raise ValueError("Invalid cutoff, AR order, or suffix endpoint")
+    history = np.clip(prefix[:, cutoff-p:cutoff].copy(), 0., 1.)
+    predictions = np.empty((n_events, end-cutoff), np.float64)
+    for t in range(cutoff, end):
+        residual = history - mean[t-p:t]
+        if standardized:
+            residual /= std[t-p:t]
+        next_residual = residual[:, ::-1] @ coeff
+        values = mean[t] + (std[t] if standardized else 1.) * next_residual
+        values = np.clip(values, 0., 1.)
+        predictions[:, t-cutoff] = values
+        if p > 1:
+            history[:, :-1] = history[:, 1:]
+        history[:, -1] = values
+    return predictions
+
+
+def metric_row(truth, pred, mv_scale):
+    error = np.asarray(pred, np.float64) - np.asarray(truth, np.float64)
+    mse = float(np.mean(error**2))
+    return {
+        "mse_normalized": mse,
+        "rmse_normalized": float(np.sqrt(mse)),
+        "mae_normalized": float(np.mean(abs(error))),
+        "rmse_mV": float(np.sqrt(mse) * mv_scale),
+        "mae_mV": float(np.mean(abs(error)) * mv_scale),
+    }
+
+
+def choose_indices(total, limit, seed):
+    if limit < 0:
+        raise ValueError("Event limit must be nonnegative; zero means all")
+    count = total if limit == 0 else min(limit, total)
+    if count < 2:
+        raise ValueError("At least two events required")
+    return np.sort(np.random.default_rng(seed).choice(total, count, replace=False))
+
+
+def plot_summary(rows, out, title):
+    fig, ax = plt.subplots(figsize=(9, 5))
+    colors = {"mean": "#333333", "mean_ar": "#1879B3",
+              "standardized_ar": "#35956C"}
+    order = max(r["order"] for r in rows)
+    for method in METHODS:
+        series = sorted((r for r in rows if r["method"] == method and
+                         (r["order"] == order or method == "mean")),
+                        key=lambda r: r["cutoff_sample"])
+        ax.plot([r["cutoff_ns"] for r in series],
+                [r["rmse_mV"] for r in series],
+                marker="o", color=colors[method], label=method)
+    ax.set(xlabel="Cutoff position (ns)", ylabel="Suffix RMSE (mV)", title=title)
+    ax.grid(alpha=.3)
+    ax.legend(title=f"AR order {order}")
+    fig.tight_layout()
+    fig.savefig(out / "rmse_vs_cutoff.png", dpi=160)
+    plt.close(fig)
+
+
+def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
+                 mask, provenance, args):
+    name = f"{board}/{mode}/detector_{detector+1}"
+    out = args.output_root / board / mode / f"detector_{detector+1}"
+    out.mkdir(parents=True, exist_ok=True)
+    train_ids = choose_indices(len(x_train), args.max_train_events, args.seed)
+    eval_ids = choose_indices(len(x_eval), args.max_eval_events, args.seed + 991)
+    training = np.asarray(x_train[train_ids, detector, :], np.float64)
+    evaluation = np.asarray(x_eval[eval_ids, detector, :], np.float64)
+    mean, std, std_floor = fit_moments(training)
+    interval = active_interval(mask, mean, max(args.ar_orders))
+    cutoffs = dense_cutoffs(mean, interval, max(args.ar_orders), args.n_cutoffs)
+    fitted = fit_ridge_orders(training, mean, std, interval, args.ar_orders,
+                              alpha=args.ridge_alpha, stride=args.train_stride,
+                              batch_events=args.batch_events)
+    scale = np.asarray(transform.maximum - transform.minimum).reshape(-1)
+    mv_scale = float(scale[detector] if scale.size >= 2 else scale[0])
+    rows = []
+    example = None
+    for cutoff in cutoffs:
+        cutoff, stop = int(cutoff), interval[1]
+        truth = evaluation[:, cutoff:stop]
+        baseline = np.broadcast_to(np.clip(mean[cutoff:stop], 0., 1.), truth.shape)
+        base = metric_row(truth, baseline, mv_scale)
+        for order in args.ar_orders:
+            for method in ("mean_ar", "standardized_ar"):
+                model = fitted[method][order]
+                prediction = forecast_suffix(
+                    evaluation[:, :cutoff], mean, std, model["coefficients"],
+                    cutoff, stop, standardized=(method == "standardized_ar")
+                )
+                metric = metric_row(truth, prediction, mv_scale)
+                rows.append({
+                    **metric, "method": method, "order": order,
+                    "cutoff_sample": cutoff,
+                    "cutoff_ns": float(time_ps[cutoff]/1000),
+                    "n_missing": stop-cutoff,
+                    "n_eval_events": len(eval_ids),
+                    "mse_improvement_percent": (
+                        100 * (1 - metric["mse_normalized"]/base["mse_normalized"])
+                        if base["mse_normalized"] > 0 else 0.),
+                    "stable": model["stable"],
+                    "root_radius": model["root_radius"],
+                })
+                if (example is None and method == "standardized_ar" and
+                        order == args.ar_orders[-1]):
+                    example = (cutoff, evaluation[0].copy(), prediction[0].copy(),
+                               baseline[0].copy(), int(eval_ids[0]))
+        rows.append({
+            **base, "method": "mean", "order": 0,
+            "cutoff_sample": cutoff, "cutoff_ns": float(time_ps[cutoff]/1000),
+            "n_missing": stop-cutoff, "n_eval_events": len(eval_ids),
+            "mse_improvement_percent": 0., "stable": True, "root_radius": 0.,
+        })
+    with (out / "metrics.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    (out / "model.json").write_text(json.dumps({
+        "board": board, "mode": mode, "detector": detector+1,
+        "source": provenance, "fit_role": "development", "eval_role": "blind",
+        "train_events": len(train_ids), "eval_events": len(eval_ids),
+        "train_indices": train_ids.tolist(), "eval_indices": eval_ids.tolist(),
+        "mean": mean.tolist(), "std": std.tolist(), "std_floor": std_floor,
+        "valid_interval": list(interval), "cutoffs": cutoffs.tolist(),
+        "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
+        "train_stride": args.train_stride, "seed": args.seed,
+        "models": {method: {str(p): {
+            **{k:v for k,v in fitted[method][p].items() if k != "coefficients"},
+            "coefficients": fitted[method][p]["coefficients"].tolist()
+        } for p in args.ar_orders} for method in fitted},
+    }, indent=2), encoding="utf-8")
+    plot_summary(rows, out, name)
+    if example is not None:
+        cutoff, original, prediction, baseline, event_id = example
+        ns = np.asarray(time_ps) / 1000
+        fig, ax = plt.subplots(figsize=(10, 4.5))
+        ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
+        ax.plot(ns[cutoff:interval[1]], baseline, color="#C98740",
+                label="Mean replacement")
+        ax.plot(ns[cutoff:interval[1]], prediction, color="#2B9C74",
+                label="Standardized AR")
+        ax.axvline(ns[cutoff], color="gray", ls="--")
+        ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
+               title=f"{name}, blind row {event_id}, cutoff {ns[cutoff]:.3f} ns")
+        ax.legend()
+        ax.grid(alpha=.25)
+        fig.tight_layout()
+        fig.savefig(out / "waveform_example.png", dpi=160)
+        plt.close(fig)
+    print(f"[{name}] train={len(train_ids)} blind={len(eval_ids)} "
+          f"valid=[{interval[0]},{interval[1]}) cutoffs={len(cutoffs)} "
+          f"orders={args.ar_orders} -> {out}", flush=True)
+    return out
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--uc-cache-root", type=Path, required=True)
+    parser.add_argument("--fbk-cache-root", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--window", default="wide")
+    parser.add_argument("--development-name", help="Dataset label if ambiguous")
+    parser.add_argument("--blind-name", help="Blind dataset label if ambiguous")
+    parser.add_argument("--ar-orders", nargs="+", type=int,
+                        default=[8, 16, 32, 64, 128])
+    parser.add_argument("--n-cutoffs", type=int, default=10)
+    parser.add_argument("--ridge-alpha", type=float, default=1e-3,
+                        help="Ridge penalty relative to mean Gram diagonal")
+    parser.add_argument("--train-stride", type=int, default=4)
+    parser.add_argument("--batch-events", type=int, default=8)
+    parser.add_argument("--max-train-events", type=int, default=512,
+                        help="0 uses all development events")
+    parser.add_argument("--max-eval-events", type=int, default=128,
+                        help="0 uses all blind events")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args(argv)
+    args.output_root = args.output_root.expanduser().resolve()
+    args.ar_orders = sorted(set(args.ar_orders))
+    if not args.ar_orders or min(args.ar_orders) < 1:
+        parser.error("AR orders must be positive")
+    if args.ridge_alpha < 0 or args.train_stride < 1 or args.batch_events < 1:
+        parser.error("Ridge alpha >= 0, stride and batch size >= 1 required")
+    if args.n_cutoffs < 4:
+        parser.error("At least 4 cutoffs required")
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    for board, root in (("UC", args.uc_cache_root), ("FBK", args.fbk_cache_root)):
+        for mode in ("energy", "timing"):
+            train, blind, time_ps, transform, mask, source = load_pair(
+                root, mode, args.window, args.development_name, args.blind_name)
+            for detector in (0, 1):
+                evaluate_one(board, mode, detector, train, blind, time_ps,
+                             transform, mask, source, args)
+    print(f"All eight independent analyses written to {args.output_root}")
+
+
+if __name__ == "__main__":
+    main()
