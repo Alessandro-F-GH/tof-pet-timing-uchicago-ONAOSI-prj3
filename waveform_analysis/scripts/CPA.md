@@ -66,13 +66,13 @@ The source correction models remain frozen.
 
 Cutoffs in ns, relative to the aligned ML-input grid:
 `-1, 0, 2, 4, 6, 8, 10, 15, 20, 25, ...` until the window ends.
-The complete-waveform prediction is a separate final reference endpoint.
+For timing, the initial valid segment uses the ordinary schedule. Every later\nvalid segment after a masked interval gets additional cutoffs 1, 3, 5, 7, 9,\n14, 19, ... ns after the first retained sample in that segment, provided the\ncutoff remains within it. Cutoffs inside masked regions are excluded, not\nshifted. The complete-waveform prediction is a separate final reference endpoint.
 At the first cutoff the incremental attribution is intentionally undefined.
 
 ## Outputs
 
 `<output-root>/<board>/<study-folder>/<mode>/<model>/` contains
-`metrics.csv`, `attribution.csv`, `imputer_validation.csv`,
+`metrics.csv`, `imputer_validation.csv`,
 `selected_imputers.csv`, `predictions.npz`, `imputer.npz`,
 `summary.json`, `timing_resolution.png` and
 `prediction_increments.png`. The study folder is the readable saved-result batch directory (for example
