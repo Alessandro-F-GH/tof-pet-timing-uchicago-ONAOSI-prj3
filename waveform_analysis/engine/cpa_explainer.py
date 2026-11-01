@@ -518,8 +518,17 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
             spec = get_model(name)
             store = RunStore(run["directory"],
                              artifact_root=config["preprocessing"]["artifact_root"])
-            model_path = _resolve_tshap_model_directory(
-                spec, store, run["directory"], explicit_model_dir=model_dir is not None)
+            try:
+                model_path = _resolve_tshap_model_directory(
+                    spec, store, run["directory"],
+                    explicit_model_dir=model_dir is not None)
+            except (FileNotFoundError, ValueError) as exc:
+                if model_dir is not None:
+                    raise
+                if logger:
+                    logger.warning("CPA skipped run without a usable fitted model | %s | %s",
+                                   run["directory"], exc)
+                continue
             if not saved_model_complete(spec, model_path):
                 if model_dir is not None:
                     raise FileNotFoundError(f"Saved model/transform missing: {model_path}")
