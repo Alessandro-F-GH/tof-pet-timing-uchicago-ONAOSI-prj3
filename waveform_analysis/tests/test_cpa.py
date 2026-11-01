@@ -66,3 +66,22 @@ def test_candidate_selection_falls_back_to_mean_on_constant_signals():
                                orders=(4,8), local_samples=10)
     assert all(c["method"] == "mean" for c in selected["selected"].values())
     assert set(selected["selected"]) == {(0,15),(1,15),(0,30),(1,30)}
+
+
+def test_readable_cpa_path_and_collision_detection(tmp_path, monkeypatch):
+    from waveform_analysis.engine import cpa_explainer as cpa
+    from pathlib import Path
+    batch = tmp_path / "results" / "UC" / "benchmark_48V_final"
+    batch.mkdir(parents=True)
+    monkeypatch.setattr(cpa, "batch_root", lambda run: batch)
+    output = cpa._cpa_destination(
+        tmp_path / "cpa_results", "UC", batch / "run", "energy", "onishi_cnn")
+    assert output == (tmp_path / "cpa_results" / "UC" /
+                      "benchmark_48V_final" / "energy" / "onishi_cnn")
+    assert not cpa._guard_dataset_identity(output, "cohortA")
+    output.mkdir(parents=True)
+    (output / "summary.json").write_text('{"dataset_identity":"cohortA"}')
+    assert cpa._guard_dataset_identity(output, "cohortA")
+    import pytest
+    with pytest.raises(ValueError, match="collision"):
+        cpa._guard_dataset_identity(output, "cohortB")
