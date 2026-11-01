@@ -136,6 +136,30 @@ def _parser() -> argparse.ArgumentParser:
     tshap_local.add_argument("--imputer-slope-points", type=int, default=5)
     tshap_local.add_argument("--overwrite", action="store_true",
                              help="Force recomputation of local explanations")
+    cpa = sub.add_parser("explain-cpa",
+                         help="Chronological prefix attribution using frozen wide-window models")
+    cpa_source = cpa.add_mutually_exclusive_group(required=True)
+    cpa_source.add_argument("--results", type=Path, help="Canonical saved-model result root")
+    cpa_source.add_argument("--model-dir", type=Path, help="One saved-model result directory")
+    cpa.add_argument("--models", nargs="+", help="Override default best/Onishi/Ridge models")
+    cpa.add_argument("--mode", choices=("energy", "timing"))
+    cpa.add_argument("--board", help="Board label (UC or FBK); one board per invocation")
+    cpa.add_argument("--cache-root", type=Path, required=True,
+                     help="Prepared base waveform cache (no feature cache needed)")
+    cpa.add_argument("--artifact-root", type=Path,
+                     help="Optional artifact store for newer externally referenced models")
+    cpa.add_argument("--output-root", type=Path, default=Path("cpa_results"))
+    cpa.add_argument("--max-events", type=int, default=1024)
+    cpa.add_argument("--fit-events", type=int, default=1024)
+    cpa.add_argument("--validation-events", type=int, default=128)
+    cpa.add_argument("--bootstrap", type=int, default=100)
+    cpa.add_argument("--predict-batch-size", type=int, default=64)
+    cpa.add_argument("--seed", type=int, default=42)
+    cpa.add_argument("--orders", nargs="+", type=int, default=[8,16,32,64,128])
+    cpa.add_argument("--local-samples", type=int, default=100)
+    cpa.add_argument("--ridge-alpha", type=float, default=1e-3)
+    cpa.add_argument("--train-stride", type=int, default=4)
+    cpa.add_argument("--overwrite", action="store_true")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
@@ -155,6 +179,23 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
+    if args.command == "explain-cpa":
+        from .engine.cpa_explainer import explain_cpa
+        for output in explain_cpa(
+            args.results, model_dir=args.model_dir, models=args.models,
+            mode=args.mode, board=args.board, cache_root=args.cache_root,
+            artifact_root=args.artifact_root, output_root=args.output_root,
+            max_events=args.max_events, fit_events=args.fit_events,
+            validation_events=args.validation_events,
+            bootstrap=args.bootstrap, seed=args.seed,
+            predict_batch_size=args.predict_batch_size,
+            orders=tuple(sorted(set(args.orders))),
+            local_samples=args.local_samples, ridge_alpha=args.ridge_alpha,
+            train_stride=args.train_stride, overwrite=args.overwrite,
+            logger=logger,
+        ):
+            print(output)
+        return
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
         for output in explain_tshap(args.results, model_dir=args.model_dir, models=args.models,
