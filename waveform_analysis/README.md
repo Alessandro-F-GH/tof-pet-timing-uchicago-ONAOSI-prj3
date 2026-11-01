@@ -125,33 +125,3 @@ python -m pytest waveform_analysis/tests
 ```
 
 The tests do not establish numerical reproduction of the original acquisition-based experiments. For research results, retain the exact batch configuration, package versions, source-data identities and saved evaluation artifacts.
-
-## Two-stage timing correction
-
-The two-stage experiment applies the existing shared linear Ridge correction to a
-short Onishi window on a fixed 25% development subset, then trains the prescribed
-direct MultiRocket model on the complete wide window and the out-of-sample residual
-target for the remaining 75%. The split is deterministic and saved per board/mode.
-The fitted wide-window transformation is loaded from the matching completed
-full-development benchmark run; it is never refitted for this experiment.
-
-Run one board and acquisition mode at a time, using the corresponding existing
-wide-window benchmark configuration:
-
-```bash
-python -m waveform_analysis.cli two-stage \
-  --config waveform_analysis/config/batches/benchmark_UC.json \
-  --board UC --mode energy_to_energy --split-fraction 0.25 \
-  --cache-root "$HOME/UC_cache"
-```
-
-For UC timing use `--mode timing_to_timing`; for FBK use
-`benchmark_FBK.json`, `--board FBK` and
-`--cache-root "$HOME/FBK_cache"`. The board-specific cache defaults are
-`$HOME/UC_cache` and `$HOME/FBK_cache`, respectively, so the explicit
-`--cache-root` option is only needed to override them. The command uses
-`preprocessing/` and `artifact_store/` inside that cache bundle. Results are written under a dedicated
-`two_stage/<board>/<mode>/` namespace and do not overwrite single-stage runs.
-The command requires a completed matching wide-window source run and its saved
-model/transform artifact in the configured artifact store. It stops if the source
-population, transformation parameters or seed do not match.
