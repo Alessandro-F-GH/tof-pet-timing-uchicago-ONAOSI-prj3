@@ -51,13 +51,35 @@ python -m waveform_analysis.cli explain-cpa \
 To analyze only one mode, add `--mode energy` or `--mode timing`. To explain
 one saved run, replace `--results` with `--model-dir /path/to/run`.
 Use `--models` to override the default selection:
-- Energy wide: direct_multirocket_rdst, onishi_cnn, shared_linear_ridge.
+- Energy wide: direct_multirocket_rdst, direct_multirocket, direct_rdst, onishi_cnn, shared_linear_ridge.
 - Timing wide: direct_multirocket, onishi_cnn, shared_linear_ridge.
 
 Options include `--fit-events` (1024), `--validation-events` (128),
 `--orders` (8 16 32 64 128), `--local-samples` (100),
 `--predict-batch-size` (64), `--bootstrap` (100), and `--overwrite`.
 The source correction models remain frozen.
+
+
+### Energy kernel feature reuse
+
+CPA additionally evaluates the saved direct MultiRocket and direct RDST Ridge
+models on **energy only**. The combined direct MultiRocket-RDST model is
+processed first. Its frozen feature transform consists of the concatenated
+MultiRocket and RDST blocks. When all relevant inputs (development and blind
+cohorts, sample mask, cutoff schedule and event indices) match **and** the
+saved standalone transformer parameters, learned convolution kernels or
+shapelets, and fitted scaling match the corresponding combined block, CPA
+computes that block only once per imputed batch and evaluates all Ridge heads
+on the shared features. No transformed-feature cache is written to disk.
+
+Importantly, separately fitted randomized transforms can differ even with the
+same algorithm settings: the saved training pipeline derives random seeds from
+model-specific transform names. When the fitted transformers differ, the
+standalone model is evaluated through its own fitted feature transform, to
+avoid substituting another model's feature space. Thus the new models are not
+always computationally free. Feature sharing is currently activated for a
+full-blind run (`--max-events 0`) with matching cohort identities; capped,
+model-specific event samples retain the independent inference path.
 
 ## Procedure
 
