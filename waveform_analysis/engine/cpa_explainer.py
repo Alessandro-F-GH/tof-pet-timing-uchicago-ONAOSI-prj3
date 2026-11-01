@@ -408,6 +408,16 @@ def _identity(run, development, blind, board, mode):
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def _cohort_identity(development, blind, board, mode):
+    """Identify prepared datasets independently of model result directory."""
+    data = dict(board=board, mode=mode,
+                development=str(development.directory),
+                blind=str(blind.directory),
+                development_population=development.manifest.get("event_population_identity"),
+                blind_population=blind.manifest.get("event_population_identity"))
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def _cpa_destination(output_root, board, run_directory, mode, model):
     """Human-readable paths; dataset/run fingerprint stays in summary metadata.
 
@@ -612,6 +622,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 if not cutoffs:
                     raise ValueError("No valid chronological cutoffs for this run")
                 identity = _identity(run, development, blind, board_name, family)
+                cohort_identity = _cohort_identity(development, blind, board_name, family)
                 dest = _cpa_destination(
                     output_root, board_name, run["directory"], family, name
                 )
@@ -630,7 +641,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         "ridge_alpha": float(ridge_alpha),
                         "train_stride": int(train_stride),
                         "cutoff_samples": [int(k) for k in cutoffs],
-                        "performance_only_version": 3,
+                        "performance_only_version": 4,
                     }
                     if all(previous.get(k) == v for k,v in expected.items()) and all(
                         (dest / p).is_file() for p in
@@ -650,7 +661,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         continue
                     if logger:
                         logger.info("CPA settings/results changed; recomputing %s", dest)
-                cache_key = (identity, mask.tobytes(), tuple(cutoffs),
+                cache_key = (cohort_identity, mask.tobytes(), tuple(cutoffs),
                              int(seed), int(fit_events), int(validation_events),
                              tuple(orders), int(local_samples), float(ridge_alpha),
                              int(train_stride))
@@ -658,7 +669,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     dev_waves = getattr(development, f"{family}_windows")
                     if dev_waves is None:
                         raise ValueError("Prepared development waveforms missing")
-                    fit_seed = semantic_seed(seed, "cpa-imputer", board_name, identity)
+                    fit_seed = semantic_seed(seed, "cpa-imputer", board_name, cohort_identity)
                     imputer_cache[cache_key] = select_imputers(
                         dev_waves, mask, cutoffs, seed=fit_seed,
                         fit_events=fit_events, validation_events=validation_events,
@@ -668,7 +679,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 kernel_group = (family == "energy" and name in (
                     "direct_multirocket_rdst", "direct_multirocket", "direct_rdst"))
                 event_seed = semantic_seed(
-                    seed, "cpa-blind", board_name, identity,
+                    seed, "cpa-blind", board_name, cohort_identity,
                     "direct_energy_kernels" if kernel_group else name)
                 indices = _draw_indices(blind.n_events, max_events, event_seed)
                 waves = waveform_view(blind, config["mode"], indices).materialize()
@@ -707,22 +718,25 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                                     other_cfg.get("window_name", "").lower() != "wide" or
                                     str(other_batch.get("board", board_name)).lower() != board_name.lower()):
                                 continue
+                            other_prep = other_cfg["preprocessing"]
+                            other_prep["named_cache_root"] = str(root)
+                            other_prep["cache_dir"] = str(root / "preprocessing")
+                            other_prep["artifact_root"] = prep["artifact_root"]
                             other_development = prepared.find(
                                 "development", other_cfg, other["manifest"])
                             other_blind = prepared.find("blind", other_cfg, other["manifest"])
                             other_identity = _identity(
                                 other, other_development, other_blind, board_name, family)
-                            if other_identity != identity or other_blind.n_events != blind.n_events:
+                            other_cohort_identity = _cohort_identity(
+                                other_development, other_blind, board_name, family)
+                            if (other_cohort_identity != cohort_identity or
+                                    other_blind.n_events != blind.n_events):
                                 if logger:
                                     logger.info(
                                         "CPA FEATURE REUSE | %s/%s | NOT REUSED | "
                                         "dataset identity or event population differs",
                                         board_name, other_name)
                                 continue
-                            other_prep = other_cfg["preprocessing"]
-                            other_prep["named_cache_root"] = str(root)
-                            other_prep["cache_dir"] = str(root / "preprocessing")
-                            other_prep["artifact_root"] = prep["artifact_root"]
                             other_store = RunStore(
                                 other["directory"], artifact_root=prep["artifact_root"])
                             other_path = _resolve_tshap_model_directory(
@@ -752,7 +766,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                                         board_name, other_name, reason)
                                 continue
                             other_event_seed = semantic_seed(
-                                seed, "cpa-blind", board_name, other_identity,
+                                seed, "cpa-blind", board_name, other_cohort_identity,
                                 "direct_energy_kernels")
                             other_indices = _draw_indices(
                                 blind.n_events, max_events, other_event_seed)
@@ -764,7 +778,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                                         board_name, other_name)
                                 continue
                             companion_models[other_name] = (
-                                other_spec, other_fitted, block, other_event_seed)
+                                other_spec, other_fitted, block, other_event_seed,
+                                other_identity)
                             other_fitted = None
                             if logger:
                                 logger.info(
@@ -786,8 +801,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                             board_name, name, len(companion_models),
                             ", ".join(sorted(companion_models)) or "none")
                     if companion_models:
-                        for other_name, (_, _, _, other_seed) in companion_models.items():
-                            other_key = (board_name, identity, other_name,
+                        for other_name, (_, _, _, other_seed, other_identity) in companion_models.items():
+                            other_key = (board_name, other_identity, other_name,
                                          tuple(cutoffs), int(other_seed), int(len(indices)))
                             shared_kernel_predictions[other_key] = (
                                 np.empty_like(predictions),
@@ -822,7 +837,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         group = {name: (spec, fitted, None)}
                         group.update({
                             other_name: (other_spec, other_fitted, block)
-                            for other_name, (other_spec, other_fitted, block, _)
+                            for other_name, (other_spec, other_fitted, block, _, _)
                             in companion_models.items()
                         })
                         common = predict_shared_energy_group(
@@ -830,8 +845,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                         common_mean = predict_shared_energy_group(
                             group, mean_reconstructed, chunk_size=predict_batch_size)
                         predictions[j], mean_predictions[j] = common[name], common_mean[name]
-                        for other_name, (_, _, _, other_seed) in companion_models.items():
-                            other_key = (board_name, identity, other_name, tuple(cutoffs),
+                        for other_name, (_, _, _, other_seed, other_identity) in companion_models.items():
+                            other_key = (board_name, other_identity, other_name, tuple(cutoffs),
                                          int(other_seed), int(len(indices)))
                             out, mean_out = shared_kernel_predictions[other_key]
                             out[j], mean_out[j] = common[other_name], common_mean[other_name]
@@ -854,14 +869,14 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     group = {name: (spec, fitted, None)}
                     group.update({
                         other_name: (other_spec, other_fitted, block)
-                        for other_name, (other_spec, other_fitted, block, _)
+                        for other_name, (other_spec, other_fitted, block, _, _)
                         in companion_models.items()
                     })
                     original = predict_shared_energy_group(
                         group, waves, chunk_size=predict_batch_size)
                     predictions[-1] = original[name]
-                    for other_name, (_, _, _, other_seed) in companion_models.items():
-                        other_key = (board_name, identity, other_name, tuple(cutoffs),
+                    for other_name, (_, _, _, other_seed, other_identity) in companion_models.items():
+                        other_key = (board_name, other_identity, other_name, tuple(cutoffs),
                                      int(other_seed), int(len(indices)))
                         shared_kernel_predictions[other_key][0][-1] = original[other_name]
                 else:
@@ -909,6 +924,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 (dest / "summary.json").write_text(json.dumps(_json_safe({
                     "method": "deterministic_chronological_prefix_attribution",
                     "board": board_name, "dataset_identity": identity,
+                    "cohort_identity": cohort_identity,
                     "study_directory": batch_root(run["directory"]).name,
                     "source_model_directory": str(model_path),
                     "run_directory": str(run["directory"]),
@@ -924,7 +940,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                     "ridge_alpha": float(ridge_alpha),
                     "train_stride": int(train_stride),
                     "cutoff_samples": [int(k) for k in cutoffs],
-                    "performance_only_version": 3,
+                    "performance_only_version": 4,
                     "cutoffs": axis, "omitted_cutoffs": omitted,
                     "masked_intervals_ns": masked_time_intervals(times, mask),
                     "selected_imputers": selected,
