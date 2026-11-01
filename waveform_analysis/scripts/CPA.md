@@ -66,7 +66,7 @@ The source correction models remain frozen.
 
 Cutoffs in ns, relative to the aligned ML-input grid:
 `-1, 0, 2, 4, 6, 8, 10, 15, 20, 25, ...` until the window ends.
-For timing, the initial valid segment uses the ordinary schedule. Every later\nvalid segment after a masked interval gets additional cutoffs 1, 3, 5, 7, 9,\n14, 19, ... ns after the first retained sample in that segment, provided the\ncutoff remains within it. Cutoffs inside masked regions are excluded, not\nshifted. The complete-waveform prediction is a separate final reference endpoint.
+For timing, the initial valid segment uses only its portion of the ordinary\nabsolute schedule. Subsequent valid segments use **only** cutoffs 1, 3, 5, 7,\n9, 14, 19, ... ns after their first retained sample. Absolute cutoffs must\nnot leak into later segments. Cutoffs inside masked regions are excluded, not\nshifted. The complete-waveform prediction is a separate final reference endpoint.
 At the first cutoff the incremental attribution is intentionally undefined.
 
 ## Outputs
