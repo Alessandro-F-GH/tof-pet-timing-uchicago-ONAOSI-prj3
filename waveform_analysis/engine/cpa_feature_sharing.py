@@ -47,38 +47,68 @@ def _same_transformer_settings(a, b, ignored=()):
     return all(_same_arrays(pa[k], pb[k]) for k in pa)
 
 
-def compatible_component(combined_fitted, separate_fitted, block):
-    """Conservatively prove identical learned frozen features/scalers.
+def component_compatibility(combined_fitted, separate_fitted, block):
+    """Return (can_reuse, explanation) for exact fitted-feature equivalence.
 
-    A mismatch falls back to the standalone saved transform. The combined
-    Ridge block weights are NOT reused: every model retains its own Ridge.
+    Model-family names or matching hyperparameters are not enough:
+    transform kernels/shapelets AND scaler state must coincide. These
+    diagnostics are reported once per model, not per input batch.
     """
     if block not in KERNEL_BLOCKS.values():
-        return False
+        return False, f"unsupported block {block!r}"
     a = getattr(getattr(combined_fitted, "feature_transform", None), "artifact", None)
     b = getattr(getattr(separate_fitted, "feature_transform", None), "artifact", None)
-    if a is None or b is None or not hasattr(a, block):
-        return False
+    if a is None or b is None:
+        return False, "saved fitted transform missing"
+    if not hasattr(a, block):
+        return False, f"combined transform missing {block} block"
     part = getattr(a, block)
-    if type(part) is not type(b) or part.shared or b.shared:
-        return False
-    if not _same_scaler(part.scaler, b.scaler):
-        return False
-    if not _same_transformer_settings(
-        part.transformer, b.transformer,
-        ignored=("n_jobs", "random_state"),
-    ):
-        return False
+    if type(part) is not type(b):
+        return False, "fitted transform artifact types differ"
+    if part.shared or b.shared:
+        return False, "shared-detector transform cannot replace direct block"
+
+    for key in ("scale_", "mean_", "var_", "n_features_in_"):
+        if not _same_arrays(getattr(part.scaler, key, None),
+                            getattr(b.scaler, key, None)):
+            return False, f"fitted scaler differs ({key})"
+
+    if type(part.transformer) is not type(b.transformer):
+        return False, "transformer types differ"
+    if not hasattr(part.transformer, "get_params") or not hasattr(b.transformer, "get_params"):
+        return False, "transformer parameter inspection unavailable"
+    pa = part.transformer.get_params(deep=False).copy()
+    pb = b.transformer.get_params(deep=False).copy()
+    # Worker configuration and initial RNG state do not change a previously
+    # learned transform. Compare learned arrays below, not random_state.
+    for key in ("n_jobs", "random_state"):
+        pa.pop(key, None)
+        pb.pop(key, None)
+    if pa.keys() != pb.keys():
+        return False, "transformer parameter names differ"
+    for key in sorted(pa):
+        if not _same_arrays(pa[key], pb[key]):
+            return False, f"transformer hyperparameter differs ({key})"
+
     if block == "multirocket":
         for key in ("input_samples", "normalise", "feature_count"):
             if part.metadata.get(key) != b.metadata.get(key):
-                return False
-        return (_same_arrays(part.transformer.parameter, b.transformer.parameter)
-                and _same_arrays(part.transformer.parameter1, b.transformer.parameter1))
-    if block == "rdst":
-        return (_same_arrays(part.transformer.shapelets_, b.transformer.shapelets_)
-                and part.transformer.n_shapelets_ == b.transformer.n_shapelets_)
-    return False
+                return False, f"MultiROCKET metadata differs ({key})"
+        if not _same_arrays(part.transformer.parameter, b.transformer.parameter):
+            return False, "learned MultiROCKET raw kernels/biases differ"
+        if not _same_arrays(part.transformer.parameter1, b.transformer.parameter1):
+            return False, "learned MultiROCKET difference kernels/biases differ"
+    elif block == "rdst":
+        if part.transformer.n_shapelets_ != b.transformer.n_shapelets_:
+            return False, "RDST fitted shapelet counts differ"
+        if not _same_arrays(part.transformer.shapelets_, b.transformer.shapelets_):
+            return False, "learned RDST shapelets differ"
+    return True, f"fitted {block} features and scaler match exactly"
+
+
+def compatible_component(combined_fitted, separate_fitted, block):
+    """Backward-compatible boolean check for batch shared-feature inference."""
+    return component_compatibility(combined_fitted, separate_fitted, block)[0]
 
 
 def predict_shared_energy_group(models, values, *, chunk_size=64):
