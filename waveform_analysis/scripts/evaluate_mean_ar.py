@@ -170,7 +170,7 @@ def save_plot(path: Path, time: np.ndarray, actual: np.ndarray, mean: np.ndarray
 
 def analyze_channel(train: np.ndarray, ev: np.ndarray, times: np.ndarray, transform,
                     output: Path, orders: list[int], n_cutoffs: int,
-                    alpha_grid: list[float], max_rows: int, seed: int):
+                    detector: int, alpha_grid: list[float], max_rows: int, seed: int):
     output.mkdir(parents=True, exist_ok=True)
     if train.shape[1] != ev.shape[1] or train.shape[1] != len(times):
         raise ValueError("Training/evaluation grids differ")
@@ -213,8 +213,8 @@ def analyze_channel(train: np.ndarray, ev: np.ndarray, times: np.ndarray, transf
         else:
             raise ValueError(f"Refitted {label} AR({order}) unstable; cannot safely use full development mean")
 
-    output_scale = float(np.asarray(transform.maximum).reshape(-1)[0] -
-                         np.asarray(transform.minimum).reshape(-1)[0]) if transform is not None else float("nan")
+    output_scale = float(np.asarray(transform.maximum).reshape(-1)[detector] -
+                         np.asarray(transform.minimum).reshape(-1)[detector]) if transform is not None else float("nan")
     results = []
     positional = []
     for cutoff in cutoffs:
@@ -312,7 +312,7 @@ def run(args):
                 analyze_channel(np.asarray(train_pair[:, detector], float),
                                 np.asarray(ev_pair[:, detector], float), time,
                                 transform, destination, args.ar_orders,
-                                args.n_cutoffs, args.alphas, args.max_fit_rows,
+                                args.n_cutoffs, detector, args.alphas, args.max_fit_rows,
                                 args.seed+detector)
             del train_pair, ev_pair
 
