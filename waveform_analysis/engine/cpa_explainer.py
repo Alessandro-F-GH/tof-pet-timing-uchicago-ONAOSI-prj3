@@ -678,6 +678,13 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                               int(event_seed), int(len(indices)))
                 shared = shared_kernel_predictions.pop(shared_key, None)
                 companion_models = {}
+                if (name == "direct_multirocket_rdst" and family == "energy"
+                        and 0 < max_events < blind.n_events and logger):
+                    logger.info(
+                        "CPA FEATURE REUSE | %s/%s | NOT CHECKED | "
+                        "capped evaluation (%d/%d blind events); "
+                        "standalone models select model-specific subsets",
+                        board_name, name, len(indices), blind.n_events)
                 if (shared is not None and logger):
                     logger.info(
                         "CPA FEATURE REUSE | %s/%s | REUSED combined fitted block; "
@@ -789,6 +796,14 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                             shared_kernel_predictions[other_key] = (
                                 np.empty_like(predictions),
                                 np.empty_like(mean_predictions))
+                if (logger and family == "energy" and
+                        name in ("direct_multirocket", "direct_rdst") and
+                        shared is None):
+                    logger.info(
+                        "CPA FEATURE REUSE | %s/%s | NOT REUSED | "
+                        "no shared combined-model predictions available; "
+                        "this alone does not prove fitted transforms differ",
+                        board_name, name)
                 if logger:
                     logger.info(
                         "CPA INFERENCE | %s/%s/%s | %s | events=%d | cutoffs=%d",
