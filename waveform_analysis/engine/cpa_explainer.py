@@ -37,7 +37,8 @@ from waveform_analysis.signal.metrics import fit_ctr_ps
 
 DEFAULT_ORDERS = (8, 16, 32, 64, 128)
 DEFAULT_MODELS = {
-    "energy": ("direct_multirocket_rdst", "onishi_cnn", "shared_linear_ridge"),
+    "energy": ("direct_multirocket_rdst", "direct_multirocket", "direct_rdst",
+               "onishi_cnn", "shared_linear_ridge"),
     "timing": ("direct_multirocket", "onishi_cnn", "shared_linear_ridge"),
 }
 
@@ -524,6 +525,10 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
     if (max_events != 0 and max_events < 2) or fit_events < 0 or validation_events < 2 or bootstrap < 0:
         raise ValueError("Invalid event count or bootstrap repetitions")
     runs = _cpa_run_inputs(results, model_dir, models=models, mode=mode, logger=logger)
+    # Evaluate the combined kernel model first, making component features
+    # available to compatible standalone models during the same pass.
+    runs.sort(key=lambda r: 0 if r["manifest"].get("model") ==
+              "direct_multirocket_rdst" else 1)
     if not runs:
         raise ValueError("No matching wide-window model runs with readable configurations found")
     output_root = Path(output_root or "cpa_results").expanduser().resolve()
@@ -535,6 +540,10 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
     prepared = PreparedCacheLookup()
     imputer_cache = {}
     outputs = []
+    # Predicted correction arrays only (not transformed features). These
+    # remain small even when the blind set is large; every feature matrix
+    # is released immediately after its chunk has been predicted.
+    shared_kernel_predictions = {}
     for run in runs:
         name = run["manifest"].get("model")
         config = None
@@ -655,22 +664,147 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 target = np.asarray(model_target(blind, config["mode"]), np.float64)[indices]
                 predictions = np.empty((len(cutoffs)+1, len(indices)), np.float64)
                 mean_predictions = np.empty((len(cutoffs), len(indices)), np.float64)
+                shared_key = (board_name, identity, name, tuple(cutoffs),
+                              int(event_seed), int(len(indices)))
+                shared = shared_kernel_predictions.pop(shared_key, None)
+                companion_models = {}
+                if (shared is None and name == "direct_multirocket_rdst"
+                        and family == "energy" and
+                        (max_events == 0 or max_events >= blind.n_events)):
+                    # Saved transforms are *not* assumed identical just because
+                    # the combined transform concatenates MR and RDST blocks.
+                    # Verify exact fitted kernels/shapelets and scalers first.
+                    from waveform_analysis.engine.cpa_feature_sharing import (
+                        KERNEL_BLOCKS, compatible_component,
+                    )
+                    for other in runs:
+                        other_name = other["manifest"].get("model")
+                        if other_name not in KERNEL_BLOCKS or other_name in companion_models:
+                            continue
+                        other_fitted = None
+                        try:
+                            other_cfg = resolve_run_config(other["directory"])
+                            other_spec = get_model(other_name)
+                            other_batch = read_json(batch_root(other["directory"]) / "config.json")
+                            if (mode_family(other_cfg["mode"]) != family or
+                                    other_cfg.get("window_name", "").lower() != "wide" or
+                                    str(other_batch.get("board", board_name)).lower() != board_name.lower()):
+                                continue
+                            other_development = prepared.find(
+                                "development", other_cfg, other["manifest"])
+                            other_blind = prepared.find("blind", other_cfg, other["manifest"])
+                            other_identity = _identity(
+                                other, other_development, other_blind, board_name, family)
+                            if other_identity != identity or other_blind.n_events != blind.n_events:
+                                continue
+                            other_prep = other_cfg["preprocessing"]
+                            other_prep["named_cache_root"] = str(root)
+                            other_prep["cache_dir"] = str(root / "preprocessing")
+                            other_prep["artifact_root"] = prep["artifact_root"]
+                            other_store = RunStore(
+                                other["directory"], artifact_root=prep["artifact_root"])
+                            other_path = _resolve_tshap_model_directory(
+                                other_spec, other_store, other["directory"],
+                                explicit_model_dir=False)
+                            if not saved_model_complete(other_spec, other_path):
+                                continue
+                            other_fitted = load_fitted_model(
+                                other_spec, other_path,
+                                other.get("best", {}).get("parameters", {}),
+                                other_cfg)
+                            block = KERNEL_BLOCKS[other_name]
+                            if (not np.array_equal(other_fitted.sample_mask, mask)
+                                    or not compatible_component(fitted, other_fitted, block)):
+                                if logger:
+                                    logger.info(
+                                        "CPA separate transform required | %s | fitted %s block differs",
+                                        other_name, block)
+                                continue
+                            other_event_seed = semantic_seed(
+                                seed, "cpa-blind", board_name, other_identity, other_name)
+                            other_indices = _draw_indices(
+                                blind.n_events, max_events, other_event_seed)
+                            if not np.array_equal(other_indices, indices):
+                                continue
+                            companion_models[other_name] = (
+                                other_spec, other_fitted, block, other_event_seed)
+                            other_fitted = None
+                            if logger:
+                                logger.info("CPA reusing combined %s features for %s",
+                                            block, other_name)
+                        except (ValueError, KeyError, FileNotFoundError) as exc:
+                            if logger:
+                                logger.warning("CPA cannot share %s features: %s",
+                                               other_name, exc)
+                        finally:
+                            del other_fitted
+                    if companion_models:
+                        for other_name, (_, _, _, other_seed) in companion_models.items():
+                            other_key = (board_name, identity, other_name,
+                                         tuple(cutoffs), int(other_seed), int(len(indices)))
+                            shared_kernel_predictions[other_key] = (
+                                np.empty_like(predictions),
+                                np.empty_like(mean_predictions))
                 for j, cutoff in enumerate(cutoffs):
                     reconstructed = reconstruct_pair(waves, imputer, mask, cutoff)
-                    predictions[j] = _predict_bounded(
-                        spec, fitted, reconstructed, predict_batch_size)
                     mean_reconstructed = reconstruct_pair(
                         waves, imputer, mask, cutoff, mean_only=True)
-                    mean_predictions[j] = _predict_bounded(
-                        spec, fitted, mean_reconstructed, predict_batch_size)
+                    if shared is not None:
+                        predictions[j] = shared[0][j]
+                        mean_predictions[j] = shared[1][j]
+                    elif companion_models:
+                        from waveform_analysis.engine.cpa_feature_sharing import (
+                            predict_shared_energy_group,
+                        )
+                        group = {name: (spec, fitted, None)}
+                        group.update({
+                            other_name: (other_spec, other_fitted, block)
+                            for other_name, (other_spec, other_fitted, block, _)
+                            in companion_models.items()
+                        })
+                        common = predict_shared_energy_group(
+                            group, reconstructed, chunk_size=predict_batch_size)
+                        common_mean = predict_shared_energy_group(
+                            group, mean_reconstructed, chunk_size=predict_batch_size)
+                        predictions[j], mean_predictions[j] = common[name], common_mean[name]
+                        for other_name, (_, _, _, other_seed) in companion_models.items():
+                            other_key = (board_name, identity, other_name, tuple(cutoffs),
+                                         int(other_seed), int(len(indices)))
+                            out, mean_out = shared_kernel_predictions[other_key]
+                            out[j], mean_out[j] = common[other_name], common_mean[other_name]
+                    else:
+                        predictions[j] = _predict_bounded(
+                            spec, fitted, reconstructed, predict_batch_size)
+                        mean_predictions[j] = _predict_bounded(
+                            spec, fitted, mean_reconstructed, predict_batch_size)
                     if logger:
                         logger.info("CPA | %s/%s | cutoff=%g ns | %d/%d",
                                     family, name, times[cutoff]/1000., j+1, len(cutoffs))
                 # Use the established fitted-model inference path as the unmodified
                 # reference; never derive the full result by imputing final samples.
-                predictions[-1] = predict_indices(
-                    spec, fitted, blind, config["mode"], indices,
-                    chunk_size=predict_batch_size)
+                if shared is not None:
+                    predictions[-1] = shared[0][-1]
+                elif companion_models:
+                    from waveform_analysis.engine.cpa_feature_sharing import (
+                        predict_shared_energy_group,
+                    )
+                    group = {name: (spec, fitted, None)}
+                    group.update({
+                        other_name: (other_spec, other_fitted, block)
+                        for other_name, (other_spec, other_fitted, block, _)
+                        in companion_models.items()
+                    })
+                    original = predict_shared_energy_group(
+                        group, waves, chunk_size=predict_batch_size)
+                    predictions[-1] = original[name]
+                    for other_name, (_, _, _, other_seed) in companion_models.items():
+                        other_key = (board_name, identity, other_name, tuple(cutoffs),
+                                     int(other_seed), int(len(indices)))
+                        shared_kernel_predictions[other_key][0][-1] = original[other_name]
+                else:
+                    predictions[-1] = predict_indices(
+                        spec, fitted, blind, config["mode"], indices,
+                        chunk_size=predict_batch_size)
                 metrics = summarize_predictions(predictions, target,
                                                 seed=event_seed+14,
                                                 bootstrap=bootstrap)
@@ -745,6 +879,8 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 print(f"CPA complete | {board_name}/{family}/{name} | "
                       f"events={len(indices)} | {dest}", flush=True)
             finally:
+                if "companion_models" in locals():
+                    companion_models.clear()
                 del fitted
                 release_training_memory()
         except Exception:
