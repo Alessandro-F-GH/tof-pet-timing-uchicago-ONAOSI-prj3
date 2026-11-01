@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from waveform_analysis.data.results import batch_root, read_json
+from waveform_analysis.data.named_cache import safe_component
 from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, model_target, waveform_view
 from waveform_analysis.engine.train import (
@@ -359,6 +360,42 @@ def _identity(run, development, blind, board, mode):
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def _cpa_destination(output_root, board, run_directory, mode, model):
+    """Human-readable paths; dataset/run fingerprint stays in summary metadata.
+
+    A canonical batch has exactly one trio of control/development/blind
+    datasets. The batch directory is its natural stable human-readable label.
+    """
+    return (Path(output_root) / safe_component(board) /
+            safe_component(batch_root(run_directory).name) /
+            safe_component(mode) / safe_component(model))
+
+
+def _guard_dataset_identity(destination, identity):
+    """Never confuse two cohorts that happen to share a display label.
+
+    This check applies even with --overwrite: overwriting a different cohort
+    would silently replace results from an unrelated experiment.
+    """
+    summary_path = Path(destination) / "summary.json"
+    if not summary_path.is_file():
+        if Path(destination).exists() and any(Path(destination).iterdir()):
+            raise FileExistsError(
+                f"Nonempty CPA output without a summary: {destination}. "
+                "Move it aside or choose another --output-root."
+            )
+        return False
+    summary = read_json(summary_path)
+    prior = summary.get("dataset_identity")
+    if prior != identity:
+        raise ValueError(
+            f"CPA output naming collision: {destination} refers to "
+            f"dataset identity {prior!r}, but this run has identity {identity!r}. "
+            "Use separate named batch directories or a different --output-root."
+        )
+    return True
+
+
 def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 board=None, cache_root=None, artifact_root=None, output_root=None,
                 max_events=1024, fit_events=1024, validation_events=128,
@@ -439,8 +476,11 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 if not cutoffs:
                     raise ValueError("No valid chronological cutoffs for this run")
                 identity = _identity(run, development, blind, board_name, family)
-                dest = output_root / board_name / identity / family / name
-                if (dest / "summary.json").exists() and not overwrite:
+                dest = _cpa_destination(
+                    output_root, board_name, run["directory"], family, name
+                )
+                already_complete = _guard_dataset_identity(dest, identity)
+                if already_complete and not overwrite:
                     outputs.append(dest)
                     continue
                 cache_key = (identity, mask.tobytes(), tuple(cutoffs),
@@ -539,6 +579,7 @@ def explain_cpa(results=None, *, model_dir=None, models=None, mode=None,
                 (dest / "summary.json").write_text(json.dumps(_json_safe({
                     "method": "deterministic_chronological_prefix_attribution",
                     "board": board_name, "dataset_identity": identity,
+                    "study_directory": batch_root(run["directory"]).name,
                     "source_model_directory": str(model_path),
                     "run_directory": str(run["directory"]),
                     "seed": seed, "event_seed": event_seed,
