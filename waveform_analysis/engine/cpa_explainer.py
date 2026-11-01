@@ -60,11 +60,20 @@ def timing_cutoff_schedule_ns(time_ps, mask):
     keep = np.asarray(mask, bool)
     if t.shape != keep.shape or t.ndim != 1:
         raise ValueError("Timing grid and mask must have matching dimensions")
-    requested = cutoff_schedule_ns(float(t[-1]))
     from waveform_analysis.scripts.evaluate_mean_ar import valid_intervals
-    for start, end in valid_intervals(keep):
-        if start == 0:
-            continue
+    intervals = valid_intervals(keep)
+    if not intervals:
+        return []
+    # The absolute schedule belongs ONLY to the first retained segment.
+    # Mixing it with later mask-relative schedules creates spurious 10/15/20...
+    # ns cutoffs between (for example) 8.925, 10.925, 12.925 ns.
+    first_start, first_end = intervals[0]
+    requested = [
+        v for v in cutoff_schedule_ns(float(t[-1]))
+        if float(t[first_start]) <= v <= float(t[first_end-1])
+    ]
+    # Every subsequent retained segment starts a fresh local schedule.
+    for start, end in intervals[1:]:
         base = float(t[start])
         offset = 1.
         while base + offset <= float(t[end-1]) + 1e-9:
