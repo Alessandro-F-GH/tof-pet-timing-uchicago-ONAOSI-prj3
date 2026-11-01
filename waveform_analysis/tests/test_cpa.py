@@ -129,6 +129,10 @@ def test_timing_cutoffs_restart_after_each_masked_region():
     for expected in (3.5,5.5,7.5,9.5,11.5,16.5,20.5,22.5,24.5,26.5,28.5,33.5):
         assert np.any(np.isclose(ns, expected))
     assert np.all(mask[cutoffs])
+    # No legacy absolute-grid cutoffs in post-mask segments.
+    assert not np.any(np.isclose(ns, 10.))
+    assert not np.any(np.isclose(ns, 15.))
+    assert not np.any(np.isclose(ns, 20.))
     assert not np.any((ns >= .5) & (ns < 2.5))
     assert not np.any((ns >= 17.5) & (ns < 19.5))
     intervals = masked_time_intervals(t, mask)
@@ -160,3 +164,18 @@ def test_cpa_performance_plot_uses_two_axes_and_mask_shading(tmp_path, monkeypat
     assert path.stat().st_size > 100
     assert len(labels) == 2
     assert "RMSE" in labels[0] and "CTR" in labels[1]
+
+
+def test_timing_cutoffs_do_not_mix_absolute_and_relative_grids():
+    from waveform_analysis.engine.cpa_explainer import timing_cutoff_schedule_ns
+    t = np.arange(-2., 50., .025) * 1000
+    mask = np.ones(len(t), bool)
+    mask[(t >= .2*1000) & (t < 7.925*1000)] = False
+    schedule = timing_cutoff_schedule_ns(t, mask)
+    cutoffs, _ = cutoff_samples(t, mask, schedule)
+    actual = t[cutoffs]/1000
+    for expected in (-1., 0., 8.925, 10.925, 12.925,
+                     14.925, 16.925, 21.925, 26.925):
+        assert np.any(np.isclose(actual, expected, atol=.0001))
+    for forbidden in (2., 4., 6., 8., 10., 15., 20., 25., 30., 35., 40., 45.):
+        assert not np.any(np.isclose(actual, forbidden, atol=.0001))
