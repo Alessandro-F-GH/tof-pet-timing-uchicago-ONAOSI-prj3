@@ -502,8 +502,19 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
         ax.plot(ns[cutoff:], baseline, color="#C98740",
                 label="Mean replacement")
-        ax.plot(ns[cutoff:], prediction, color="#2B9C74",
-                label="Standardized AR")
+        ax.plot(ns[cutoff:], prediction[cutoff:], color="#2B9C74",
+                label="Standardized AR (no decay)")
+        # Illustrate one representative half-life without another AR recursion.
+        selected_half_life = min(args.decay_half_lives_ns,
+                                 key=lambda h: abs(h-1.))
+        stop = local_forecast_end(mask, cutoff)
+        faded = damped_ar_forecast(
+            prediction[None, cutoff:stop], mean, time_ps, cutoff,
+            selected_half_life)[0]
+        faded_suffix = baseline.copy()
+        faded_suffix[cutoff:stop] = faded
+        ax.plot(ns[cutoff:], faded_suffix[cutoff:], color="#9352AE",
+                label=f"Damped AR (half-life {selected_half_life:g} ns)")
         ax.axvline(ns[cutoff], color="gray", ls="--")
         ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
                title=f"{name}, blind row {event_id}, cutoff {ns[cutoff]:.3f} ns")
