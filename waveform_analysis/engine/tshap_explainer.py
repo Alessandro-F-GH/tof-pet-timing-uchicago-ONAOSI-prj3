@@ -34,8 +34,8 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 8
-GLOBAL_PLOT_VERSION = 19
+TSHAP_METHOD_VERSION = 9
+GLOBAL_PLOT_VERSION = 20
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -514,35 +514,34 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
             if sample.ndim != 2 or sample.shape[0] != 2:
                 raise ValueError("Expected one two-detector waveform")
             original = np.asarray(fnc(sample[None]), np.float64)
-            if original.shape != (1,):
-                raise ValueError("TSHAP predictor must return one scalar per event")
+            empty = np.asarray(fnc(imputer.unconditional_mean()[None]), np.float64)
+            if original.shape != (1,) or empty.shape != (1,):
+                raise ValueError("Predictor must return one scalar per event")
             scores = np.empty(len(window_positions), np.float64)
             for first in range(0, len(window_positions), predict_batch_size):
                 part = window_positions[first:first + predict_batch_size]
-                candidates = np.repeat(sample[None], len(part), axis=0)
-                for i, position in enumerate(part):
+                keep_candidates, remove_candidates = [], []
+                for position in part:
                     channel, start = int(position[0]), int(position[1])
                     width = int(position[2]) if len(position) == 3 else self.window_length
                     stop = min(start + width, sample.shape[-1])
                     if channel != -1 or start < 0 or stop <= start:
-                        raise ValueError("Invalid paired temporal occlusion window")
-                    for detector in range(2):
-                        imputed = imputer.impute_segment_batch(
-                            sample[None], detector, start, stop-start
-                        )[0]
-                        candidates[i, detector, start:stop] = imputed
-                predicted = np.asarray(fnc(candidates), np.float64)
-                if predicted.shape != (len(part),):
-                    raise ValueError("TSHAP returned an invalid prediction batch")
-                scores[first:first+len(part)] = original[0] - predicted
-            if window_positions and all(
-                len(position) in (2, 3) and int(position[0]) == -1
-                for position in window_positions
-            ):
-                self.last_window_positions = [
-                    (-1, int(position[1])) for position in window_positions
-                ]
-                self.last_window_scores = scores.copy()
+                        raise ValueError("Invalid paired temporal window")
+                    keep_candidates.append(imputer.reconstruct(
+                        sample[None], start, stop-start, keep_only=True,
+                        sample_mask=self.sample_mask)[0])
+                    remove_candidates.append(imputer.reconstruct(
+                        sample[None], start, stop-start, keep_only=False,
+                        sample_mask=self.sample_mask)[0])
+                candidates = np.ascontiguousarray(
+                    np.stack(keep_candidates + remove_candidates), dtype=np.float32)
+                values = np.asarray(fnc(candidates), np.float64)
+                if values.shape != (2 * len(part),):
+                    raise ValueError("Invalid coalition prediction batch")
+                scores[first:first + len(part)] = _two_feature_shapley(
+                    original[0], empty[0], values[:len(part)], values[len(part):])
+            self.last_window_positions = [(-1, int(p[1])) for p in window_positions]
+            self.last_window_scores = scores.copy()
             return scores
 
     return BoundedTSHAP(
@@ -1683,7 +1682,7 @@ def _publish_window_imputer(destination, imputer_metadata, identity):
         "cache_hit": bool(imputer_metadata["cache_hit"]),
         "training_events": int(imputer_metadata["n_training_events"]),
         "tuning_events": int(imputer_metadata["n_tuning_events"]),
-        "explained_variance_ratio_by_detector": imputer_metadata["explained_variance_ratio_by_detector"],
+        "explained_variance_ratio_joint": imputer_metadata["explained_variance_ratio_joint"],
         "settings": identity,
     })
     return destination
@@ -1722,7 +1721,7 @@ def _get_window_imputer(cache, control, config, output_root, run_directory, *,
     )
     key = canonical_hash(identity)
     if key not in cache:
-        cache[key] = _cached_hermite_ppca_imputer(
+        cache[key] = _cached_joint_ppca_imputer(
             control, config["mode"], config,
             window_samples=window_samples, stride_samples=stride_samples,
             components=components, fit_events=fit_events,
@@ -1846,7 +1845,7 @@ def explain_tshap(
                 "seed": sampling_seed,
                 "roi": bool(roi),
                 "imputer": {
-                    "method": "hermite_ppca_blend",
+                    "method": "joint_ppca_shapley",
                     "components": int(imputer_components),
                     "fit_events": int(imputer_fit_events),
                     "tuning_events": int(imputer_tuning_events),
@@ -1854,7 +1853,7 @@ def explain_tshap(
                 },
             }
             identity = {
-                "method": "paired_single_event_hermite_ppca_blend_window_occlusion",
+                "method": "paired_single_event_joint_ppca_shapley_window_occlusion",
                 "method_version": TSHAP_METHOD_VERSION,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -2053,7 +2052,7 @@ def explain_tshap(
                     "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name,
                     "window_name": window_name,
-                    "imputation": "hermite_ppca_blend",
+                    "imputation": "joint_ppca_shapley",
                     "imputer": {
                         "method": "Hermite interpolation blended with conditional PPCA mean using a smooth envelope",
                         "components": int(imputer_components),
@@ -2061,14 +2060,14 @@ def explain_tshap(
                         "training_events": int(imputer_metadata["n_training_events"]),
                         "tuning_events": int(imputer_metadata["n_tuning_events"]),
                         "training_and_tuning_are_disjoint": True,
-                        "explained_variance_ratio_by_detector": imputer_metadata[
-                            "explained_variance_ratio_by_detector"
+                        "explained_variance_ratio_joint": imputer_metadata[
+                            "explained_variance_ratio_joint"
                         ],
                         "cache_file": imputer_metadata["cache_file"],
                         "cache_identity": imputer_metadata["cache_identity"],
                         "cache_hit": imputer_metadata["cache_hit"],
-                        "mean_blend_weight_by_detector": imputer.mean_alpha_by_detector,
-                        "blend_weights_by_detector_and_window": imputer.weight_rows,
+                        "mean_blend_weight_by_detector": None,
+                        "blend_weights_by_detector_and_window": [],
                     },
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
@@ -2251,8 +2250,8 @@ def explain_tshap_local(
                 imputer_slope_points=imputer_slope_points,
             )
             identity = {
-                "method": "paired_hermite_ppca_local_case_study",
-                "method_version": 6,
+                "method": "paired_joint_ppca_two_player_local_shapley",
+                "method_version": 7,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
