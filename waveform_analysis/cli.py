@@ -95,8 +95,8 @@ def _parser() -> argparse.ArgumentParser:
                        help="Fixed sampling seed shared across models (default: 42)")
     tshap.add_argument("--roi", action="store_true", help="Calculate upstream TSHAP-ROI as well")
     tshap.add_argument("--overwrite", action="store_true", help="Replace matching existing explanations")
-    tshap.add_argument("--conditional-samples", type=int, default=16,
-                       help="Joint PPCA conditional draws per coalition (default: 16)")
+    tshap.add_argument("--n-baselines", type=int, default=8,
+                       help="Real control baseline waveforms used for both coalitions")
     tshap.add_argument("--imputer-components", type=int, default=32)
     tshap.add_argument("--imputer-fit-events", type=int, default=2000)
     tshap.add_argument("--imputer-tuning-events", type=int, default=300)
@@ -132,8 +132,8 @@ def _parser() -> argparse.ArgumentParser:
     tshap_local.add_argument("--predict-batch-size", type=int, default=64)
     tshap_local.add_argument("--seed", type=int, default=42,
                              help="Fixed control-baseline sampling seed (default: 42)")
-    tshap_local.add_argument("--conditional-samples", type=int, default=16,
-                             help="Joint PPCA conditional draws per coalition (default: 16)")
+    tshap_local.add_argument("--n-baselines", type=int, default=8,
+                             help="Real control baseline waveforms used for both coalitions")
     tshap_local.add_argument("--imputer-components", type=int, default=32)
     tshap_local.add_argument("--imputer-fit-events", type=int, default=2000)
     tshap_local.add_argument("--imputer-tuning-events", type=int, default=300)
@@ -274,7 +274,7 @@ def main() -> None:
                 imputer_fit_events=args.imputer_fit_events,
                 imputer_tuning_events=args.imputer_tuning_events,
                 imputer_slope_points=args.imputer_slope_points,
-                conditional_samples=args.conditional_samples, logger=logger):
+                n_baselines=args.n_baselines, logger=logger):
             print(output)
         return
     if args.command == "explain-tshap-local":
