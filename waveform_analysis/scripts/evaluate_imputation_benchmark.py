@@ -244,7 +244,8 @@ def keep_only_benchmark(label, channel, args, waves, time_ps, mask,
         "sample_interval_ps": dt_ps, "mask_width_samples": width,
         "mask_positions": len(starts), "methods": list(methods),
         "occlusion_mode": "keep_only",
-        "knn_k": list(args.knn_k), "knn_distance": "paired_observed_window_euclidean",
+        "knn_k": list(args.knn_k),
+        "knn_edge_tau_ns": list(args.knn_edge_tau_ns), "knn_distance": "paired_observed_window_euclidean",
         "baseline": "per_detector_development_sample_median",
         "ppca": "posterior_mean_conditioned_on_retained_window",
         "signal_units": "mV",
@@ -351,7 +352,10 @@ def evaluate_configuration(label, results, channel, args, output):
     # Paired kNN neighbor search only sees retained waveform samples.
     reference_pool = np.asarray(waves[training], dtype=np.float64)
     eval_pool = np.asarray(waves[evaluation], dtype=np.float64)
-    methods = tuple(m for m in METHODS if m != "knn") + tuple(f"knn_k{k}" for k in args.knn_k)
+    methods = (tuple(m for m in METHODS if m != "knn")
+               + tuple(f"knn_k{k}" for k in args.knn_k)
+               + tuple(f"knn_edge_k{k}_tau{tau:g}" for tau in args.knn_edge_tau_ns
+                       for k in args.knn_k))
     # Per-position and event-wise squared errors are retained for pooled metrics/CI.
     position_rows = []
     event_sse = {method: np.zeros(len(evaluation), dtype=np.float64) for method in methods}
@@ -363,17 +367,35 @@ def evaluate_configuration(label, results, channel, args, output):
         observed[start:stop] = False
         if not np.any(observed):
             raise ValueError("No observed samples for kNN remove-window evaluation")
-        reference_prefix = reference_pool[:, :, observed].reshape(len(training), -1)
-        eval_prefix = eval_pool[:, :, observed].reshape(len(evaluation), -1)
-        norm = np.einsum("ij,ij->i", reference_prefix, reference_prefix)
-        nearest = np.empty((len(evaluation), max(args.knn_k)), dtype=np.int64)
-        for first in range(0, len(evaluation), args.batch_size):
-            last = min(len(evaluation), first + args.batch_size)
-            chunk = eval_prefix[first:last]
-            distances = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
-                         + norm[None, :] - 2. * chunk @ reference_prefix.T)
-            np.maximum(distances, 0., out=distances)
-            nearest[first:last] = np.argsort(distances, axis=1, kind="stable")[:, :max(args.knn_k)]
+        raw_reference = reference_pool[:, :, observed].reshape(len(training), -1)
+        raw_evaluation = eval_pool[:, :, observed].reshape(len(evaluation), -1)
+        # For samples outside [start, stop), distance to the closest edge.
+        # Sampling interval is in ps, while tau is in ns.
+        positions = np.flatnonzero(observed)
+        age_ns = np.where(positions < start,
+                          (start - positions) * dt_ps / 1000.,
+                          (positions - (stop - 1)) * dt_ps / 1000.)
+        nearest_by_method = {}
+        for tau in [float("inf"), *args.knn_edge_tau_ns]:
+            weights = (np.ones(len(positions), np.float64)
+                       if np.isinf(tau) else np.exp(-age_ns / tau))
+            # Rescale before multiplication to avoid irrelevant underflow.
+            weights /= max(float(weights.max()), 1e-300)
+            root_weights = np.sqrt(np.tile(weights, 2))
+            source = raw_reference * root_weights
+            query = raw_evaluation * root_weights
+            norm = np.einsum("ij,ij->i", source, source)
+            nearest = np.empty((len(evaluation), max(args.knn_k)), np.int64)
+            for first in range(0, len(evaluation), args.batch_size):
+                last = min(len(evaluation), first + args.batch_size)
+                chunk = query[first:last]
+                distances = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
+                             + norm[None, :] - 2. * chunk @ source.T)
+                np.maximum(distances, 0., out=distances)
+                nearest[first:last] = np.argsort(
+                    distances, axis=1, kind="stable")[:, :max(args.knn_k)]
+            key = "knn" if np.isinf(tau) else f"knn_edge_tau{tau:g}"
+            nearest_by_method[key] = nearest
         for det, model in enumerate(models):
             env = smooth_blend_envelope(start, width, length)
             alpha = alphas[det, pi]
@@ -389,8 +411,15 @@ def evaluate_configuration(label, results, channel, args, output):
                 predictions = {
                     "linear": linear, "hermite": hermite,
                     "ppca": ppca, "hermite_ppca_blend": blend,
-                    **{f"knn_k{k}": reference_pool[nearest[local, :k], det, start:stop].mean(axis=1)
-                       for k in args.knn_k},
+                    **{
+                        (f"knn_k{k}" if name == "knn"
+                         else f"knn_edge_k{k}_tau{tau:g}"):
+                        reference_pool[neighbor_ids[local, :k], det, start:stop].mean(axis=1)
+                        for name, neighbor_ids in nearest_by_method.items()
+                        for tau in ([float("inf")] if name == "knn"
+                                    else [float(name.split("tau")[-1])])
+                        for k in args.knn_k
+                    },
                 }
                 # Original TSHAP replaces each masked segment with the corresponding
                 # segment from every reference baseline. Score expected squared error
@@ -553,6 +582,10 @@ def main():
                         help="Remove window (legacy) or retain only window and impute exterior")
     parser.add_argument("--knn-k", nargs="+", type=int, default=[1],
                         help="Evaluate each listed neighbor count independently, no tuning")
+    parser.add_argument("--knn-edge-tau-ns", nargs="+", type=float,
+                        default=[],
+                        help="Exponential distance-to-window-edge scales (ns); "
+                             "adds weighted kNN for remove_window only")
     parser.add_argument("--mask-ns", type=float, default=0.25)
     parser.add_argument("--mask-stride-samples", type=int)
     parser.add_argument("--eval-events", type=int, default=500)
@@ -565,6 +598,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     args.knn_k = sorted(set(args.knn_k))
+    args.knn_edge_tau_ns = sorted(set(args.knn_edge_tau_ns))
+    if any(not np.isfinite(t) or t <= 0 for t in args.knn_edge_tau_ns):
+        parser.error("--knn-edge-tau-ns needs positive finite values")
     if not args.knn_k or args.knn_k[0] < 1:
         parser.error("--knn-k must contain positive integers")
     if (args.max_events < 20 or args.components < 1 or args.n_baselines < 1 or args.mask_ns <= 0
@@ -599,6 +635,7 @@ def main():
         "mask_width_ns": args.mask_ns, "seed": args.seed,
         "n_baselines": args.n_baselines,
         "knn_k": list(args.knn_k),
+        "knn_edge_tau_ns": list(args.knn_edge_tau_ns),
         "signal_units": "mV; plot values use µV if all RMSE values are below 1 mV",
         "bootstrap_replicates": args.bootstrap,
         "warning": "Results are valid only if each results path resolves to the intended development dataset and split.",
