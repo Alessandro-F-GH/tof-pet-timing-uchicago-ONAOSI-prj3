@@ -112,7 +112,7 @@ def save_position_plot(rows, output, label, channel):
             y[~np.isfinite(y) | (y <= 0)] = np.nan
             # Plot only evaluated mask positions. Connecting points with lines
             # would visually interpolate across cropped/excluded time regions.
-            points = ax.scatter(x, y, label=LABELS.get(method, method.replace("knn_k", "kNN k=")), s=18, zorder=3)
+            points = ax.scatter(x, y, label=method_label(method), s=18, zorder=3)
             if detector == 1:
                 handles.append(points)
         ax.set_title(f"Detector {detector}")
@@ -121,7 +121,7 @@ def save_position_plot(rows, output, label, channel):
     # Keep the one shared legend between the figure title and subplot titles.
     # A figure-level x label remains at the bottom with no competing legend.
     fig.suptitle(f"{label} - {channel.capitalize()} channel", y=0.99)
-    fig.legend(handles, [LABELS.get(m, m.replace("knn_k", "kNN k=")) for m in available_methods],
+    fig.legend(handles, [method_label(m) for m in available_methods],
                loc="upper center", bbox_to_anchor=(0.5, 0.94),
                ncol=len(available_methods), fontsize=10, frameon=False)
     axes[0].set_ylabel(f"Reconstruction RMSE ({unit})", labelpad=5)
@@ -496,6 +496,32 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+def best_knn_only(rows, *, group_keys=("dataset", "channel")):
+    """Keep non-kNN methods and one globally best kNN per dataset/channel.
+
+    Selection is descriptive and uses evaluation RMSE; full unscreened values
+    remain in the raw CSVs. Never present post-selection CI as independent
+    confirmation of the selected hyperparameters.
+    """
+    groups = list(dict.fromkeys(tuple(r[k] for k in group_keys) for r in rows))
+    best = {}
+    for group in groups:
+        subset = [r for r in rows if tuple(r[k] for k in group_keys) == group]
+        knn = [r for r in subset if r["method"].startswith("knn_")]
+        if knn:
+            best[group] = min(knn, key=lambda r: (r["rmse"], r["method"]))["method"]
+    return [r for r in rows
+            if not r["method"].startswith("knn_")
+            or r["method"] == best.get(tuple(r[k] for k in group_keys))]
+
+
+def method_label(method):
+    if method.startswith("knn_edge_k"):
+        k, tau = method.removeprefix("knn_edge_k").split("_tau", 1)
+        return f"kNN k={k}, edge tau={tau} ns"
+    return LABELS.get(method, method.replace("knn_k", "kNN k="))
+
+
 def write_latex(path, rows):
     configs = sorted({(r["dataset"], r["channel"]) for r in rows})
     methods = list(dict.fromkeys(r["method"] for r in rows))
@@ -513,7 +539,7 @@ def write_latex(path, rows):
         hermite = next(r["rmse"] for r in subset if r["method"] == reference_method)
         for r in subset:
             delta = 100.0 * (1.0 - r["rmse"] / hermite) if hermite else 0.0
-            label = LABELS.get(r["method"], r["method"].replace("knn_k", "kNN k=")).replace("--", r"\textendash{}")
+            label = method_label(r["method"]).replace("--", r"\textendash{}")
             ci = f'[{r["ci95_low"]:.3g}, {r["ci95_high"]:.3g}]'
             lines.append(
                 f'{dataset} & {channel} & {label} & {r["rmse"]:.4g} & {ci} & {delta:+.1f} \\\\'
@@ -537,11 +563,11 @@ def save_overall_plot(rows, output):
     for mi, method in enumerate(methods):
         values, low, high = [], [], []
         for dataset, channel in configs:
-            row = next(r for r in rows if r["dataset"] == dataset and r["channel"] == channel
-                       and r["method"] == method)
-            values.append(row["rmse"] * scale)
-            low.append(row["ci95_low"] * scale)
-            high.append(row["ci95_high"] * scale)
+            row = next((r for r in rows if r["dataset"] == dataset
+                        and r["channel"] == channel and r["method"] == method), None)
+            values.append(row["rmse"] * scale if row else np.nan)
+            low.append(row["ci95_low"] * scale if row else np.nan)
+            high.append(row["ci95_high"] * scale if row else np.nan)
         values = np.asarray(values)
         yerr = np.vstack((values - np.asarray(low), np.asarray(high) - values))
         xpos = x - total_width / 2 + (mi + 0.5) * bar_width
@@ -621,16 +647,34 @@ def main():
             all_overall.extend(overall_rows)
             configurations.append(config)
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{label}_{channel}")
-            save_position_plot(positions_rows, output, label, channel)
             write_csv(output / f"position_metrics_{safe}.csv", positions_rows)
     write_csv(output / "position_metrics.csv", all_positions)
     write_csv(output / "overall_metrics.csv", all_overall)
-    write_latex(output / "reconstruction_metrics.tex", all_overall)
-    save_overall_plot(all_overall, output)
+    selected_overall = best_knn_only(all_overall)
+    selected_methods = {
+        (r["dataset"], r["channel"]): r["method"]
+        for r in selected_overall if r["method"].startswith("knn_")
+    }
+    selected_positions = [
+        r for r in all_positions
+        if not r["method"].startswith("knn_")
+        or r["method"] == selected_methods.get((r["dataset"], r["channel"]))
+    ]
+    for label, channel in dict.fromkeys((r["dataset"], r["channel"]) for r in selected_positions):
+        subset = [r for r in selected_positions
+                  if r["dataset"] == label and r["channel"] == channel]
+        save_position_plot(subset, output, label, channel)
+    write_csv(output / "overall_metrics_selected.csv", selected_overall)
+    write_csv(output / "position_metrics_selected.csv", selected_positions)
+    write_latex(output / "reconstruction_metrics.tex", selected_overall)
+    save_overall_plot(selected_overall, output)
     summary = {
         "description": "Held-out waveform reconstruction benchmark (remove-window or keep-only) in physical mV units; event-level bootstrap confidence intervals.",
         "configurations": configurations,
-        "methods": list(dict.fromkeys(r["method"] for r in all_overall)),
+        "methods": list(dict.fromkeys(r["method"] for r in selected_overall)),
+        "best_knn": [dict(dataset=r["dataset"], channel=r["channel"], method=r["method"], rmse=r["rmse"])
+                     for r in selected_overall if r["method"].startswith("knn_")],
+        "selection_note": "Best kNN selected by evaluation RMSE for display only; full raw CSV is retained. Selection may bias the reported best RMSE and CI.",
         "occlusion_mode": args.occlusion_mode, "method_labels": LABELS,
         "mask_width_ns": args.mask_ns, "seed": args.seed,
         "n_baselines": args.n_baselines,
