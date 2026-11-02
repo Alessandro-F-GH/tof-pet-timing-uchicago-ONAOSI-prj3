@@ -65,8 +65,7 @@ Each `OUTPUT/BOARD/MODE/detector_N/` contains:
   stability.
 - `rmse_vs_cutoff.png`: error versus cutoff for mean baseline and the
   largest tested AR order.
-- `waveform_example.png`: one representative held-out waveform with mean
-  and standardized-AR suffix reconstruction.
+- `waveform_examples/waveform_cutoff_XXXXX.png`: one held-out waveform reconstruction\n  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), the cutoff, and\n  the next mask boundary when applicable.
 
 **Limits:** deterministic forecasts approach the learned mean when residual
 memory vanishes; low reconstruction MSE is not proof of realistic stochastic
