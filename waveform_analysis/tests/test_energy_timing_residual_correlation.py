@@ -33,3 +33,13 @@ def test_intersection_too_small_is_rejected():
             np.array([1, 2, 3]), np.array([1., 2., 3.]),
             np.array([3, 4, 5]), np.array([3., 4., 5.]),
         )
+
+
+def test_difference_statistics_use_paired_residuals():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import difference_statistics
+    timing = np.array([-2., -1., 0., 1., 2.])
+    energy = timing + np.array([3., -3., 3., -3., 0.])
+    result = difference_statistics(energy, timing)
+    assert result["difference_mean_ps"] == pytest.approx(0.)
+    assert result["difference_std_ps"] == pytest.approx(np.std(energy-timing, ddof=1))
+    assert result["difference_rmse_ps"] == pytest.approx(np.sqrt(np.mean((energy-timing)**2)))
