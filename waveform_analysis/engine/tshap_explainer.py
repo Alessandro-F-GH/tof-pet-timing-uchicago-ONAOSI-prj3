@@ -238,255 +238,185 @@ def _predict_bounded(spec, fitted, values, batch_size):
     return output
 
 
-class _HermitePPCAImputer:
-    """Position-specific Hermite baseline with a calibration-fitted PPCA correction."""
+class _JointPPCAImputer:
+    """One physical-mV PPCA distribution over both detector waveforms.
 
-    def __init__(self, models, tuning_waves, *, slope_points=5, batch_size=64):
-        from waveform_analysis.scripts.train_ppca_interpolation_blend import (
-            hermite_interpolation_batch, smooth_blend_envelope,
-        )
-        self.models = models
-        self.tuning_waves = np.asarray(tuning_waves, dtype=np.float64)
-        self.slope_points = int(slope_points)
-        self.batch_size = int(batch_size)
+    The model is fitted once to concatenated [detector 1, detector 2] samples.
+    Both two-player TSHAP coalitions use this same distribution, conditioned on
+    their observed sample indices. The fitted frozen amplitude transform maps
+    reconstructed physical-mV waveforms back to model-normalized inputs.
+    """
+
+    def __init__(self, model, transform):
+        self.model = model
+        self.transform = transform
+        self.n_samples = model.mean.size // 2
+        if model.mean.size != 2 * self.n_samples or self.n_samples < 2:
+            raise ValueError("Joint PPCA needs two equally sized detector waveforms")
         self._prepared = {}
-        self._envelopes = {}
-        self._alphas = {}
-        self._hermite = hermite_interpolation_batch
-        self._envelope = smooth_blend_envelope
 
-    def _prepare(self, detector, start, width):
-        key = (int(detector), int(start), int(width))
-        if key in self._alphas:
-            return key
-        model = self.models[detector]
-        stop = start + width
-        prepared = model.prepare_mask(start, width)
-        envelope = self._envelope(start, width, len(model.mean))
-        alpha = 0.0
-        if start > 0 and stop < len(model.mean) and np.any(envelope):
-            numerator = 0.0
-            denominator = 0.0
-            for offset in range(0, len(self.tuning_waves), self.batch_size):
-                batch = self.tuning_waves[offset:offset + self.batch_size, detector, :]
-                truth = batch[:, start:stop]
-                hermite = self._hermite(batch, start, width, self.slope_points)
-                ppca = model.conditional_mean_batch(
-                    batch, start, width, prepared=prepared
-                )
-                delta = envelope[None, :] * (ppca - hermite)
-                numerator += float(np.sum(delta * (truth - hermite)))
-                denominator += float(np.sum(delta * delta))
-            if denominator > 1e-18:
-                alpha = float(np.clip(numerator / denominator, 0.0, 1.0))
-        self._prepared[key] = prepared
-        self._envelopes[key] = envelope
-        self._alphas[key] = alpha
-        return key
+    def unconditional_mean(self):
+        """Single consistent v(empty) waveform in the model's input space."""
+        physical = self.model.mean.reshape(1, 2, self.n_samples)
+        return np.asarray(self.transform.transform(physical), np.float32)[0]
 
-    def impute_segment_batch(self, waveforms, detector, start, width):
-        """Return imputed samples only, for [events, detectors, time] waveforms."""
-        from waveform_analysis.scripts.train_ppca_interpolation_blend import (
-            linear_interpolation_batch,
-        )
-        batch = np.asarray(waveforms, dtype=np.float64)
-        if batch.ndim != 3 or batch.shape[1] != 2:
-            raise ValueError("Imputation expects [events, 2 detectors, samples]")
-        key = self._prepare(detector, start, width)
-        if self._alphas[key] == 0.0 and (
-            start == 0 or start + width >= batch.shape[-1]
-        ):
-            return linear_interpolation_batch(batch[:, detector, :], start, width)
-        model = self.models[detector]
-        signal = batch[:, detector, :]
-        hermite = self._hermite(signal, start, width, self.slope_points)
-        ppca = model.conditional_mean_batch(
-            signal, start, width, prepared=self._prepared[key]
-        )
-        envelope = self._envelopes[key]
-        return hermite + self._alphas[key] * envelope[None, :] * (ppca - hermite)
+    def reconstruct(self, waveforms, start, width, *, keep_only, sample_mask=None):
+        """Return full model-space waveforms with only missing samples imputed.
 
-    @property
-    def weight_rows(self):
-        return [
-            {"detector": detector + 1, "start_sample": start, "width_samples": width,
-             "alpha_ppca": float(alpha)}
-            for (detector, start, width), alpha in sorted(self._alphas.items())
-        ]
-
-    @property
-    def mean_alpha_by_detector(self):
-        return [
-            float(np.mean([a for (d, _, _), a in self._alphas.items() if d == detector]))
-            if any(d == detector for d, _, _ in self._alphas) else 0.0
-            for detector in range(2)
-        ]
+        Observed samples are never overwritten; detector samples are conditioned
+        jointly. Samples cropped by the saved model mask are never conditioned on.
+        """
+        data = np.asarray(waveforms, np.float32)
+        if data.ndim != 3 or data.shape[1:] != (2, self.n_samples):
+            raise ValueError("Expected [events, 2 detectors, samples]")
+        if start < 0 or width < 1 or start + width > self.n_samples:
+            raise ValueError("Invalid temporal window")
+        valid = (np.ones(self.n_samples, bool) if sample_mask is None
+                 else np.asarray(sample_mask, bool).reshape(-1))
+        if valid.shape != (self.n_samples,):
+            raise ValueError("Model sample mask has an incompatible shape")
+        region = np.zeros(self.n_samples, bool)
+        region[start:start + width] = True
+        observed_time = valid & (region if keep_only else ~region)
+        missing_time = valid & ~observed_time
+        if not np.any(observed_time) or not np.any(missing_time):
+            raise ValueError("Window must leave valid observed and missing samples")
+        observed = np.tile(observed_time, 2)
+        missing = np.tile(missing_time, 2)
+        key = (int(start), int(width), bool(keep_only), valid.tobytes())
+        if key not in self._prepared:
+            w_observed = self.model.W[observed]
+            w_missing = self.model.W[missing]
+            precision = (np.eye(self.model.components)
+                         + w_observed.T @ w_observed / self.model.sigma2)
+            coefficients = np.linalg.solve(
+                precision, w_observed.T / self.model.sigma2
+            ).T @ w_missing.T
+            self._prepared[key] = (observed, missing, coefficients)
+        observed, missing, coefficients = self._prepared[key]
+        physical = np.asarray(self.transform.inverse(data), np.float64)
+        flat = physical.reshape(len(data), -1)
+        result = flat.copy()
+        result[:, missing] = (self.model.mean[missing]
+                             + (flat[:, observed] - self.model.mean[observed])
+                             @ coefficients)
+        normalized = self.transform.transform(result.reshape(data.shape))
+        # The existing measured samples remain bitwise identical to the input.
+        normalized[:, :, observed_time] = data[:, :, observed_time]
+        return np.ascontiguousarray(normalized, dtype=np.float32)
 
 
-def _fit_hermite_ppca_imputer(control, mode, *, components,
-                              fit_events, tuning_events, slope_points,
-                              batch_size, seed):
-    """Fit PPCA on the control cohort with disjoint fitting and tuning subsets."""
-    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
-
-    available = np.arange(control.n_events, dtype=np.int64)
-    rng = np.random.default_rng(int(seed) + 1)
-    available = rng.permutation(available)
-    n_tune = min(int(tuning_events), max(2, len(available) // 5))
-    n_fit = min(int(fit_events), len(available) - n_tune)
-    if n_fit <= components or n_tune < 2:
-        raise ValueError(
-            "Not enough control events to fit the imputation-based TSHAP method "
-            f"(available={len(available)}, fit={n_fit}, tuning={n_tune}, components={components}). "
-            "Reduce --imputer-components/--imputer-fit-events or use more control events."
-        )
-    fit_ids = available[:n_fit]
-    tune_ids = available[n_fit:n_fit + n_tune]
-    fit_waves = waveform_view(control, mode, fit_ids).materialize()
-    tuning_waves = waveform_view(control, mode, tune_ids).materialize()
-    models = []
-    explained = []
-    for detector in range(2):
-        model = ProbabilisticPCA(components).fit(
-            np.asarray(fit_waves[:, detector, :], dtype=np.float64)
-        )
-        models.append(model)
-        explained.append(float(model.explained_variance_ratio))
-    del fit_waves
-    imputer = _HermitePPCAImputer(
-        models, tuning_waves, slope_points=slope_points, batch_size=batch_size
-    )
-    del tuning_waves
-    metadata = {
-        "training_indices": fit_ids,
-        "tuning_indices": tune_ids,
-        "training_event_ids": np.asarray(control.event_index[fit_ids], dtype=np.int64),
-        "tuning_event_ids": np.asarray(control.event_index[tune_ids], dtype=np.int64),
-        "n_training_events": int(len(fit_ids)),
-        "n_tuning_events": int(len(tune_ids)),
-        "components": int(components),
-        "slope_points": int(slope_points),
-        "explained_variance_ratio_by_detector": explained,
-        "training_and_tuning_are_disjoint": True,
-    }
-    return imputer, metadata
-
-
-def _cached_hermite_ppca_imputer(
-    control, mode, config, *, window_samples, stride_samples,
-    components, fit_events, tuning_events, slope_points, batch_size, seed,
-):
-    """Fit or resolve one immutable conditional Hermite-PPCA imputer product."""
+def _fit_joint_ppca_imputer(control, mode, *, components, fit_events, seed):
+    """Fit a joint PPCA on control waveforms only, with no blind-event leakage."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 
     family = mode_family(mode)
+    transform = getattr(control, f"{family}_transform")
+    if transform is None:
+        raise ValueError("Missing frozen input transform for joint PPCA")
+    available = np.random.default_rng(int(seed) + 1).permutation(control.n_events)
+    ids = available[:min(int(fit_events), len(available))]
+    if len(ids) <= components:
+        raise ValueError("Insufficient control events for joint PPCA components")
+    normalized = waveform_view(control, mode, ids).materialize()
+    physical = np.asarray(transform.inverse(normalized), np.float64)
+    if physical.ndim != 3 or physical.shape[1] != 2 or not np.all(np.isfinite(physical)):
+        raise ValueError("Invalid control waveforms for joint PPCA")
+    joint = physical.reshape(len(physical), -1)
+    model = ProbabilisticPCA(components).fit(joint)
+    metadata = {
+        "n_training_events": int(len(ids)),
+        "n_tuning_events": 0,
+        "components": int(components),
+        "explained_variance_ratio_joint": float(model.explained_variance_ratio),
+        "training_population": "control",
+        "input_space": "physical_mV_two_detector_concatenation",
+    }
+    return _JointPPCAImputer(model, transform), metadata
+
+
+def _cached_joint_ppca_imputer(control, mode, config, *,
+                              components, fit_events, seed, **unused):
+    """Persist and reuse the same joint PPCA across TSHAP models and windows."""
+    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
+    from waveform_analysis.data.dataset import InputTransform
+    from waveform_analysis.data.named_cache import alias_path
+
+    family = mode_family(mode)
+    transform = getattr(control, f"{family}_transform")
     times = np.asarray(getattr(control, f"{family}_time_ps"), np.float64)
-    if times.ndim != 1 or times.size < 2 or not np.all(np.isfinite(times)):
-        raise ValueError("Invalid control time grid for imputer cache")
-    board = str(config.get("_board") or _find_board_label(config.get("output_dir", "")))
-    if board == "Unknown board":
-        board = str(control.manifest.get("board") or "unknown_board")
-    settings = dict(
-        cache_schema=4, board=board, channel=family, mode=mode,
-        window_ns=config["window_ns"],
-        control_identity=control.manifest.get("analysis_protocol_identity"),
-        control_population=control.manifest.get("event_population_identity"),
-        samples=int(times.size), time_grid_hash=canonical_hash(times.tolist()),
-        window_samples=int(window_samples), stride_samples=int(stride_samples),
-        components=int(components), fit_events=int(fit_events),
-        tuning_events=int(tuning_events), slope_points=int(slope_points),
-        batch_size=int(batch_size), seed=int(seed),
-    )
+    if transform is None or times.ndim != 1 or times.size < 2:
+        raise ValueError("Joint PPCA requires a valid frozen grid and transform")
+    identity = {
+        "method": "joint_ppca_two_player_shapley_v1",
+        "control_identity": control.manifest.get("analysis_protocol_identity"),
+        "control_population": control.manifest.get("event_population_identity"),
+        "control_artifact": str(control.directory.name),
+        "mode": str(mode),
+        "time_grid_hash": canonical_hash(times.tolist()),
+        "transform_minimum": np.asarray(transform.minimum).tolist(),
+        "transform_maximum": np.asarray(transform.maximum).tolist(),
+        "components": int(components),
+        "fit_events": int(fit_events),
+        "seed": int(seed),
+    }
     recipe = ProductRecipe(
-        "tshap-imputers",
-        settings,
-        parents=(str(control.directory.name),),
-        implementation="conditional-hermite-ppca-v3",
+        "tshap-imputers", identity, parents=(str(control.directory.name),),
+        implementation="joint-physical-ppca-shapley-v1",
     )
     store = ArtifactStore(config["preprocessing"]["artifact_root"])
+    alias = alias_path(cache_root_from_config(config), "imputers",
+                       "joint_ppca_shapley", family, canonical_hash(identity))
     prior = store.lookup(recipe)
 
     def build(directory, effective_recipe=None):
-        imputer, fit_meta = _fit_hermite_ppca_imputer(
-            control, mode, components=components,
-            fit_events=fit_events, tuning_events=tuning_events,
-            slope_points=slope_points, batch_size=batch_size, seed=seed,
-        )
-        starts = np.arange(0, len(times), int(stride_samples), dtype=np.int64)
-        widths = np.minimum(int(window_samples), len(times) - starts).astype(np.int64)
-        for start, width in zip(starts, widths):
-            for detector in range(2):
-                imputer._prepare(detector, int(start), int(width))
-        alphas = np.asarray([
-            [imputer._alphas[(detector, int(start), int(width))]
-             for start, width in zip(starts, widths)]
-            for detector in range(2)
-        ], dtype=np.float64)
-        metadata = dict(
-            n_training_events=int(fit_meta["n_training_events"]),
-            n_tuning_events=int(fit_meta["n_tuning_events"]),
-            explained_variance_ratio_by_detector=fit_meta["explained_variance_ratio_by_detector"],
-            training_and_tuning_are_disjoint=True,
+        imputer, metadata = _fit_joint_ppca_imputer(
+            control, mode, components=components, fit_events=fit_events, seed=seed
         )
         np.savez_compressed(
             directory / "imputer.npz",
             metadata_json=np.asarray(json.dumps(metadata)),
-            starts=starts, widths=widths, alphas=alphas,
-            **{f"mean_{d}": model.mean for d, model in enumerate(imputer.models)},
-            **{f"loadings_{d}": model.W for d, model in enumerate(imputer.models)},
-            **{f"noise_{d}": np.asarray(model.sigma2) for d, model in enumerate(imputer.models)},
-            **{f"variance_{d}": np.asarray(model.explained_variance_ratio)
-               for d, model in enumerate(imputer.models)},
+            mean=imputer.model.mean,
+            loadings=imputer.model.W,
+            noise=np.asarray(imputer.model.sigma2),
+            variance=np.asarray(imputer.model.explained_variance_ratio),
+            minimum=np.asarray(transform.minimum),
+            maximum=np.asarray(transform.maximum),
         )
 
-    alias = imputer_alias(
-        cache_root_from_config(config), config, window_samples=window_samples,
-        stride_samples=stride_samples, components=components, fit_events=fit_events,
-        tuning_events=tuning_events, slope_points=slope_points, seed=seed,
-    )
     reference = get_or_build_named(
         store, recipe, alias, build,
-        metadata={
-            "control_identity": settings["control_identity"],
-            "control_population": settings["control_population"],
-            "fit_events": int(fit_events),
-            "tuning_events": int(tuning_events),
-        },
+        metadata={"control_identity": identity["control_identity"],
+                  "fit_events": int(fit_events), "components": int(components)}
     )
-    cache_file = reference.payload_path("imputer.npz")
-    with np.load(cache_file, allow_pickle=False) as saved:
-        models = []
-        for detector in range(2):
-            model = ProbabilisticPCA(components)
-            model.mean = np.asarray(saved[f"mean_{detector}"], np.float64)
-            model.W = np.asarray(saved[f"loadings_{detector}"], np.float64)
-            model.sigma2 = float(saved[f"noise_{detector}"])
-            model.explained_variance_ratio = float(saved[f"variance_{detector}"])
-            if model.mean.shape != (len(times),) or model.W.shape != (len(times), components):
-                raise ValueError(f"Imputer artifact shape mismatch: {cache_file}")
-            models.append(model)
-        imputer = _HermitePPCAImputer(
-            models, np.empty((0, 2, len(times))), slope_points=slope_points,
-            batch_size=batch_size,
+    path = reference.payload_path("imputer.npz")
+    with np.load(path, allow_pickle=False) as saved:
+        model = ProbabilisticPCA(components)
+        model.mean = np.asarray(saved["mean"], np.float64)
+        model.W = np.asarray(saved["loadings"], np.float64)
+        model.sigma2 = float(saved["noise"])
+        model.explained_variance_ratio = float(saved["variance"])
+        if (model.mean.shape != (2 * len(times),)
+                or model.W.shape != (2 * len(times), components)
+                or not np.array_equal(saved["minimum"], transform.minimum)
+                or not np.array_equal(saved["maximum"], transform.maximum)):
+            raise ValueError(f"Joint PPCA cache data mismatch: {path}")
+        restored_transform = InputTransform(
+            np.asarray(saved["minimum"], np.float32),
+            np.asarray(saved["maximum"], np.float32),
         )
-        starts = np.asarray(saved["starts"], np.int64)
-        widths = np.asarray(saved["widths"], np.int64)
-        alphas = np.asarray(saved["alphas"], np.float64)
-        if alphas.shape != (2, len(starts)) or not np.all(np.isfinite(alphas)):
-            raise ValueError(f"Imputer artifact weights invalid: {cache_file}")
-        for i, (start, width) in enumerate(zip(starts, widths)):
-            for detector in range(2):
-                key = (detector, int(start), int(width))
-                imputer._alphas[key] = float(alphas[detector, i])
-                imputer._prepared[key] = models[detector].prepare_mask(int(start), int(width))
-                imputer._envelopes[key] = imputer._envelope(int(start), int(width), len(times))
         metadata = json.loads(str(saved["metadata_json"].item()))
-    return imputer, {
+    return _JointPPCAImputer(model, restored_transform), {
         **metadata,
-        "cache_file": str(cache_file),
+        "cache_file": str(path),
         "cache_hit": prior.status == "hit",
         "cache_identity": reference.product_id,
     }
+
+
+def _two_feature_shapley(full, empty, keep_only, remove_window):
+    """Exact 2-player Shapley value of temporal window W, not occlusion."""
+    return 0.5 * ((keep_only - empty) + (full - remove_window))
 
 
 def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None,
