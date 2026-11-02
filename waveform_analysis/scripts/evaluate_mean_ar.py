@@ -271,105 +271,147 @@ def forecast_suffix(prefix, mean, std, coeff, cutoff, end, standardized=False):
 
 
 
-def fit_gru_forecaster(training, mean, std, mask, args, seed):
-    """Train a causal one-step residual forecaster on development only."""
+def make_gru_encoder_decoder(hidden):
+    """GRU encodes the entire real prefix; MLP decodes arbitrary future times."""
     import torch
     from torch import nn
 
-    torch.manual_seed(int(seed))
-    rng = np.random.default_rng(int(seed))
-    valid = valid_intervals(mask)
-    sequence = min(args.gru_sequence, max((hi - lo - 1 for lo, hi in valid), default=0))
-    if sequence < 2:
-        raise ValueError("No valid interval supports causal GRU training")
-    intervals = [(lo, hi) for lo, hi in valid if hi - lo > sequence]
-
-    class GRUForecast(nn.Module):
+    class EncoderDecoder(nn.Module):
         def __init__(self):
             super().__init__()
-            self.recurrent = nn.GRU(3, args.gru_hidden, batch_first=True)
-            self.head = nn.Linear(args.gru_hidden, 1)
+            self.encoder = nn.GRU(3, hidden, batch_first=True)
+            self.decoder = nn.Sequential(
+                nn.Linear(hidden + 3, hidden),
+                nn.Tanh(),
+                nn.Linear(hidden, hidden),
+                nn.Tanh(),
+                nn.Linear(hidden, 1),
+            )
 
-        def forward(self, features, state=None):
-            out, state = self.recurrent(features, state)
-            return self.head(out).squeeze(-1), state
+        def forward(self, prefix_features, future_features):
+            _, state = self.encoder(prefix_features)
+            context = state[-1].unsqueeze(1).expand(
+                -1, future_features.shape[1], -1)
+            return self.decoder(
+                torch.cat((context, future_features), dim=-1)).squeeze(-1)
 
-    model = GRUForecast()
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.gru_lr)
+    return EncoderDecoder()
+
+
+def gru_features(values, mean, std, indices, length):
+    """Encode observed residuals and absolute time without future leakage."""
+    residual = np.clip((values - mean[indices]) / std[indices], -8., 8.)
+    return np.stack((
+        residual,
+        np.broadcast_to(mean[indices], residual.shape),
+        np.broadcast_to(indices.astype(np.float32) / max(length - 1, 1),
+                        residual.shape),
+    ), axis=-1).astype(np.float32)
+
+
+def gru_future_features(mean, std, positions, batch, length):
+    """Only static development statistics and timestamps enter the decoder."""
+    return np.stack((
+        np.broadcast_to(positions.astype(np.float32) /
+                        max(length - 1, 1), (batch, len(positions))),
+        np.broadcast_to(mean[positions], (batch, len(positions))),
+        np.broadcast_to(std[positions], (batch, len(positions))),
+    ), axis=-1).astype(np.float32)
+
+
+def fit_gru_forecaster(training, mean, std, mask, cutoff, stop, args, seed):
+    """Fit a cutoff-specific direct forecaster using only development events.
+
+    Train on randomly selected future positions with the *whole* real prefix;
+    loss is physical waveform MSE (normalized by development variability).
+    """
+    import torch
+
+    torch.manual_seed(int(seed))
+    rng = np.random.default_rng(int(seed))
+    lo, _ = segment_for_cutoff_for_gru(mask, cutoff)
+    if cutoff <= lo or stop <= cutoff:
+        raise ValueError("GRU requires a nonempty prefix and forecast interval")
     length = len(mean)
-    normalized = np.clip((np.asarray(training, np.float32) -
-                          np.asarray(mean, np.float32)) /
-                         np.asarray(std, np.float32), -8., 8.)
+    model = make_gru_encoder_decoder(args.gru_hidden)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.gru_lr)
+    prefix_positions = np.arange(lo, cutoff, dtype=np.int64)
+    future_positions = np.arange(cutoff, stop, dtype=np.int64)
+    y = np.asarray(training, np.float32)
+    avg_variance = float(np.mean(std[future_positions] ** 2))
+    variance_scale = max(avg_variance, 1e-6)
     mean32 = np.asarray(mean, np.float32)
+    std32 = np.asarray(std, np.float32)
+
     for epoch in range(args.gru_epochs):
         model.train()
-        epoch_loss = 0.
+        total = 0.
         for _ in range(args.gru_steps_per_epoch):
-            batch_ids = rng.integers(0, len(training), size=args.gru_batch_size)
-            interval_ids = rng.integers(0, len(intervals), size=args.gru_batch_size)
-            starts = np.asarray([
-                rng.integers(intervals[j][0], intervals[j][1] - sequence)
-                for j in interval_ids], dtype=np.int64)
-            offsets = np.arange(sequence, dtype=np.int64)[None, :]
-            t = starts[:, None] + offsets
-            residual = normalized[batch_ids[:, None], t]
-            features = np.stack((
-                residual,
-                np.broadcast_to(mean32[t], residual.shape),
-                np.broadcast_to(t.astype(np.float32) / max(length - 1, 1),
-                                residual.shape),
-            ), axis=-1)
-            target = normalized[batch_ids[:, None], t + 1]
-            pred, _ = model(torch.from_numpy(features.copy()))
-            loss = torch.mean((pred - torch.from_numpy(target.copy())) ** 2)
+            ids = rng.integers(0, len(y), size=args.gru_batch_size)
+            positions = rng.choice(
+                future_positions,
+                size=min(args.gru_future_samples, len(future_positions)),
+                replace=False)
+            positions.sort()
+            prefix = gru_features(
+                y[ids[:, None], prefix_positions[None, :]],
+                mean32, std32, prefix_positions, length)
+            future = gru_future_features(
+                mean32, std32, positions, len(ids), length)
+            truth = torch.from_numpy(y[ids[:, None], positions[None, :]].copy())
+            prediction_z = model(torch.from_numpy(prefix),
+                                 torch.from_numpy(future))
+            mu = torch.from_numpy(mean32[positions].copy())
+            sigma = torch.from_numpy(std32[positions].copy())
+            predicted_x = mu[None, :] + sigma[None, :] * prediction_z
+            loss = ((predicted_x - truth) ** 2).mean() / variance_scale
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
             optimizer.step()
-            epoch_loss += float(loss.detach())
-        print(f"[GRU] epoch {epoch+1}/{args.gru_epochs} "
-              f"residual MSE={epoch_loss/args.gru_steps_per_epoch:.5f}",
+            total += float(loss.detach())
+        print(f"[GRU cutoff={cutoff}] epoch {epoch+1}/{args.gru_epochs} "
+              f"scaled future MSE={total / args.gru_steps_per_epoch:.5f}",
               flush=True)
     model.eval()
     return model
 
 
-def forecast_gru(evaluation, mean, std, mask, cutoff, end, model):
-    """Use the real contiguous prefix, then recursively forecast its suffix."""
+def forecast_gru(evaluation, mean, std, mask, cutoff, end, model,
+                 batch_size=32, future_batch=256):
+    """Direct, nonautoregressive suffix inference with frozen encoder state."""
     import torch
 
     lo, _ = segment_for_cutoff_for_gru(mask, cutoff)
     if end <= cutoff or cutoff <= lo:
         raise ValueError("GRU forecast requires a nonempty valid prefix")
     length = len(mean)
-    prefix_t = np.arange(lo, cutoff)
-    residual = np.clip((evaluation[:, lo:cutoff] - mean[lo:cutoff]) /
-                       std[lo:cutoff], -8., 8.).astype(np.float32)
-    feat = np.stack((
-        residual,
-        np.broadcast_to(mean[lo:cutoff].astype(np.float32),
-                        residual.shape),
-        np.broadcast_to((prefix_t / max(length - 1, 1)).astype(np.float32),
-                        residual.shape)
-    ), axis=-1)
+    mean32 = np.asarray(mean, np.float32)
+    std32 = np.asarray(std, np.float32)
+    prefix_positions = np.arange(lo, cutoff, dtype=np.int64)
+    output = np.empty((len(evaluation), end - cutoff), dtype=np.float64)
+    model.eval()
     with torch.no_grad():
-        prefix_prediction, hidden = model(torch.from_numpy(feat.copy()))
-        output = np.empty((len(evaluation), end - cutoff), dtype=np.float64)
-        for t in range(cutoff, end):
-            if t == cutoff:
-                residual_next = prefix_prediction[:, -1].numpy()
-            else:
-                prediction, hidden = model(previous, hidden)
-                residual_next = prediction[:, -1].numpy()
-            value = np.clip(mean[t] + std[t] * residual_next, 0., 1.)
-            output[:, t-cutoff] = value
-            normalized_next = np.clip((value - mean[t]) / std[t], -8., 8.)
-            next_feat = np.column_stack((
-                normalized_next,
-                np.full(len(evaluation), mean[t]),
-                np.full(len(evaluation), t / max(length - 1, 1)),
-            )).astype(np.float32)
-            previous = torch.from_numpy(next_feat[:, None, :])
+        for first in range(0, len(evaluation), batch_size):
+            batch = np.asarray(evaluation[first:first + batch_size],
+                               np.float32)
+            prefix = gru_features(
+                batch[:, prefix_positions], mean32, std32,
+                prefix_positions, length)
+            _, state = model.encoder(torch.from_numpy(prefix))
+            hidden = state[-1]
+            for t0 in range(cutoff, end, future_batch):
+                t1 = min(end, t0 + future_batch)
+                positions = np.arange(t0, t1, dtype=np.int64)
+                future = torch.from_numpy(gru_future_features(
+                    mean32, std32, positions, len(batch), length))
+                context = hidden.unsqueeze(1).expand(
+                    -1, len(positions), -1)
+                pred_z = model.decoder(torch.cat((context, future), dim=-1))
+                pred_z = pred_z.squeeze(-1).numpy()
+                output[first:first + len(batch), t0-cutoff:t1-cutoff] = (
+                    np.clip(mean32[positions][None, :] +
+                            std32[positions][None, :] * pred_z, 0., 1.))
     return output
 
 
@@ -436,12 +478,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     fitted = fit_ridge_orders(training, mean, std, intervals, args.ar_orders,
                               alpha=args.ridge_alpha, stride=args.train_stride,
                               batch_events=args.batch_events)
-    gru = (fit_gru_forecaster(training, mean, std, mask, args,
-                              args.seed + detector + (0 if board == "UC" else 100))
-           if args.with_gru else None)
-    if gru is not None:
-        import torch
-        torch.save(gru.state_dict(), out / "gru_forecaster.pt")
+    # A dedicated direct forecaster is fitted at each cutoff.
+    # No blind data are used for training or checkpoint selection.
+    gru_seed = args.seed + detector + (0 if board == "UC" else 100)
     scale = np.asarray(transform.maximum - transform.minimum).reshape(-1)
     mv_scale = float(scale[detector] if scale.size >= 2 else scale[0])
     rows = []
@@ -487,8 +526,36 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     examples.append((cutoff, stop, evaluation[0].copy(),
                                      full_prediction[0].copy(), baseline_full[0].copy(),
                                      int(eval_ids[0])))
-        if gru is not None:
-            gru_suffix = forecast_gru(evaluation, mean, std, mask, cutoff, stop, gru)
+        if args.with_gru:
+            import torch
+            checkpoint = out / f"gru_cutoff_{cutoff:05d}.pt"
+            config = {
+                "cutoff": cutoff, "stop": stop,
+                "hidden": args.gru_hidden, "epochs": args.gru_epochs,
+                "batch_size": args.gru_batch_size,
+                "steps_per_epoch": args.gru_steps_per_epoch,
+                "future_samples": args.gru_future_samples,
+                "lr": args.gru_lr, "seed": gru_seed,
+                "train_indices": train_ids.tolist(),
+            }
+            gru = None
+            if checkpoint.exists():
+                saved = torch.load(checkpoint, map_location="cpu",
+                                   weights_only=True)
+                if saved.get("config") == config:
+                    gru = make_gru_encoder_decoder(args.gru_hidden)
+                    gru.load_state_dict(saved["state_dict"])
+                    gru.eval()
+                    print(f"[{name}] GRU checkpoint reused: {checkpoint}",
+                          flush=True)
+            if gru is None:
+                gru = fit_gru_forecaster(
+                    training, mean, std, mask, cutoff, stop, args, gru_seed + cutoff)
+                torch.save({"config": config, "state_dict": gru.state_dict()},
+                           checkpoint)
+            gru_suffix = forecast_gru(
+                evaluation, mean, std, mask, cutoff, stop, gru,
+                batch_size=args.gru_batch_size)
             gru_full = baseline_full.copy()
             gru_full[:, :stop-cutoff] = gru_suffix
             gru_metric = metric_row(truth, gru_full[:, future_valid], mv_scale)
@@ -527,12 +594,14 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
-        "gru": ({"enabled": True, "hidden": args.gru_hidden,
-                 "epochs": args.gru_epochs, "sequence": args.gru_sequence,
+        "gru": ({"enabled": True, "architecture": "prefix_gru_direct_decoder",
+                 "per_cutoff": True, "hidden": args.gru_hidden,
+                 "epochs": args.gru_epochs,
                  "steps_per_epoch": args.gru_steps_per_epoch,
+                 "future_samples": args.gru_future_samples,
                  "batch_size": args.gru_batch_size, "learning_rate": args.gru_lr,
-                 "checkpoint": "gru_forecaster.pt"} if gru is not None
-                else {"enabled": False}),
+                 "checkpoint_template": "gru_cutoff_XXXXX.pt"}
+                if args.with_gru else {"enabled": False}),
         "models": {method: {str(p): {
             **{k:v for k,v in fitted[method][p].items() if k != "coefficients"},
             "coefficients": fitted[method][p]["coefficients"].tolist()
@@ -593,7 +662,8 @@ def parse_args(argv=None):
                         help="Train a causal GRU forecaster on development data")
     parser.add_argument("--gru-hidden", type=int, default=32)
     parser.add_argument("--gru-epochs", type=int, default=8)
-    parser.add_argument("--gru-sequence", type=int, default=64)
+    parser.add_argument("--gru-future-samples", type=int, default=128,
+                        help="Future positions sampled per training batch")
     parser.add_argument("--gru-steps-per-epoch", type=int, default=32)
     parser.add_argument("--gru-batch-size", type=int, default=32)
     parser.add_argument("--gru-lr", type=float, default=1e-3)
@@ -604,7 +674,7 @@ def parse_args(argv=None):
         parser.error("AR orders must be positive")
     if args.ridge_alpha < 0 or args.train_stride < 1 or args.batch_events < 1:
         parser.error("Ridge alpha >= 0, stride and batch size >= 1 required")
-    if (min(args.gru_hidden, args.gru_epochs, args.gru_sequence,
+    if (min(args.gru_hidden, args.gru_epochs, args.gru_future_samples,
             args.gru_steps_per_epoch, args.gru_batch_size) < 1 or args.gru_lr <= 0):
         parser.error("GRU hyperparameters must be positive")
     if args.n_cutoffs < 4:
