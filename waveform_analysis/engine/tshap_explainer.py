@@ -283,7 +283,7 @@ class _JointPPCAImputer:
             raise ValueError("Window must leave valid observed and missing samples")
         observed = np.tile(observed_time, 2)
         missing = np.tile(missing_time, 2)
-        key = (int(start), int(width), bool(keep_only), valid.tobytes())
+        key = ("mean", int(start), int(width), bool(keep_only), valid.tobytes())
         if key not in self._prepared:
             w_observed = self.model.W[observed]
             w_missing = self.model.W[missing]
@@ -346,7 +346,7 @@ class _JointPPCAImputer:
             raise ValueError("Window needs valid observed and missing samples")
         observed = np.tile(observed_time, 2)
         missing = np.tile(missing_time, 2)
-        key = (int(start), int(width), bool(keep_only), valid.tobytes())
+        key = ("samples", int(start), int(width), bool(keep_only), valid.tobytes())
         if key not in self._prepared:
             w_observed = self.model.W[observed]
             precision = (np.eye(self.model.components)
@@ -2171,13 +2171,11 @@ def explain_tshap(
                         "ps/sample (window two-player Shapley scores redistributed over samples)"
                     ),
                     "interpretation": (
-                        "Each window and its complement are two aggregated features shared across "
-                        "both detectors. The exact two-player Shapley formula uses four coalitions "
-                        "(empty, window only, complement only, full). The same joint PPCA distribution "
-                        "is conditioned on either observed region. Using conditional-mean waveforms "
-                        "inside a nonlinear model is not equivalent to integrating model predictions "
-                        "over the conditional distribution. Redistributing windows to samples is "
-                        "not exact sample-wise Shapley attribution."
+                        "Two-player Shapley window attribution using four coalitions. "
+                        "The empty coalition averages predictions over unconditional joint PPCA draws; "
+                        "keep-only and remove-window average predictions over conditional joint PPCA draws. "
+                        "The estimates carry finite-sample Monte Carlo uncertainty, and redistribution "
+                        "over waveform samples is not exact sample-wise Shapley attribution."
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
@@ -2625,7 +2623,7 @@ def explain_tshap_local(
                     },
                     "plots": plot_names,
                     "attribution_units": "ps/sample (joint pair-level window scores redistributed identically over both detector waveforms)",
-                    "importance_protocol": "paired two-player Shapley with joint PPCA conditional means, both coalitions evaluated",
+                    "importance_protocol": "paired two-player Shapley using Monte Carlo conditional PPCA model-prediction expectations",
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
