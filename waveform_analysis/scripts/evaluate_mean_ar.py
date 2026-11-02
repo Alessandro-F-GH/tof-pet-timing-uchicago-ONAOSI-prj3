@@ -549,7 +549,7 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         ax.plot(ns[cutoff:], prediction, color="#2B9C74",
                 label=f"Standardized AR (order {args.ar_orders[-1]})")
         if cutoff in gru_examples:
-            ax.plot(ns[cutoff:], gru_examples[cutoff][cutoff:],
+            ax.plot(ns[cutoff:], gru_examples[cutoff],
                     color="#8056B3", lw=1.2, label="GRU forecast")
         ax.axvline(ns[cutoff], color="gray", ls="--",
                    label=f"Cutoff {ns[cutoff]:.3f} ns")
