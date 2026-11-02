@@ -21,17 +21,27 @@ from waveform_analysis.engine.tshap_explainer import (
 
 
 class _MeanImputer:
-    def unconditional_mean(self):
-        return np.zeros((2, 32), dtype=np.float32)
+    def __init__(self, length=32):
+        self.length = length
+
+    def sample_unconditional(self, samples, rng):
+        return np.zeros((samples, 2, self.length), np.float32)
+
+    def sample_conditional(self, waveforms, start, width, *, keep_only,
+                           samples, rng, sample_mask=None):
+        data = np.asarray(waveforms, np.float32)
+        output = np.zeros((len(data), samples, 2, data.shape[-1]), np.float32)
+        if keep_only:
+            output[:, :, :, start:start+width] = data[:, None, :, start:start+width]
+        else:
+            output[:] = data[:, None]
+            output[:, :, :, start:start+width] = 0
+        return output
 
     def reconstruct(self, waveforms, start, width, *, keep_only, sample_mask=None):
-        result = np.zeros_like(waveforms)
-        if keep_only:
-            result[:, :, start:start+width] = waveforms[:, :, start:start+width]
-        else:
-            result[:] = waveforms
-            result[:, :, start:start+width] = 0
-        return result
+        return self.sample_conditional(waveforms, start, width, keep_only=keep_only,
+                                       samples=1, rng=np.random.default_rng(0))[:, 0]
+
 
 
 def test_two_player_shapley_formula_and_coalition_symmetry():
@@ -581,7 +591,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 19
+    assert summary["plot_version"] == 20
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
@@ -672,7 +682,7 @@ def test_tshap_recomputes_fitted_features_for_each_waveform():
 
 def test_paired_event_occlusion_is_independent_of_reference_argument():
     sample = np.ones((2, 16), dtype=np.float32)
-    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=_ZeroImputer())
+    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=_MeanImputer(length=16))
     predict = lambda values: np.asarray(values)[:, 0].sum(axis=1) + 2 * np.asarray(values)[:, 1].sum(axis=1)
     score_a = explainer._calculate_window_attrib_scores(
         predict, sample, sample[None], [(-1, 4, 4)]
@@ -696,6 +706,9 @@ def test_tshap_imputer_is_built_once_and_reused_per_window(tmp_path, monkeypatch
             "event_population_identity": "control-population",
         },
         energy_time_ps=np.arange(16, dtype=np.float64),
+        energy_transform=__import__("waveform_analysis.data.dataset", fromlist=["InputTransform"]).InputTransform(
+            np.zeros((1,2,1), np.float32), np.ones((1,2,1), np.float32)),
+        directory=tmp_path / "control",
     )
     config = {"mode": "energy_to_energy", "window_name": "wide"}
     cache = {}
@@ -710,13 +723,13 @@ def test_tshap_imputer_is_built_once_and_reused_per_window(tmp_path, monkeypatch
             "cache_hit": False,
             "n_training_events": 100,
             "n_tuning_events": 20,
-            "explained_variance_ratio_by_detector": [0.8, 0.9],
+            "explained_variance_ratio_joint": 0.9,
         }
         (tmp_path / "imputer.npz").write_bytes(b"artifact")
         built.append((args, kwargs))
         return fitted, metadata
 
-    monkeypatch.setattr(tshap_explainer, "_cached_hermite_ppca_imputer", build)
+    monkeypatch.setattr(tshap_explainer, "_cached_joint_ppca_imputer", build)
     monkeypatch.setattr(
         tshap_explainer, "_publish_window_imputer",
         lambda destination, metadata, identity: published.append(destination),
@@ -743,27 +756,38 @@ def test_tshap_imputer_is_built_once_and_reused_per_window(tmp_path, monkeypatch
     assert first[0] is second[0]
     assert first[1] is second[1]
 
-def test_hermite_ppca_fit_uses_disjoint_fit_and_tuning_events(tmp_path):
-    from types import SimpleNamespace
-    from waveform_analysis.engine.tshap_explainer import _fit_hermite_ppca_imputer
-    rng = np.random.default_rng(91)
-    waves = rng.normal(0.5, 0.1, size=(80, 2, 40)).astype(np.float32)
-    control = SimpleNamespace(
-        n_events=len(waves), event_index=np.arange(1000, 1000 + len(waves), dtype=np.int64),
-        energy_windows=waves, energy_time_ps=np.arange(40, dtype=np.float64),
-        directory=tmp_path / "control",
-    )
-    imputer, metadata = _fit_hermite_ppca_imputer(
-        control, "energy_to_energy", components=3, fit_events=30, tuning_events=10,
-        slope_points=3, batch_size=8, seed=42,
-    )
-    assert set(metadata["training_indices"]).isdisjoint(metadata["tuning_indices"])
-    assert metadata["training_and_tuning_are_disjoint"]
-    assert imputer is not None
+def test_conditional_joint_ppca_draws_preserve_observed_samples():
+    from waveform_analysis.engine.tshap_explainer import _JointPPCAImputer
+    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
+    from waveform_analysis.data.dataset import InputTransform
+    rng = np.random.default_rng(15)
+    data = rng.uniform(.2, .8, (80, 2, 12)).astype(np.float32)
+    model = ProbabilisticPCA(3).fit(data.reshape(len(data), -1))
+    transform = InputTransform(np.zeros((1,2,1), np.float32),
+                               np.ones((1,2,1), np.float32))
+    imputer = _JointPPCAImputer(model, transform)
+    for keep_only in (True, False):
+        first = imputer.sample_conditional(
+            data[:2], 3, 4, keep_only=keep_only, samples=128,
+            rng=np.random.default_rng(123))
+        second = imputer.sample_conditional(
+            data[:2], 3, 4, keep_only=keep_only, samples=128,
+            rng=np.random.default_rng(123))
+        np.testing.assert_array_equal(first, second)
+        observed = np.zeros(12, dtype=bool)
+        observed[3:7] = True
+        if not keep_only:
+            observed = ~observed
+        np.testing.assert_array_equal(
+            first[:, :, :, observed],
+            np.broadcast_to(data[:2, None, :, observed],
+                            first[:, :, :, observed].shape))
+        assert np.any(np.std(first, axis=1) > 1e-6)
+
 
 
 def test_reference_tshap_constant_prediction_is_zero():
-    explainer = _new_explainer(6, 3, True, 4, imputer=_ZeroImputer())
+    explainer = _new_explainer(6, 3, True, 4, imputer=_MeanImputer(length=24))
     waveforms = np.ones((1, 2, 24), dtype=np.float32)
     baselines = np.zeros((2, 2, 24), dtype=np.float32)
     maps = explainer.explain(
