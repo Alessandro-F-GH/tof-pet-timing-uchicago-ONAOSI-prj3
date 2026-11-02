@@ -1,52 +1,55 @@
+"""Synthetic consistency checks for the joint-PPCA imputation benchmark."""
 import numpy as np
 
+from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
 from waveform_analysis.scripts.evaluate_imputation_benchmark import (
-    format_rmse_label,
-    physical_unit_scale,
+    conditional_mean, bootstrap_rmse, METHODS,
 )
 
 
-def test_benchmark_physical_unit_scale_covers_millivolts_to_picovolts():
-    assert physical_unit_scale([2.0, 1.0]) == (1.0, "mV")
-    assert physical_unit_scale([2e-2, 1e-3]) == (1e3, "µV")
-    assert physical_unit_scale([2e-6, 1e-6]) == (1e6, "nV")
-    assert physical_unit_scale([2e-9, 1e-9]) == (1e9, "pV")
+def test_benchmark_methods_no_knn_hermite_or_blend():
+    assert METHODS == ("ppca_joint", "median", "original_tshap")
 
 
-def test_benchmark_physical_unit_scale_ignores_nonfinite_and_nonpositive():
-    assert physical_unit_scale([np.nan, np.inf, 0.0, -1.0, 2e-6]) == (1e6, "nV")
+def test_joint_ppca_conditions_on_both_detectors_and_both_mask_types():
+    rng = np.random.default_rng(13)
+    n_events, length = 120, 16
+    z = rng.normal(size=(n_events, 1))
+    # Detectors are strongly correlated through their common latent pulse.
+    a = z * np.linspace(1.0, 2.0, length) + rng.normal(0, .04, (n_events, length))
+    b = z * np.linspace(1.8, .6, length) + rng.normal(0, .04, (n_events, length))
+    waves = np.concatenate((a, b), axis=1)
+    model = ProbabilisticPCA(2).fit(waves[:100])
+    test = waves[100:]
+    for keep_only in (False, True):
+        segment = np.zeros(length, bool)
+        segment[4:9] = True
+        observed = np.tile(segment if keep_only else ~segment, 2)
+        missing = ~observed
+        prediction = conditional_mean(model, test, observed, missing)
+        assert prediction.shape == (len(test), int(np.sum(missing)))
+        assert np.isfinite(prediction).all()
+        # The joint conditional estimator should beat an unconditional median.
+        baseline = np.median(waves[:100], axis=0)[missing]
+        assert np.mean((prediction - test[:, missing]) ** 2) < np.mean(
+            (baseline - test[:, missing]) ** 2
+        )
 
 
-def test_benchmark_rmse_labels_use_adaptive_units():
-    assert format_rmse_label(2.0) == "2 mV"
-    assert format_rmse_label(2e-3) == "2 µV"
-    assert format_rmse_label(2e-6) == "2 nV"
-    assert format_rmse_label(2e-9) == "2 pV"
+def test_joint_ppca_uses_cross_detector_information():
+    rng = np.random.default_rng(21)
+    latent = rng.normal(size=160)
+    one = latent[:, None] * np.ones((160, 8)) + rng.normal(0, .02, (160, 8))
+    two = 2 * latent[:, None] * np.ones((160, 8)) + rng.normal(0, .02, (160, 8))
+    waves = np.concatenate([one, two], axis=1)
+    model = ProbabilisticPCA(1).fit(waves[:130])
+    observed = np.zeros(16, bool)
+    observed[:8] = True
+    missing = ~observed
+    prediction = conditional_mean(model, waves[130:], observed, missing)
+    assert np.mean((prediction - waves[130:, missing]) ** 2) < 0.1
 
 
-def test_keep_only_benchmark_knn_single_neighbor_and_ppca():
-    from types import SimpleNamespace
-    from waveform_analysis.scripts.evaluate_imputation_benchmark import (
-        keep_only_benchmark,
-    )
-    rng = np.random.default_rng(7)
-    waves = rng.normal(size=(42, 2, 30)).astype(np.float64)
-    mask = np.ones(30, dtype=bool)
-    mask[20:24] = False
-    args = SimpleNamespace(components=2, batch_size=4, seed=8, bootstrap=20, knn_k=[1,3])
-    rows, overall, config = keep_only_benchmark(
-        "UC", "energy", args, waves, np.arange(30) * 25., mask,
-        np.arange(30), np.arange(30, 34), np.arange(34, 42),
-        [5, 10], 4, 25., "synthetic", {},
-    )
-    assert config["occlusion_mode"] == "keep_only"
-    assert config["knn_k"] == [1, 3]
-    assert len(rows) == 2 * 2 * 4  # positions, detectors, methods
-    assert {r["method"] for r in overall} == {"median", "ppca", "knn_k1", "knn_k3"}
-    assert all(np.isfinite(r["rmse"]) for r in overall)
-    assert all(r["missing_valid_samples"] == 22 for r in rows)
-
-
-def test_benchmark_knn_method_in_remove_window_set():
-    from waveform_analysis.scripts.evaluate_imputation_benchmark import METHODS
-    assert "knn" in METHODS
+def test_bootstrap_rmse_finite_interval():
+    low, high = bootstrap_rmse(np.arange(1, 11, dtype=float), 5, 42, 40)
+    assert 0 < low <= high < 2
