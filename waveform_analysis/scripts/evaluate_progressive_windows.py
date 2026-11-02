@@ -296,8 +296,8 @@ def main():
     parser.add_argument("--max-development", type=int, default=3000)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Seed for control/development subsampling and CV")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Override the existing batch seed (default: saved run seed)")
     args = parser.parse_args()
     if args.step_ns <= 0 or args.end_ns <= args.start_ns or args.kernels < 84:
         parser.error("Invalid time range or kernels (<84)")
@@ -311,6 +311,7 @@ def main():
         return_transform=True, include_control=True, include_sample_mask=True,
         include_target=True)
     run_config = resolve_run_config(run)
+    args.seed = int(run_config["seed"] if args.seed is None else args.seed)
     cv_settings = run_config["cross_validation"]
     pruning = cv_settings["pruning"]
     criterion = cv_settings["metric"]
@@ -358,8 +359,10 @@ def main():
     for block_id, (begin, end, indices) in enumerate(blocks):
         name = f"features_{sig}_block_{block_id:03d}.npy"
         path = output/name
-        if path.is_file():
+        meta_path = output / name.replace(".npy", ".json")
+        if path.is_file() and meta_path.is_file():
             z = np.load(path, mmap_mode="r")
+            counts = json.loads(meta_path.read_text(encoding="utf-8"))["counts"]
             if z.ndim != 2 or z.shape[0] != len(y) or not np.all(np.isfinite(z)):
                 raise ValueError(f"Invalid cached transform: {path}")
             print(f"[{block_id+1}/{len(blocks)}] reused {begin:g}..{end:g} ns", flush=True)
@@ -367,13 +370,14 @@ def main():
             print(f"[{block_id+1}/{len(blocks)}] transforms {begin:g}..{end:g} ns", flush=True)
             z, counts = block_features(controls, dev, indices, args, args.seed+block_id*3)
             np.save(path, z)
+            atomic_json(meta_path, {"counts": counts, "features": int(z.shape[1])})
             print(f"  saved {name}: {counts}", flush=True)
         feature_parts.append(np.asarray(z, np.float32))
         # Direct combination follows the original transform family's ordering.
         if args.family == "both":
-            mr_count = int(z.shape[1]) - 3 * args.shapelets
-            if mr_count < 1:
-                raise ValueError("RDST feature count exceeds cached block dimensions")
+            mr_count = int(counts["multirocket"])
+            if mr_count < 1 or mr_count + int(counts["rdst"]) != z.shape[1]:
+                raise ValueError("Invalid cached feature-family boundaries")
             rdst_ranges.append((total_features + mr_count,
                                 total_features + z.shape[1]))
         total_features += int(z.shape[1])
