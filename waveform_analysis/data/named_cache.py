@@ -164,7 +164,7 @@ def resolve_alias(path) -> Path:
         return path.resolve()
     pointer = path / ".cache_link.json"
     if pointer.is_file():
-        data = json.loads(pointer.read_text(encoding="utf-8"))
+        data = json.loads(pointer.read_text(encoding="utf-8").removesuffix("\\n"))
         target = Path(data["target"])
         if not target.is_absolute():
             target = path.parent / target
@@ -194,7 +194,7 @@ def publish_alias(alias, target, *, replace: bool = False) -> Path:
         except (OSError, NotImplementedError):
             temporary.mkdir(parents=True, exist_ok=True)
             (temporary / ".cache_link.json").write_text(
-                json.dumps({"target": relative}, indent=2) + "\\n", encoding="utf-8"
+                json.dumps({"target": relative}, indent=2) + "\n", encoding="utf-8"
             )
         os.replace(temporary, alias)
     except FileExistsError:
