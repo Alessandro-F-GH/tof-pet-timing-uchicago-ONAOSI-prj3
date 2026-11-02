@@ -464,19 +464,25 @@ def plot_summary(rows, out, title):
     fig, ax = plt.subplots(figsize=(9, 5))
     colors = {"mean": "#333333", "mean_ar": "#1879B3",
               "standardized_ar": "#35956C", "gru": "#8056B3", "knn": "#B35A7D"}
-    order = max(r["order"] for r in rows)
+    ar_order = max(r["order"] for r in rows
+                   if r["method"] in ("mean_ar", "standardized_ar"))
+    knn_orders = [r["order"] for r in rows if r["method"] == "knn"]
+    knn_order = max(knn_orders) if knn_orders else None
     for method in METHODS:
-        series = sorted((r for r in rows if r["method"] == method and
-                         (r["order"] == order or method in ("mean", "gru") or
-                          (method == "knn" and r["order"] == max(
-                              x["order"] for x in rows if x["method"] == "knn"))))),
-                        key=lambda r: r["cutoff_sample"])
+        target_order = knn_order if method == "knn" else ar_order
+        series = sorted(
+            (r for r in rows if r["method"] == method and
+             (method in ("mean", "gru") or r["order"] == target_order)),
+            key=lambda r: r["cutoff_sample"])
+        if not series:
+            continue
+        label = f"kNN (k={knn_order})" if method == "knn" else method
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
-                marker="o", color=colors[method], label=method)
+                marker="o", color=colors[method], label=label)
     ax.set(xlabel="Cutoff position (ns)", ylabel="Suffix RMSE (mV)", title=title)
     ax.grid(alpha=.3)
-    ax.legend(title=f"AR order {order}")
+    ax.legend(title=f"AR order {ar_order}")
     fig.tight_layout()
     fig.savefig(out / "rmse_vs_cutoff.png", dpi=160)
     plt.close(fig)
