@@ -63,3 +63,22 @@ def test_pruning_rules_are_batch_engine_not_separate_implementation():
     assert "evaluate_candidate(" in source
     assert "best_complete_candidate(" in source
     assert callable(evaluate_candidate)
+
+
+def test_effective_alphas_scale_separately_by_feature_count():
+    from waveform_analysis.scripts.evaluate_progressive_windows import effective_alphas
+    x = np.zeros((3, 18), np.float32)
+    parameters = {"multirocket_alpha": 1000., "rdst_alpha": 100.}
+    ref = {"multirocket": 120, "rdst": 60}
+    # 12 MR columns and 6 RDST columns.
+    actual = effective_alphas(x, [(12, 18)], "both", parameters, ref)
+    assert actual == {"multirocket_alpha": 100., "rdst_alpha": 10.}
+    x2 = np.zeros((3, 36), np.float32)
+    actual2 = effective_alphas(x2, [(12,18), (30,36)], "both", parameters, ref)
+    assert actual2 == {"multirocket_alpha": 200., "rdst_alpha": 20.}
+
+
+def test_original_reference_feature_counts_from_model_spaces():
+    from waveform_analysis.scripts.evaluate_progressive_windows import original_feature_counts
+    result = original_feature_counts("both")
+    assert result == {"multirocket": 50000, "rdst": 3072}
