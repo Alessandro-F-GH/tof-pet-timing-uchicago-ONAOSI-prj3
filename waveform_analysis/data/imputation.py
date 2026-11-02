@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 
 from waveform_analysis.data.results import (
-    discover_runs,
     resolve_run_config,
     read_run_manifest,
 )
@@ -33,17 +32,24 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
     provided; stored run paths are otherwise used as a fallback.
     """
     matches = []
-    for run in discover_runs(results):
-        directory = Path(run["directory"])
+    # Scan run configs directly: discover_runs() opens every manifest and fails
+    # when a separate model's result directory is only partially populated.
+    # Missing manifests must not block this waveform-only experiment.
+    for config_path in sorted(Path(results).expanduser().rglob("metadata/config.json")):
+        directory = config_path.parent.parent
+        if not (directory / "metadata" / "manifest.json").is_file():
+            continue
         cfg = resolve_run_config(directory)
         if (
             "wide" in str(cfg.get("window_name", "")).lower()
             and cfg.get("mode") == f"{channel}_to_{channel}"
         ):
-            matches.append((directory, cfg))
+            manifest = read_run_manifest(directory)
+            if manifest.get("status") == "complete":
+                matches.append((directory, cfg, manifest))
     if not matches:
         raise ValueError(f"No wide {channel} runs found under {results}")
-    directory, cfg = matches[0]
+    directory, cfg, manifest = matches[0]
     cfg = dict(cfg)
     cfg["preprocessing"] = dict(cfg["preprocessing"])
     prep = cfg["preprocessing"]
@@ -57,7 +63,6 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
             "This result has no stored artifact_root; supply --cache-root "
             "pointing to the prepared waveform cache"
         )
-    manifest = read_run_manifest(directory)
     # Keep cache_root in the public signature for older callers, but canonical
     # prepared datasets are resolved through immutable manifest references.
     lookup = PreparedCacheLookup()
