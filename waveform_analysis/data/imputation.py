@@ -29,8 +29,8 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
     diagnostics can be expressed in the original configured signal units.
     ``include_sample_mask`` additionally returns the retained-sample mask from
     preprocessing (all samples are valid for energy-channel inputs).
-    ``cache_root`` is retained for caller compatibility; canonical prepared
-    datasets are resolved from artifact references stored in the run manifest.
+    ``cache_root`` explicitly selects the portable named prepared cache when
+    provided; stored run paths are otherwise used as a fallback.
     """
     matches = []
     for run in discover_runs(results):
@@ -44,6 +44,19 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
     if not matches:
         raise ValueError(f"No wide {channel} runs found under {results}")
     directory, cfg = matches[0]
+    cfg = dict(cfg)
+    cfg["preprocessing"] = dict(cfg["preprocessing"])
+    prep = cfg["preprocessing"]
+    if cache_root is not None:
+        root = Path(cache_root).expanduser().resolve()
+        prep["named_cache_root"] = str(root)
+        prep["cache_dir"] = str(root / "preprocessing")
+        prep["artifact_root"] = str(root / "artifact_store")
+    elif "artifact_root" not in prep:
+        raise ValueError(
+            "This result has no stored artifact_root; supply --cache-root "
+            "pointing to the prepared waveform cache"
+        )
     manifest = read_run_manifest(directory)
     # Keep cache_root in the public signature for older callers, but canonical
     # prepared datasets are resolved through immutable manifest references.
