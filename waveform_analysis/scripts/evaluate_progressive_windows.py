@@ -101,18 +101,74 @@ def alpha_grid(family):
     return candidate_manifest(candidates)
 
 
-def regularized_feature_matrix(features, rdst_ranges, family, parameters):
-    """Identical two-alpha scaling to kernel.multirocket_rdst_common.fit.
+def original_feature_counts(family):
+    """Reference feature counts implied by the saved batch model-space settings.
 
-    min ||y - X_m b_m - X_r b_r||²
-        + alpha_m ||b_m||² + alpha_r ||b_r||².
-    Scaling X_r by sqrt(alpha_m/alpha_r), then Ridge(alpha_m), is
-    algebraically equivalent. Never mutate cached features.
+    These are per-family counts, NOT the sum across time blocks. The benchmark
+    MultiRocket transform outputs raw + first-difference pooling features.
+    RDST outputs three values per fitted shapelet.
     """
+    name = {"both": "direct_multirocket_rdst",
+            "multirocket": "direct_multirocket",
+            "rdst": "direct_rdst"}[family]
+    path = (Path(__file__).resolve().parents[1] / "config" /
+            "model_spaces" / (name + ".json"))
+    params = json.loads(path.read_text(encoding="utf-8"))["parameters"]
+    reference = {}
+    if family in ("both", "multirocket"):
+        reference["multirocket"] = (
+            2 * int(params["n_kernels"]["value"]) *
+            int(params["n_features_per_kernel"]["value"])
+        )
+    if family in ("both", "rdst"):
+        reference["rdst"] = 3 * int(params["max_shapelets"]["value"])
+    return reference
+
+
+def effective_alphas(features, rdst_ranges, family, parameters,
+                     reference_counts=None):
+    """Scale each family alpha by its CURRENT / ORIGINAL feature count.
+
+    This is an explicit exploratory heuristic, not an analytical invariance
+    of Ridge regression. Current counts come from actual cached block arrays.
+    """
+    n_rdst = sum(int(stop - start) for start, stop in rdst_ranges)
+    n_multirocket = int(features.shape[1] - n_rdst)
+    actual = {"multirocket": n_multirocket, "rdst": n_rdst}
+    if family == "rdst":
+        actual["rdst"] = int(features.shape[1])
+        actual["multirocket"] = 0
+    reference_counts = actual if reference_counts is None else reference_counts
+    if family == "both":
+        names = (("multirocket", "multirocket_alpha"),
+                 ("rdst", "rdst_alpha"))
+    else:
+        names = ((family, "ridge_alpha"),)
+    scaled = {}
+    for group, parameter in names:
+        base = float(parameters[parameter])
+        count = int(actual[group])
+        ref = int(reference_counts[group])
+        if not np.isfinite(base) or base <= 0 or count < 1 or ref < 1:
+            raise ValueError(f"Invalid feature-normalized alpha for {group}")
+        scaled[parameter] = base * (count / ref)
+    return scaled
+
+
+def regularized_feature_matrix(features, rdst_ranges, family, parameters,
+                               reference_counts=None):
+    """Two-alpha Ridge scaling matching multirocket_rdst_common.fit.
+
+    For each family: alpha_eff = alpha_grid * n_current / n_original.
+    Effective penalties use ACTUAL cumulative feature counts, including
+    variable RDST shapelet counts; original counts come from batch config.
+    """
+    penalties = effective_alphas(
+        features, rdst_ranges, family, parameters, reference_counts)
     if family != "both":
-        return features, float(parameters["ridge_alpha"])
-    mr_alpha = float(parameters["multirocket_alpha"])
-    rdst_alpha = float(parameters["rdst_alpha"])
+        return features, penalties["ridge_alpha"]
+    mr_alpha = penalties["multirocket_alpha"]
+    rdst_alpha = penalties["rdst_alpha"]
     ratio = np.sqrt(mr_alpha / rdst_alpha)
     if not np.isfinite(ratio) or ratio <= 0:
         raise ValueError("Invalid family penalty ratio")
@@ -123,7 +179,7 @@ def regularized_feature_matrix(features, rdst_ranges, family, parameters):
 
 
 def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
-                    pruning, criterion, fit_cfg, seed):
+                    pruning, criterion, fit_cfg, seed, reference_counts):
     """Run the SAME grid-CV/pruning implementation used by batch studies.
 
     The only scores produced here are development CV fold scores. There is
@@ -151,7 +207,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
             rows_by_candidate.get(incumbent_id) if incumbent_id is not None else None
         )
         x, alpha = regularized_feature_matrix(
-            features, rdst_ranges, family, parameters
+            features, rdst_ranges, family, parameters, reference_counts
         )
         def evaluate_fold(parameters, fold):
             tr = np.asarray(fold.train, np.int64)
@@ -209,7 +265,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
         identifier = pick["candidate_id"]
         params = candidates[identifier]
         x, alpha = regularized_feature_matrix(
-            features, rdst_ranges, family, params
+            features, rdst_ranges, family, params, reference_counts
         )
         def evaluate_fold(parameters, fold):
             tr = np.asarray(fold.train, np.int64)
@@ -340,6 +396,7 @@ def main():
         batch_seed=args.seed,
         n_folds=fold_count, shuffle=bool(cv_settings["shuffle"]))
     candidates = alpha_grid(args.family)
+    reference_counts = original_feature_counts(args.family)
 
     settings = {k: v for k, v in vars(args).items()
                 if k not in ("output", "results", "cache_root")}
@@ -351,7 +408,9 @@ def main():
     sig = fingerprint(settings)
     atomic_json(output/"settings.json", {
         "fingerprint": sig, "settings": settings, "blind_accessed": False,
-        "cross_validation": cv_settings, "ridge_candidates": candidates})
+        "cross_validation": cv_settings, "ridge_candidates": candidates,
+        "alpha_scaling": "alpha_grid * cumulative_family_features / benchmark_family_features",
+        "reference_feature_counts": reference_counts})
     feature_parts = []
     rdst_ranges = []
     total_features = 0
@@ -384,19 +443,26 @@ def main():
         prefix = np.concatenate(feature_parts, axis=1)
         winner, candidate_results, fold_results = evaluate_prefix(
             prefix, rdst_ranges, y, split, args.family, candidates,
-            pruning, criterion, fit_cfg, args.seed)
+            pruning, criterion, fit_cfg, args.seed, reference_counts)
         for row in candidate_results:
+            effective = effective_alphas(prefix, rdst_ranges, args.family,
+                                         row["parameters"], reference_counts)
             candidates_out.append(dict(
                 cutoff_ns=end, n_blocks=block_id+1, features=total_features,
                 candidate_id=row["candidate_id"],
                 multirocket_alpha=row["parameters"].get("multirocket_alpha", ""),
                 rdst_alpha=row["parameters"].get("rdst_alpha", ""),
                 ridge_alpha=row["parameters"].get("ridge_alpha", ""),
+                effective_multirocket_alpha=effective.get("multirocket_alpha", ""),
+                effective_rdst_alpha=effective.get("rdst_alpha", ""),
+                effective_ridge_alpha=effective.get("ridge_alpha", ""),
                 completed_folds=row["completed_folds"], total_folds=row["total_folds"],
                 pruned=row["pruned"], pruning_reason=row["pruning_reason"],
                 ctr_mean_ps=row["ctr_mean_ps"], rmse_mean_ps=row["rmse_mean_ps"]))
         for row in fold_results:
             folds_out.append(dict(cutoff_ns=end, n_blocks=block_id+1, **row))
+        effective_winner = effective_alphas(prefix, rdst_ranges, args.family,
+                                            winner["parameters"], reference_counts)
         result = dict(
             cutoff_ns=end, n_blocks=block_id+1, features=total_features,
             n_development=len(y), selection_metric=criterion,
@@ -404,6 +470,9 @@ def main():
             multirocket_alpha=winner["parameters"].get("multirocket_alpha", ""),
             rdst_alpha=winner["parameters"].get("rdst_alpha", ""),
             ridge_alpha=winner["parameters"].get("ridge_alpha", ""),
+            effective_multirocket_alpha=effective_winner.get("multirocket_alpha", ""),
+            effective_rdst_alpha=effective_winner.get("rdst_alpha", ""),
+            effective_ridge_alpha=effective_winner.get("ridge_alpha", ""),
             ctr_mean_ps=winner["ctr_mean_ps"], ctr_std_ps=winner["ctr_std_ps"],
             rmse_mean_ps=winner["rmse_mean_ps"], rmse_std_ps=winner["rmse_std_ps"])
         summary.append(result)
@@ -411,7 +480,8 @@ def main():
         csv_output(output/"cv_candidates.csv", candidates_out)
         csv_output(output/"cv_folds.csv", folds_out)
         print(f"  cutoff {end:g} ns | features={total_features} | "
-              f"best alpha={winner['parameters']} | "
+              f"best alpha_grid={winner['parameters']} | "
+              f"alpha_effective={effective_winner} | "
               f"CV CTR={result['ctr_mean_ps']:.2f} ps | "
               f"CV RMSE={result['rmse_mean_ps']:.2f} ps", flush=True)
     plot_summary(summary, output, args.channel.upper())
