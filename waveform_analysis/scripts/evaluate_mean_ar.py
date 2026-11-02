@@ -278,10 +278,11 @@ def fit_gru_forecaster(training, mean, std, mask, args, seed):
 
     torch.manual_seed(int(seed))
     rng = np.random.default_rng(int(seed))
-    intervals = [(lo, hi) for lo, hi in valid_intervals(mask)
-                 if hi - lo >= args.gru_sequence + 1]
-    if not intervals:
-        raise ValueError("No valid interval supports the selected GRU sequence length")
+    valid = valid_intervals(mask)
+    sequence = min(args.gru_sequence, max((hi - lo - 1 for lo, hi in valid), default=0))
+    if sequence < 2:
+        raise ValueError("No valid interval supports causal GRU training")
+    intervals = [(lo, hi) for lo, hi in valid if hi - lo > sequence]
 
     class GRUForecast(nn.Module):
         def __init__(self):
@@ -307,9 +308,9 @@ def fit_gru_forecaster(training, mean, std, mask, args, seed):
             batch_ids = rng.integers(0, len(training), size=args.gru_batch_size)
             interval_ids = rng.integers(0, len(intervals), size=args.gru_batch_size)
             starts = np.asarray([
-                rng.integers(intervals[j][0], intervals[j][1] - args.gru_sequence)
+                rng.integers(intervals[j][0], intervals[j][1] - sequence)
                 for j in interval_ids], dtype=np.int64)
-            offsets = np.arange(args.gru_sequence, dtype=np.int64)[None, :]
+            offsets = np.arange(sequence, dtype=np.int64)[None, :]
             t = starts[:, None] + offsets
             residual = normalized[batch_ids[:, None], t]
             features = np.stack((
@@ -405,7 +406,7 @@ def plot_summary(rows, out, title):
     order = max(r["order"] for r in rows)
     for method in METHODS:
         series = sorted((r for r in rows if r["method"] == method and
-                         (r["order"] == order or method == "mean")),
+                         (r["order"] == order or method in ("mean", "gru"))),
                         key=lambda r: r["cutoff_sample"])
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
