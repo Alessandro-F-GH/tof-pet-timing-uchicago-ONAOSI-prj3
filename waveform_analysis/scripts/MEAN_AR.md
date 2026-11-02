@@ -53,6 +53,32 @@ on the exact same blind events and valid-suffix positions. `--with-knn`
 works independently of `--with-gru`. k-NN estimates are deterministic,
 and the comparison plot shows the largest requested `k`.
 
+Optional **weighted prefix k-NN**, optimizing both `k` and decay `tau`
+independently at every cutoff using development leave-one-out validation:
+
+```bash
+python -m waveform_analysis.scripts.evaluate_mean_ar \
+  --uc-cache-root "$HOME/UC_cache" \
+  --fbk-cache-root "$HOME/FBK_cache" \
+  --output-root "$HOME/mean_ar_weighted_knn_results" \
+  --ar-orders 8 16 32 64 128 \
+  --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \
+  --with-weighted-knn --knn-k 1 3 5 10 20 50 100 \
+  --knn-tau-ns 0.25 0.5 1 2 5
+```
+
+Weighted squared prefix distance is `sum(exp(-age_ns/tau) * difference**2)`,
+normalized by the sum of weights. The candidate `tau=inf` (uniform weights)
+is **always included**, representing ordinary k-NN. A joint development-only
+leave-one-out search minimizes future reconstruction MSE with the same
+post-mask mean fallback as all other methods. Blind scoring compares
+selected weighted k-NN against separately optimized ordinary k-NN on the
+same events. Selected `k`, `tau`, and candidate development scores
+appear in `model.json`; weighted k-NN has its own row in `metrics.csv`
+and appears in cutoff and waveform plots.
+No weights are learned from blind suffixes. `--with-weighted-knn` enables
+ordinary k-NN automatically.
+
 Optional **boundary-corrected k-NN**:
 
 ```bash
