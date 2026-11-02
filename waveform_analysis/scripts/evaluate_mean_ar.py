@@ -580,7 +580,7 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
-        "gru": ({"enabled": True, "architecture": "prefix_gru_direct_decoder",
+        "gru": ({"enabled": True, "architecture": "gru_direct_voltage_full_suffix_v2",
                  "per_cutoff": True, "hidden": args.gru_hidden,
                  "epochs": args.gru_epochs,
                  "steps_per_epoch": args.gru_steps_per_epoch,
@@ -657,7 +657,8 @@ def parse_args(argv=None):
         parser.error("AR orders must be positive")
     if args.ridge_alpha < 0 or args.train_stride < 1 or args.batch_events < 1:
         parser.error("Ridge alpha >= 0, stride and batch size >= 1 required")
-    if (min(args.gru_hidden, args.gru_epochs,             args.gru_steps_per_epoch, args.gru_batch_size) < 1 or args.gru_lr <= 0):
+    if (min(args.gru_hidden, args.gru_epochs,
+            args.gru_steps_per_epoch, args.gru_batch_size) < 1 or args.gru_lr <= 0):
         parser.error("GRU hyperparameters must be positive")
     if args.n_cutoffs < 4:
         parser.error("At least 4 cutoffs required")
