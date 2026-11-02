@@ -221,108 +221,45 @@ def test_cpa_multi_board_rejects_missing_cache_and_preserves_single_board(tmp_pa
     assert _cpa_jobs(args) == [(results / "UC", None, "UC", tmp_path)]
 
 
-def test_cpa_energy_kernel_defaults_only():
+def test_cpa_kernel_defaults_only_combined():
     from waveform_analysis.engine.cpa_explainer import DEFAULT_MODELS
-    assert "direct_multirocket" in DEFAULT_MODELS["energy"]
-    assert "direct_rdst" in DEFAULT_MODELS["energy"]
-    assert "direct_multirocket_rdst" in DEFAULT_MODELS["energy"]
-    assert "direct_rdst" not in DEFAULT_MODELS["timing"]
+    for family in ("energy", "timing"):
+        assert "direct_multirocket_rdst" in DEFAULT_MODELS[family]
+        assert "direct_multirocket" not in DEFAULT_MODELS[family]
+        assert "direct_rdst" not in DEFAULT_MODELS[family]
 
 
-def test_cpa_shared_feature_blocks_and_incompatible_fallback(monkeypatch):
-    from types import SimpleNamespace as Obj
-    from waveform_analysis.engine.cpa_feature_sharing import (
-        compatible_component, predict_shared_energy_group,
+def test_weighted_knn_cpa_uses_only_observed_prefix():
+    from waveform_analysis.engine.cpa_explainer import (
+        select_weighted_knn_imputers, reconstruct_pair,
     )
-
-    class FakeTransformer:
-        def __init__(self, n):
-            self.n = n
-            self.parameter = (np.array([1., 2.]),)
-            self.parameter1 = (np.array([3., 4.]),)
-        def get_params(self, deep=False):
-            return {"n_kernels": self.n, "random_state": 42}
-    class Scaler:
-        scale_ = np.array([1.])
-        mean_ = np.array([0.])
-        var_ = np.array([1.])
-        n_features_in_ = 1
-
-    mr = Obj(transformer=FakeTransformer(4), scaler=Scaler(), shared=False,
-             metadata={"input_samples": 4, "normalise": False,
-                       "feature_count": 2})
-    same = Obj(transformer=FakeTransformer(4), scaler=Scaler(), shared=False,
-               metadata=dict(mr.metadata))
-    different = Obj(transformer=FakeTransformer(5), scaler=Scaler(), shared=False,
-                    metadata=dict(mr.metadata))
-    mask = np.ones(4, bool)
-    def fitted(transform):
-        return Obj(sample_mask=mask, output_max_abs_ps=1000.,
-                   feature_transform=Obj(artifact=transform))
-    combined = fitted(Obj(multirocket=mr,
-                          metadata={"batch_size": 8,
-                                    "feature_blocks": {"multirocket":[0,2],
-                                                       "rdst":[2,4]}}))
-    standalone = fitted(same)
-    assert compatible_component(combined, standalone, "multirocket")
-    assert not compatible_component(combined, fitted(different), "multirocket")
-    # Grouped inference evaluates one combined transform, sharing its first
-    # two feature columns with the standalone Ridge.
-    calls = []
-    combined.feature_transform.apply = lambda x: (
-        calls.append(len(x)) or np.ones((len(x),4), np.float32))
-    spec = Obj(predict=lambda model, features: np.sum(features, axis=1))
-    group = {
-        "direct_multirocket_rdst": (spec, combined, None),
-        "direct_multirocket": (spec, standalone, "multirocket"),
-    }
-    pred = predict_shared_energy_group(
-        group, np.ones((5,2,4), np.float32), chunk_size=3)
-    assert calls == [3, 2]
-    np.testing.assert_allclose(pred["direct_multirocket_rdst"], 4.)
-    np.testing.assert_allclose(pred["direct_multirocket"], 2.)
-
-
-def test_cpa_component_compatibility_diagnostic_reports_reason():
-    from types import SimpleNamespace as Obj
-    from waveform_analysis.engine.cpa_feature_sharing import component_compatibility
-
-    class Transformer:
-        parameter = (np.array([1.,2.]),)
-        parameter1 = (np.array([3.,4.]),)
-        def get_params(self, deep=False):
-            return {"n_kernels": 42, "random_state": 3, "n_jobs": 1}
-    class Scaler:
-        def __init__(self, scale):
-            self.scale_ = np.array([scale])
-            self.mean_ = np.array([0.])
-            self.var_ = np.array([scale**2])
-            self.n_features_in_ = 1
-
-    def component(scale):
-        return Obj(transformer=Transformer(), scaler=Scaler(scale), shared=False,
-                   metadata={"input_samples": 10, "normalise": False,
-                             "feature_count": 2})
-    combined = Obj(feature_transform=Obj(artifact=Obj(multirocket=component(1.))))
-    same = Obj(feature_transform=Obj(artifact=component(1.)))
-    different = Obj(feature_transform=Obj(artifact=component(2.)))
-    ok, reason = component_compatibility(combined, same, "multirocket")
-    assert ok and "match" in reason
-    ok, reason = component_compatibility(combined, different, "multirocket")
-    assert not ok and "scaler" in reason
-
-
-def test_capped_energy_kernel_models_share_event_seed():
-    from waveform_analysis.data.splits import semantic_seed
-    from waveform_analysis.engine.cpa_explainer import _draw_indices
-    names = ("direct_multirocket_rdst", "direct_multirocket", "direct_rdst")
-    seeds = [
-        semantic_seed(1, "cpa-blind", "UC", "same-dataset",
-                      "direct_energy_kernels") for _ in names
-    ]
-    assert len(set(seeds)) == 1
-    indices = [_draw_indices(200, 3, value) for value in seeds]
-    assert all(np.array_equal(indices[0], v) for v in indices[1:])
+    rng = np.random.default_rng(123)
+    n, t = 35, 48
+    x = np.clip(
+        .3 + .07*rng.normal(size=(n, 2, 1)) +
+        .02*rng.normal(size=(n, 2, t)), 0, 1).astype(np.float32)
+    mask = np.ones(t, bool)
+    mask[34:38] = False
+    selected = select_weighted_knn_imputers(
+        x, mask, [20], np.arange(t) * 25.,
+        seed=2, fit_events=24, validation_events=8,
+        knn_k=(1, 3, 5), knn_tau_ns=(.25, 1.),
+        local_samples=8)
+    assert len(selected["selected"]) == 2
+    for choice in selected["selected"].values():
+        assert choice["method"] == "weighted_knn"
+        assert choice["k"] in (1, 3, 5)
+    blind = x[:4].copy()
+    a = reconstruct_pair(blind, selected, mask, 20)
+    altered = blind.copy()
+    altered[:, :, 20:] = .99
+    b = reconstruct_pair(altered, selected, mask, 20)
+    np.testing.assert_allclose(a, b, atol=1e-7)
+    np.testing.assert_allclose(a[:, :, :20], blind[:, :, :20])
+    for detector in (0, 1):
+        expected_mean = selected["detectors"][detector]["mean"]
+        np.testing.assert_allclose(a[:, detector, 34:],
+                                   expected_mean[None, 34:], atol=1e-6)
 
 
 def test_cpa_cohort_identity_ignores_result_folder():
