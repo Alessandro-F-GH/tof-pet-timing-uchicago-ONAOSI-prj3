@@ -1615,7 +1615,7 @@ def _refresh_presentation(destination):
         "one joint temporal occlusion per window; both detector signals are imputed together and yield one pair-level score"
     )
     summary["global_importance_aggregation"] = {
-        "pair": "mean absolute joint-occlusion attribution across explained blind events",
+        "pair": "mean absolute two-player window Shapley values across explained blind events",
         "signed_windows": "mean positive and negative parts of the single pair-level signed prediction difference",
         "normalization": "importance values are unnormalized; both waveform colours use one shared PowerNorm(gamma=1.6) scale in ps/sample",
     }
@@ -1743,11 +1743,11 @@ def explain_tshap(
     imputer_fit_events=2000, imputer_tuning_events=300,
     imputer_slope_points=5, logger=None,
 ):
-    """Explain saved regressors using paired single-event Hermite-PPCA blend occlusions.
+    """Explain saved regressors using paired exact two-player Shapley values.
 
     Both detector signals are imputed over the same temporal window in one
     perturbation, yielding one pair-level score independent of model formulation.
-    The control cohort is used only to fit PPCA and calibrate blend weights.
+    The control cohort fits one joint PPCA over both detector waveforms.
     """
     for name, value in (
         ("max_events", max_events),
@@ -1849,11 +1849,10 @@ def explain_tshap(
                     "components": int(imputer_components),
                     "fit_events": int(imputer_fit_events),
                     "tuning_events": int(imputer_tuning_events),
-                    "slope_points": int(imputer_slope_points),
                 },
             }
             identity = {
-                "method": "paired_single_event_joint_ppca_shapley_window_occlusion",
+                "method": "paired_joint_ppca_two_player_shapley",
                 "method_version": TSHAP_METHOD_VERSION,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -1905,9 +1904,8 @@ def explain_tshap(
             )
             if logger:
                 logger.info(
-                    "TSHAP blend imputer | train=%d | tune=%d | components=%d | cache_hit=%s",
+                    "TSHAP joint PPCA | train=%d | components=%d | cache_hit=%s",
                     imputer_metadata["n_training_events"],
-                    imputer_metadata["n_tuning_events"],
                     imputer_components,
                     imputer_metadata["cache_hit"],
                 )
@@ -2054,7 +2052,7 @@ def explain_tshap(
                     "window_name": window_name,
                     "imputation": "joint_ppca_shapley",
                     "imputer": {
-                        "method": "Hermite interpolation blended with conditional PPCA mean using a smooth envelope",
+                        "method": "Joint two-detector PPCA conditional mean for both complementary coalitions",
                         "components": int(imputer_components),
                         "slope_points": int(imputer_slope_points),
                         "training_events": int(imputer_metadata["n_training_events"]),
@@ -2066,23 +2064,23 @@ def explain_tshap(
                         "cache_file": imputer_metadata["cache_file"],
                         "cache_identity": imputer_metadata["cache_identity"],
                         "cache_hit": imputer_metadata["cache_hit"],
-                        "mean_blend_weight_by_detector": None,
-                        "blend_weights_by_detector_and_window": [],
-                    },
+                        },
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
                     "waveform_samples": int(len(time_ps)),
                     "formulation": spec.estimator_formulation,
                     "attribution_units": (
-                        "ps/sample (raw signed window prediction differences redistributed over samples)"
+                        "ps/sample (window two-player Shapley scores redistributed over samples)"
                     ),
                     "interpretation": (
-                        "Both detector signals are occluded together over the same temporal window once per event. "
-                        "Missing samples in each signal are replaced by that event's conditional Hermite-PPCA blend "
-                        "imputation; one signed pair-level score is the original prediction minus the jointly "
-                        "imputed prediction. The score is not decomposed into detector-specific contributions. "
-                        "Temporal interpolation is not an exact sample-wise Shapley decomposition."
+                        "Each window and its complement are two aggregated features shared across "
+                        "both detectors. The exact two-player Shapley formula uses four coalitions "
+                        "(empty, window only, complement only, full). The same joint PPCA distribution "
+                        "is conditioned on either observed region. Using conditional-mean waveforms "
+                        "inside a nonlinear model is not equivalent to integrating model predictions "
+                        "over the conditional distribution. Redistributing windows to samples is "
+                        "not exact sample-wise Shapley attribution."
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
@@ -2526,7 +2524,7 @@ def explain_tshap_local(
                     },
                     "plots": plot_names,
                     "attribution_units": "ps/sample (joint pair-level window scores redistributed identically over both detector waveforms)",
-                    "importance_protocol": "both detector signals are imputed together over the same temporal window; one signed pair-level score is retained per window",
+                    "importance_protocol": "paired two-player Shapley with joint PPCA conditional means, both coalitions evaluated",
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
