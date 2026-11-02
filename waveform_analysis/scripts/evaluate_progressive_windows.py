@@ -140,13 +140,13 @@ def main():
     parser.add_argument("--start-ns", type=float, default=-2.)
     parser.add_argument("--end-ns", type=float, default=50.)
     parser.add_argument("--step-ns", type=float, default=2.)
-    parser.add_argument("--kernels", type=int, default=168)
-    parser.add_argument("--dilations", type=int, default=8)
-    parser.add_argument("--shapelets", type=int, default=32)
+    parser.add_argument("--kernels", type=int, default=84)
+    parser.add_argument("--dilations", type=int, default=4)
+    parser.add_argument("--shapelets", type=int, default=16)
     parser.add_argument("--shapelet-length", type=int, default=11)
     parser.add_argument("--ridge-alpha", type=float, default=10000.)
     parser.add_argument("--max-control", type=int, default=1024)
-    parser.add_argument("--max-development", type=int, default=5000)
+    parser.add_argument("--max-development", type=int, default=3000)
     parser.add_argument("--folds", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -155,7 +155,9 @@ def main():
     args = parser.parse_args()
     if args.step_ns <= 0 or args.end_ns <= args.start_ns or args.kernels < 84:
         parser.error("Invalid time range or kernels (<84)")
-    if args.ridge_alpha <= 0 or args.folds < 2 or args.shapelets < 1:
+    if (args.ridge_alpha <= 0 or args.folds < 2 or args.shapelets < 1
+            or args.max_control < 10 or args.max_development < args.folds * 5
+            or args.dilations < 1 or args.shapelet_length < 2):
         parser.error("Invalid Ridge alpha, folds or shapelets")
     output = root_relative(args.output)
     output.mkdir(parents=True, exist_ok=True)
