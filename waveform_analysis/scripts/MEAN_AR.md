@@ -30,6 +30,30 @@ script independently fits:
 - **Standardized AR**: Ridge autoregression of
   `(x[t] - mean[t]) / std[t]`; standard deviations are floored.
 
+Optional causal GRU comparison (requires PyTorch, already listed in requirements):
+
+```bash
+python -m waveform_analysis.scripts.evaluate_mean_ar \\
+  --uc-cache-root "$HOME/UC_cache" \\
+  --fbk-cache-root "$HOME/FBK_cache" \\
+  --output-root "$HOME/mean_ar_gru_results" \\
+  --ar-orders 8 16 32 64 128 \\
+  --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \\
+  --with-gru --gru-hidden 32 --gru-sequence 64 \\
+  --gru-epochs 8 --gru-steps-per-epoch 32
+```
+
+With `--with-gru`, a separate single-detector GRU is trained on
+development waveforms for each board/mode/detector. It predicts the next
+normalized residual from previous residual, position and mean; forecasting
+starts from the real contiguous prefix and proceeds recursively, without
+access to the evaluation suffix. The GRU uses the same cutoff, mask, blind
+events and full valid-suffix scoring as the AR baselines. After the first
+masked region it falls back to the population mean, just like AR.
+This first comparison is deterministic and **does not sample** from a
+probabilistic waveform distribution. Hyperparameters are fixed, not tuned on
+blind data.
+
 Each AR order has its own regression coefficients. Ridge uses a regularization
 parameter scaled to mean input energy (`--ridge-alpha`, default 0.001).
 The same training target positions are used for all orders. The script does
@@ -59,13 +83,13 @@ to the mean baseline.
 
 Each `OUTPUT/BOARD/MODE/detector_N/` contains:
 
-- `metrics.csv`: held-out errors for every cutoff, order and method.
+- `metrics.csv`: held-out errors for every cutoff, order and method (including GRU when enabled).\n- `gru_forecaster.pt`: learned GRU weights when enabled.
 - `model.json`: population provenance, selected event indices,
   per-position mean/std, fit settings, AR coefficients and characteristic-root
   stability.
 - `rmse_vs_cutoff.png`: error versus cutoff for mean baseline and the
   largest tested AR order.
-- `waveform_examples/waveform_cutoff_XXXXX.png`: one held-out waveform reconstruction\n  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), the cutoff, and\n  the next mask boundary when applicable.
+- `waveform_examples/waveform_cutoff_XXXXX.png`: one held-out waveform reconstruction\n  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), optional GRU, the cutoff, and\n  the next mask boundary when applicable.
 
 **Limits:** deterministic forecasts approach the learned mean when residual
 memory vanishes; low reconstruction MSE is not proof of realistic stochastic
