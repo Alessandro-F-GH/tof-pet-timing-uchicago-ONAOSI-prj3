@@ -70,6 +70,38 @@ def correlations(energy, timing):
     }
 
 
+def difference_statistics(energy, timing):
+    """Observed difference and variance-subtraction test on paired events."""
+    difference = energy - timing
+    energy_std = float(np.std(energy, ddof=1))
+    timing_std = float(np.std(timing, ddof=1))
+    variance_excess = energy_std**2 - timing_std**2
+    return {
+        "difference_mean_ps": float(np.mean(difference)),
+        "difference_std_ps": float(np.std(difference, ddof=1)),
+        "difference_rmse_ps": float(np.sqrt(np.mean(difference**2))),
+        "energy_variance_minus_timing_variance_ps2": variance_excess,
+        "predicted_extra_std_ps_if_timing_is_common_only":
+            float(np.sqrt(variance_excess)) if variance_excess >= 0 else None,
+        "note_difference": "The quadrature prediction uses full-sample standard "
+            "deviations, not fitted CTR. It assumes timing=C and energy=C+N, "
+            "with C independent of N.",
+    }
+
+
+def save_difference_plot(energy, timing, output):
+    fig, ax = plt.subplots(figsize=(7.2, 4.4))
+    ax.hist(energy - timing, bins=100, density=True, alpha=0.75)
+    ax.set_xlabel("Energy residual - timing residual (ps)")
+    ax.set_ylabel("Density")
+    ax.set_title("Difference of matched corrected residuals")
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(output / "residual_difference.png", dpi=180)
+    fig.savefig(output / "residual_difference.pdf")
+    plt.close(fig)
+
+
 def save_plot(energy, timing, output):
     fig, ax = plt.subplots(figsize=(6.2, 5.4))
     ax.scatter(energy, timing, s=7, alpha=0.25, rasterized=True)
@@ -98,6 +130,7 @@ def main(argv=None):
     ids, energy, timing, n_nonfinite = align_residuals(
         energy_ids, energy_residuals, timing_ids, timing_residuals)
     results = correlations(energy, timing)
+    results.update(difference_statistics(energy, timing))
     results.update(
         n_energy_events=int(len(energy_ids)),
         n_timing_events=int(len(timing_ids)),
@@ -112,15 +145,19 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=True)
     with (args.output / "matched_residuals.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["event_id", "energy_corrected_ps", "timing_corrected_ps"])
-        writer.writerows(zip(ids.tolist(), energy.tolist(), timing.tolist()))
+        writer.writerow(["event_id", "energy_corrected_ps", "timing_corrected_ps", "energy_minus_timing_ps"])
+        writer.writerows(zip(ids.tolist(), energy.tolist(), timing.tolist(), (energy-timing).tolist()))
     (args.output / "correlation_summary.json").write_text(
         json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     save_plot(energy, timing, args.output)
+    save_difference_plot(energy, timing, args.output)
     print(f"Matched events: {len(ids)} | Pearson r={results['pearson_r']:.5f} "
           f"(p={results['pearson_p_value']:.3g}) | "
           f"Spearman rho={results['spearman_rho']:.5f} "
           f"(p={results['spearman_p_value']:.3g})", flush=True)
+    print(f"Difference std={results['difference_std_ps']:.3f} ps | "
+          f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
+          flush=True)
     print(f"Results: {args.output}", flush=True)
 
 
