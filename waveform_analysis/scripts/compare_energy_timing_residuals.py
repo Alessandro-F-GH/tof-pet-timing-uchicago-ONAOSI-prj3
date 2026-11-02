@@ -17,6 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
+from waveform_analysis.reporting.stats import metric_values
 
 
 def read_residuals(path: Path):
@@ -89,6 +90,28 @@ def difference_statistics(energy, timing):
     }
 
 
+def ctr_quadrature_comparison(energy, timing, *, bin_width_ps, seed):
+    """Fitted CTR for energy, timing, their difference; common+extra prediction."""
+    config = {"histogram_bin_width_ps": float(bin_width_ps)}
+    ctr_energy = float(metric_values(energy, config, seed=seed)["ctr_ps"])
+    ctr_timing = float(metric_values(timing, config, seed=seed)["ctr_ps"])
+    ctr_difference = float(metric_values(energy-timing, config, seed=seed)["ctr_ps"])
+    excess = ctr_energy**2 - ctr_timing**2
+    predicted = float(np.sqrt(excess)) if excess >= 0 else None
+    return {
+        "ctr_energy_ps": ctr_energy,
+        "ctr_timing_ps": ctr_timing,
+        "ctr_difference_ps": ctr_difference,
+        "predicted_difference_ctr_ps_if_timing_is_common_only": predicted,
+        "difference_ctr_minus_prediction_ps": (
+            float(ctr_difference-predicted) if predicted is not None else None),
+        "ctr_bin_width_ps": float(bin_width_ps),
+        "note_ctr": "CTR comparison requires approximately Gaussian residual "
+            "distributions with consistent fitted-width definitions. No "
+            "independent-source decomposition can be established from this alone.",
+    }
+
+
 def save_difference_plot(energy, timing, output):
     fig, ax = plt.subplots(figsize=(7.2, 4.4))
     ax.hist(energy - timing, bins=100, density=True, alpha=0.75)
@@ -124,13 +147,20 @@ def main(argv=None):
     parser.add_argument("--timing", type=Path, required=True,
                         help="Timing predictions .npz with event_id and corrected_ps")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fit-bin-width-ps", type=float, default=10.0,
+                        help="Histogram bin width for CTR fits (default: 10 ps)")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
+    if args.fit_bin_width_ps <= 0:
+        parser.error("--fit-bin-width-ps must be positive")
     energy_ids, energy_residuals = read_residuals(args.energy)
     timing_ids, timing_residuals = read_residuals(args.timing)
     ids, energy, timing, n_nonfinite = align_residuals(
         energy_ids, energy_residuals, timing_ids, timing_residuals)
     results = correlations(energy, timing)
     results.update(difference_statistics(energy, timing))
+    results.update(ctr_quadrature_comparison(
+        energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
     results.update(
         n_energy_events=int(len(energy_ids)),
         n_timing_events=int(len(timing_ids)),
@@ -157,6 +187,11 @@ def main(argv=None):
           f"(p={results['spearman_p_value']:.3g})", flush=True)
     print(f"Difference std={results['difference_std_ps']:.3f} ps | "
           f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
+          flush=True)
+    print(f"Fitted CTR: energy={results['ctr_energy_ps']:.2f} ps, "
+          f"timing={results['ctr_timing_ps']:.2f} ps, "
+          f"difference={results['ctr_difference_ps']:.2f} ps | "
+          f"quadrature prediction={results['predicted_difference_ctr_ps_if_timing_is_common_only']}",
           flush=True)
     print(f"Results: {args.output}", flush=True)
 
