@@ -430,7 +430,7 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
         raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
 
     class BoundedTSHAP(TSHAPExplainer):
-        """Upstream temporal aggregation with paired, mask-aware conditional occlusion."""
+        """Upstream temporal aggregation with paired two-player Shapley scores."""
 
         def __init__(self, *args, sample_mask=None, **kwargs):
             super().__init__(*args, **kwargs)
@@ -1612,7 +1612,7 @@ def _refresh_presentation(destination):
         "shaded mean +/- one population standard deviation (ddof=0) across explained blind events, in mV"
     )
     summary["importance_protocol"] = (
-        "one joint temporal occlusion per window; both detector signals are imputed together and yield one pair-level score"
+        "two aggregated temporal features per window; both detector signals share one two-player Shapley score"
     )
     summary["global_importance_aggregation"] = {
         "pair": "mean absolute two-player window Shapley values across explained blind events",
@@ -1911,7 +1911,7 @@ def explain_tshap(
                     imputer_metadata["cache_hit"],
                 )
                 logger.info(
-                    "TSHAP paired-window occlusion | %s | events=%d/%d | samples=%d | ROI=%s",
+                    "TSHAP paired-window Shapley | %s | events=%d/%d | samples=%d | ROI=%s",
                     spec.name, len(event_ids), blind.n_events, time_ps.size, roi,
                 )
 
@@ -2057,14 +2057,13 @@ def explain_tshap(
                         "components": int(imputer_components),
                         "training_events": int(imputer_metadata["n_training_events"]),
                         "tuning_events": int(imputer_metadata["n_tuning_events"]),
-                        "training_and_tuning_are_disjoint": None,
-                        "explained_variance_ratio_joint": imputer_metadata[
+                                                "explained_variance_ratio_joint": imputer_metadata[
                             "explained_variance_ratio_joint"
                         ],
                         "cache_file": imputer_metadata["cache_file"],
                         "cache_identity": imputer_metadata["cache_identity"],
                         "cache_hit": imputer_metadata["cache_hit"],
-                        },
+                    },
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
@@ -2092,7 +2091,7 @@ def explain_tshap(
                         window_starts,
                     ),
                     "global_importance_aggregation": {
-                        "pair": "mean absolute joint-occlusion attribution across explained blind events",
+                        "pair": "mean absolute paired two-player Shapley score across blind events",
                         "signed_windows": "mean positive and negative parts of the single pair-level signed prediction difference",
                         "normalization": (
                             "Importance values are unnormalized; both waveform colours use one shared "
