@@ -21,7 +21,7 @@ def root_relative(path):
 
 
 def load_wide_development(results, channel, cache_root=None, *, return_transform=False,
-                          include_control=False, include_sample_mask=False):
+                          include_control=False, include_sample_mask=False, include_target=False):
     """Load prepared wide-window development waveforms for one channel.
 
     If ``return_transform`` is true, also return the frozen input transform so
@@ -85,7 +85,7 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
             raise ValueError("Control and development waveform transforms differ")
     if waves is None or times is None or waves.ndim != 3 or waves.shape[1] != 2:
         raise ValueError("Expected development waveforms [events, 2 detectors, samples]")
-    if include_sample_mask and not return_transform:
+    if (include_sample_mask or include_target) and not return_transform:
         raise ValueError("include_sample_mask requires return_transform=True")
     if return_transform:
         if transform is None:
@@ -102,5 +102,11 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
             else:
                 mask = np.ones(len(times), dtype=bool)
             extra += (mask,)
+        if include_target:
+            target = (dataset.energy_target_ps if channel == "energy"
+                      else dataset.timing_target_ps)
+            if target is None or len(target) != len(waves):
+                raise ValueError(f"Missing development {channel} correction targets")
+            extra += (np.asarray(target, dtype=np.float64),)
         return (waves, np.asarray(times), directory, dataset.manifest, transform, *extra)
     return waves, np.asarray(times), directory, dataset.manifest
