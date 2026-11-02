@@ -306,6 +306,89 @@ class _JointPPCAImputer:
         return np.ascontiguousarray(normalized, dtype=np.float32)
 
 
+    def sample_unconditional(self, samples, rng):
+        """Independent draws from the full joint PPCA, in model input space."""
+        if samples < 1:
+            raise ValueError("samples must be positive")
+        model = self.model
+        latent = rng.standard_normal((samples, model.components))
+        noise = rng.standard_normal((samples, model.mean.size))
+        physical = (model.mean[None] + latent @ model.W.T
+                    + np.sqrt(model.sigma2) * noise)
+        normalized = self.transform.transform(
+            physical.reshape(samples, 2, self.n_samples))
+        return np.ascontiguousarray(normalized, dtype=np.float32)
+
+    def sample_conditional(self, waveforms, start, width, *, keep_only,
+                           samples, rng, sample_mask=None):
+        """Sample the exact PPCA Gaussian conditional of missing paired samples.
+
+        Observed samples are held fixed. Posterior uncertainty includes BOTH
+        latent uncertainty and independent PPCA observation noise. Output is
+        [events, samples, 2 detectors, time] in the frozen model input space.
+        """
+        if samples < 1:
+            raise ValueError("samples must be positive")
+        data = np.asarray(waveforms, np.float32)
+        if data.ndim != 3 or data.shape[1:] != (2, self.n_samples):
+            raise ValueError("Expected [events, 2 detectors, samples]")
+        if start < 0 or width < 1 or start + width > self.n_samples:
+            raise ValueError("Invalid temporal window")
+        valid = (np.ones(self.n_samples, dtype=bool) if sample_mask is None
+                 else np.asarray(sample_mask, dtype=bool).reshape(-1))
+        if valid.shape != (self.n_samples,):
+            raise ValueError("Invalid model sample mask")
+        inside = np.zeros(self.n_samples, dtype=bool)
+        inside[start:start + width] = True
+        observed_time = valid & (inside if keep_only else ~inside)
+        missing_time = valid & ~observed_time
+        if not observed_time.any() or not missing_time.any():
+            raise ValueError("Window needs valid observed and missing samples")
+        observed = np.tile(observed_time, 2)
+        missing = np.tile(missing_time, 2)
+        key = (int(start), int(width), bool(keep_only), valid.tobytes())
+        if key not in self._prepared:
+            w_observed = self.model.W[observed]
+            precision = (np.eye(self.model.components)
+                         + w_observed.T @ w_observed / self.model.sigma2)
+            chol = np.linalg.cholesky(precision)
+            # E[z|x_obs] = (x_obs-mu_obs) @ latent_map.
+            latent_map = np.linalg.solve(
+                chol.T, np.linalg.solve(chol, w_observed.T / self.model.sigma2)
+            ).T
+            # Row-vector standard normals @ inv(chol) have covariance
+            # inv(chol).T @ inv(chol) == inv(precision).
+            latent_noise_map = np.linalg.solve(
+                chol, np.eye(self.model.components))
+            self._prepared[key] = (observed, missing, latent_map,
+                                   latent_noise_map, self.model.W[missing])
+        observed, missing, latent_map, latent_noise_map, w_missing = (
+            self._prepared[key])
+        physical = np.asarray(self.transform.inverse(data), np.float64)
+        flat = physical.reshape(len(data), -1)
+        latent_mean = (flat[:, observed] - self.model.mean[observed]) @ latent_map
+        latent_draws = (latent_mean[:, None, :] +
+                        rng.standard_normal(
+                            (len(data), samples, self.model.components)
+                        ) @ latent_noise_map)
+        missing_draws = (self.model.mean[missing] +
+                         latent_draws @ w_missing.T +
+                         np.sqrt(self.model.sigma2) * rng.standard_normal(
+                             (len(data), samples, int(missing.sum()))))
+        completed = np.broadcast_to(
+            flat[:, None, :], (len(data), samples, flat.shape[1])).copy()
+        completed[:, :, missing] = missing_draws
+        transformed = self.transform.transform(
+            completed.reshape(len(data) * samples, 2, self.n_samples)
+        ).reshape(len(data), samples, 2, self.n_samples)
+        # Preserve observations exactly, even after round-trip normalization.
+        # Use an explicit per-detector indexed assignment (no sample mixing).
+        for detector in range(2):
+            transformed[:, :, detector, observed_time] = (
+                data[:, None, detector, observed_time])
+        return np.ascontiguousarray(transformed, dtype=np.float32)
+
+
 def _fit_joint_ppca_imputer(control, mode, *, components, fit_events, seed):
     """Fit a joint PPCA on control waveforms only, with no blind-event leakage."""
     from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
