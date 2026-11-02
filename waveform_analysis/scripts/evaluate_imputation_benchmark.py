@@ -32,7 +32,7 @@ from waveform_analysis.scripts.train_ppca_interpolation_blend import (
 )
 
 
-METHODS = ("original_tshap", "linear", "hermite", "ppca", "hermite_ppca_blend")
+METHODS = ("original_tshap", "linear", "hermite", "ppca", "hermite_ppca_blend", "knn")
 LABELS = {
     "original_tshap": "Multi-baseline",
     "linear": "Linear interpolation",
@@ -99,7 +99,7 @@ def save_position_plot(rows, output, label, channel):
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
     handles = []
     available_methods = [m for m in METHODS if any(r["method"] == m for r in rows)]
-    available_methods += [m for m in ("median", "knn") if any(r["method"] == m for r in rows)]
+    available_methods += [m for m in ("median",) if any(r["method"] == m for r in rows)]
     for detector, ax in enumerate(axes, start=1):
         selected = [r for r in rows if r["detector"] == detector]
         for method in available_methods:
@@ -127,7 +127,9 @@ def save_position_plot(rows, output, label, channel):
                loc="upper center", bbox_to_anchor=(0.5, 0.94),
                ncol=len(available_methods), fontsize=10, frameon=False)
     axes[0].set_ylabel(f"Reconstruction RMSE ({unit})", labelpad=5)
-    fig.supxlabel("Masked interval start (ns)", y=0.068)
+    occlusion = rows[0].get("occlusion_mode", "remove_window")
+    fig.supxlabel("Retained window start (ns)" if occlusion == "keep_only"
+                   else "Masked interval start (ns)", y=0.068)
     # Fixed figure margins keep the subplot titles close to the shared legend,
     # with the shared x-axis label just below the tick labels.
     fig.subplots_adjust(left=0.09, right=0.985, bottom=0.165,
@@ -345,6 +347,9 @@ def evaluate_configuration(label, results, channel, args, output):
                 if denominator > 1e-18 else 0.0
             )
 
+    # Paired kNN neighbor search only sees retained waveform samples.
+    reference_pool = np.asarray(waves[training], dtype=np.float64)
+    eval_pool = np.asarray(waves[evaluation], dtype=np.float64)
     # Per-position and event-wise squared errors are retained for pooled metrics/CI.
     position_rows = []
     event_sse = {method: np.zeros(len(evaluation), dtype=np.float64) for method in METHODS}
@@ -352,6 +357,21 @@ def evaluate_configuration(label, results, channel, args, output):
     for pi, start in enumerate(starts):
         stop = start + width
         sse = {method: np.zeros(2, dtype=np.float64) for method in METHODS}
+        observed = np.asarray(sample_mask, bool).copy()
+        observed[start:stop] = False
+        if not np.any(observed):
+            raise ValueError("No observed samples for kNN remove-window evaluation")
+        reference_prefix = reference_pool[:, :, observed].reshape(len(training), -1)
+        eval_prefix = eval_pool[:, :, observed].reshape(len(evaluation), -1)
+        norm = np.einsum("ij,ij->i", reference_prefix, reference_prefix)
+        nearest = np.empty(len(evaluation), dtype=np.int64)
+        for first in range(0, len(evaluation), args.batch_size):
+            last = min(len(evaluation), first + args.batch_size)
+            chunk = eval_prefix[first:last]
+            distances = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
+                         + norm[None, :] - 2. * chunk @ reference_prefix.T)
+            np.maximum(distances, 0., out=distances)
+            nearest[first:last] = np.argmin(distances, axis=1)
         for det, model in enumerate(models):
             env = smooth_blend_envelope(start, width, length)
             alpha = alphas[det, pi]
@@ -367,6 +387,7 @@ def evaluate_configuration(label, results, channel, args, output):
                 predictions = {
                     "linear": linear, "hermite": hermite,
                     "ppca": ppca, "hermite_ppca_blend": blend,
+                    "knn": reference_pool[nearest[local], det, start:stop],
                 }
                 # Original TSHAP replaces each masked segment with the corresponding
                 # segment from every reference baseline. Score expected squared error
@@ -393,6 +414,8 @@ def evaluate_configuration(label, results, channel, args, output):
                     "mask_width_samples": int(width), "mask_width_ns": float(width * dt_ps / 1000.0),
                     "evaluation_events": int(len(evaluation)),
                     "rmse": rmse_from_sse(sse[method][det], len(evaluation) * width),
+                    "occlusion_mode": "remove_window",
+                    "missing_valid_samples": int(width),
                 })
         if pi % max(1, len(starts)//10) == 0 or pi == len(starts)-1:
             print(f"[{label}/{channel}] position {pi+1}/{len(starts)}", flush=True)
@@ -411,6 +434,7 @@ def evaluate_configuration(label, results, channel, args, output):
             "tuning_events": len(tuning), "mask_positions": len(starts),
             "mask_width_samples": width, "mask_width_ns": width * dt_ps / 1000.0,
             "components": args.components,
+            "occlusion_mode": "remove_window",
         })
     return position_rows, overall_rows, {
         "dataset": label, "channel": channel, "source_run": str(source),
@@ -422,6 +446,8 @@ def evaluate_configuration(label, results, channel, args, output):
         "mask_width_ns": width * dt_ps / 1000.0, "mask_positions": len(starts),
         "components": args.components, "seed": args.seed,
         "methods": list(METHODS), "slope_points": args.slope_points,
+        "occlusion_mode": "remove_window", "knn_k": 1,
+        "knn_distance": "paired_retained_samples_euclidean",
         "n_original_tshap_reference_baselines": int(n_reference),
         "original_tshap_reference_source": "independent control dataset",
         "signal_units": "mV (inverse of frozen per-detector input transform)",
