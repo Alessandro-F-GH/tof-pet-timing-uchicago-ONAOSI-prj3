@@ -51,8 +51,8 @@ python -m waveform_analysis.cli explain-cpa \
 To analyze only one mode, add `--mode energy` or `--mode timing`. To explain
 one saved run, replace `--results` with `--model-dir /path/to/run`.
 Use `--models` to override the default selection:
-- Energy wide: direct_multirocket_rdst, direct_multirocket, direct_rdst, onishi_cnn, shared_linear_ridge.
-- Timing wide: direct_multirocket, onishi_cnn, shared_linear_ridge.
+- Energy wide: direct_multirocket_rdst, onishi_cnn, shared_linear_ridge.
+- Timing wide: direct_multirocket_rdst, onishi_cnn, shared_linear_ridge.
 
 Options include `--fit-events` (1024), `--validation-events` (128),
 `--orders` (8 16 32 64 128), `--local-samples` (100),
@@ -60,43 +60,57 @@ Options include `--fit-events` (1024), `--validation-events` (128),
 The source correction models remain frozen.
 
 
-### Energy kernel feature reuse
+### Model scope and inference
 
-CPA additionally evaluates the saved direct MultiRocket and direct RDST Ridge
-models on **energy only**. The combined direct MultiRocket-RDST model is
-processed first. Its frozen feature transform consists of the concatenated
-MultiRocket and RDST blocks. When all relevant inputs (development and blind
-cohorts, sample mask, cutoff schedule and event indices) match **and** the
-saved standalone transformer parameters, learned convolution kernels or
-shapelets, and fitted scaling match the corresponding combined block, CPA
-computes that block only once per imputed batch and evaluates all Ridge heads
-on the shared features. No transformed-feature cache is written to disk.
+CPA analyzes the frozen combined `direct_multirocket_rdst` model (plus the
+optional Onishi CNN and shared Ridge baselines). Standalone
+`direct_multirocket` and `direct_rdst` are excluded from CPA. Every model
+uses its own saved fitted transformation, independently. There is no
+cross-model feature reuse or compatibility check.
 
-Importantly, separately fitted randomized transforms can differ even with the
-same algorithm settings: the saved training pipeline derives random seeds from
-model-specific transform names. When the fitted transformers differ, the
-standalone model is evaluated through its own fitted feature transform, to
-avoid substituting another model's feature space. Thus the new models are not
-always computationally free. Feature sharing is currently activated for a
-full-blind run (`--max-events 0`) with matching cohort identities; capped,
-model-specific event samples retain the independent inference path.
+### Weighted k-NN causal forecasting
+
+Use `--imputer weighted-knn` to replace AR imputer selection with
+development-validated weighted k-NN. Candidate `k` and exponentially
+decaying prefix-weight `tau` are selected independently for each detector
+and cutoff on held-out development events; `tau=inf` (uniform prefix
+distance) is always eligible. Selection minimizes the same balanced
+local-horizon and full-unmasked-segment MSE ratios used in CPA. The chosen
+`k` and `tau` are then applied to a development reference cohort, and
+only the *observed blind prefix* participates in neighbor matching. The
+neighbor mean supplies the future waveform up to the next mask; beyond
+that boundary the regular development mean is used.
+
+```bash
+nohup python -m waveform_analysis.cli explain-cpa \
+  --results "$PWD/waveform_analysis/results" \
+  --boards UC FBK \
+  --uc-cache-root "$HOME/UC_cache" \
+  --fbk-cache-root "$HOME/FBK_cache" \
+  --output-root "$HOME/cpa_weighted_knn_results" \
+  --imputer weighted-knn \
+  --knn-k 1 3 5 10 20 50 100 \
+  --knn-tau-ns 0.25 0.5 1 2 5 \
+  --max-events 1024 --bootstrap 100 --seed 42 \
+  > cpa_weighted_knn.log 2>&1 < /dev/null &
+```
+
+The original `--imputer ar` remains available. Use different output roots
+for meaningful side-by-side comparison. Model inference still uses the
+frozen, saved transform and model; no timing-correction model retraining.
 
 ## Procedure
 
-1. A seeded development split fits conditional mean AR and standardized AR
-   for each detector. Each candidate order must have enough contiguous observed
-   samples and stable fitted roots; mean replacement always remains eligible.
+1. With `--imputer ar`, a development split fits mean AR and standardized AR\n   for each detector. With `--imputer weighted-knn`, the development split instead\n   chooses nearest-neighbor count and temporal decay for each cutoff. The mean\n   replacement remains the comparison baseline.
 2. Choose the minimum validation loss for **each detector and cutoff**:
    average of the local-horizon and full-next-valid-segment MSE ratios
    to the mean baseline. No correction-model information or blind events
    enters imputer selection.
-3. Refit selected imputers on the designated development cohort, check
-   stability again and fall back to the mean if necessary.
+3. Refit selected AR candidates on development or use the development\n   reference population for weighted k-NN. Blind signals never enter fitting.
 4. Select a reproducible, **model-specific** subset of up to 1024 blind
    events, with exactly the same events for the selected and mean-only
    imputers within that model.
-5. Reveal both aligned input waveforms through the cutoff. Forecast the
-   remaining current unmasked interval using the chosen AR imputer; from
+5. Reveal both aligned input waveforms through the cutoff. Forecast the\n   remaining current unmasked interval using the selected imputer; from
    the next masked interval onward use the mean. Cutoffs inside masked
    regions are skipped (not shifted), as are out-of-grid cutoffs.
 6. Recompute full-waveform predictions through the normal frozen-model
