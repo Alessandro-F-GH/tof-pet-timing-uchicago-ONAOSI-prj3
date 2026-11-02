@@ -81,3 +81,13 @@ def test_pruning_still_uses_batch_study():
     from waveform_analysis.scripts.evaluate_progressive_windows import evaluate_prefix
     assert callable(evaluate_candidate)
     assert "evaluate_candidate(" in inspect.getsource(evaluate_prefix)
+
+
+def test_batch_transform_parameters_are_not_reduced():
+    from waveform_analysis.scripts.evaluate_progressive_windows import batch_model_space
+    params = batch_model_space("both")["parameters"]
+    assert params["n_kernels"]["value"] == 6250
+    assert params["max_dilations_per_kernel"]["value"] == 32
+    assert params["n_features_per_kernel"]["value"] == 4
+    assert params["max_shapelets"]["value"] == 1024
+    assert params["shapelet_lengths"]["value"] == [11]
