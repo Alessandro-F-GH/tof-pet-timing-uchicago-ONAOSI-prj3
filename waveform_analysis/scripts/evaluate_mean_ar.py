@@ -329,7 +329,7 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     scale = np.asarray(transform.maximum - transform.minimum).reshape(-1)
     mv_scale = float(scale[detector] if scale.size >= 2 else scale[0])
     rows = []
-    example = None
+    examples = []
     for cutoff in cutoffs:
         cutoff = int(cutoff)
         stop = local_forecast_end(mask, cutoff)
@@ -366,10 +366,10 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     "stable": model["stable"],
                     "root_radius": model["root_radius"],
                 })
-                if (example is None and method == "standardized_ar" and
-                        order == args.ar_orders[-1]):
-                    example = (cutoff, evaluation[0].copy(), full_prediction[0].copy(),
-                               baseline_full[0].copy(), int(eval_ids[0]))
+                if method == "standardized_ar" and order == args.ar_orders[-1]:
+                    examples.append((cutoff, stop, evaluation[0].copy(),
+                                     full_prediction[0].copy(), baseline_full[0].copy(),
+                                     int(eval_ids[0])))
         rows.append({
             **base, "method": "mean", "order": 0,
             "cutoff_sample": cutoff, "cutoff_ns": float(time_ps[cutoff]/1000),
@@ -399,22 +399,26 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         } for p in args.ar_orders} for method in fitted},
     }, indent=2), encoding="utf-8")
     plot_summary(rows, out, name)
-    if example is not None:
-        cutoff, original, prediction, baseline, event_id = example
-        ns = np.asarray(time_ps) / 1000
+    example_dir = out / "waveform_examples"
+    example_dir.mkdir(exist_ok=True)
+    ns = np.asarray(time_ps) / 1000
+    for cutoff, stop, original, prediction, baseline, event_id in examples:
         fig, ax = plt.subplots(figsize=(10, 4.5))
         ax.plot(ns, original, color="#222222", lw=1.2, label="Blind original")
-        ax.plot(ns[cutoff:], baseline, color="#C98740",
-                label="Mean replacement")
+        ax.plot(ns[cutoff:], baseline, color="#C98740", label="Mean replacement")
         ax.plot(ns[cutoff:], prediction, color="#2B9C74",
-                label="Standardized AR")
-        ax.axvline(ns[cutoff], color="gray", ls="--")
+                label=f"Standardized AR (order {args.ar_orders[-1]})")
+        ax.axvline(ns[cutoff], color="gray", ls="--",
+                   label=f"Cutoff {ns[cutoff]:.3f} ns")
+        if stop < len(ns):
+            ax.axvline(ns[stop], color="#8B8B8B", ls=":",
+                       label="AR stops at mask boundary")
         ax.set(xlabel="Time (ns)", ylabel="Normalized voltage [0,1]",
                title=f"{name}, blind row {event_id}, cutoff {ns[cutoff]:.3f} ns")
         ax.legend()
         ax.grid(alpha=.25)
         fig.tight_layout()
-        fig.savefig(out / "waveform_example.png", dpi=160)
+        fig.savefig(example_dir / f"waveform_cutoff_{cutoff:05d}.png", dpi=160)
         plt.close(fig)
     print(f"[{name}] train={len(train_ids)} blind={len(eval_ids)} "
           f"valid_regions={valid_intervals(mask)} cutoffs={len(cutoffs)} "
