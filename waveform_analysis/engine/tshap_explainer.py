@@ -1691,23 +1691,24 @@ def _publish_window_imputer(destination, imputer_metadata, identity):
 def _window_imputer_identity(control, config, *, window_samples, stride_samples,
                              components, fit_events, tuning_events, slope_points,
                              batch_size, seed):
+    """Only fitting-dependent inputs: explanation windows never cause a refit."""
     family = mode_family(config["mode"])
     times = np.asarray(getattr(control, f"{family}_time_ps"), dtype=np.float64)
+    transform = getattr(control, f"{family}_transform")
     return {
+        "method": "joint_ppca_shapley_v1",
         "control_identity": control.manifest.get("analysis_protocol_identity"),
         "control_population": control.manifest.get("event_population_identity"),
+        "control_artifact": str(control.directory.name),
         "mode": config["mode"],
-        "window_name": config.get("window_name"),
         "time_grid_hash": canonical_hash(times.tolist()),
-        "window_samples": int(window_samples),
-        "stride_samples": int(stride_samples),
+        "transform_minimum": np.asarray(transform.minimum).tolist(),
+        "transform_maximum": np.asarray(transform.maximum).tolist(),
         "components": int(components),
         "fit_events": int(fit_events),
-        "tuning_events": int(tuning_events),
-        "slope_points": int(slope_points),
-        "batch_size": int(batch_size),
         "seed": int(seed),
     }
+
 
 def _get_window_imputer(cache, control, config, output_root, run_directory, *,
                            window_samples, stride_samples, components, fit_events,
@@ -1848,7 +1849,7 @@ def explain_tshap(
                     "method": "joint_ppca_shapley",
                     "components": int(imputer_components),
                     "fit_events": int(imputer_fit_events),
-                    "tuning_events": int(imputer_tuning_events),
+                    "tuning_events": 0,
                 },
             }
             identity = {
@@ -2054,10 +2055,9 @@ def explain_tshap(
                     "imputer": {
                         "method": "Joint two-detector PPCA conditional mean for both complementary coalitions",
                         "components": int(imputer_components),
-                        "slope_points": int(imputer_slope_points),
                         "training_events": int(imputer_metadata["n_training_events"]),
                         "tuning_events": int(imputer_metadata["n_tuning_events"]),
-                        "training_and_tuning_are_disjoint": True,
+                        "training_and_tuning_are_disjoint": None,
                         "explained_variance_ratio_joint": imputer_metadata[
                             "explained_variance_ratio_joint"
                         ],
