@@ -53,6 +53,32 @@ on the exact same blind events and valid-suffix positions. `--with-knn`
 works independently of `--with-gru`. k-NN estimates are deterministic,
 and the comparison plot shows the largest requested `k`.
 
+Optional **hybrid k-NN + fixed-order AR**:
+
+```bash
+python -m waveform_analysis.scripts.evaluate_mean_ar \
+  --uc-cache-root "$HOME/UC_cache" \
+  --fbk-cache-root "$HOME/FBK_cache" \
+  --output-root "$HOME/mean_ar_hybrid_results" \
+  --ar-orders 8 16 32 64 128 \
+  --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \
+  --with-hybrid --hybrid-ar-order 16 \
+  --knn-k 1 3 5 10 20 50 100
+```
+
+The hybrid selects k **per cutoff** with the same development-only leave-one-out
+criterion as k-NN. The selected development neighbors provide a
+**conditional mean waveform**, including observed prefix and future. Then a
+fixed-order Ridge AR is fitted to *leave-one-out conditional residuals* on
+development events only. Blind forecasting initializes AR from the observed
+difference between the real prefix and its k-NN conditional mean, and adds
+the predicted residual to the k-NN future. Both pure k-NN and hybrid are
+scored on the same blind events. AR order defaults to 16 and is **not
+optimized**; if a valid interval cannot support 16 lags, the order is
+reduced to what the interval supports. The hybrid coefficients and chosen k
+per cutoff are stored in `model.json`. After a masked boundary, the mean
+baseline is used as in other methods. `--with-hybrid` enables k-NN automatically.
+
 Optional **cutoff-specific GRU encoder + direct forecasting decoder**:
 
 ```bash
