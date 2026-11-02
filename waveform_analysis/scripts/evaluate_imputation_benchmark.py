@@ -120,9 +120,9 @@ def plot_overall(rows, folder):
     plt.close(fig)
 
 
-def benchmark(label, path, channel, args, folder):
+def benchmark(label, path, channel, args, folder, cache_root):
     waves, time_ps, source, manifest, transform, controls, mask = load_wide_development(
-        root_relative(path), channel, root_relative(args.cache_root),
+        root_relative(path), channel, root_relative(cache_root),
         return_transform=True, include_control=True, include_sample_mask=True)
     waves = np.asarray(transform.inverse(waves), np.float64)
     controls = np.asarray(transform.inverse(controls), np.float64)
@@ -254,7 +254,10 @@ def main():
     parser.add_argument("--bootstrap", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-    if args.mask_ns <= 0 or args.components < 1 or args.n_baselines < 1 or args.bootstrap < 20:
+    if (args.mask_ns <= 0 or args.components < 1 or args.n_baselines < 1
+            or args.bootstrap < 20 or args.max_events < 10 or args.eval_events < 1
+            or not 0 < args.eval_fraction < 1
+            or args.mask_stride_samples is not None and args.mask_stride_samples < 1):
         parser.error("Invalid mask width, PPCA components, baselines, or bootstrap count")
     roots = dict(args.dataset_cache_root)
     folder = root_relative(args.output)
@@ -262,9 +265,8 @@ def main():
     positions_out, overall_out, settings = [], [], []
     for label, path in args.dataset:
         cache = roots.get(label, args.cache_root)
-        args.cache_root = cache
         for channel in args.channels:
-            p, o, info = benchmark(label, path, channel, args, folder)
+            p, o, info = benchmark(label, path, channel, args, folder, cache)
             positions_out.extend(p)
             overall_out.extend(o)
             settings.append(info)
