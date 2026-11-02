@@ -371,13 +371,13 @@ def evaluate_configuration(label, results, channel, args, output):
         raw_evaluation = eval_pool[:, :, observed].reshape(len(evaluation), -1)
         # For samples outside [start, stop), distance to the closest edge.
         # Sampling interval is in ps, while tau is in ns.
-        positions = np.flatnonzero(observed)
-        age_ns = np.where(positions < start,
-                          (start - positions) * dt_ps / 1000.,
-                          (positions - (stop - 1)) * dt_ps / 1000.)
+        observed_positions = np.flatnonzero(observed)
+        age_ns = np.where(observed_positions < start,
+                          (start - observed_positions) * dt_ps / 1000.,
+                          (observed_positions - (stop - 1)) * dt_ps / 1000.)
         nearest_by_method = {}
         for tau in [float("inf"), *args.knn_edge_tau_ns]:
-            weights = (np.ones(len(positions), np.float64)
+            weights = (np.ones(len(observed_positions), np.float64)
                        if np.isinf(tau) else np.exp(-age_ns / tau))
             # Rescale before multiplication to avoid irrelevant underflow.
             weights /= max(float(weights.max()), 1e-300)
