@@ -39,6 +39,8 @@ LABELS = {
     "hermite": "Cubic Hermite",
     "ppca": "Standard PPCA",
     "hermite_ppca_blend": "Hermite-PPCA blend",
+    "median": "Development median",
+    "knn": "kNN (k=1)",
 }
 
 
@@ -96,9 +98,11 @@ def save_position_plot(rows, output, label, channel):
     scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
     handles = []
+    available_methods = [m for m in METHODS if any(r["method"] == m for r in rows)]
+    available_methods += [m for m in ("median", "knn") if any(r["method"] == m for r in rows)]
     for detector, ax in enumerate(axes, start=1):
         selected = [r for r in rows if r["detector"] == detector]
-        for method in METHODS:
+        for method in available_methods:
             series = sorted(
                 (r for r in selected if r["method"] == method),
                 key=lambda r: r["start_ns"],
@@ -119,9 +123,9 @@ def save_position_plot(rows, output, label, channel):
     # Keep the one shared legend between the figure title and subplot titles.
     # A figure-level x label remains at the bottom with no competing legend.
     fig.suptitle(f"{label} - {channel.capitalize()} channel", y=0.99)
-    fig.legend(handles, [LABELS[m] for m in METHODS],
+    fig.legend(handles, [LABELS[m] for m in available_methods],
                loc="upper center", bbox_to_anchor=(0.5, 0.94),
-               ncol=len(METHODS), fontsize=10, frameon=False)
+               ncol=len(available_methods), fontsize=10, frameon=False)
     axes[0].set_ylabel(f"Reconstruction RMSE ({unit})", labelpad=5)
     fig.supxlabel("Masked interval start (ns)", y=0.068)
     # Fixed figure margins keep the subplot titles close to the shared legend,
@@ -132,6 +136,119 @@ def save_position_plot(rows, output, label, channel):
     fig.savefig(output / f"rmse_by_position_{safe}.pdf", bbox_inches="tight")
     fig.savefig(output / f"rmse_by_position_{safe}.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
+
+
+def keep_only_benchmark(label, channel, args, waves, time_ps, mask,
+                        training, tuning, evaluation, starts, width, dt_ps, source,
+                        manifest):
+    """Reconstruct all *valid* samples outside one retained window.
+
+    Only the window is observable. kNN neighbor search uses both detectors;
+    the returned reference waveform is real development data (k=1).
+    PPCA conditions on the same retained region, independently per detector.
+    """
+    length = waves.shape[-1]
+    valid = np.asarray(mask, bool)
+    ref = np.asarray(waves[training], np.float64)
+    test = np.asarray(waves[evaluation], np.float64)
+    models = [ProbabilisticPCA(args.components).fit(ref[:, d]) for d in range(2)]
+    median = np.median(ref, axis=0)
+    methods = ("median", "ppca", "knn")
+    sse_events = {method: np.zeros(len(test), np.float64) for method in methods}
+    rows = []
+    total_per_event = 0
+    for pi, start in enumerate(starts):
+        stop = start + width
+        observed = np.zeros(length, bool)
+        observed[start:stop] = True
+        observed &= valid
+        missing = valid & ~observed
+        n_missing = int(missing.sum())
+        if not n_missing or not observed.any():
+            continue
+        total_per_event += 2 * n_missing
+        # Paired detector distance, restricted to the retained samples.
+        train_prefix = ref[:, :, observed].reshape(len(ref), -1)
+        test_prefix = test[:, :, observed].reshape(len(test), -1)
+        train_norm = np.einsum("ij,ij->i", train_prefix, train_prefix)
+        closest = np.empty(len(test), dtype=int)
+        for first in range(0, len(test), args.batch_size):
+            last = min(len(test), first+args.batch_size)
+            chunk = test_prefix[first:last]
+            dist = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
+                    + train_norm[None, :] - 2. * chunk @ train_prefix.T)
+            np.maximum(dist, 0., out=dist)
+            closest[first:last] = np.argmin(dist, axis=1)
+        knn = ref[closest]
+        per_method = {m: np.zeros(2, np.float64) for m in methods}
+        for d, model in enumerate(models):
+            # Posterior latent mean given only the retained window.
+            W_o = model.W[observed]
+            W_m = model.W[missing]
+            precision = np.eye(model.components) + W_o.T @ W_o / model.sigma2
+            rhs = W_o.T / model.sigma2
+            coefficients = np.linalg.solve(precision, rhs).T @ W_m.T
+            for first in range(0, len(test), args.batch_size):
+                last = min(len(test), first+args.batch_size)
+                actual = test[first:last, d]
+                true = actual[:, missing]
+                preds = {
+                    "median": np.broadcast_to(median[d, missing], true.shape),
+                    "knn": knn[first:last, d][:, missing],
+                    "ppca": model.mean[missing] + (
+                        actual[:, observed] - model.mean[observed]
+                    ) @ coefficients,
+                }
+                for method, predicted in preds.items():
+                    error = np.sum(np.square(predicted-true), axis=1)
+                    per_method[method][d] += float(error.sum())
+                    sse_events[method][first:last] += error
+        for d in range(2):
+            for method in methods:
+                rows.append({
+                    "dataset": label, "channel": channel, "detector": d+1,
+                    "method": method, "mask_position": pi,
+                    "start_sample": int(start), "start_ns": float(time_ps[start]/1000.),
+                    "mask_width_samples": int(width),
+                    "mask_width_ns": float(width*dt_ps/1000.),
+                    "evaluation_events": len(test),
+                    "rmse": rmse_from_sse(per_method[method][d],
+                                          len(test)*n_missing),
+                    "occlusion_mode": "keep_only",
+                    "missing_valid_samples": n_missing,
+                })
+        if pi % max(1, len(starts)//10) == 0 or pi == len(starts)-1:
+            print(f"[{label}/{channel}] keep-only {pi+1}/{len(starts)}", flush=True)
+    overall = []
+    for method in methods:
+        lo, hi = bootstrap_rmse(sse_events[method], total_per_event,
+                                args.seed + 1000 + methods.index(method),
+                                args.bootstrap)
+        overall.append({
+            "dataset": label, "channel": channel, "method": method,
+            "rmse": rmse_from_sse(sse_events[method].sum(),
+                                  len(test)*total_per_event),
+            "ci95_low": lo, "ci95_high": hi,
+            "evaluation_events": len(test), "training_events": len(training),
+            "tuning_events": len(tuning), "mask_positions": len(starts),
+            "mask_width_samples": width, "mask_width_ns": width*dt_ps/1000.,
+            "components": args.components,
+            "occlusion_mode": "keep_only",
+        })
+    meta = {
+        "dataset": label, "channel": channel, "source_run": str(source),
+        "dataset_identity": manifest.get("analysis_protocol_identity"),
+        "training_events": len(training), "tuning_events": len(tuning),
+        "evaluation_events": len(test), "waveform_samples": length,
+        "sample_interval_ps": dt_ps, "mask_width_samples": width,
+        "mask_positions": len(starts), "methods": list(methods),
+        "occlusion_mode": "keep_only",
+        "knn_k": 1, "knn_distance": "paired_observed_window_euclidean",
+        "baseline": "per_detector_development_sample_median",
+        "ppca": "posterior_mean_conditioned_on_retained_window",
+        "signal_units": "mV",
+    }
+    return rows, overall, meta
 
 
 def evaluate_configuration(label, results, channel, args, output):
@@ -192,6 +309,11 @@ def evaluate_configuration(label, results, channel, args, output):
         len(control_waves), size=n_reference, replace=False
     )
     reference_waves = control_waves[reference_ids]
+
+    if args.occlusion_mode == "keep_only":
+        return keep_only_benchmark(
+            label, channel, args, waves, time_ps, sample_mask,
+            training, tuning, evaluation, starts, width, dt_ps, source, manifest)
 
     models = []
     prepared_masks = []
@@ -317,6 +439,7 @@ def write_csv(path, rows):
 
 def write_latex(path, rows):
     configs = sorted({(r["dataset"], r["channel"]) for r in rows})
+    methods = list(dict.fromkeys(r["method"] for r in rows))
     lines = [
         r"\begin{table}[t]", r"\centering",
         r"\caption{Held-out waveform reconstruction RMSE in mV. Confidence intervals are event-bootstrap 95\% intervals.}",
@@ -327,7 +450,8 @@ def write_latex(path, rows):
     ]
     for dataset, channel in configs:
         subset = [r for r in rows if r["dataset"] == dataset and r["channel"] == channel]
-        hermite = next(r["rmse"] for r in subset if r["method"] == "hermite")
+        reference_method = "hermite" if "hermite" in methods else "median"
+        hermite = next(r["rmse"] for r in subset if r["method"] == reference_method)
         for r in subset:
             delta = 100.0 * (1.0 - r["rmse"] / hermite) if hermite else 0.0
             label = LABELS[r["method"]].replace("--", r"\textendash{}")
@@ -348,9 +472,10 @@ def save_overall_plot(rows, output):
     scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     x = np.arange(len(configs), dtype=np.float64)
     total_width = 0.82
-    bar_width = total_width / len(METHODS)
+    methods = list(dict.fromkeys(r["method"] for r in rows))
+    bar_width = total_width / len(methods)
     fig, ax = plt.subplots(figsize=(max(9.0, 1.7 * len(configs)), 5.2))
-    for mi, method in enumerate(METHODS):
+    for mi, method in enumerate(methods):
         values, low, high = [], [], []
         for dataset, channel in configs:
             row = next(r for r in rows if r["dataset"] == dataset and r["channel"] == channel
@@ -373,7 +498,7 @@ def save_overall_plot(rows, output):
     ax.set_ylabel(f"Pooled held-out RMSE ({unit})")
     ax.set_title("Overall imputation reconstruction error")
     ax.grid(axis="y", alpha=0.25)
-    ax.legend(fontsize="small", ncol=min(3, len(METHODS)))
+    ax.legend(fontsize="small", ncol=min(3, len(methods)))
     ax.margins(y=0.18)
     fig.tight_layout()
     fig.savefig(output / "overall_rmse.pdf", bbox_inches="tight")
@@ -393,6 +518,9 @@ def main():
     parser.add_argument("--components", type=int, default=32)
     parser.add_argument("--n-baselines", type=int, default=8,
                         help="Number of non-evaluation reference waveforms for original TSHAP substitution")
+    parser.add_argument("--occlusion-mode", choices=("remove_window", "keep_only"),
+                        default="remove_window",
+                        help="Remove window (legacy) or retain only window and impute exterior")
     parser.add_argument("--mask-ns", type=float, default=0.25)
     parser.add_argument("--mask-stride-samples", type=int)
     parser.add_argument("--eval-events", type=int, default=500)
@@ -431,7 +559,8 @@ def main():
     summary = {
         "description": "Held-out reconstruction benchmark in physical mV units; original TSHAP multi-baseline substitution is evaluated as expected reconstruction error over reference segments; event-level bootstrap CIs.",
         "configurations": configurations,
-        "methods": list(METHODS), "method_labels": LABELS,
+        "methods": list(dict.fromkeys(r["method"] for r in all_overall)),
+        "occlusion_mode": args.occlusion_mode, "method_labels": LABELS,
         "mask_width_ns": args.mask_ns, "seed": args.seed,
         "n_baselines": args.n_baselines,
         "signal_units": "mV; plot values use µV if all RMSE values are below 1 mV",
