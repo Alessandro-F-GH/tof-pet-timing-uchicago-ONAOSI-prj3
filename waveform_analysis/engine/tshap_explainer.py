@@ -34,7 +34,7 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 9
+TSHAP_METHOD_VERSION = 10
 GLOBAL_PLOT_VERSION = 20
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
@@ -503,12 +503,14 @@ def _two_feature_shapley(full, empty, keep_only, remove_window):
 
 
 def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None,
-                   sample_mask=None):
+                   sample_mask=None, conditional_samples=16, sampling_seed=42):
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
         raise ImportError("TSHAP requires the upstream dependency: pip install tshap==0.0.1") from exc
 
+    if conditional_samples < 1:
+        raise ValueError("conditional_samples must be >= 1")
     if imputer is None:
         raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
 
@@ -593,36 +595,45 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
             return retained
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
-            sample = np.asarray(input_sample, np.float32)
+            import hashlib
+            sample = np.asarray(input_sample, dtype=np.float32)
             if sample.ndim != 2 or sample.shape[0] != 2:
                 raise ValueError("Expected one two-detector waveform")
-            original = np.asarray(fnc(sample[None]), np.float64)
-            empty = np.asarray(fnc(imputer.unconditional_mean()[None]), np.float64)
-            if original.shape != (1,) or empty.shape != (1,):
-                raise ValueError("Predictor must return one scalar per event")
+            full = np.asarray(fnc(sample[None]), np.float64)
+            if full.shape != (1,):
+                raise ValueError("Invalid full-waveform prediction")
+            if not hasattr(self, "_unconditional_prediction"):
+                reference_rng = np.random.default_rng(sampling_seed + 117)
+                draws = imputer.sample_unconditional(conditional_samples, reference_rng)
+                self._unconditional_prediction = float(np.mean(fnc(draws)))
+            empty = self._unconditional_prediction
+            # Event-dependent deterministic stream prevents stochastic changes
+            # between repeated calls and independent explanations.
+            hash_seed = int.from_bytes(
+                hashlib.blake2b(sample.tobytes(), digest_size=8).digest(), "little")
+            rng = np.random.default_rng(hash_seed ^ int(sampling_seed))
             scores = np.empty(len(window_positions), np.float64)
-            for first in range(0, len(window_positions), predict_batch_size):
-                part = window_positions[first:first + predict_batch_size]
-                keep_candidates, remove_candidates = [], []
-                for position in part:
-                    channel, start = int(position[0]), int(position[1])
-                    width = int(position[2]) if len(position) == 3 else self.window_length
-                    stop = min(start + width, sample.shape[-1])
-                    if channel != -1 or start < 0 or stop <= start:
-                        raise ValueError("Invalid paired temporal window")
-                    keep_candidates.append(imputer.reconstruct(
-                        sample[None], start, stop-start, keep_only=True,
-                        sample_mask=self.sample_mask)[0])
-                    remove_candidates.append(imputer.reconstruct(
-                        sample[None], start, stop-start, keep_only=False,
-                        sample_mask=self.sample_mask)[0])
-                candidates = np.ascontiguousarray(
-                    np.stack(keep_candidates + remove_candidates), dtype=np.float32)
-                values = np.asarray(fnc(candidates), np.float64)
-                if values.shape != (2 * len(part),):
-                    raise ValueError("Invalid coalition prediction batch")
-                scores[first:first + len(part)] = _two_feature_shapley(
-                    original[0], empty[0], values[:len(part)], values[len(part):])
+            for i, position in enumerate(window_positions):
+                channel, start = int(position[0]), int(position[1])
+                width = int(position[2]) if len(position) == 3 else self.window_length
+                width = min(width, sample.shape[-1] - start)
+                if channel != -1 or start < 0 or width < 1:
+                    raise ValueError("Invalid temporal attribution window")
+                keep = imputer.sample_conditional(
+                    sample[None], start, width, keep_only=True,
+                    samples=conditional_samples, rng=rng,
+                    sample_mask=self.sample_mask)[0]
+                remove = imputer.sample_conditional(
+                    sample[None], start, width, keep_only=False,
+                    samples=conditional_samples, rng=rng,
+                    sample_mask=self.sample_mask)[0]
+                # Predictions are internally batched by the bounded caller.
+                predictions = np.asarray(fnc(np.concatenate((keep, remove))), np.float64)
+                if predictions.shape != (2 * conditional_samples,):
+                    raise ValueError("Invalid conditional model prediction shape")
+                scores[i] = _two_feature_shapley(
+                    full[0], empty, predictions[:conditional_samples].mean(),
+                    predictions[conditional_samples:].mean())
             self.last_window_positions = [(-1, int(p[1])) for p in window_positions]
             self.last_window_scores = scores.copy()
             return scores
@@ -1825,7 +1836,7 @@ def explain_tshap(
     window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
     roi=False, overwrite=False, imputer_components=32,
     imputer_fit_events=2000, imputer_tuning_events=300,
-    imputer_slope_points=5, logger=None,
+    imputer_slope_points=5, conditional_samples=16, logger=None,
 ):
     """Explain saved regressors using paired exact two-player Shapley values.
 
@@ -1840,6 +1851,7 @@ def explain_tshap(
         ("predict_batch_size", predict_batch_size),
         ("imputer_components", imputer_components),
         ("imputer_fit_events", imputer_fit_events),
+        ("conditional_samples", conditional_samples),
         ("imputer_tuning_events", imputer_tuning_events),
         ("imputer_slope_points", imputer_slope_points),
     ):
@@ -1926,17 +1938,18 @@ def explain_tshap(
                 "window_samples": int(window_samples),
                 "stride_samples": int(stride_samples),
                 "predict_batch_size": int(predict_batch_size),
+                "conditional_samples": int(conditional_samples),
                 "seed": sampling_seed,
                 "roi": bool(roi),
                 "imputer": {
-                    "method": "joint_ppca_shapley",
+                    "method": "joint_ppca_conditional_mc",
                     "components": int(imputer_components),
                     "fit_events": int(imputer_fit_events),
                     "tuning_events": 0,
                 },
             }
             identity = {
-                "method": "paired_joint_ppca_two_player_shapley",
+                "method": "paired_joint_ppca_conditional_mc_shapley",
                 "method_version": TSHAP_METHOD_VERSION,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -2028,6 +2041,7 @@ def explain_tshap(
                             window_samples, stride_samples, roi,
                             predict_batch_size, imputer=imputer,
                             sample_mask=sample_mask,
+                            conditional_samples=conditional_samples, sampling_seed=int(seed),
                         )
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         raw_scores = []
@@ -2134,9 +2148,10 @@ def explain_tshap(
                     "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name,
                     "window_name": window_name,
-                    "imputation": "joint_ppca_shapley",
+                    "imputation": "joint_ppca_conditional_mc",
                     "imputer": {
-                        "method": "Joint two-detector PPCA conditional mean for both complementary coalitions",
+                        "method": "Joint PPCA conditional Monte Carlo model-prediction expectation",
+                        "conditional_samples": int(conditional_samples),
                         "components": int(imputer_components),
                         "training_events": int(imputer_metadata["n_training_events"]),
                         "tuning_events": int(imputer_metadata["n_tuning_events"]),
@@ -2231,6 +2246,7 @@ def explain_tshap_local(
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
     imputer_tuning_events=300, imputer_slope_points=5,
+    conditional_samples=16,
 ):
     """Explain a small, reproducible set of good/bad and typical blind events.
 
@@ -2243,6 +2259,7 @@ def explain_tshap_local(
         ("window_samples", window_samples),
         ("stride_samples", stride_samples),
         ("predict_batch_size", predict_batch_size),
+        ("conditional_samples", conditional_samples),
     ):
         _validate_positive_int(name, value)
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -2323,6 +2340,7 @@ def explain_tshap_local(
                 window_samples=window_samples,
                 stride_samples=stride_samples,
                 predict_batch_size=predict_batch_size,
+                conditional_samples=conditional_samples,
                 seed=int(seed),
                 imputer_components=imputer_components,
                 imputer_fit_events=imputer_fit_events,
@@ -2330,8 +2348,8 @@ def explain_tshap_local(
                 imputer_slope_points=imputer_slope_points,
             )
             identity = {
-                "method": "paired_joint_ppca_two_player_local_shapley",
-                "method_version": 7,
+                "method": "paired_joint_ppca_conditional_mc_local_shapley",
+                "method_version": 8,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -2478,6 +2496,7 @@ def explain_tshap_local(
                             window_samples, stride_samples, roi=False,
                             predict_batch_size=predict_batch_size, imputer=imputer,
                             sample_mask=sample_mask,
+                            conditional_samples=conditional_samples, sampling_seed=int(seed),
                         )
                         local_maps = np.empty_like(waves, dtype=np.float64)
                         local_scores = []
