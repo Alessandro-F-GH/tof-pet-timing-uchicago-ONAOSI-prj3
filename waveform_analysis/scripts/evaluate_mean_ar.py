@@ -26,7 +26,7 @@ from waveform_analysis.data.dataset import load_prepared_dataset
 from waveform_analysis.data.named_cache import resolve_alias
 from waveform_analysis.signal.sample_mask import control_clipping_sample_mask
 
-METHODS = ("mean", "mean_ar", "standardized_ar", "gru", "knn", "knn_boundary")
+METHODS = ("mean", "mean_ar", "standardized_ar", "gru", "knn", "knn_boundary", "knn_weighted")
 
 
 def _aliases(root, mode, window, role, dataset_name=None):
@@ -439,6 +439,83 @@ def forecast_knn(training, evaluation, mask, cutoff, end, k_values, batch_size=3
     return forecasts
 
 
+def prefix_weights(time_ps, lo, cutoff, tau_ns):
+    """Exponentially prioritize recent observed samples; inf is uniform kNN."""
+    times = np.asarray(time_ps[lo:cutoff], dtype=np.float64)
+    if np.isinf(tau_ns):
+        return np.ones(len(times), dtype=np.float64)
+    ages_ns = (times[-1] - times) / 1000.
+    weights = np.exp(-ages_ns / tau_ns)
+    # Relative weights suffice for neighbor ordering; avoid dividing by tiny sums.
+    return weights / max(weights.sum(), 1e-300)
+
+
+def forecast_weighted_knn(training, evaluation, mask, cutoff, end, k,
+                          tau_ns, time_ps, batch_size=32):
+    """Predict development-neighbor mean using prefix weighted L2 distance."""
+    lo, _ = segment_for_cutoff_for_gru(mask, cutoff)
+    weights = prefix_weights(time_ps, lo, cutoff, tau_ns)
+    root_weights = np.sqrt(weights)
+    source = np.asarray(training[:, lo:cutoff], np.float64) * root_weights
+    target = np.asarray(evaluation[:, lo:cutoff], np.float64) * root_weights
+    source_sq = np.einsum("ij,ij->i", source, source)
+    predictions = np.empty((len(target), end-cutoff), dtype=np.float64)
+    for first in range(0, len(target), batch_size):
+        chunk = target[first:first+batch_size]
+        dist2 = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
+                 + source_sq[None, :] - 2. * chunk @ source.T)
+        np.maximum(dist2, 0., out=dist2)
+        nearest = np.argsort(dist2, axis=1, kind="stable")[:, :k]
+        predictions[first:first+len(chunk)] = (
+            training[nearest, cutoff:end].mean(axis=1))
+    return predictions
+
+
+def select_weighted_knn(training, mean, mask, cutoff, end, ks, taus,
+                        time_ps, batch_size=32):
+    """Joint cutoff-specific k/tau selection using development LOO only."""
+    lo, _ = segment_for_cutoff_for_gru(mask, cutoff)
+    n = len(training)
+    candidates = sorted(set(k for k in ks if 1 <= k < n))
+    if not candidates:
+        raise ValueError("No valid development-only kNN neighbor candidates")
+    future_valid = np.asarray(mask[cutoff:], bool)
+    full_truth = np.asarray(training[:, cutoff:][:, future_valid], np.float64)
+    future_valid_local = future_valid[:end-cutoff]
+    # Remaining valid positions after end use the same unconditional mean
+    # for every candidate; only the locally forecasted portion can change.
+    target = np.asarray(training[:, cutoff:end][:, future_valid_local],
+                        np.float64)
+    total_errors = {}
+    for tau in taus:
+        root_w = np.sqrt(prefix_weights(time_ps, lo, cutoff, tau))
+        pref = np.asarray(training[:, lo:cutoff], np.float64) * root_w
+        norms = np.einsum("ij,ij->i", pref, pref)
+        squared = {k: 0. for k in candidates}
+        for first in range(0, n, batch_size):
+            last = min(n, first+batch_size)
+            batch = pref[first:last]
+            dist2 = (np.einsum("ij,ij->i", batch, batch)[:, None] +
+                     norms[None, :] - 2. * batch @ pref.T)
+            np.maximum(dist2, 0., out=dist2)
+            dist2[np.arange(last-first), np.arange(first, last)] = np.inf
+            nearest = np.argsort(dist2, axis=1, kind="stable")[:, :max(candidates)]
+            all_futures = training[nearest, cutoff:end][:, :, future_valid_local]
+            truth_batch = target[first:last]
+            for k in candidates:
+                prediction = all_futures[:, :k].mean(axis=1)
+                squared[k] += float(np.square(prediction-truth_batch).sum())
+        for k in candidates:
+            total_errors[(k, tau)] = squared[k] / max(target.size, 1)
+    # Error on post-mask mean fallback is common to every candidate, so
+    # optimizing the variable part is exactly equivalent to full-suffix MSE.
+    best_k, best_tau = min(
+        total_errors, key=lambda pair: (
+            total_errors[pair], pair[0],
+            -float("inf") if np.isinf(pair[1]) else pair[1]))
+    return best_k, best_tau, total_errors
+
+
 def boundary_correct_knn(evaluation, knn_suffix, cutoff, time_ps,
                          tau_ns=0.5):
     """Short exponential offset correction for the kNN forecast at cutoff.
@@ -519,18 +596,19 @@ def choose_indices(total, limit, seed):
 def plot_summary(rows, out, title):
     fig, ax = plt.subplots(figsize=(9, 5))
     colors = {"mean": "#333333", "mean_ar": "#1879B3",
-              "standardized_ar": "#35956C", "gru": "#8056B3", "knn": "#B35A7D", "knn_boundary": "#B88521"}
+              "standardized_ar": "#35956C", "gru": "#8056B3", "knn": "#B35A7D", "knn_boundary": "#B88521", "knn_weighted": "#187F88"}
     ar_order = max(r["order"] for r in rows
                    if r["method"] in ("mean_ar", "standardized_ar"))
     for method in METHODS:
         series = sorted(
             (r for r in rows if r["method"] == method and
-             (method in ("mean", "gru", "knn", "knn_boundary") or r["order"] == ar_order)),
+             (method in ("mean", "gru", "knn", "knn_boundary", "knn_weighted") or r["order"] == ar_order)),
             key=lambda r: r["cutoff_sample"])
         if not series:
             continue
         label = ("kNN (selected k)" if method == "knn" else
-                 "Boundary-corrected kNN" if method == "knn_boundary" else method)
+                 "Boundary-corrected kNN" if method == "knn_boundary" else
+                 "Weighted kNN (selected k, tau)" if method == "knn_weighted" else method)
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
                 marker="o", color=colors[method], label=label)
@@ -567,6 +645,8 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     gru_examples = {}
     knn_examples = {}
     boundary_examples = {}
+    weighted_examples = {}
+    weighted_selection = {}
     knn_selection = {}
     for cutoff in cutoffs:
         cutoff = int(cutoff)
@@ -640,6 +720,46 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                 "stable": True, "root_radius": 0.,
             })
             knn_examples[cutoff] = (best_k, knn_full[0].copy())
+            if args.with_weighted_knn:
+                taus = sorted(set(args.knn_tau_ns + [float("inf")]))
+                weighted_k, weighted_tau, dev_grid = select_weighted_knn(
+                    training, mean, mask, cutoff, stop, args.knn_k, taus,
+                    time_ps, batch_size=args.knn_batch_size)
+                weighted_selection[str(cutoff)] = {
+                    "chosen_k": weighted_k,
+                    "chosen_tau_ns": ("inf" if np.isinf(weighted_tau)
+                                      else float(weighted_tau)),
+                    "development_loo_mse_by_k_tau": {
+                        f"k={k},tau_ns={'inf' if np.isinf(tau) else tau}":
+                        float(mse) for (k, tau), mse in dev_grid.items()},
+                }
+                print(f"[{name}] cutoff {cutoff}: weighted kNN "
+                      f"k={weighted_k} tau={weighted_tau:g} ns, "
+                      f"LOO MSE={dev_grid[(weighted_k, weighted_tau)]:.6g}",
+                      flush=True)
+                weighted_suffix = forecast_weighted_knn(
+                    training, evaluation, mask, cutoff, stop,
+                    weighted_k, weighted_tau, time_ps,
+                    batch_size=args.knn_batch_size)
+                weighted_full = baseline_full.copy()
+                weighted_full[:, :stop-cutoff] = weighted_suffix
+                weighted_metric = metric_row(
+                    truth, weighted_full[:, future_valid], mv_scale)
+                rows.append({
+                    **weighted_metric, "method": "knn_weighted",
+                    "order": weighted_k,
+                    "cutoff_sample": cutoff,
+                    "cutoff_ns": float(time_ps[cutoff]/1000),
+                    "n_missing": int(np.count_nonzero(future_valid)),
+                    "ar_predicted_samples": stop-cutoff,
+                    "n_eval_events": len(eval_ids),
+                    "mse_improvement_percent": (
+                        100 * (1 - weighted_metric["mse_normalized"] /
+                               base["mse_normalized"])
+                        if base["mse_normalized"] > 0 else 0.),
+                    "stable": True, "root_radius": 0.,
+                })
+                weighted_examples[cutoff] = weighted_full[0].copy()
             if args.with_boundary_knn:
                 corrected = boundary_correct_knn(
                     evaluation, suffix, cutoff, time_ps[:stop],
@@ -730,6 +850,10 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
+        "weighted_knn": {"enabled": args.with_weighted_knn,
+                         "candidate_tau_ns": args.knn_tau_ns + [float("inf")],
+                         "selection": "development_leave_one_out",
+                         "per_cutoff": weighted_selection},
         "boundary_knn": {"enabled": args.with_boundary_knn,
                          "tau_ns": args.boundary_tau_ns,
                          "first_sample_anchor": "last_observed_value",
@@ -761,6 +885,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         ax.plot(ns[cutoff:], baseline, color="#C98740", label="Mean replacement")
         ax.plot(ns[cutoff:], prediction, color="#2B9C74",
                 label=f"Standardized AR (order {args.ar_orders[-1]})")
+        if cutoff in weighted_examples:
+            ax.plot(ns[cutoff:], weighted_examples[cutoff],
+                    color="#187F88", lw=1.2, label="Weighted kNN")
         if cutoff in boundary_examples:
             ax.plot(ns[cutoff:], boundary_examples[cutoff],
                     color="#B88521", lw=1.2, label="Boundary-corrected kNN")
@@ -813,6 +940,11 @@ def parse_args(argv=None):
                         help="kNN with exponentially decaying boundary offset")
     parser.add_argument("--boundary-tau-ns", type=float, default=0.5,
                         help="Fixed decay time of boundary correction in ns")
+    parser.add_argument("--with-weighted-knn", action="store_true",
+                        help="Jointly optimize k and exponential prefix-weight tau per cutoff")
+    parser.add_argument("--knn-tau-ns", nargs="+", type=float,
+                        default=[0.25, 0.5, 1., 2., 5.],
+                        help="Candidate decay times in ns; inf included automatically")
     parser.add_argument("--with-knn", action="store_true",
                         help="Compare nearest development-prefix waveforms")
     parser.add_argument("--knn-k", nargs="+", type=int, default=[1, 5, 20],
@@ -840,7 +972,9 @@ def parse_args(argv=None):
         parser.error("kNN neighbor counts and batch size must be positive")
     if args.boundary_tau_ns <= 0:
         parser.error("Boundary correction tau must be positive")
-    if args.with_boundary_knn:
+    if not args.knn_tau_ns or any(x <= 0 or np.isnan(x) for x in args.knn_tau_ns):
+        parser.error("kNN decay times must be positive")
+    if args.with_weighted_knn or args.with_boundary_knn:
         args.with_knn = True
     if args.n_cutoffs < 4:
         parser.error("At least 4 cutoffs required")
