@@ -63,36 +63,41 @@ def fingerprint(payload):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:20]
 
 
-def window_features(control, development, indices, args, seed):
-    """Fit both families from scratch on the entire observed prefix."""
+def batch_model_space(family):
+    """Read transform parameters directly from the checked-in batch model space."""
+    name = {"both": "direct_multirocket_rdst",
+            "multirocket": "direct_multirocket",
+            "rdst": "direct_rdst"}[family]
+    path = (Path(__file__).resolve().parents[1] / "config" /
+            "model_spaces" / f"{name}.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def window_features(control, development, indices, family, space, seed):
+    """Fit the full prefix using EXACT batch transform settings."""
     x_ctrl = np.ascontiguousarray(control[:, :, indices], dtype=np.float32)
     x_dev = np.ascontiguousarray(development[:, :, indices], dtype=np.float32)
-    pieces = []
-    counts = {}
-    if args.family in ("multirocket", "both"):
-        parameters = mr.transform_parameters({
-            "n_kernels": args.kernels,
-            "max_dilations_per_kernel": args.dilations,
-            "n_features_per_kernel": 4, "normalise": False,
-        }, {"transform": {"n_jobs": args.jobs, "batch_size": args.batch_size}})
-        model, _ = mr.fit_transform(parameters, x_ctrl, seed=seed, config={
-            "_frozen_transform_only": True}, shared=False)
+    configured = {key: spec["value"] for key, spec in space["parameters"].items()
+                  if spec["type"] == "fixed"}
+    execution = {"transform": space["transform"]}
+    pieces, counts = [], {}
+    if family in ("multirocket", "both"):
+        params = mr.transform_parameters(configured, execution)
+        model, _ = mr.fit_transform(
+            params, x_ctrl, seed=seed,
+            config={"_frozen_transform_only": True}, shared=False)
         feat = mr.transform(model, x_dev)
         pieces.append(np.asarray(feat, np.float32))
         counts["multirocket"] = int(feat.shape[1])
-    if args.family in ("rdst", "both"):
-        parameters = rd.transform_parameters({
-            "max_shapelets": args.shapelets,
-            "shapelet_lengths": [args.shapelet_length],
-            "proba_normalization": 0.8,
-            "threshold_percentiles": [5, 10],
-            "alpha_similarity": 0.5, "use_prime_dilations": False,
-        }, {"transform": {"n_jobs": args.jobs}})
-        model, _ = rd.fit_transform(parameters, x_ctrl, seed=seed+1, config={},
-                                    shared=False)
+        del feat, model
+    if family in ("rdst", "both"):
+        params = rd.transform_parameters(configured, execution)
+        model, _ = rd.fit_transform(
+            params, x_ctrl, seed=seed + 1, config={}, shared=False)
         feat = rd.transform(model, x_dev)
         pieces.append(np.asarray(feat, np.float32))
         counts["rdst"] = int(feat.shape[1])
+        del feat, model
     return np.concatenate(pieces, axis=1), counts
 
 
@@ -102,8 +107,7 @@ def alpha_grid(family):
             "rdst": "direct_rdst"}[family]
     path = Path(__file__).resolve().parents[1] / "config" / "model_spaces" / (name + ".json")
     space = json.loads(path.read_text(encoding="utf-8"))
-    # Kernel and shapelet counts are intentionally overridden for this study.
-    # Only the ORIGINAL Ridge penalty grid is reused here.
+    # The transform settings and penalty grids both match this batch model space.
     candidates = [
         {key: float(value) for key, value in candidate.items()
          if key in ("multirocket_alpha", "rdst_alpha", "ridge_alpha")}
@@ -359,22 +363,15 @@ def main():
     parser.add_argument("--start-ns", type=float, default=-2.)
     parser.add_argument("--end-ns", type=float, default=50.)
     parser.add_argument("--step-ns", type=float, default=2.)
-    parser.add_argument("--kernels", type=int, default=84)
-    parser.add_argument("--dilations", type=int, default=4)
-    parser.add_argument("--shapelets", type=int, default=16)
-    parser.add_argument("--shapelet-length", type=int, default=11)
     parser.add_argument("--max-control", type=int, default=1024)
     parser.add_argument("--max-development", type=int, default=3000)
-    parser.add_argument("--jobs", type=int, default=4)
-    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=None,
                         help="Override the existing batch seed (default: saved run seed)")
     args = parser.parse_args()
-    if args.step_ns <= 0 or args.end_ns <= args.start_ns or args.kernels < 84:
-        parser.error("Invalid time range or kernels (<84)")
-    if (args.shapelets < 1 or args.max_control < 10 or args.max_development < 10
-            or args.dilations < 1 or args.shapelet_length < 2):
-        parser.error("Invalid feature-transform settings")
+    if args.step_ns <= 0 or args.end_ns <= args.start_ns:
+        parser.error("Invalid time range")
+    if args.max_control < 10 or args.max_development < 10:
+        parser.error("Invalid sample counts")
     output = root_relative(args.output)
     output.mkdir(parents=True, exist_ok=True)
     waves, times, run, manifest, _, control, mask, target = load_wide_development(
@@ -402,8 +399,11 @@ def main():
         raise ValueError("Not enough development events for the configured CV folds")
     windows = temporal_cutoffs(times, mask, args.start_ns, args.end_ns,
                                args.step_ns)
+    space = batch_model_space(args.family)
+    shapelet_length = (max(space["parameters"]["shapelet_lengths"]["value"])
+                       if args.family in ("rdst", "both") else 0)
     if args.family in ("rdst", "both") and any(
-            len(indices) < args.shapelet_length for _, _, indices in windows):
+            len(indices) < shapelet_length for _, _, indices in windows):
         raise ValueError("Shapelet length exceeds an included cumulative window")
     split = make_cv_split(
         len(y),
@@ -426,6 +426,7 @@ def main():
         "alpha_selection": "full-window development CV and batch pruning",
         "fixed_alpha_across_cutoffs": True,
         "reference_feature_counts": reference_counts,
+        "batch_transform_settings": space,
         "feature_cache": False,
         "final_fit": False})
 
@@ -436,7 +437,8 @@ def main():
     print(f"Selecting fixed alphas with full window {start_full:g}..{end_full:g} ns",
           flush=True)
     full_features, full_counts = window_features(
-        controls, dev, full_indices, args, args.seed + 3 * (len(windows)-1))
+        controls, dev, full_indices, args.family, space,
+        args.seed + 3 * (len(windows)-1))
     full_rdst_ranges = ([(int(full_counts["multirocket"]),
                           int(full_features.shape[1]))]
                         if args.family == "both" else [])
@@ -496,7 +498,7 @@ def main():
             print(f"[{i+1}/{len(windows)}] fitting entire window "
                   f"{args.start_ns:g}..{cutoff:g} ns", flush=True)
             features, counts = window_features(
-                controls, dev, indices, args, args.seed + 3*i)
+                controls, dev, indices, args.family, space, args.seed + 3*i)
             rdst_ranges = ([(int(counts["multirocket"]),
                              int(features.shape[1]))]
                            if args.family == "both" else [])
