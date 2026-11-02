@@ -20,104 +20,85 @@ from waveform_analysis.engine.tshap_explainer import (
 )
 
 
-class _ZeroImputer:
-    def impute_segment_batch(self, waveforms, detector, start, width):
-        return np.zeros((len(waveforms), width), dtype=np.float64)
+class _MeanImputer:
+    def unconditional_mean(self):
+        return np.zeros((2, 32), dtype=np.float32)
+
+    def reconstruct(self, waveforms, start, width, *, keep_only, sample_mask=None):
+        result = np.zeros_like(waveforms)
+        if keep_only:
+            result[:, :, start:start+width] = waveforms[:, :, start:start+width]
+        else:
+            result[:] = waveforms
+            result[:, :, start:start+width] = 0
+        return result
+
+
+def test_two_player_shapley_formula_and_coalition_symmetry():
+    from waveform_analysis.engine.tshap_explainer import _two_feature_shapley
+    assert _two_feature_shapley(10., 2., 5., 7.) == 3.
+    assert _two_feature_shapley(10., 2., 7., 5.) == 5.
+    # Both complement scores add to full minus empty.
+    assert 3. + 5. == 10. - 2.
 
 
 @pytest.mark.parametrize("roi", [False, True])
-def test_paired_window_occlusion_is_single_event_and_signed(roi):
-    rng = np.random.default_rng(47)
-    sample = rng.uniform(0.1, 1, size=(2, 32)).astype(np.float32)
+def test_paired_window_shapley_for_linear_model(roi):
+    sample = np.ones((2, 32), np.float32)
     explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
-                              imputer=_ZeroImputer())
-    positions = [(-1, 4, 8), (-1, 8, 8), (-1, 16, 8)]
+                              imputer=_MeanImputer())
     def predict(values):
-        return np.asarray(values)[:, 0].sum(axis=1) - 2 * np.asarray(values)[:, 1].sum(axis=1)
-    expected = np.asarray([
-        sample[0, 4:12].sum() - 2 * sample[1, 4:12].sum(),
-        sample[0, 8:16].sum() - 2 * sample[1, 8:16].sum(),
-        sample[0, 16:24].sum() - 2 * sample[1, 16:24].sum(),
-    ])
-    observed = explainer._calculate_window_attrib_scores(
-        predict, sample, np.zeros((5, 2, 32)), positions)
-    np.testing.assert_allclose(observed, expected, rtol=1e-6)
-    other = explainer._calculate_window_attrib_scores(
-        predict, sample, np.full((1, 2, 32), 99.0), positions)
-    np.testing.assert_allclose(other, observed, rtol=0, atol=0)
-
-
-def test_paired_occlusion_masks_both_detectors_once_and_returns_one_score():
-    sample = np.ones((2, 16), dtype=np.float32)
-    explainer = _new_explainer(
-        4, 4, False, predict_batch_size=4, imputer=_ZeroImputer(),
-    )
-
-    def predict(values):
-        values = np.asarray(values)
-        return values[:, 0].sum(axis=1) + 2.0 * values[:, 1].sum(axis=1)
-
-    scores = explainer._calculate_window_attrib_scores(
-        predict, sample, np.zeros((3, 2, 16)), [(-1, 4, 4)]
-    )
-    np.testing.assert_allclose(scores, [12.0])
-    assert explainer.last_window_positions == [(-1, 4)]
-    np.testing.assert_allclose(explainer.last_window_scores, [12.0])
-
-    starts, raw = __import__(
-        "waveform_analysis.engine.tshap_explainer", fromlist=["_raw_window_data"]
-    )._raw_window_data(explainer)
-    np.testing.assert_array_equal(starts, [4])
-    np.testing.assert_allclose(raw, [[12.0]])
+        data = np.asarray(values)
+        return data[:, 0].sum(axis=1) + 2 * data[:, 1].sum(axis=1)
+    score = explainer._calculate_window_attrib_scores(
+        predict, sample, sample[None], [(-1, 4, 8), (-1, 8, 8)])
+    np.testing.assert_allclose(score, [24., 24.])
+    assert explainer.last_window_positions == [(-1, 4), (-1, 8)]
 
 
 def test_tshap_constant_prediction_is_zero():
-    model = _new_explainer(6, 3, False, 4, imputer=_ZeroImputer())
-    sample = np.ones((2, 24), dtype=np.float32)
-    values = model._calculate_window_attrib_scores(
-        lambda values: np.full(len(values), 7.0), sample, sample[None],
-        [(-1, 0, 6), (-1, 8, 6)])
-    np.testing.assert_allclose(values, 0)
+    sample = np.ones((2, 32), np.float32)
+    explainer = _new_explainer(8, 4, False, 4, imputer=_MeanImputer())
+    score = explainer._calculate_window_attrib_scores(
+        lambda data: np.full(len(data), 7.), sample, sample[None],
+        [(-1, 4, 8)])
+    np.testing.assert_allclose(score, 0.)
 
 
-def test_conditional_imputer_cache_reuses_fitted_parameters(tmp_path, monkeypatch):
+def test_joint_ppca_cache_reuses_fitted_parameters(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from waveform_analysis.engine import tshap_explainer as t
+    from waveform_analysis.data.dataset import InputTransform
     rng = np.random.default_rng(3)
-    waves = rng.normal(0.5, .15, (70, 2, 60)).astype(np.float32)
+    waves = rng.uniform(.2, .8, (70, 2, 60)).astype(np.float32)
+    transform = InputTransform(np.zeros((1, 2, 1), np.float32),
+                               np.ones((1, 2, 1), np.float32))
     control = SimpleNamespace(
         directory=tmp_path / "control",
         n_events=len(waves), event_index=np.arange(len(waves)),
-        energy_windows=waves, energy_time_ps=np.arange(60)*12.5,
+        energy_windows=waves, energy_transform=transform,
+        energy_time_ps=np.arange(60) * 12.5,
         manifest={"analysis_protocol_identity": "control-v1",
                   "event_population_identity": "population-v1"})
-    config = {
-        "_board": "UC",
-        "window_ns": {"start": -2, "end": 50},
-        "output_dir": str(tmp_path / "UC" / "test_ridge"),
-        "preprocessing": {"artifact_root": str(tmp_path / "artifact_store")},
-    }
-    options = dict(window_samples=20, stride_samples=20,
-                   components=4, fit_events=30, tuning_events=12,
-                   slope_points=5, batch_size=8, seed=42)
-    first, first_meta = t._cached_hermite_ppca_imputer(
+    config = {"_board": "UC", "window_ns": {"start": -2, "end": 50},
+              "mode": "energy_to_energy",
+              "output_dir": str(tmp_path / "UC" / "test_ridge"),
+              "preprocessing": {"artifact_root": str(tmp_path / "artifact_store")}}
+    options = dict(components=4, fit_events=30, seed=42)
+    first, meta = t._cached_joint_ppca_imputer(
         control, "energy_to_energy", config, **options)
-    assert first_meta["cache_hit"] is False
+    assert not meta["cache_hit"]
     def forbidden(*args, **kwargs):
-        raise AssertionError("Imputer was refitted on cache hit")
-    monkeypatch.setattr(t, "_fit_hermite_ppca_imputer", forbidden)
-    second, second_meta = t._cached_hermite_ppca_imputer(
+        raise AssertionError("Unexpected joint PPCA refit")
+    monkeypatch.setattr(t, "_fit_joint_ppca_imputer", forbidden)
+    second, metadata = t._cached_joint_ppca_imputer(
         control, "energy_to_energy", config, **options)
-    assert second_meta["cache_hit"] is True
-    assert second_meta["cache_identity"] == first_meta["cache_identity"]
+    assert metadata["cache_hit"]
+    assert metadata["cache_identity"] == meta["cache_identity"]
     np.testing.assert_allclose(
-        first.impute_segment_batch(waves[:3], 0, 20, 20),
-        second.impute_segment_batch(waves[:3], 0, 20, 20),
-        rtol=1e-12, atol=1e-12)
-    third, third_meta = t._cached_hermite_ppca_imputer(
-        control, "energy_to_energy", config, **options)
-    assert third_meta["cache_hit"] is True
-    assert third_meta["cache_identity"] == first_meta["cache_identity"]
+        first.reconstruct(waves[:2], 5, 10, keep_only=True),
+        second.reconstruct(waves[:2], 5, 10, keep_only=True),
+        atol=1e-6)
 
 
 def test_event_selection_is_reproducible():
