@@ -30,29 +30,34 @@ script independently fits:
 - **Standardized AR**: Ridge autoregression of
   `(x[t] - mean[t]) / std[t]`; standard deviations are floored.
 
-Optional causal GRU comparison (requires PyTorch, already listed in requirements):
+Optional **cutoff-specific GRU encoder + direct forecasting decoder**:
 
 ```bash
-python -m waveform_analysis.scripts.evaluate_mean_ar \\
-  --uc-cache-root "$HOME/UC_cache" \\
-  --fbk-cache-root "$HOME/FBK_cache" \\
-  --output-root "$HOME/mean_ar_gru_results" \\
-  --ar-orders 8 16 32 64 128 \\
-  --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \\
-  --with-gru --gru-hidden 32 --gru-sequence 64 \\
+python -m waveform_analysis.scripts.evaluate_mean_ar \
+  --uc-cache-root "$HOME/UC_cache" \
+  --fbk-cache-root "$HOME/FBK_cache" \
+  --output-root "$HOME/mean_ar_gru_results" \
+  --ar-orders 8 16 32 64 128 \
+  --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \
+  --with-gru --gru-hidden 32 --gru-future-samples 128 \
   --gru-epochs 8 --gru-steps-per-epoch 32
 ```
 
-With `--with-gru`, a separate single-detector GRU is trained on
-development waveforms for each board/mode/detector. It predicts the next
-normalized residual from previous residual, position and mean; forecasting
-starts from the real contiguous prefix and proceeds recursively, without
-access to the evaluation suffix. The GRU uses the same cutoff, mask, blind
-events and full valid-suffix scoring as the AR baselines. After the first
-masked region it falls back to the population mean, just like AR.
-This first comparison is deterministic and **does not sample** from a
-probabilistic waveform distribution. Hyperparameters are fixed, not tuned on
-blind data.
+With `--with-gru`, one independent GRU is fitted **per cutoff, board, mode,
+and detector** on development waveforms. The GRU encoder reads the entire
+real contiguous prefix (not only the last value). Its decoder combines the
+encoded prefix with target-time coordinates and frozen development mean/std,
+then predicts future residuals **directly**. No autoregressive rollout or
+future waveform values are used during evaluation. Training minimizes
+future-waveform MSE by randomly sampling positions across the remaining
+valid interval each step. Following a masked boundary, predictions revert
+to the mean as in the AR baseline. This is a deterministic conditional-mean
+forecaster, not a probabilistic imputer.
+
+Each cutoff has a saved `gru_cutoff_XXXXX.pt` checkpoint. On rerun, matching
+settings and development indices allow reuse, avoiding unnecessary retraining.
+The checkpoints from the previous one-step GRU implementation cannot be
+reused with this architecture. Training cost scales with number of cutoffs.
 
 Each AR order has its own regression coefficients. Ridge uses a regularization
 parameter scaled to mean input energy (`--ridge-alpha`, default 0.001).
@@ -83,13 +88,15 @@ to the mean baseline.
 
 Each `OUTPUT/BOARD/MODE/detector_N/` contains:
 
-- `metrics.csv`: held-out errors for every cutoff, order and method (including GRU when enabled).\n- `gru_forecaster.pt`: learned GRU weights when enabled.
+- `metrics.csv`: held-out errors for every cutoff, order and method (including GRU when enabled).\n- `gru_cutoff_XXXXX.pt`: per-cutoff GRU encoder-decoder checkpoints (when enabled).
 - `model.json`: population provenance, selected event indices,
   per-position mean/std, fit settings, AR coefficients and characteristic-root
   stability.
 - `rmse_vs_cutoff.png`: error versus cutoff for mean baseline and the
   largest tested AR order.
-- `waveform_examples/waveform_cutoff_XXXXX.png`: one held-out waveform reconstruction\n  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), optional GRU, the cutoff, and\n  the next mask boundary when applicable.
+- `waveform_examples/waveform_cutoff_XXXXX.png`: one held-out waveform reconstruction
+  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), optional GRU, the cutoff, and
+  the next mask boundary when applicable.
 
 **Limits:** deterministic forecasts approach the learned mean when residual
 memory vanishes; low reconstruction MSE is not proof of realistic stochastic
