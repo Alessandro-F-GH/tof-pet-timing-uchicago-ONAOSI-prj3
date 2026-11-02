@@ -1515,102 +1515,13 @@ def _explanation_destination(output_root, run_directory):
 
 
 
-def _window_imputer_destination(output_root, run_directory, config):
-    """Store one shared imputer bundle beside all model-specific TSHAP outputs."""
-    batch = batch_root(run_directory)
-    family = mode_family(config["mode"])
-    window = str(config.get("window_name") or "unknown_window")
-    return Path(output_root).resolve() / batch.name / family / window / "tshap_imputer"
-
-
-def _publish_window_imputer(destination, imputer_metadata, identity):
-    """Publish the fitted imputer and its provenance once per window."""
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    identity_path = destination / "summary.json"
-    artifact_path = destination / "imputer.npz"
-    fingerprint = canonical_hash(identity)
-    if identity_path.is_file() and artifact_path.is_file():
-        try:
-            existing = json.loads(identity_path.read_text(encoding="utf-8"))
-            if existing.get("identity_sha256") == fingerprint:
-                return destination
-        except (OSError, ValueError):
-            pass
-    source = Path(imputer_metadata["cache_file"])
-    if not source.is_file():
-        raise FileNotFoundError(f"Cached TSHAP imputer artifact is missing: {source}")
-    temporary = destination / ".imputer.npz.tmp"
-    shutil.copy2(source, temporary)
-    os.replace(temporary, artifact_path)
-    atomic_json(identity_path, {
-        "identity_sha256": fingerprint,
-        "imputer_cache_identity": imputer_metadata["cache_identity"],
-        "imputer_cache_file": str(source),
-        "cache_hit": bool(imputer_metadata["cache_hit"]),
-        "training_events": int(imputer_metadata["n_training_events"]),
-        "tuning_events": int(imputer_metadata["n_tuning_events"]),
-        "explained_variance_ratio_joint": imputer_metadata["explained_variance_ratio_joint"],
-        "settings": identity,
-    })
-    return destination
-
-
-def _window_imputer_identity(control, config, *, window_samples, stride_samples,
-                             components, fit_events, tuning_events, slope_points,
-                             batch_size, seed):
-    """Only fitting-dependent inputs: explanation windows never cause a refit."""
-    family = mode_family(config["mode"])
-    times = np.asarray(getattr(control, f"{family}_time_ps"), dtype=np.float64)
-    transform = getattr(control, f"{family}_transform")
-    return {
-        "method": "joint_ppca_shapley_v1",
-        "control_identity": control.manifest.get("analysis_protocol_identity"),
-        "control_population": control.manifest.get("event_population_identity"),
-        "control_artifact": str(control.directory.name),
-        "mode": config["mode"],
-        "time_grid_hash": canonical_hash(times.tolist()),
-        "transform_minimum": np.asarray(transform.minimum).tolist(),
-        "transform_maximum": np.asarray(transform.maximum).tolist(),
-        "components": int(components),
-        "fit_events": int(fit_events),
-        "seed": int(seed),
-    }
-
-
-def _get_window_imputer(cache, control, config, output_root, run_directory, *,
-                           window_samples, stride_samples, components, fit_events,
-                           tuning_events, slope_points, batch_size, seed):
-    """Return the single fitted imputer shared by models using the same window."""
-    identity = _window_imputer_identity(
-        control, config, window_samples=window_samples,
-        stride_samples=stride_samples, components=components,
-        fit_events=fit_events, tuning_events=tuning_events,
-        slope_points=slope_points, batch_size=batch_size, seed=seed,
-    )
-    key = canonical_hash(identity)
-    if key not in cache:
-        cache[key] = _cached_joint_ppca_imputer(
-            control, config["mode"], config,
-            window_samples=window_samples, stride_samples=stride_samples,
-            components=components, fit_events=fit_events,
-            tuning_events=tuning_events, slope_points=slope_points,
-            batch_size=batch_size, seed=seed,
-        )
-        _publish_window_imputer(
-            _window_imputer_destination(output_root, run_directory, config),
-            cache[key][1], identity,
-        )
-    return cache[key]
-
-
 def explain_tshap(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
     cache_root=None, artifact_root=None, output_root=None, max_events=100,
     window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
     roi=False, overwrite=False, imputer_components=32,
     imputer_fit_events=2000, imputer_tuning_events=300,
-    imputer_slope_points=5, conditional_samples=16, logger=None,
+    imputer_slope_points=5, conditional_samples=16, n_baselines=8, logger=None,
 ):
     """Explain saved regressors using paired exact two-player Shapley values.
 
@@ -1625,7 +1536,7 @@ def explain_tshap(
         ("predict_batch_size", predict_batch_size),
         ("imputer_components", imputer_components),
         ("imputer_fit_events", imputer_fit_events),
-        ("conditional_samples", conditional_samples),
+        ("n_baselines", n_baselines),
         ("imputer_tuning_events", imputer_tuning_events),
         ("imputer_slope_points", imputer_slope_points),
     ):
@@ -1659,7 +1570,7 @@ def explain_tshap(
     lookup = PreparedCacheLookup()
     outputs, failures = [], []
     selected_runs = 0
-    window_imputers = {}
+
     for run in runs:
         manifest = run["manifest"]
         if models is not None and manifest["model"] not in models:
@@ -1712,18 +1623,13 @@ def explain_tshap(
                 "window_samples": int(window_samples),
                 "stride_samples": int(stride_samples),
                 "predict_batch_size": int(predict_batch_size),
-                "conditional_samples": int(conditional_samples),
+                "n_baselines": int(n_baselines),
                 "seed": sampling_seed,
                 "roi": bool(roi),
-                "imputer": {
-                    "method": "joint_ppca_conditional_mc",
-                    "components": int(imputer_components),
-                    "fit_events": int(imputer_fit_events),
-                    "tuning_events": 0,
-                },
+                "baseline_source": "control",
             }
             identity = {
-                "method": "paired_joint_ppca_conditional_mc_shapley",
+                "method": "paired_original_reference_shapley",
                 "method_version": TSHAP_METHOD_VERSION,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
@@ -1765,25 +1671,11 @@ def explain_tshap(
                     "Blind TSHAP waveforms must be finite [events, 2 detectors, samples] arrays"
                 )
 
-            imputer, imputer_metadata = _get_window_imputer(
-                window_imputers, control, config, output_root, directory,
-                window_samples=window_samples, stride_samples=stride_samples,
-                components=imputer_components, fit_events=imputer_fit_events,
-                tuning_events=imputer_tuning_events,
-                slope_points=imputer_slope_points,
-                batch_size=predict_batch_size, seed=sampling_seed,
+            baselines, baseline_ids = _sample_control_baselines(
+                control, config["mode"], n_baselines=n_baselines, seed=sampling_seed
             )
             if logger:
-                logger.info(
-                    "TSHAP joint PPCA | train=%d | components=%d | cache_hit=%s",
-                    imputer_metadata["n_training_events"],
-                    imputer_components,
-                    imputer_metadata["cache_hit"],
-                )
-                logger.info(
-                    "TSHAP paired-window Shapley | %s | events=%d/%d | samples=%d | ROI=%s",
-                    spec.name, len(event_ids), blind.n_events, time_ps.size, roi,
-                )
+                logger.info("TSHAP reference baselines=%d | %s", len(baselines), spec.name)
 
             parent = destination.parent
             parent.mkdir(parents=True, exist_ok=True)
@@ -1813,9 +1705,7 @@ def explain_tshap(
 
                         explainer = _new_explainer(
                             window_samples, stride_samples, roi,
-                            predict_batch_size, imputer=imputer,
-                            sample_mask=sample_mask,
-                            conditional_samples=conditional_samples, sampling_seed=int(seed),
+                            predict_batch_size, sample_mask=sample_mask,
                         )
                         window_maps = np.empty_like(waves, dtype=np.float64)
                         raw_scores = []
@@ -1825,7 +1715,7 @@ def explain_tshap(
                             # The upstream API requires a reference argument, but the
                             # conditional adapter ignores it and imputes this event itself.
                             win, regions = explainer.explain(
-                                pair[None, ...], pair[None, ...], predict
+                                pair[None, ...], baselines, predict
                             )
                             window_maps[i] = win[0]
                             starts, scores = _raw_window_data(explainer)
@@ -1922,20 +1812,9 @@ def explain_tshap(
                     "plot_version": GLOBAL_PLOT_VERSION,
                     "board": board_name,
                     "window_name": window_name,
-                    "imputation": "joint_ppca_conditional_mc",
-                    "imputer": {
-                        "method": "Joint PPCA conditional Monte Carlo model-prediction expectation",
-                        "conditional_samples": int(conditional_samples),
-                        "components": int(imputer_components),
-                        "training_events": int(imputer_metadata["n_training_events"]),
-                        "tuning_events": int(imputer_metadata["n_tuning_events"]),
-                                                "explained_variance_ratio_joint": imputer_metadata[
-                            "explained_variance_ratio_joint"
-                        ],
-                        "cache_file": imputer_metadata["cache_file"],
-                        "cache_identity": imputer_metadata["cache_identity"],
-                        "cache_hit": imputer_metadata["cache_hit"],
-                    },
+                    "imputation": "original_reference_baseline",
+                    "n_control_baselines": int(len(baselines)),
+                    "control_baseline_event_ids": baseline_ids.tolist(),
                     "tshap_window_samples": int(window_samples),
                     "tshap_stride_samples": int(stride_samples),
                     "n_explained_events": len(event_ids),
@@ -1945,11 +1824,10 @@ def explain_tshap(
                         "ps/sample (window two-player Shapley scores redistributed over samples)"
                     ),
                     "interpretation": (
-                        "Two-player Shapley window attribution using four coalitions. "
-                        "The empty coalition averages predictions over unconditional joint PPCA draws; "
-                        "keep-only and remove-window average predictions over conditional joint PPCA draws. "
-                        "The estimates carry finite-sample Monte Carlo uncertainty, and redistribution "
-                        "over waveform samples is not exact sample-wise Shapley attribution."
+                        "Original reference-background TSHAP with one paired temporal feature "
+                        "and its complement. Both coalitions use the SAME real control baseline; "
+                        "exact two-feature Shapley contributions are averaged over references. "
+                        "Temporal redistribution is not exact sample-wise Shapley."
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
@@ -2018,7 +1896,7 @@ def explain_tshap_local(
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
     imputer_tuning_events=300, imputer_slope_points=5,
-    conditional_samples=16,
+    conditional_samples=16, n_baselines=8,
 ):
     """Explain a small, reproducible set of good/bad and typical blind events.
 
@@ -2107,6 +1985,7 @@ def explain_tshap_local(
                     f"Saved model or frozen feature transform missing: {fitted_model_dir}"
                 )
             settings = dict(
+                n_baselines=n_baselines,
                 events_per_group=events_per_group,
                 extreme_margin=float(extreme_margin),
                 window_samples=window_samples,
@@ -2120,8 +1999,8 @@ def explain_tshap_local(
                 imputer_slope_points=imputer_slope_points,
             )
             identity = {
-                "method": "paired_joint_ppca_conditional_mc_local_shapley",
-                "method_version": 8,
+                "method": "paired_original_reference_local_shapley",
+                "method_version": 9,
                 "upstream_version": tshap_version,
                 "final_fit": manifest["stage_fingerprints"]["final_fit"],
                 "control": manifest["dataset_populations"]["control"]["analysis_protocol_identity"],
@@ -2170,13 +2049,8 @@ def explain_tshap_local(
                 run_store, blind, manifest, config["mode"]
             )
 
-            imputer, imputer_metadata = _get_window_imputer(
-                window_imputers, control, config, output_root, directory,
-                window_samples=window_samples, stride_samples=stride_samples,
-                components=imputer_components, fit_events=imputer_fit_events,
-                tuning_events=imputer_tuning_events,
-                slope_points=imputer_slope_points,
-                batch_size=predict_batch_size, seed=int(seed),
+            baselines, baseline_ids = _sample_control_baselines(
+                control, config["mode"], n_baselines=n_baselines, seed=int(seed)
             )
 
             parent = destination.parent
@@ -2266,9 +2140,7 @@ def explain_tshap_local(
 
                         explainer = _new_explainer(
                             window_samples, stride_samples, roi=False,
-                            predict_batch_size=predict_batch_size, imputer=imputer,
-                            sample_mask=sample_mask,
-                            conditional_samples=conditional_samples, sampling_seed=int(seed),
+                            predict_batch_size=predict_batch_size, sample_mask=sample_mask,
                         )
                         local_maps = np.empty_like(waves, dtype=np.float64)
                         local_scores = []
@@ -2360,7 +2232,7 @@ def explain_tshap_local(
                     predicted_correction_ps=selected_predictions,
                     residual_ps=selected_targets - selected_predictions,
                     signed_improvement_ps=selected_improvements,
-                    control_event_id=np.empty(0, dtype=np.int64),
+                    control_event_id=baseline_ids,
                     median_predicted_correction_ps=np.asarray(median_prediction, dtype=np.float64),
                 )
                 group_counts = {
@@ -2373,12 +2245,12 @@ def explain_tshap_local(
                     "plot_version": LOCAL_PLOT_VERSION,
                     "n_explained_events": len(event_ids),
                     "n_events_per_group": events_per_group,
-                    "imputer_cache_identity": imputer_metadata["cache_identity"],
-                    "n_control_baselines": 0,
+                    "baseline_source": "control",
+                    "n_control_baselines": int(len(baselines)),
                     "sample_mask_window_filter": _sample_mask_window_summary(
                         sample_mask, len(time_ps), window_samples, stride_samples, window_starts
                     ),
-                    "imputer_cache_file": imputer_metadata["cache_file"],
+                    "control_baseline_event_ids": baseline_ids.tolist(),
                     "waveform_samples": int(time_ps.size),
                     "median_predicted_correction_ps": median_prediction,
                     "group_counts": group_counts,
@@ -2397,7 +2269,7 @@ def explain_tshap_local(
                     },
                     "plots": plot_names,
                     "attribution_units": "ps/sample (joint pair-level window scores redistributed identically over both detector waveforms)",
-                    "importance_protocol": "paired two-player Shapley using Monte Carlo conditional PPCA model-prediction expectations",
+                    "importance_protocol": "original background-reference two-player Shapley with paired detector windows",
                     "input_units": "dimensionless min-max-normalized waveform amplitude",
                     "signal_units": "mV (inverse of frozen prepared waveform normalization)",
                     "led_threshold_mV": led_threshold_mv,
