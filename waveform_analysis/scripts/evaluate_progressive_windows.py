@@ -21,9 +21,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import KFold
 
+from waveform_analysis.core.io import atomic_json
 from waveform_analysis.data.imputation import load_wide_development, root_relative
+from waveform_analysis.data.results import resolve_run_config
+from waveform_analysis.data.splits import make_cv_split, semantic_seed
+from waveform_analysis.engine.search import candidate_manifest, grid_candidates
+from waveform_analysis.engine.validation import best_complete_candidate, evaluate_candidate
 from waveform_analysis.models.kernel import multirocket_common as mr, rdst_common as rd
 from waveform_analysis.reporting.stats import metric_values
 
@@ -81,17 +85,163 @@ def block_features(control, development, indices, args, seed):
     return np.concatenate(pieces, axis=1), counts
 
 
-def evaluate_prefix(features, target, folds, args, fit_cfg):
-    # Penalty ratio can distinguish RDST from MultiRocket through fixed
-    # feature scaling; the transform itself is never refitted per fold.
-    rows = []
-    for fold_id, (train, valid) in enumerate(folds, 1):
-        model = Ridge(alpha=args.ridge_alpha, solver="lsqr", tol=1e-4)
-        model.fit(features[train], target[train])
-        residual = target[valid] - model.predict(features[valid])
-        metrics = metric_values(residual, fit_cfg, seed=args.seed+fold_id)
-        rows.append(dict(fold=fold_id, n_validation=len(valid), **metrics))
-    return rows
+def alpha_grid(family):
+    """Use the exact candidate spaces configured for the batch-study models."""
+    name = {"both": "direct_multirocket_rdst", "multirocket": "direct_multirocket",
+            "rdst": "direct_rdst"}[family]
+    path = Path(__file__).resolve().parents[1] / "config" / "model_spaces" / (name + ".json")
+    space = json.loads(path.read_text(encoding="utf-8"))
+    # Kernel and shapelet counts are intentionally overridden for this study.
+    # Only the ORIGINAL Ridge penalty grid is reused here.
+    candidates = [
+        {key: float(value) for key, value in candidate.items()
+         if key in ("multirocket_alpha", "rdst_alpha", "ridge_alpha")}
+        for candidate in grid_candidates(space)
+    ]
+    return candidate_manifest(candidates)
+
+
+def regularized_feature_matrix(features, rdst_ranges, family, parameters):
+    """Identical two-alpha scaling to kernel.multirocket_rdst_common.fit.
+
+    min ||y - X_m b_m - X_r b_r||²
+        + alpha_m ||b_m||² + alpha_r ||b_r||².
+    Scaling X_r by sqrt(alpha_m/alpha_r), then Ridge(alpha_m), is
+    algebraically equivalent. Never mutate cached features.
+    """
+    if family != "both":
+        return features, float(parameters["ridge_alpha"])
+    mr_alpha = float(parameters["multirocket_alpha"])
+    rdst_alpha = float(parameters["rdst_alpha"])
+    ratio = np.sqrt(mr_alpha / rdst_alpha)
+    if not np.isfinite(ratio) or ratio <= 0:
+        raise ValueError("Invalid family penalty ratio")
+    x = features.copy()
+    for start, stop in rdst_ranges:
+        x[:, start:stop] *= ratio
+    return x, mr_alpha
+
+
+def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
+                    pruning, criterion, fit_cfg, seed):
+    """Run the SAME grid-CV/pruning implementation used by batch studies.
+
+    The only scores produced here are development CV fold scores. There is
+    no final fit and no independent evaluation population.
+    """
+    led_folds = {
+        int(fold.fold_id): metric_values(
+            target[np.asarray(fold.validation, np.int64)], fit_cfg,
+            seed=semantic_seed(seed, "led", int(fold.fold_id))
+        )
+        for fold in split.folds
+    }
+    summaries = []
+    fold_rows = []
+    by_candidate = {}
+    rows_by_candidate = {}
+    startup = int(pruning["startup_complete_candidates"])
+
+    for identifier, parameters in candidates.items():
+        incumbent = None if sum(
+            not row["pruned"] and row["completed_folds"] == row["total_folds"]
+            for row in summaries
+        ) < startup else best_complete_candidate(summaries, criterion)
+        incumbent_id = incumbent["candidate_id"] if incumbent is not None else None
+        incumbent_rows = (
+            rows_by_candidate.get(incumbent_id) if incumbent_id is not None else None
+        )
+        x, alpha = regularized_feature_matrix(
+            features, rdst_ranges, family, parameters
+        )
+        def evaluate_fold(parameters, fold):
+            tr = np.asarray(fold.train, np.int64)
+            va = np.asarray(fold.validation, np.int64)
+            model = Ridge(alpha=alpha, fit_intercept=True,
+                          solver="lsqr", tol=1e-4)
+            model.fit(x[tr], target[tr])
+            residual = target[va] - model.predict(x[va])
+            result = metric_values(
+                residual, fit_cfg,
+                seed=semantic_seed(seed, identifier, int(fold.fold_id), "metric")
+            )
+            led = led_folds[int(fold.fold_id)]
+            return {
+                "n_train": int(len(tr)),
+                "n_validation": int(len(va)),
+                "ctr_ps": result["ctr_ps"], "rmse_ps": result["rmse_ps"],
+                "led_ctr_ps": led["ctr_ps"], "led_rmse_ps": led["rmse_ps"],
+            }
+        candidate, rows = evaluate_candidate(
+            candidate_id=identifier,
+            parameters=parameters,
+            folds=split.folds,
+            evaluate_fold=evaluate_fold,
+            metric=criterion,
+            pruning=pruning,
+            incumbent_candidate_id=incumbent_id,
+            incumbent_rows=incumbent_rows,
+        )
+        summaries.append(candidate)
+        rows_by_candidate[identifier] = rows
+        by_candidate[identifier] = (x, alpha)
+        # Candidate-level details, including incomplete pruned candidates.
+        fold_rows.extend(rows)
+        print(
+            f"    alpha={parameters} | {criterion.upper()}="
+            f"{candidate[criterion + '_mean_ps']:.2f} ps | "
+            f"folds={candidate['completed_folds']}/{candidate['total_folds']} | "
+            f"{'PRUNED (' + str(candidate['pruning_reason']) + ')' if candidate['pruned'] else 'complete'}",
+            flush=True,
+        )
+        del x
+
+    winner = best_complete_candidate(summaries, criterion)
+    if winner is None:
+        # Same batch-study fallback: fully evaluate the best partial candidate
+        # only so that a comparison score is available at this cutoff.
+        finite = [
+            row for row in summaries
+            if np.isfinite(float(row[criterion + "_mean_ps"]))
+        ]
+        if not finite:
+            raise RuntimeError("Every candidate failed to produce a CV score")
+        pick = min(finite, key=lambda row: (
+            float(row[criterion + "_mean_ps"]), row["candidate_id"]))
+        identifier = pick["candidate_id"]
+        params = candidates[identifier]
+        x, alpha = regularized_feature_matrix(
+            features, rdst_ranges, family, params
+        )
+        def evaluate_fold(parameters, fold):
+            tr = np.asarray(fold.train, np.int64)
+            va = np.asarray(fold.validation, np.int64)
+            model = Ridge(alpha=alpha, fit_intercept=True,
+                          solver="lsqr", tol=1e-4)
+            model.fit(x[tr], target[tr])
+            residual = target[va] - model.predict(x[va])
+            result = metric_values(
+                residual, fit_cfg,
+                seed=semantic_seed(seed, identifier, int(fold.fold_id), "metric")
+            )
+            led = led_folds[int(fold.fold_id)]
+            return {
+                "n_train": int(len(tr)), "n_validation": int(len(va)),
+                "ctr_ps": result["ctr_ps"], "rmse_ps": result["rmse_ps"],
+                "led_ctr_ps": led["ctr_ps"], "led_rmse_ps": led["rmse_ps"],
+            }
+        winner, rows = evaluate_candidate(
+            candidate_id=identifier, parameters=params, folds=split.folds,
+            evaluate_fold=evaluate_fold, metric=criterion, pruning=pruning,
+            existing_fold_rows=rows_by_candidate[identifier],
+            force_complete=True,
+        )
+        summaries = [winner if row["candidate_id"] == identifier else row
+                     for row in summaries]
+        fold_rows = [row for row in fold_rows if row["candidate_id"] != identifier]
+        fold_rows.extend(rows)
+        del x
+    return winner, summaries, fold_rows
 
 
 def csv_output(path, rows):
