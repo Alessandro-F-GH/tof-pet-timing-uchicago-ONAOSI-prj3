@@ -33,16 +33,16 @@ def test_keep_only_benchmark_knn_single_neighbor_and_ppca():
     waves = rng.normal(size=(42, 2, 30)).astype(np.float64)
     mask = np.ones(30, dtype=bool)
     mask[20:24] = False
-    args = SimpleNamespace(components=2, batch_size=4, seed=8, bootstrap=20)
+    args = SimpleNamespace(components=2, batch_size=4, seed=8, bootstrap=20, knn_k=[1,3])
     rows, overall, config = keep_only_benchmark(
         "UC", "energy", args, waves, np.arange(30) * 25., mask,
         np.arange(30), np.arange(30, 34), np.arange(34, 42),
         [5, 10], 4, 25., "synthetic", {},
     )
     assert config["occlusion_mode"] == "keep_only"
-    assert config["knn_k"] == 1
-    assert len(rows) == 2 * 2 * 3  # positions, detectors, methods
-    assert {r["method"] for r in overall} == {"median", "ppca", "knn"}
+    assert config["knn_k"] == [1, 3]
+    assert len(rows) == 2 * 2 * 4  # positions, detectors, methods
+    assert {r["method"] for r in overall} == {"median", "ppca", "knn_k1", "knn_k3"}
     assert all(np.isfinite(r["rmse"]) for r in overall)
     assert all(r["missing_valid_samples"] == 22 for r in rows)
 
