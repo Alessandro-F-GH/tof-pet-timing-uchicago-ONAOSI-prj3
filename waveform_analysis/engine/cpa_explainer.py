@@ -31,15 +31,15 @@ from waveform_analysis.data.storage import RunStore
 from waveform_analysis.models import get_model
 from waveform_analysis.scripts.evaluate_mean_ar import (
     fit_moments, fit_ridge_orders, forecast_suffix, valid_intervals,
+    prefix_weights, forecast_weighted_knn,
 )
 from waveform_analysis.signal.metrics import fit_ctr_ps
 
 
 DEFAULT_ORDERS = (8, 16, 32, 64, 128)
 DEFAULT_MODELS = {
-    "energy": ("direct_multirocket_rdst", "direct_multirocket", "direct_rdst",
-               "onishi_cnn", "shared_linear_ridge"),
-    "timing": ("direct_multirocket", "onishi_cnn", "shared_linear_ridge"),
+    "energy": ("direct_multirocket_rdst", "onishi_cnn", "shared_linear_ridge"),
+    "timing": ("direct_multirocket_rdst", "onishi_cnn", "shared_linear_ridge"),
 }
 
 
@@ -136,7 +136,8 @@ def segment_for_cutoff(mask, cutoff):
     return start, stop
 
 
-def suffix_with_imputer(waves, mean, std, mask, cutoff, candidate):
+def suffix_with_imputer(waves, mean, std, mask, cutoff, candidate, *,
+                        reference=None, time_ps=None):
     """Observed prefix stays exact; AR stops at first future masked sample."""
     x = np.asarray(waves, np.float32)
     if x.ndim != 2 or x.shape[1] != len(mean):
@@ -147,6 +148,13 @@ def suffix_with_imputer(waves, mean, std, mask, cutoff, candidate):
     if candidate["method"] == "mean":
         return result
     lo, hi = segment_for_cutoff(mask, k)
+    if candidate["method"] == "weighted_knn":
+        if reference is None or time_ps is None:
+            raise ValueError("Weighted kNN requires development reference and time grid")
+        result[:, k:hi] = forecast_weighted_knn(
+            reference, x, mask, k, hi, int(candidate["k"]),
+            float(candidate["tau_ns"]), time_ps).astype(np.float32)
+        return result
     coeff = np.asarray(candidate["coefficients"], np.float64)
     if k-lo < len(coeff):
         raise ValueError("Not enough contiguous observed history")
@@ -288,6 +296,109 @@ def select_imputers(development, mask, cutoffs, *, seed=42, fit_events=1024,
     }
 
 
+def select_weighted_knn_imputers(
+        development, mask, cutoffs, time_ps, *,
+        seed=42, fit_events=1024, validation_events=128,
+        knn_k=(1, 3, 5, 10, 20, 50, 100),
+        knn_tau_ns=(0.25, 0.5, 1., 2., 5.),
+        local_samples=100, validation_batch=8):
+    """Choose k and exponential tau per detector/cutoff on development only.
+
+    Uses a held-out development validation cohort, not blind events. The
+    same balanced local/full-valid-region score as AR CPA is minimized.
+    After selection, the reference pool is refitted on development data.
+    """
+    if validation_events < 2 or fit_events < 0:
+        raise ValueError("Invalid kNN fit/validation limits")
+    count = len(development)
+    permutation = np.random.default_rng(int(seed)).permutation(count)
+    n_val = min(validation_events, max(2, count//5))
+    fit_ids = (permutation[n_val:n_val+fit_events] if fit_events
+               else permutation[n_val:])
+    val_ids = permutation[:n_val]
+    n_refit = min(count, fit_events) if fit_events else count
+    refit_ids = permutation[:n_refit]
+    if len(fit_ids) < 2 or len(refit_ids) < 2:
+        raise ValueError("Insufficient independent development events for kNN")
+    k_candidates = sorted({int(k) for k in knn_k if 1 <= int(k) <= len(fit_ids)})
+    if not k_candidates:
+        raise ValueError("No kNN candidate supported by development cohort")
+    tau_candidates = [float("inf")] + sorted(
+        {float(tau) for tau in knn_tau_ns if np.isfinite(float(tau))})
+    m = np.asarray(mask, bool)
+    t = np.asarray(time_ps, np.float64)
+    if not np.all(np.diff(t) > 0):
+        raise ValueError("kNN requires strictly increasing time samples")
+    selected, scores, detectors = {}, [], []
+    for detector in range(2):
+        x_fit = np.asarray(development[fit_ids, detector, :], np.float64)
+        x_val = np.asarray(development[val_ids, detector, :], np.float64)
+        refit = np.asarray(development[refit_ids, detector, :], np.float32)
+        mean_fit, _, _ = fit_moments(x_fit)
+        mean_refit, std_refit, floor = fit_moments(refit)
+        detectors.append({
+            "mean": mean_refit, "std": std_refit, "std_floor": floor,
+            "coefficients": {}, "reference": refit,
+        })
+        for c in cutoffs:
+            cutoff = int(c)
+            lo, end = segment_for_cutoff(m, cutoff)
+            horizon = end-cutoff
+            local = min(int(local_samples), horizon)
+            true_future = x_val[:, cutoff:end]
+            baseline_future = mean_fit[None, cutoff:end]
+            local_den = float(np.sum(
+                (true_future[:, :local]-baseline_future[:, :local])**2)) + 1e-12
+            full_den = float(np.sum((true_future-baseline_future)**2)) + 1e-12
+            best_score, winner = float("inf"), None
+            for tau in tau_candidates:
+                root_weight = np.sqrt(prefix_weights(t, lo, cutoff, tau))
+                train_prefix = x_fit[:, lo:cutoff] * root_weight
+                val_prefix = x_val[:, lo:cutoff] * root_weight
+                train_norm = np.einsum("ij,ij->i", train_prefix, train_prefix)
+                squared_local = {k: 0. for k in k_candidates}
+                squared_full = {k: 0. for k in k_candidates}
+                for first in range(0, len(x_val), validation_batch):
+                    last = min(len(x_val), first+validation_batch)
+                    batch = val_prefix[first:last]
+                    dist = (np.einsum("ij,ij->i", batch, batch)[:, None]
+                            + train_norm[None, :] - 2*batch @ train_prefix.T)
+                    np.maximum(dist, 0., out=dist)
+                    neighbors = np.argsort(dist, axis=1, kind="stable")[
+                        :, :max(k_candidates)]
+                    # Cumulative sum lets all candidate k share the same search.
+                    futures = x_fit[neighbors, cutoff:end]
+                    summed = np.cumsum(futures, axis=1)
+                    true = true_future[first:last]
+                    for k in k_candidates:
+                        forecast = summed[:, k-1, :] / k
+                        error = forecast - true
+                        squared_local[k] += float(
+                            np.sum(error[:, :local]**2))
+                        squared_full[k] += float(np.sum(error**2))
+                for k in k_candidates:
+                    score = .5*(squared_local[k]/local_den
+                                + squared_full[k]/full_den)
+                    scores.append({
+                        "detector": detector+1, "cutoff_sample": cutoff,
+                        "method": "weighted_knn", "order": 0,
+                        "k": k, "tau_ns": "inf" if np.isinf(tau) else tau,
+                        "score": score, "eligible": True,
+                    })
+                    if score < best_score - 1e-12:
+                        best_score = score
+                        winner = {"method": "weighted_knn", "order": 0,
+                                  "k": int(k),
+                                  "tau_ns": "inf" if np.isinf(tau) else tau,
+                                  "validation_score": score}
+            selected[(detector, cutoff)] = winner
+    return {
+        "detectors": detectors, "selected": selected, "scores": scores,
+        "fit_ids": fit_ids, "validation_ids": val_ids, "refit_ids": refit_ids,
+        "time_ps": t,
+    }
+
+
 def reconstruct_pair(waves, imputer, mask, cutoff, *, mean_only=False):
     """Reconstruct paired detector waveforms without future-sample leakage."""
     pair = np.asarray(waves, np.float32)
@@ -298,6 +409,7 @@ def reconstruct_pair(waves, imputer, mask, cutoff, *, mean_only=False):
                   imputer["selected"][(d, int(cutoff))])
         result[:, d, :] = suffix_with_imputer(
             pair[:, d, :], trained["mean"], trained["std"], mask, cutoff, choice,
+            reference=trained.get("reference"), time_ps=imputer.get("time_ps"),
         )
     return result
 
