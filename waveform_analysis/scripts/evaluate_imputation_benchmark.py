@@ -97,8 +97,7 @@ def save_position_plot(rows, output, label, channel):
     scale, unit = physical_unit_scale([r["rmse"] for r in rows])
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.7), sharex=True, sharey=True)
     handles = []
-    available_methods = [m for m in METHODS if any(r["method"] == m for r in rows)]
-    available_methods += [m for m in ("median",) if any(r["method"] == m for r in rows)]
+    available_methods = list(dict.fromkeys(r["method"] for r in rows))
     for detector, ax in enumerate(axes, start=1):
         selected = [r for r in rows if r["detector"] == detector]
         for method in available_methods:
@@ -113,7 +112,7 @@ def save_position_plot(rows, output, label, channel):
             y[~np.isfinite(y) | (y <= 0)] = np.nan
             # Plot only evaluated mask positions. Connecting points with lines
             # would visually interpolate across cropped/excluded time regions.
-            points = ax.scatter(x, y, label=LABELS[method], s=18, zorder=3)
+            points = ax.scatter(x, y, label=LABELS.get(method, method.replace("knn_k", "kNN k=")), s=18, zorder=3)
             if detector == 1:
                 handles.append(points)
         ax.set_title(f"Detector {detector}")
@@ -122,7 +121,7 @@ def save_position_plot(rows, output, label, channel):
     # Keep the one shared legend between the figure title and subplot titles.
     # A figure-level x label remains at the bottom with no competing legend.
     fig.suptitle(f"{label} - {channel.capitalize()} channel", y=0.99)
-    fig.legend(handles, [LABELS[m] for m in available_methods],
+    fig.legend(handles, [LABELS.get(m, m.replace("knn_k", "kNN k=")) for m in available_methods],
                loc="upper center", bbox_to_anchor=(0.5, 0.94),
                ncol=len(available_methods), fontsize=10, frameon=False)
     axes[0].set_ylabel(f"Reconstruction RMSE ({unit})", labelpad=5)
@@ -154,7 +153,7 @@ def keep_only_benchmark(label, channel, args, waves, time_ps, mask,
     test = np.asarray(waves[evaluation], np.float64)
     models = [ProbabilisticPCA(args.components).fit(ref[:, d]) for d in range(2)]
     median = np.median(ref, axis=0)
-    methods = ("median", "ppca", "knn")
+    methods = ("median", "ppca") + tuple(f"knn_k{k}" for k in args.knn_k)
     sse_events = {method: np.zeros(len(test), np.float64) for method in methods}
     rows = []
     total_per_event = 0
@@ -172,14 +171,14 @@ def keep_only_benchmark(label, channel, args, waves, time_ps, mask,
         train_prefix = ref[:, :, observed].reshape(len(ref), -1)
         test_prefix = test[:, :, observed].reshape(len(test), -1)
         train_norm = np.einsum("ij,ij->i", train_prefix, train_prefix)
-        closest = np.empty(len(test), dtype=int)
+        closest = np.empty((len(test), max(args.knn_k)), dtype=int)
         for first in range(0, len(test), args.batch_size):
             last = min(len(test), first+args.batch_size)
             chunk = test_prefix[first:last]
             dist = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
                     + train_norm[None, :] - 2. * chunk @ train_prefix.T)
             np.maximum(dist, 0., out=dist)
-            closest[first:last] = np.argmin(dist, axis=1)
+            closest[first:last] = np.argsort(dist, axis=1, kind="stable")[:, :max(args.knn_k)]
         knn = ref[closest]
         per_method = {m: np.zeros(2, np.float64) for m in methods}
         for d, model in enumerate(models):
@@ -195,7 +194,8 @@ def keep_only_benchmark(label, channel, args, waves, time_ps, mask,
                 true = actual[:, missing]
                 preds = {
                     "median": np.broadcast_to(median[d, missing], true.shape),
-                    "knn": knn[first:last, d][:, missing],
+                    **{f"knn_k{k}": knn[first:last, :k, d][:, :, missing].mean(axis=1)
+                       for k in args.knn_k},
                     "ppca": model.mean[missing] + (
                         actual[:, observed] - model.mean[observed]
                     ) @ coefficients,
@@ -244,7 +244,7 @@ def keep_only_benchmark(label, channel, args, waves, time_ps, mask,
         "sample_interval_ps": dt_ps, "mask_width_samples": width,
         "mask_positions": len(starts), "methods": list(methods),
         "occlusion_mode": "keep_only",
-        "knn_k": 1, "knn_distance": "paired_observed_window_euclidean",
+        "knn_k": list(args.knn_k), "knn_distance": "paired_observed_window_euclidean",
         "baseline": "per_detector_development_sample_median",
         "ppca": "posterior_mean_conditioned_on_retained_window",
         "signal_units": "mV",
@@ -291,6 +291,8 @@ def evaluate_configuration(label, results, channel, args, output):
     training, tuning, evaluation = (
         selected[:n_train], selected[n_train:n_train+n_tune], selected[n_train+n_tune:]
     )
+    if max(args.knn_k) > len(training):
+        raise ValueError(f"Requested k={max(args.knn_k)} exceeds {len(training)} training events")
     if len(evaluation) == 0 or len(tuning) == 0:
         raise ValueError("Empty tuning/evaluation split; adjust event/fraction settings")
 
@@ -349,13 +351,14 @@ def evaluate_configuration(label, results, channel, args, output):
     # Paired kNN neighbor search only sees retained waveform samples.
     reference_pool = np.asarray(waves[training], dtype=np.float64)
     eval_pool = np.asarray(waves[evaluation], dtype=np.float64)
+    methods = tuple(m for m in METHODS if m != "knn") + tuple(f"knn_k{k}" for k in args.knn_k)
     # Per-position and event-wise squared errors are retained for pooled metrics/CI.
     position_rows = []
-    event_sse = {method: np.zeros(len(evaluation), dtype=np.float64) for method in METHODS}
+    event_sse = {method: np.zeros(len(evaluation), dtype=np.float64) for method in methods}
     values_per_event = 2 * len(starts) * width
     for pi, start in enumerate(starts):
         stop = start + width
-        sse = {method: np.zeros(2, dtype=np.float64) for method in METHODS}
+        sse = {method: np.zeros(2, dtype=np.float64) for method in methods}
         observed = np.asarray(sample_mask, bool).copy()
         observed[start:stop] = False
         if not np.any(observed):
@@ -363,14 +366,14 @@ def evaluate_configuration(label, results, channel, args, output):
         reference_prefix = reference_pool[:, :, observed].reshape(len(training), -1)
         eval_prefix = eval_pool[:, :, observed].reshape(len(evaluation), -1)
         norm = np.einsum("ij,ij->i", reference_prefix, reference_prefix)
-        nearest = np.empty(len(evaluation), dtype=np.int64)
+        nearest = np.empty((len(evaluation), max(args.knn_k)), dtype=np.int64)
         for first in range(0, len(evaluation), args.batch_size):
             last = min(len(evaluation), first + args.batch_size)
             chunk = eval_prefix[first:last]
             distances = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
                          + norm[None, :] - 2. * chunk @ reference_prefix.T)
             np.maximum(distances, 0., out=distances)
-            nearest[first:last] = np.argmin(distances, axis=1)
+            nearest[first:last] = np.argsort(distances, axis=1, kind="stable")[:, :max(args.knn_k)]
         for det, model in enumerate(models):
             env = smooth_blend_envelope(start, width, length)
             alpha = alphas[det, pi]
@@ -386,7 +389,8 @@ def evaluate_configuration(label, results, channel, args, output):
                 predictions = {
                     "linear": linear, "hermite": hermite,
                     "ppca": ppca, "hermite_ppca_blend": blend,
-                    "knn": reference_pool[nearest[local], det, start:stop],
+                    **{f"knn_k{k}": reference_pool[nearest[local, :k], det, start:stop].mean(axis=1)
+                       for k in args.knn_k},
                 }
                 # Original TSHAP replaces each masked segment with the corresponding
                 # segment from every reference baseline. Score expected squared error
@@ -405,7 +409,7 @@ def evaluate_configuration(label, results, channel, args, output):
                     sse[method][det] += float(squared.sum())
                     event_sse[method][local] += squared.sum(axis=1)
         for det in range(2):
-            for method in METHODS:
+            for method in methods:
                 position_rows.append({
                     "dataset": label, "channel": channel, "detector": det + 1,
                     "method": method, "mask_position": pi, "start_sample": int(start),
@@ -420,11 +424,11 @@ def evaluate_configuration(label, results, channel, args, output):
             print(f"[{label}/{channel}] position {pi+1}/{len(starts)}", flush=True)
 
     overall_rows = []
-    for method in METHODS:
+    for method in methods:
         total_sse = float(event_sse[method].sum())
         n_values = len(evaluation) * values_per_event
         lo, hi = bootstrap_rmse(event_sse[method], values_per_event,
-                                args.seed + 1000 + METHODS.index(method), args.bootstrap)
+                                args.seed + 1000 + methods.index(method), args.bootstrap)
         overall_rows.append({
             "dataset": label, "channel": channel, "method": method,
             "rmse": rmse_from_sse(total_sse, n_values),
@@ -444,7 +448,8 @@ def evaluate_configuration(label, results, channel, args, output):
         "sample_interval_ps": dt_ps, "mask_width_samples": width,
         "mask_width_ns": width * dt_ps / 1000.0, "mask_positions": len(starts),
         "components": args.components, "seed": args.seed,
-        "methods": list(METHODS), "slope_points": args.slope_points,
+        "methods": list(methods), "slope_points": args.slope_points,
+        "knn_k": list(args.knn_k),
         "occlusion_mode": "remove_window", "knn_k": 1,
         "knn_distance": "paired_retained_samples_euclidean",
         "n_original_tshap_reference_baselines": int(n_reference),
@@ -479,7 +484,7 @@ def write_latex(path, rows):
         hermite = next(r["rmse"] for r in subset if r["method"] == reference_method)
         for r in subset:
             delta = 100.0 * (1.0 - r["rmse"] / hermite) if hermite else 0.0
-            label = LABELS[r["method"]].replace("--", r"\textendash{}")
+            label = LABELS.get(r["method"], r["method"].replace("knn_k", "kNN k=")).replace("--", r"\textendash{}")
             ci = f'[{r["ci95_low"]:.3g}, {r["ci95_high"]:.3g}]'
             lines.append(
                 f'{dataset} & {channel} & {label} & {r["rmse"]:.4g} & {ci} & {delta:+.1f} \\\\'
@@ -512,7 +517,7 @@ def save_overall_plot(rows, output):
         yerr = np.vstack((values - np.asarray(low), np.asarray(high) - values))
         xpos = x - total_width / 2 + (mi + 0.5) * bar_width
         bars = ax.bar(xpos, values, width=bar_width, yerr=yerr, capsize=2.5,
-                      label=LABELS[method])
+                      label=LABELS.get(method, method.replace("knn_k", "kNN k=")))
         for bar, value in zip(bars, values):
             ax.annotate(format_rmse_label(value / scale),
                         (bar.get_x() + bar.get_width()/2, bar.get_height()),
@@ -546,6 +551,8 @@ def main():
     parser.add_argument("--occlusion-mode", choices=("remove_window", "keep_only"),
                         default="remove_window",
                         help="Remove window (legacy) or retain only window and impute exterior")
+    parser.add_argument("--knn-k", nargs="+", type=int, default=[1],
+                        help="Evaluate each listed neighbor count independently, no tuning")
     parser.add_argument("--mask-ns", type=float, default=0.25)
     parser.add_argument("--mask-stride-samples", type=int)
     parser.add_argument("--eval-events", type=int, default=500)
@@ -557,6 +564,9 @@ def main():
     parser.add_argument("--bootstrap", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+    args.knn_k = sorted(set(args.knn_k))
+    if not args.knn_k or args.knn_k[0] < 1:
+        parser.error("--knn-k must contain positive integers")
     if (args.max_events < 20 or args.components < 1 or args.n_baselines < 1 or args.mask_ns <= 0
             or args.batch_size < 1 or args.eval_events < 1 or args.tuning_events < 1
             or not 0 < args.eval_fraction < 1 or not 0 < args.tuning_fraction < 1
@@ -588,6 +598,7 @@ def main():
         "occlusion_mode": args.occlusion_mode, "method_labels": LABELS,
         "mask_width_ns": args.mask_ns, "seed": args.seed,
         "n_baselines": args.n_baselines,
+        "knn_k": list(args.knn_k),
         "signal_units": "mV; plot values use µV if all RMSE values are below 1 mV",
         "bootstrap_replicates": args.bootstrap,
         "warning": "Results are valid only if each results path resolves to the intended development dataset and split.",
