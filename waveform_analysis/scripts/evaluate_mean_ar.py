@@ -26,7 +26,7 @@ from waveform_analysis.data.dataset import load_prepared_dataset
 from waveform_analysis.data.named_cache import resolve_alias
 from waveform_analysis.signal.sample_mask import control_clipping_sample_mask
 
-METHODS = ("mean", "mean_ar", "standardized_ar", "gru")
+METHODS = ("mean", "mean_ar", "standardized_ar", "gru", "knn")
 
 
 def _aliases(root, mode, window, role, dataset_name=None):
@@ -408,6 +408,37 @@ def segment_for_cutoff_for_gru(mask, cutoff):
     raise ValueError("Cutoff outside retained mask")
 
 
+def forecast_knn(training, evaluation, mask, cutoff, end, k_values, batch_size=32):
+    """Nearest development prefixes -> mean of neighbors' actual future.
+
+    Distances are computed only over the contiguous observed segment preceding
+    the cutoff. The blind suffix is never used to identify neighbors.
+    """
+    lo, _ = segment_for_cutoff_for_gru(mask, cutoff)
+    if cutoff <= lo or end <= cutoff:
+        raise ValueError("kNN needs an observed prefix and future interval")
+    source = np.asarray(training[:, lo:cutoff], dtype=np.float64)
+    target = np.asarray(evaluation[:, lo:cutoff], dtype=np.float64)
+    k_max = max(k_values)
+    if k_max > len(source):
+        raise ValueError("kNN k exceeds number of development events")
+    # Squared Euclidean distances; common prefix length makes scaling
+    # unnecessary for rankings. Matrix products avoid 3-D allocations.
+    source_sq = np.einsum("ij,ij->i", source, source)
+    forecasts = {k: np.empty((len(target), end-cutoff),
+                              dtype=np.float64) for k in k_values}
+    for first in range(0, len(target), batch_size):
+        batch = target[first:first+batch_size]
+        dist2 = (np.einsum("ij,ij->i", batch, batch)[:, None]
+                 + source_sq[None, :] - 2.0 * batch @ source.T)
+        np.maximum(dist2, 0., out=dist2)
+        neighbors = np.argsort(dist2, axis=1, kind="stable")[:, :k_max]
+        future = training[neighbors, cutoff:end]
+        for k in k_values:
+            forecasts[k][first:first+len(batch)] = future[:, :k].mean(axis=1)
+    return forecasts
+
+
 def metric_row(truth, pred, mv_scale):
     error = np.asarray(pred, np.float64) - np.asarray(truth, np.float64)
     mse = float(np.mean(error**2))
@@ -432,11 +463,13 @@ def choose_indices(total, limit, seed):
 def plot_summary(rows, out, title):
     fig, ax = plt.subplots(figsize=(9, 5))
     colors = {"mean": "#333333", "mean_ar": "#1879B3",
-              "standardized_ar": "#35956C", "gru": "#8056B3"}
+              "standardized_ar": "#35956C", "gru": "#8056B3", "knn": "#B35A7D"}
     order = max(r["order"] for r in rows)
     for method in METHODS:
         series = sorted((r for r in rows if r["method"] == method and
-                         (r["order"] == order or method in ("mean", "gru"))),
+                         (r["order"] == order or method in ("mean", "gru") or
+                          (method == "knn" and r["order"] == max(
+                              x["order"] for x in rows if x["method"] == "knn"))))),
                         key=lambda r: r["cutoff_sample"])
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
@@ -472,6 +505,7 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     rows = []
     examples = []
     gru_examples = {}
+    knn_examples = {}
     for cutoff in cutoffs:
         cutoff = int(cutoff)
         stop = local_forecast_end(mask, cutoff)
@@ -512,6 +546,29 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                     examples.append((cutoff, stop, evaluation[0].copy(),
                                      full_prediction[0].copy(), baseline_full[0].copy(),
                                      int(eval_ids[0])))
+        if args.with_knn:
+            knn_suffixes = forecast_knn(
+                training, evaluation, mask, cutoff, stop, args.knn_k,
+                batch_size=args.knn_batch_size)
+            for k, suffix in knn_suffixes.items():
+                knn_full = baseline_full.copy()
+                knn_full[:, :stop-cutoff] = suffix
+                knn_metric = metric_row(
+                    truth, knn_full[:, future_valid], mv_scale)
+                rows.append({
+                    **knn_metric, "method": "knn", "order": k,
+                    "cutoff_sample": cutoff,
+                    "cutoff_ns": float(time_ps[cutoff]/1000),
+                    "n_missing": int(np.count_nonzero(future_valid)),
+                    "ar_predicted_samples": stop-cutoff,
+                    "n_eval_events": len(eval_ids),
+                    "mse_improvement_percent": (
+                        100 * (1 - knn_metric["mse_normalized"] /
+                               base["mse_normalized"])
+                        if base["mse_normalized"] > 0 else 0.),
+                    "stable": True, "root_radius": 0.,
+                })
+                knn_examples[(cutoff, k)] = knn_full[0].copy()
         if args.with_gru:
             import torch
             checkpoint = out / f"gru_cutoff_{cutoff:05d}.pt"
@@ -580,6 +637,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
+        "knn": {"enabled": args.with_knn, "k_values": args.knn_k,
+                "distance": "euclidean_observed_contiguous_prefix",
+                "aggregation": "uniform_mean"},
         "gru": ({"enabled": True, "architecture": "gru_direct_voltage_full_suffix_v2",
                  "per_cutoff": True, "hidden": args.gru_hidden,
                  "epochs": args.gru_epochs,
@@ -605,6 +665,10 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         if cutoff in gru_examples:
             ax.plot(ns[cutoff:], gru_examples[cutoff],
                     color="#8056B3", lw=1.2, label="GRU forecast")
+        if args.with_knn:
+            k = args.knn_k[-1]
+            ax.plot(ns[cutoff:], knn_examples[(cutoff, k)],
+                    color="#B35A7D", lw=1.2, label=f"kNN (k={k})")
         ax.axvline(ns[cutoff], color="gray", ls="--",
                    label=f"Cutoff {ns[cutoff]:.3f} ns")
         if stop < len(ns):
@@ -643,6 +707,11 @@ def parse_args(argv=None):
     parser.add_argument("--max-eval-events", type=int, default=128,
                         help="0 uses all blind events")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--with-knn", action="store_true",
+                        help="Compare nearest development-prefix waveforms")
+    parser.add_argument("--knn-k", nargs="+", type=int, default=[1, 5, 20],
+                        help="Neighbor counts: 1 copies nearest event, larger k averages")
+    parser.add_argument("--knn-batch-size", type=int, default=32)
     parser.add_argument("--with-gru", action="store_true",
                         help="Train a causal GRU forecaster on development data")
     parser.add_argument("--gru-hidden", type=int, default=32)
@@ -660,6 +729,9 @@ def parse_args(argv=None):
     if (min(args.gru_hidden, args.gru_epochs,
             args.gru_steps_per_epoch, args.gru_batch_size) < 1 or args.gru_lr <= 0):
         parser.error("GRU hyperparameters must be positive")
+    args.knn_k = sorted(set(args.knn_k))
+    if not args.knn_k or min(args.knn_k) < 1 or args.knn_batch_size < 1:
+        parser.error("kNN neighbor counts and batch size must be positive")
     if args.n_cutoffs < 4:
         parser.error("At least 4 cutoffs required")
     return args
