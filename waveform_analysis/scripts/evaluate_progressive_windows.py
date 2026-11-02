@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Exploratory development-only CV as time-block features accumulate.
+"""Development-only CV with separately refitted cumulative-window transforms.
 
-Each independent temporal block is transformed ONCE using control-only fitted
-MultiRocket/RDST, and its development features are cached. At cutoff t the
-Ridge sees concatenated blocks whose END is <= t. Never loads blind data.
+For each cutoff, fit MultiRocket/RDST on the FULL [start, cutoff) waveform
+using control events only. Evaluate frozen features on development CV folds.
+Select Ridge penalties once on the largest window with the original batch
+grid/pruning, then KEEP THEIR EFFECTIVE VALUES FIXED for every cutoff.
 
-This is deliberately NOT a standard increasing-window MultiRocket/RDST:
-independent block transforms can learn scale-dependent features.
+Never opens blind events; saves only CV results/plots, no features or models.
 """
 from __future__ import annotations
 
@@ -32,28 +32,39 @@ from waveform_analysis.models.kernel import multirocket_common as mr, rdst_commo
 from waveform_analysis.reporting.stats import metric_values
 
 
-def temporal_blocks(time_ps, sample_mask, start_ns, end_ns, step_ns):
-    """Return nonoverlapping time intervals, using only retained model samples."""
+def temporal_cutoffs(time_ps, sample_mask, start_ns, end_ns, step_ns,
+                     min_samples=16):
+    """Full prefix [start, cutoff) indices at each requested cutoff.
+
+    Samples masked by the model's frozen preprocessing are excluded. No
+    independent temporal blocks are constructed or concatenated.
+    """
     times = np.asarray(time_ps, np.float64) / 1000.
     valid = np.asarray(sample_mask, bool)
-    boundaries = np.arange(start_ns, end_ns, step_ns)
-    boundaries = np.r_[boundaries, end_ns]
-    blocks = []
-    for a, b in zip(boundaries[:-1], boundaries[1:]):
-        indices = np.flatnonzero((times >= a - 1e-8) & (times < b - 1e-8) & valid)
-        if indices.size >= 16:
-            blocks.append((float(a), float(b), indices))
-    if not blocks:
-        raise ValueError("No blocks with at least 16 retained samples")
-    return blocks
+    if times.ndim != 1 or valid.shape != times.shape:
+        raise ValueError("Time grid and model sample mask must match")
+    if step_ns <= 0 or end_ns <= start_ns:
+        raise ValueError("Invalid progressive time limits")
+    ends = np.arange(start_ns + step_ns, end_ns, step_ns, dtype=np.float64)
+    ends = np.append(ends, float(end_ns))
+    windows = []
+    for end in ends:
+        indices = np.flatnonzero(
+            (times >= start_ns - 1e-8) & (times < end - 1e-8) & valid
+        )
+        if len(indices) >= min_samples:
+            windows.append((float(start_ns), float(end), indices))
+    if not windows:
+        raise ValueError("No cumulative window with enough retained samples")
+    return windows
 
 
 def fingerprint(payload):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:20]
 
 
-def block_features(control, development, indices, args, seed):
-    """Fit two existing transformer families on control; transform development."""
+def window_features(control, development, indices, args, seed):
+    """Fit both families from scratch on the entire observed prefix."""
     x_ctrl = np.ascontiguousarray(control[:, :, indices], dtype=np.float32)
     x_dev = np.ascontiguousarray(development[:, :, indices], dtype=np.float32)
     pieces = []
@@ -125,61 +136,65 @@ def original_feature_counts(family):
     return reference
 
 
-def effective_alphas(features, rdst_ranges, family, parameters,
-                     reference_counts=None):
-    """Scale each family alpha by its CURRENT / ORIGINAL feature count.
-
-    This is an explicit exploratory heuristic, not an analytical invariance
-    of Ridge regression. Current counts come from actual cached block arrays.
-    """
+def feature_counts(features, rdst_ranges, family):
+    """Exact counts, including any realized RDST shapelet reduction."""
     n_rdst = sum(int(stop - start) for start, stop in rdst_ranges)
-    n_multirocket = int(features.shape[1] - n_rdst)
-    actual = {"multirocket": n_multirocket, "rdst": n_rdst}
     if family == "rdst":
-        actual["rdst"] = int(features.shape[1])
-        actual["multirocket"] = 0
-    reference_counts = actual if reference_counts is None else reference_counts
-    if family == "both":
-        names = (("multirocket", "multirocket_alpha"),
-                 ("rdst", "rdst_alpha"))
-    else:
-        names = ((family, "ridge_alpha"),)
+        return {"rdst": int(features.shape[1])}
+    if family == "multirocket":
+        return {"multirocket": int(features.shape[1])}
+    return {
+        "multirocket": int(features.shape[1] - n_rdst),
+        "rdst": int(n_rdst),
+    }
+
+
+def effective_alphas(features, rdst_ranges, family, parameters,
+                     reference_counts):
+    """Normalize batch alpha grid ONCE at the largest window.
+
+    Formula preserves the earlier exploratory feature-count correction.
+    These numerical alphas MUST then remain fixed across all cutoffs.
+    """
+    actual = feature_counts(features, rdst_ranges, family)
+    names = (("multirocket", "multirocket_alpha"),
+             ("rdst", "rdst_alpha")) if family == "both" else ((family, "ridge_alpha"),)
     scaled = {}
     for group, parameter in names:
+        count, reference = int(actual[group]), int(reference_counts[group])
         base = float(parameters[parameter])
-        count = int(actual[group])
-        ref = int(reference_counts[group])
-        if not np.isfinite(base) or base <= 0 or count < 1 or ref < 1:
-            raise ValueError(f"Invalid feature-normalized alpha for {group}")
-        scaled[parameter] = base * (count / ref)
+        if count < 1 or reference < 1 or base <= 0 or not np.isfinite(base):
+            raise ValueError("Invalid feature-normalized alpha")
+        scaled[parameter] = float(base * count / reference)
     return scaled
 
 
-def regularized_feature_matrix(features, rdst_ranges, family, parameters,
-                               reference_counts=None):
-    """Two-alpha Ridge scaling matching multirocket_rdst_common.fit.
+def regularized_feature_matrix(features, rdst_ranges, family, alphas):
+    """Apply the same two-family Ridge penalty reparameterization as batch.
 
-    For each family: alpha_eff = alpha_grid * n_current / n_original.
-    Effective penalties use ACTUAL cumulative feature counts, including
-    variable RDST shapelet counts; original counts come from batch config.
+    Values passed here are ALREADY the final effective alpha values. Do not
+    rescale them at each cutoff: this maintains identical regularization.
     """
-    penalties = effective_alphas(
-        features, rdst_ranges, family, parameters, reference_counts)
     if family != "both":
-        return features, penalties["ridge_alpha"]
-    mr_alpha = penalties["multirocket_alpha"]
-    rdst_alpha = penalties["rdst_alpha"]
+        alpha = float(alphas["ridge_alpha"])
+        if alpha <= 0 or not np.isfinite(alpha):
+            raise ValueError("Ridge alpha must be positive and finite")
+        return features, alpha
+    mr_alpha = float(alphas["multirocket_alpha"])
+    rdst_alpha = float(alphas["rdst_alpha"])
+    if min(mr_alpha, rdst_alpha) <= 0:
+        raise ValueError("Family Ridge penalties must be positive")
     ratio = np.sqrt(mr_alpha / rdst_alpha)
     if not np.isfinite(ratio) or ratio <= 0:
         raise ValueError("Invalid family penalty ratio")
-    x = features.copy()
+    x = np.asarray(features, dtype=np.float32).copy()
     for start, stop in rdst_ranges:
         x[:, start:stop] *= ratio
     return x, mr_alpha
 
 
 def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
-                    pruning, criterion, fit_cfg, seed, reference_counts):
+                    pruning, criterion, fit_cfg, seed, force_complete=False):
     """Run the SAME grid-CV/pruning implementation used by batch studies.
 
     The only scores produced here are development CV fold scores. There is
@@ -207,7 +222,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
             rows_by_candidate.get(incumbent_id) if incumbent_id is not None else None
         )
         x, alpha = regularized_feature_matrix(
-            features, rdst_ranges, family, parameters, reference_counts
+            features, rdst_ranges, family, parameters
         )
         def evaluate_fold(parameters, fold):
             tr = np.asarray(fold.train, np.int64)
@@ -235,7 +250,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
             metric=criterion,
             pruning=pruning,
             incumbent_candidate_id=incumbent_id,
-            incumbent_rows=incumbent_rows,
+            incumbent_rows=incumbent_rows, force_complete=force_complete,
         )
         summaries.append(candidate)
         rows_by_candidate[identifier] = rows
@@ -265,7 +280,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
         identifier = pick["candidate_id"]
         params = candidates[identifier]
         x, alpha = regularized_feature_matrix(
-            features, rdst_ranges, family, params, reference_counts
+            features, rdst_ranges, family, params
         )
         def evaluate_fold(parameters, fold):
             tr = np.asarray(fold.train, np.int64)
