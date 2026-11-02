@@ -41,7 +41,7 @@ def test_keep_only_benchmark_knn_single_neighbor_and_ppca():
     )
     assert config["occlusion_mode"] == "keep_only"
     assert config["knn_k"] == 1
-    assert len(rows) == 2 * 2 * 3 * 2  # positions, detectors, methods
+    assert len(rows) == 2 * 2 * 3  # positions, detectors, methods
     assert {r["method"] for r in overall} == {"median", "ppca", "knn"}
     assert all(np.isfinite(r["rmse"]) for r in overall)
     assert all(r["missing_valid_samples"] == 22 for r in rows)
