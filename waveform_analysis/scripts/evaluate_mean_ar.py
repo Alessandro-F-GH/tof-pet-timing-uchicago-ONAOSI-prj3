@@ -279,9 +279,9 @@ def make_gru_encoder_decoder(hidden):
     class EncoderDecoder(nn.Module):
         def __init__(self):
             super().__init__()
-            self.encoder = nn.GRU(3, hidden, batch_first=True)
+            self.encoder = nn.GRU(2, hidden, batch_first=True)
             self.decoder = nn.Sequential(
-                nn.Linear(hidden + 3, hidden),
+                nn.Linear(hidden + 2, hidden),
                 nn.Tanh(),
                 nn.Linear(hidden, hidden),
                 nn.Tanh(),
@@ -298,32 +298,29 @@ def make_gru_encoder_decoder(hidden):
     return EncoderDecoder()
 
 
-def gru_features(values, mean, std, indices, length):
-    """Encode observed residuals and absolute time without future leakage."""
-    residual = np.clip((values - mean[indices]) / std[indices], -8., 8.)
+def gru_features(values, indices, length):
+    """Read observed voltage and relative time, without residual transforms."""
     return np.stack((
-        residual,
-        np.broadcast_to(mean[indices], residual.shape),
+        np.asarray(values, dtype=np.float32),
         np.broadcast_to(indices.astype(np.float32) / max(length - 1, 1),
-                        residual.shape),
+                        values.shape),
     ), axis=-1).astype(np.float32)
 
 
-def gru_future_features(mean, std, positions, batch, length):
-    """Only static development statistics and timestamps enter the decoder."""
+def gru_future_features(mean, positions, batch, length):
+    """Future timestamp and population mean, without event-specific future."""
     return np.stack((
         np.broadcast_to(positions.astype(np.float32) /
                         max(length - 1, 1), (batch, len(positions))),
         np.broadcast_to(mean[positions], (batch, len(positions))),
-        np.broadcast_to(std[positions], (batch, len(positions))),
     ), axis=-1).astype(np.float32)
 
 
 def fit_gru_forecaster(training, mean, std, mask, cutoff, stop, args, seed):
     """Fit a cutoff-specific direct forecaster using only development events.
 
-    Train on randomly selected future positions with the *whole* real prefix;
-    loss is physical waveform MSE (normalized by development variability).
+    Train on the complete valid future interval with the whole real prefix.
+    Decoder directly regresses voltage, rather than residuals.
     """
     import torch
 
@@ -341,29 +338,20 @@ def fit_gru_forecaster(training, mean, std, mask, cutoff, stop, args, seed):
     avg_variance = float(np.mean(std[future_positions] ** 2))
     variance_scale = max(avg_variance, 1e-6)
     mean32 = np.asarray(mean, np.float32)
-    std32 = np.asarray(std, np.float32)
 
     for epoch in range(args.gru_epochs):
         model.train()
         total = 0.
         for _ in range(args.gru_steps_per_epoch):
             ids = rng.integers(0, len(y), size=args.gru_batch_size)
-            positions = rng.choice(
-                future_positions,
-                size=min(args.gru_future_samples, len(future_positions)),
-                replace=False)
-            positions.sort()
             prefix = gru_features(
                 y[ids[:, None], prefix_positions[None, :]],
-                mean32, std32, prefix_positions, length)
+                prefix_positions, length)
             future = gru_future_features(
-                mean32, std32, positions, len(ids), length)
-            truth = torch.from_numpy(y[ids[:, None], positions[None, :]].copy())
-            prediction_z = model(torch.from_numpy(prefix),
-                                 torch.from_numpy(future))
-            mu = torch.from_numpy(mean32[positions].copy())
-            sigma = torch.from_numpy(std32[positions].copy())
-            predicted_x = mu[None, :] + sigma[None, :] * prediction_z
+                mean32, future_positions, len(ids), length)
+            truth = torch.from_numpy(y[ids[:, None], future_positions[None, :]].copy())
+            predicted_x = model(torch.from_numpy(prefix),
+                                torch.from_numpy(future))
             loss = ((predicted_x - truth) ** 2).mean() / variance_scale
             optimizer.zero_grad()
             loss.backward()
@@ -396,22 +384,20 @@ def forecast_gru(evaluation, mean, std, mask, cutoff, end, model,
             batch = np.asarray(evaluation[first:first + batch_size],
                                np.float32)
             prefix = gru_features(
-                batch[:, prefix_positions], mean32, std32,
-                prefix_positions, length)
+                batch[:, prefix_positions], prefix_positions, length)
             _, state = model.encoder(torch.from_numpy(prefix))
             hidden = state[-1]
             for t0 in range(cutoff, end, future_batch):
                 t1 = min(end, t0 + future_batch)
                 positions = np.arange(t0, t1, dtype=np.int64)
                 future = torch.from_numpy(gru_future_features(
-                    mean32, std32, positions, len(batch), length))
+                    mean32, positions, len(batch), length))
                 context = hidden.unsqueeze(1).expand(
                     -1, len(positions), -1)
-                pred_z = model.decoder(torch.cat((context, future), dim=-1))
-                pred_z = pred_z.squeeze(-1).numpy()
+                predicted_x = model.decoder(
+                    torch.cat((context, future), dim=-1)).squeeze(-1).numpy()
                 output[first:first + len(batch), t0-cutoff:t1-cutoff] = (
-                    np.clip(mean32[positions][None, :] +
-                            std32[positions][None, :] * pred_z, 0., 1.))
+                    np.clip(predicted_x, 0., 1.))
     return output
 
 
@@ -530,11 +516,11 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
             import torch
             checkpoint = out / f"gru_cutoff_{cutoff:05d}.pt"
             config = {
+                "architecture": "gru_direct_voltage_full_suffix_v2",
                 "cutoff": cutoff, "stop": stop,
                 "hidden": args.gru_hidden, "epochs": args.gru_epochs,
                 "batch_size": args.gru_batch_size,
                 "steps_per_epoch": args.gru_steps_per_epoch,
-                "future_samples": args.gru_future_samples,
                 "lr": args.gru_lr, "seed": gru_seed,
                 "train_indices": train_ids.tolist(),
             }
@@ -598,7 +584,6 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                  "per_cutoff": True, "hidden": args.gru_hidden,
                  "epochs": args.gru_epochs,
                  "steps_per_epoch": args.gru_steps_per_epoch,
-                 "future_samples": args.gru_future_samples,
                  "batch_size": args.gru_batch_size, "learning_rate": args.gru_lr,
                  "checkpoint_template": "gru_cutoff_XXXXX.pt"}
                 if args.with_gru else {"enabled": False}),
@@ -662,8 +647,6 @@ def parse_args(argv=None):
                         help="Train a causal GRU forecaster on development data")
     parser.add_argument("--gru-hidden", type=int, default=32)
     parser.add_argument("--gru-epochs", type=int, default=8)
-    parser.add_argument("--gru-future-samples", type=int, default=128,
-                        help="Future positions sampled per training batch")
     parser.add_argument("--gru-steps-per-epoch", type=int, default=32)
     parser.add_argument("--gru-batch-size", type=int, default=32)
     parser.add_argument("--gru-lr", type=float, default=1e-3)
@@ -674,8 +657,7 @@ def parse_args(argv=None):
         parser.error("AR orders must be positive")
     if args.ridge_alpha < 0 or args.train_stride < 1 or args.batch_events < 1:
         parser.error("Ridge alpha >= 0, stride and batch size >= 1 required")
-    if (min(args.gru_hidden, args.gru_epochs, args.gru_future_samples,
-            args.gru_steps_per_epoch, args.gru_batch_size) < 1 or args.gru_lr <= 0):
+    if (min(args.gru_hidden, args.gru_epochs,             args.gru_steps_per_epoch, args.gru_batch_size) < 1 or args.gru_lr <= 0):
         parser.error("GRU hyperparameters must be positive")
     if args.n_cutoffs < 4:
         parser.error("At least 4 cutoffs required")
