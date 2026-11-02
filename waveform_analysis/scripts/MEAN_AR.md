@@ -39,18 +39,18 @@ python -m waveform_analysis.scripts.evaluate_mean_ar \
   --output-root "$HOME/mean_ar_gru_results" \
   --ar-orders 8 16 32 64 128 \
   --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \
-  --with-gru --gru-hidden 32 --gru-future-samples 128 \
+  --with-gru --gru-hidden 32 \
   --gru-epochs 8 --gru-steps-per-epoch 32
 ```
 
 With `--with-gru`, one independent GRU is fitted **per cutoff, board, mode,
 and detector** on development waveforms. The GRU encoder reads the entire
 real contiguous prefix (not only the last value). Its decoder combines the
-encoded prefix with target-time coordinates and frozen development mean/std,
-then predicts future residuals **directly**. No autoregressive rollout or
-future waveform values are used during evaluation. Training minimizes
-future-waveform MSE by randomly sampling positions across the remaining
-valid interval each step. Following a masked boundary, predictions revert
+encoded prefix with target-time coordinates and the development mean,
+then regresses the normalized waveform voltage **directly** (not residuals).
+No autoregressive rollout or future waveform values are used during evaluation.
+Training evaluates MSE at **every future position in the current valid interval**
+at each optimization step, not a subset of future positions. Following a masked boundary, predictions revert
 to the mean as in the AR baseline. This is a deterministic conditional-mean
 forecaster, not a probabilistic imputer.
 
