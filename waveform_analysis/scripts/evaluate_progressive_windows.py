@@ -138,7 +138,6 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
     }
     summaries = []
     fold_rows = []
-    by_candidate = {}
     rows_by_candidate = {}
     startup = int(pruning["startup_complete_candidates"])
 
@@ -184,7 +183,6 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
         )
         summaries.append(candidate)
         rows_by_candidate[identifier] = rows
-        by_candidate[identifier] = (x, alpha)
         # Candidate-level details, including incomplete pruned candidates.
         fold_rows.extend(rows)
         print(
@@ -294,27 +292,33 @@ def main():
     parser.add_argument("--dilations", type=int, default=4)
     parser.add_argument("--shapelets", type=int, default=16)
     parser.add_argument("--shapelet-length", type=int, default=11)
-    parser.add_argument("--ridge-alpha", type=float, default=10000.)
     parser.add_argument("--max-control", type=int, default=1024)
     parser.add_argument("--max-development", type=int, default=3000)
-    parser.add_argument("--folds", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--fit-bin-width-ps", type=float, default=10.)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Seed for control/development subsampling and CV")
     args = parser.parse_args()
     if args.step_ns <= 0 or args.end_ns <= args.start_ns or args.kernels < 84:
         parser.error("Invalid time range or kernels (<84)")
-    if (args.ridge_alpha <= 0 or args.folds < 2 or args.shapelets < 1
-            or args.max_control < 10 or args.max_development < args.folds * 5
+    if (args.shapelets < 1 or args.max_control < 10 or args.max_development < 10
             or args.dilations < 1 or args.shapelet_length < 2):
-        parser.error("Invalid Ridge alpha, folds or shapelets")
+        parser.error("Invalid feature-transform settings")
     output = root_relative(args.output)
     output.mkdir(parents=True, exist_ok=True)
     waves, times, run, manifest, _, control, mask, target = load_wide_development(
         root_relative(args.results), args.channel, root_relative(args.cache_root),
         return_transform=True, include_control=True, include_sample_mask=True,
         include_target=True)
+    run_config = resolve_run_config(run)
+    cv_settings = run_config["cross_validation"]
+    pruning = cv_settings["pruning"]
+    criterion = cv_settings["metric"]
+    fold_count = int(cv_settings["folds"])
+    fit_cfg = run_config["fit"]
+    if int(pruning["startup_complete_candidates"]) < 0:
+        raise ValueError("Invalid batch-study pruning startup setting")
+
     selected_control = np.sort(np.random.default_rng(args.seed+7).choice(
         len(control), min(len(control), args.max_control), replace=False))
     selected_dev = np.sort(np.random.default_rng(args.seed+13).choice(
@@ -322,60 +326,92 @@ def main():
     controls = np.asarray(control[selected_control], np.float32)
     dev = np.asarray(waves[selected_dev], np.float32)
     y = np.asarray(target[selected_dev], np.float64)
-    if len(y) < args.folds * 5:
-        raise ValueError("Not enough development events for CV")
+    if len(y) < max(fold_count, fold_count * int(cv_settings["minimum_events_per_fold"])):
+        raise ValueError("Not enough development events for the configured CV folds")
     blocks = temporal_blocks(times, mask, args.start_ns, args.end_ns, args.step_ns)
-    if args.family in ("rdst", "both") and any(len(b[2]) < args.shapelet_length for b in blocks):
+    if args.family in ("rdst", "both") and any(
+            len(indices) < args.shapelet_length for _, _, indices in blocks):
         raise ValueError("Shapelet length exceeds a selected block")
-    fit_cfg = {"histogram_bin_width_ps": args.fit_bin_width_ps}
+    split = make_cv_split(
+        len(y),
+        population_identity=str(manifest["analysis_protocol_identity"]) + ":" +
+                            fingerprint(selected_dev.tolist()),
+        batch_seed=args.seed,
+        n_folds=fold_count, shuffle=bool(cv_settings["shuffle"]))
+    candidates = alpha_grid(args.family)
+
     settings = {k: v for k, v in vars(args).items()
                 if k not in ("output", "results", "cache_root")}
-    settings.update(control_identity=manifest.get("analysis_protocol_identity"),
-                    source_run=str(run), selected_control=selected_control.tolist(),
-                    selected_dev=selected_dev.tolist(),
-                    blocks=[(a,b,idx.tolist()) for a,b,idx in blocks])
+    settings.update(
+        control_identity=manifest.get("analysis_protocol_identity"),
+        source_run=str(run), selected_control=selected_control.tolist(),
+        selected_dev=selected_dev.tolist(),
+        blocks=[(a,b,idx.tolist()) for a,b,idx in blocks])
     sig = fingerprint(settings)
-    (output/"settings.json").write_text(json.dumps(
-        {"fingerprint": sig, "settings": settings, "blind_accessed": False},
-        indent=2, default=str), encoding="utf-8")
-    splits = list(KFold(n_splits=args.folds, shuffle=True,
-                        random_state=args.seed).split(np.arange(len(y))))
-    features = []
-    summary, folds_out = [], []
+    atomic_json(output/"settings.json", {
+        "fingerprint": sig, "settings": settings, "blind_accessed": False,
+        "cross_validation": cv_settings, "ridge_candidates": candidates})
+    feature_parts = []
+    rdst_ranges = []
+    total_features = 0
+    summary, candidates_out, folds_out = [], [], []
     for block_id, (begin, end, indices) in enumerate(blocks):
         name = f"features_{sig}_block_{block_id:03d}.npy"
         path = output/name
         if path.is_file():
             z = np.load(path, mmap_mode="r")
-            if z.shape[0] != len(y) or z.ndim != 2 or not np.all(np.isfinite(z)):
+            if z.ndim != 2 or z.shape[0] != len(y) or not np.all(np.isfinite(z)):
                 raise ValueError(f"Invalid cached transform: {path}")
-            print(f"[{block_id+1}/{len(blocks)}] reused block {begin:g}..{end:g} ns", flush=True)
+            print(f"[{block_id+1}/{len(blocks)}] reused {begin:g}..{end:g} ns", flush=True)
         else:
-            print(f"[{block_id+1}/{len(blocks)}] fitting transforms for {begin:g}..{end:g} ns", flush=True)
+            print(f"[{block_id+1}/{len(blocks)}] transforms {begin:g}..{end:g} ns", flush=True)
             z, counts = block_features(controls, dev, indices, args, args.seed+block_id*3)
             np.save(path, z)
-            print(f"  saved {name}: features={z.shape[1]} families={counts}", flush=True)
-        features.append(np.asarray(z, np.float32))
-        # Only concatenate EXISTING feature matrices, no transform repeated.
-        prefix = np.concatenate(features, axis=1)
-        metrics = evaluate_prefix(prefix, y, splits, args, fit_cfg)
-        for row in metrics:
-            folds_out.append(dict(cutoff_ns=end, n_blocks=block_id+1,
-                                  features=prefix.shape[1], **row))
-        result = dict(cutoff_ns=end, n_blocks=block_id+1,
-                      features=prefix.shape[1], n_development=len(y),
-                      ctr_mean_ps=float(np.mean([r["ctr_ps"] for r in metrics])),
-                      ctr_std_ps=float(np.std([r["ctr_ps"] for r in metrics], ddof=1)),
-                      rmse_mean_ps=float(np.mean([r["rmse_ps"] for r in metrics])),
-                      rmse_std_ps=float(np.std([r["rmse_ps"] for r in metrics], ddof=1)))
+            print(f"  saved {name}: {counts}", flush=True)
+        feature_parts.append(np.asarray(z, np.float32))
+        # Direct combination follows the original transform family's ordering.
+        if args.family == "both":
+            mr_count = int(z.shape[1]) - 3 * args.shapelets
+            if mr_count < 1:
+                raise ValueError("RDST feature count exceeds cached block dimensions")
+            rdst_ranges.append((total_features + mr_count,
+                                total_features + z.shape[1]))
+        total_features += int(z.shape[1])
+        prefix = np.concatenate(feature_parts, axis=1)
+        winner, candidate_results, fold_results = evaluate_prefix(
+            prefix, rdst_ranges, y, split, args.family, candidates,
+            pruning, criterion, fit_cfg, args.seed)
+        for row in candidate_results:
+            candidates_out.append(dict(
+                cutoff_ns=end, n_blocks=block_id+1, features=total_features,
+                candidate_id=row["candidate_id"],
+                multirocket_alpha=row["parameters"].get("multirocket_alpha", ""),
+                rdst_alpha=row["parameters"].get("rdst_alpha", ""),
+                ridge_alpha=row["parameters"].get("ridge_alpha", ""),
+                completed_folds=row["completed_folds"], total_folds=row["total_folds"],
+                pruned=row["pruned"], pruning_reason=row["pruning_reason"],
+                ctr_mean_ps=row["ctr_mean_ps"], rmse_mean_ps=row["rmse_mean_ps"]))
+        for row in fold_results:
+            folds_out.append(dict(cutoff_ns=end, n_blocks=block_id+1, **row))
+        result = dict(
+            cutoff_ns=end, n_blocks=block_id+1, features=total_features,
+            n_development=len(y), selection_metric=criterion,
+            candidate_id=winner["candidate_id"],
+            multirocket_alpha=winner["parameters"].get("multirocket_alpha", ""),
+            rdst_alpha=winner["parameters"].get("rdst_alpha", ""),
+            ridge_alpha=winner["parameters"].get("ridge_alpha", ""),
+            ctr_mean_ps=winner["ctr_mean_ps"], ctr_std_ps=winner["ctr_std_ps"],
+            rmse_mean_ps=winner["rmse_mean_ps"], rmse_std_ps=winner["rmse_std_ps"])
         summary.append(result)
         csv_output(output/"cv_summary.csv", summary)
+        csv_output(output/"cv_candidates.csv", candidates_out)
         csv_output(output/"cv_folds.csv", folds_out)
-        print(f"  cutoff {end:g} ns | features={prefix.shape[1]} | "
-              f"CV CTR={result['ctr_mean_ps']:.2f} ± {result['ctr_std_ps']:.2f} ps | "
-              f"RMSE={result['rmse_mean_ps']:.2f} ps", flush=True)
+        print(f"  cutoff {end:g} ns | features={total_features} | "
+              f"best alpha={winner['parameters']} | "
+              f"CV CTR={result['ctr_mean_ps']:.2f} ps | "
+              f"CV RMSE={result['rmse_mean_ps']:.2f} ps", flush=True)
     plot_summary(summary, output, args.channel.upper())
-    print(f"Finished; outputs: {output}", flush=True)
+    print(f"CV complete, no final model and no blind evaluation: {output}", flush=True)
 
 
 if __name__ == "__main__":
