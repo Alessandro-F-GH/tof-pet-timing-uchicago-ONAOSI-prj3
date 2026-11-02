@@ -353,12 +353,14 @@ def forecast_gru(evaluation, mean, std, mask, cutoff, end, model):
                         residual.shape)
     ), axis=-1)
     with torch.no_grad():
-        _, hidden = model.recurrent(torch.from_numpy(feat.copy()))
-        previous = torch.from_numpy(feat[:, -1:, :].copy())
+        prefix_prediction, hidden = model(torch.from_numpy(feat.copy()))
         output = np.empty((len(evaluation), end - cutoff), dtype=np.float64)
         for t in range(cutoff, end):
-            prediction, hidden = model(previous, hidden)
-            residual_next = prediction[:, -1].numpy()
+            if t == cutoff:
+                residual_next = prefix_prediction[:, -1].numpy()
+            else:
+                prediction, hidden = model(previous, hidden)
+                residual_next = prediction[:, -1].numpy()
             value = np.clip(mean[t] + std[t] * residual_next, 0., 1.)
             output[:, t-cutoff] = value
             normalized_next = np.clip((value - mean[t]) / std[t], -8., 8.)
