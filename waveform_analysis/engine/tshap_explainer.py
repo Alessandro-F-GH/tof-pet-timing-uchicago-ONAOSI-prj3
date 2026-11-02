@@ -34,8 +34,8 @@ from waveform_analysis.models import get_model
 from waveform_analysis.signal.baseline import baseline_level_mV
 
 
-TSHAP_METHOD_VERSION = 10
-GLOBAL_PLOT_VERSION = 20
+TSHAP_METHOD_VERSION = 11
+GLOBAL_PLOT_VERSION = 21
 LOCAL_PREDICTION_REPLAY_ATOL_PS = 0.1
 LOCAL_PREDICTION_REPLAY_RTOL = 1e-3
 REQUIRED_ARTIFACTS = (
@@ -238,263 +238,22 @@ def _predict_bounded(spec, fitted, values, batch_size):
     return output
 
 
-class _JointPPCAImputer:
-    """One physical-mV PPCA distribution over both detector waveforms.
+def _sample_control_baselines(control, mode, *, n_baselines, seed):
+    """Choose fixed, paired waveform references from control (never blind).
 
-    The model is fitted once to concatenated [detector 1, detector 2] samples.
-    Both two-player TSHAP coalitions use this same distribution, conditioned on
-    their observed sample indices. The fitted frozen amplitude transform maps
-    reconstructed physical-mV waveforms back to model-normalized inputs.
+    Their identity is deterministic and is shared by both Shapley coalitions.
     """
-
-    def __init__(self, model, transform):
-        self.model = model
-        self.transform = transform
-        self.n_samples = model.mean.size // 2
-        if model.mean.size != 2 * self.n_samples or self.n_samples < 2:
-            raise ValueError("Joint PPCA needs two equally sized detector waveforms")
-        self._prepared = {}
-
-    def unconditional_mean(self):
-        """Single consistent v(empty) waveform in the model's input space."""
-        physical = self.model.mean.reshape(1, 2, self.n_samples)
-        return np.asarray(self.transform.transform(physical), np.float32)[0]
-
-    def reconstruct(self, waveforms, start, width, *, keep_only, sample_mask=None):
-        """Return full model-space waveforms with only missing samples imputed.
-
-        Observed samples are never overwritten; detector samples are conditioned
-        jointly. Samples cropped by the saved model mask are never conditioned on.
-        """
-        data = np.asarray(waveforms, np.float32)
-        if data.ndim != 3 or data.shape[1:] != (2, self.n_samples):
-            raise ValueError("Expected [events, 2 detectors, samples]")
-        if start < 0 or width < 1 or start + width > self.n_samples:
-            raise ValueError("Invalid temporal window")
-        valid = (np.ones(self.n_samples, bool) if sample_mask is None
-                 else np.asarray(sample_mask, bool).reshape(-1))
-        if valid.shape != (self.n_samples,):
-            raise ValueError("Model sample mask has an incompatible shape")
-        region = np.zeros(self.n_samples, bool)
-        region[start:start + width] = True
-        observed_time = valid & (region if keep_only else ~region)
-        missing_time = valid & ~observed_time
-        if not np.any(observed_time) or not np.any(missing_time):
-            raise ValueError("Window must leave valid observed and missing samples")
-        observed = np.tile(observed_time, 2)
-        missing = np.tile(missing_time, 2)
-        key = ("mean", int(start), int(width), bool(keep_only), valid.tobytes())
-        if key not in self._prepared:
-            w_observed = self.model.W[observed]
-            w_missing = self.model.W[missing]
-            precision = (np.eye(self.model.components)
-                         + w_observed.T @ w_observed / self.model.sigma2)
-            coefficients = np.linalg.solve(
-                precision, w_observed.T / self.model.sigma2
-            ).T @ w_missing.T
-            self._prepared[key] = (observed, missing, coefficients)
-        observed, missing, coefficients = self._prepared[key]
-        physical = np.asarray(self.transform.inverse(data), np.float64)
-        flat = physical.reshape(len(data), -1)
-        result = flat.copy()
-        result[:, missing] = (self.model.mean[missing]
-                             + (flat[:, observed] - self.model.mean[observed])
-                             @ coefficients)
-        normalized = self.transform.transform(result.reshape(data.shape))
-        # The existing measured samples remain bitwise identical to the input.
-        normalized[:, :, observed_time] = data[:, :, observed_time]
-        return np.ascontiguousarray(normalized, dtype=np.float32)
-
-
-    def sample_unconditional(self, samples, rng):
-        """Independent draws from the full joint PPCA, in model input space."""
-        if samples < 1:
-            raise ValueError("samples must be positive")
-        model = self.model
-        latent = rng.standard_normal((samples, model.components))
-        noise = rng.standard_normal((samples, model.mean.size))
-        physical = (model.mean[None] + latent @ model.W.T
-                    + np.sqrt(model.sigma2) * noise)
-        normalized = self.transform.transform(
-            physical.reshape(samples, 2, self.n_samples))
-        return np.ascontiguousarray(normalized, dtype=np.float32)
-
-    def sample_conditional(self, waveforms, start, width, *, keep_only,
-                           samples, rng, sample_mask=None):
-        """Sample the exact PPCA Gaussian conditional of missing paired samples.
-
-        Observed samples are held fixed. Posterior uncertainty includes BOTH
-        latent uncertainty and independent PPCA observation noise. Output is
-        [events, samples, 2 detectors, time] in the frozen model input space.
-        """
-        if samples < 1:
-            raise ValueError("samples must be positive")
-        data = np.asarray(waveforms, np.float32)
-        if data.ndim != 3 or data.shape[1:] != (2, self.n_samples):
-            raise ValueError("Expected [events, 2 detectors, samples]")
-        if start < 0 or width < 1 or start + width > self.n_samples:
-            raise ValueError("Invalid temporal window")
-        valid = (np.ones(self.n_samples, dtype=bool) if sample_mask is None
-                 else np.asarray(sample_mask, dtype=bool).reshape(-1))
-        if valid.shape != (self.n_samples,):
-            raise ValueError("Invalid model sample mask")
-        inside = np.zeros(self.n_samples, dtype=bool)
-        inside[start:start + width] = True
-        observed_time = valid & (inside if keep_only else ~inside)
-        missing_time = valid & ~observed_time
-        if not observed_time.any() or not missing_time.any():
-            raise ValueError("Window needs valid observed and missing samples")
-        observed = np.tile(observed_time, 2)
-        missing = np.tile(missing_time, 2)
-        key = ("samples", int(start), int(width), bool(keep_only), valid.tobytes())
-        if key not in self._prepared:
-            w_observed = self.model.W[observed]
-            precision = (np.eye(self.model.components)
-                         + w_observed.T @ w_observed / self.model.sigma2)
-            chol = np.linalg.cholesky(precision)
-            # E[z|x_obs] = (x_obs-mu_obs) @ latent_map.
-            latent_map = np.linalg.solve(
-                chol.T, np.linalg.solve(chol, w_observed.T / self.model.sigma2)
-            ).T
-            # Row-vector standard normals @ inv(chol) have covariance
-            # inv(chol).T @ inv(chol) == inv(precision).
-            latent_noise_map = np.linalg.solve(
-                chol, np.eye(self.model.components))
-            self._prepared[key] = (observed, missing, latent_map,
-                                   latent_noise_map, self.model.W[missing])
-        observed, missing, latent_map, latent_noise_map, w_missing = (
-            self._prepared[key])
-        physical = np.asarray(self.transform.inverse(data), np.float64)
-        flat = physical.reshape(len(data), -1)
-        latent_mean = (flat[:, observed] - self.model.mean[observed]) @ latent_map
-        latent_draws = (latent_mean[:, None, :] +
-                        rng.standard_normal(
-                            (len(data), samples, self.model.components)
-                        ) @ latent_noise_map)
-        missing_draws = (self.model.mean[missing] +
-                         latent_draws @ w_missing.T +
-                         np.sqrt(self.model.sigma2) * rng.standard_normal(
-                             (len(data), samples, int(missing.sum()))))
-        completed = np.broadcast_to(
-            flat[:, None, :], (len(data), samples, flat.shape[1])).copy()
-        completed[:, :, missing] = missing_draws
-        transformed = self.transform.transform(
-            completed.reshape(len(data) * samples, 2, self.n_samples)
-        ).reshape(len(data), samples, 2, self.n_samples)
-        # Preserve observations exactly, even after round-trip normalization.
-        # Use an explicit per-detector indexed assignment (no sample mixing).
-        for detector in range(2):
-            transformed[:, :, detector, observed_time] = (
-                data[:, None, detector, observed_time])
-        return np.ascontiguousarray(transformed, dtype=np.float32)
-
-
-def _fit_joint_ppca_imputer(control, mode, *, components, fit_events, seed):
-    """Fit a joint PPCA on control waveforms only, with no blind-event leakage."""
-    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
-
-    family = mode_family(mode)
-    transform = getattr(control, f"{family}_transform")
-    if transform is None:
-        raise ValueError("Missing frozen input transform for joint PPCA")
-    available = np.random.default_rng(int(seed) + 1).permutation(control.n_events)
-    ids = available[:min(int(fit_events), len(available))]
-    if len(ids) <= components:
-        raise ValueError("Insufficient control events for joint PPCA components")
-    normalized = waveform_view(control, mode, ids).materialize()
-    physical = np.asarray(transform.inverse(normalized), np.float64)
-    if physical.ndim != 3 or physical.shape[1] != 2 or not np.all(np.isfinite(physical)):
-        raise ValueError("Invalid control waveforms for joint PPCA")
-    joint = physical.reshape(len(physical), -1)
-    model = ProbabilisticPCA(components).fit(joint)
-    metadata = {
-        "n_training_events": int(len(ids)),
-        "n_tuning_events": 0,
-        "components": int(components),
-        "explained_variance_ratio_joint": float(model.explained_variance_ratio),
-        "training_population": "control",
-        "input_space": "physical_mV_two_detector_concatenation",
-    }
-    return _JointPPCAImputer(model, transform), metadata
-
-
-def _cached_joint_ppca_imputer(control, mode, config, *,
-                              components, fit_events, seed, **unused):
-    """Persist and reuse the same joint PPCA across TSHAP models and windows."""
-    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
-    from waveform_analysis.data.dataset import InputTransform
-    from waveform_analysis.data.named_cache import alias_path
-
-    family = mode_family(mode)
-    transform = getattr(control, f"{family}_transform")
-    times = np.asarray(getattr(control, f"{family}_time_ps"), np.float64)
-    if transform is None or times.ndim != 1 or times.size < 2:
-        raise ValueError("Joint PPCA requires a valid frozen grid and transform")
-    identity = {
-        "method": "joint_ppca_two_player_shapley_v1",
-        "control_identity": control.manifest.get("analysis_protocol_identity"),
-        "control_population": control.manifest.get("event_population_identity"),
-        "control_artifact": str(control.directory.name),
-        "mode": str(mode),
-        "time_grid_hash": canonical_hash(times.tolist()),
-        "transform_minimum": np.asarray(transform.minimum).tolist(),
-        "transform_maximum": np.asarray(transform.maximum).tolist(),
-        "components": int(components),
-        "fit_events": int(fit_events),
-        "seed": int(seed),
-    }
-    recipe = ProductRecipe(
-        "tshap-imputers", identity, parents=(str(control.directory.name),),
-        implementation="joint-physical-ppca-shapley-v1",
+    if n_baselines < 1 or control.n_events < 1:
+        raise ValueError("At least one control baseline is required")
+    indices = np.sort(np.random.default_rng(int(seed) + 17).choice(
+        control.n_events, size=min(n_baselines, control.n_events), replace=False
+    ))
+    waves = np.ascontiguousarray(
+        waveform_view(control, mode, indices).materialize(), dtype=np.float32
     )
-    store = ArtifactStore(config["preprocessing"]["artifact_root"])
-    alias = alias_path(cache_root_from_config(config), "imputers",
-                       "joint_ppca_shapley", family, canonical_hash(identity))
-    prior = store.lookup(recipe)
-
-    def build(directory, effective_recipe=None):
-        imputer, metadata = _fit_joint_ppca_imputer(
-            control, mode, components=components, fit_events=fit_events, seed=seed
-        )
-        np.savez_compressed(
-            directory / "imputer.npz",
-            metadata_json=np.asarray(json.dumps(metadata)),
-            mean=imputer.model.mean,
-            loadings=imputer.model.W,
-            noise=np.asarray(imputer.model.sigma2),
-            variance=np.asarray(imputer.model.explained_variance_ratio),
-            minimum=np.asarray(transform.minimum),
-            maximum=np.asarray(transform.maximum),
-        )
-
-    reference = get_or_build_named(
-        store, recipe, alias, build,
-        metadata={"control_identity": identity["control_identity"],
-                  "fit_events": int(fit_events), "components": int(components)}
-    )
-    path = reference.payload_path("imputer.npz")
-    with np.load(path, allow_pickle=False) as saved:
-        model = ProbabilisticPCA(components)
-        model.mean = np.asarray(saved["mean"], np.float64)
-        model.W = np.asarray(saved["loadings"], np.float64)
-        model.sigma2 = float(saved["noise"])
-        model.explained_variance_ratio = float(saved["variance"])
-        if (model.mean.shape != (2 * len(times),)
-                or model.W.shape != (2 * len(times), components)
-                or not np.array_equal(saved["minimum"], transform.minimum)
-                or not np.array_equal(saved["maximum"], transform.maximum)):
-            raise ValueError(f"Joint PPCA cache data mismatch: {path}")
-        restored_transform = InputTransform(
-            np.asarray(saved["minimum"], np.float32),
-            np.asarray(saved["maximum"], np.float32),
-        )
-        metadata = json.loads(str(saved["metadata_json"].item()))
-    return _JointPPCAImputer(model, restored_transform), {
-        **metadata,
-        "cache_file": str(path),
-        "cache_hit": prior.status == "hit",
-        "cache_identity": reference.product_id,
-    }
+    if waves.ndim != 3 or waves.shape[1] != 2 or not np.all(np.isfinite(waves)):
+        raise ValueError("Control TSHAP baselines must have shape [events, 2, time]")
+    return waves, np.asarray(control.event_index[indices], dtype=np.int64)
 
 
 def _two_feature_shapley(full, empty, keep_only, remove_window):
@@ -502,17 +261,13 @@ def _two_feature_shapley(full, empty, keep_only, remove_window):
     return 0.5 * ((keep_only - empty) + (full - remove_window))
 
 
-def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, imputer=None,
-                   sample_mask=None, conditional_samples=16, sampling_seed=42):
+def _new_explainer(window_samples, stride_samples, roi, predict_batch_size,
+                   sample_mask=None):
+    """Bounded, paired-window adaptation of the original background TSHAP."""
     try:
         from tshap.tshap import TSHAPExplainer
     except ImportError as exc:
-        raise ImportError("TSHAP requires the upstream dependency: pip install tshap==0.0.1") from exc
-
-    if conditional_samples < 1:
-        raise ValueError("conditional_samples must be >= 1")
-    if imputer is None:
-        raise ValueError("The conditional TSHAP adapter requires a fitted imputer")
+        raise ImportError("TSHAP requires: pip install tshap==0.0.1") from exc
 
     class BoundedTSHAP(TSHAPExplainer):
         """Upstream temporal aggregation with paired two-player Shapley scores."""
@@ -595,45 +350,64 @@ def _new_explainer(window_samples, stride_samples, roi, predict_batch_size, impu
             return retained
 
         def _calculate_window_attrib_scores(self, fnc, input_sample, baselines, window_positions):
-            import hashlib
-            sample = np.asarray(input_sample, dtype=np.float32)
+            """Exact two-feature Shapley averaged over reference waveforms.
+
+            For each b, the SAME b is used for both complement coalitions:
+            phi = (f(x)-f(x_outside,b_inside)
+                   +f(x_inside,b_outside)-f(b))/2.
+            All predicted waveforms are bounded in memory.
+            """
+            sample = np.asarray(input_sample, np.float32)
+            reference = np.asarray(baselines, np.float32)
             if sample.ndim != 2 or sample.shape[0] != 2:
-                raise ValueError("Expected one two-detector waveform")
+                raise ValueError("TSHAP requires one two-detector input")
+            if (reference.ndim != 3 or reference.shape[1:] != sample.shape
+                    or len(reference) < 1 or not np.all(np.isfinite(reference))):
+                raise ValueError("Invalid paired TSHAP control baselines")
             full = np.asarray(fnc(sample[None]), np.float64)
-            if full.shape != (1,):
+            if full.shape != (1,) or not np.isfinite(full).all():
                 raise ValueError("Invalid full-waveform prediction")
-            if not hasattr(self, "_unconditional_prediction"):
-                reference_rng = np.random.default_rng(sampling_seed + 117)
-                draws = imputer.sample_unconditional(conditional_samples, reference_rng)
-                self._unconditional_prediction = float(np.mean(fnc(draws)))
-            empty = self._unconditional_prediction
-            # Event-dependent deterministic stream prevents stochastic changes
-            # between repeated calls and independent explanations.
-            hash_seed = int.from_bytes(
-                hashlib.blake2b(sample.tobytes(), digest_size=8).digest(), "little")
-            rng = np.random.default_rng(hash_seed ^ int(sampling_seed))
-            scores = np.empty(len(window_positions), np.float64)
+            # Cache baseline predictions for the current explainer/model.
+            # This same reference cohort is used across blind events and ROIs.
+            signature = (id(baselines), reference.shape)
+            if getattr(self, "_reference_signature", None) != signature:
+                reference_predictions = []
+                for start in range(0, len(reference), predict_batch_size):
+                    pred = np.asarray(fnc(reference[start:start+predict_batch_size]),
+                                      np.float64)
+                    if pred.shape != (min(predict_batch_size, len(reference)-start),):
+                        raise ValueError("Invalid TSHAP reference predictions")
+                    reference_predictions.append(pred)
+                self._reference_predictions = np.concatenate(reference_predictions)
+                self._reference_signature = signature
+
+            scores = np.empty(len(window_positions), dtype=np.float64)
+            per_chunk = max(1, predict_batch_size // 2)
             for i, position in enumerate(window_positions):
                 channel, start = int(position[0]), int(position[1])
                 width = int(position[2]) if len(position) == 3 else self.window_length
-                width = min(width, sample.shape[-1] - start)
-                if channel != -1 or start < 0 or width < 1:
-                    raise ValueError("Invalid temporal attribution window")
-                keep = imputer.sample_conditional(
-                    sample[None], start, width, keep_only=True,
-                    samples=conditional_samples, rng=rng,
-                    sample_mask=self.sample_mask)[0]
-                remove = imputer.sample_conditional(
-                    sample[None], start, width, keep_only=False,
-                    samples=conditional_samples, rng=rng,
-                    sample_mask=self.sample_mask)[0]
-                # Predictions are internally batched by the bounded caller.
-                predictions = np.asarray(fnc(np.concatenate((keep, remove))), np.float64)
-                if predictions.shape != (2 * conditional_samples,):
-                    raise ValueError("Invalid conditional model prediction shape")
-                scores[i] = _two_feature_shapley(
-                    full[0], empty, predictions[:conditional_samples].mean(),
-                    predictions[conditional_samples:].mean())
+                stop = min(start + width, sample.shape[-1])
+                if channel != -1 or start < 0 or stop <= start:
+                    raise ValueError("Invalid paired temporal TSHAP window")
+                value = 0.0
+                for first in range(0, len(reference), per_chunk):
+                    last = min(first + per_chunk, len(reference))
+                    current = reference[first:last]
+                    removed = np.broadcast_to(sample[None], current.shape).copy()
+                    removed[:, :, start:stop] = current[:, :, start:stop]
+                    retained = current.copy()
+                    retained[:, :, start:stop] = sample[None, :, start:stop]
+                    coalition_batch = np.empty(
+                        (2*len(current), *sample.shape), dtype=np.float32)
+                    coalition_batch[0::2] = removed
+                    coalition_batch[1::2] = retained
+                    predicted = np.asarray(fnc(coalition_batch), np.float64)
+                    if predicted.shape != (2*len(current),):
+                        raise ValueError("Invalid paired coalition predictions")
+                    value += np.sum(_two_feature_shapley(
+                        full[0], self._reference_predictions[first:last],
+                        predicted[1::2], predicted[0::2]))
+                scores[i] = value / len(reference)
             self.last_window_positions = [(-1, int(p[1])) for p in window_positions]
             self.last_window_scores = scores.copy()
             return scores
