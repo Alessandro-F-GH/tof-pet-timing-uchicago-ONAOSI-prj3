@@ -30,6 +30,29 @@ script independently fits:
 - **Standardized AR**: Ridge autoregression of
   `(x[t] - mean[t]) / std[t]`; standard deviations are floored.
 
+Optional **prefix k-NN forecaster** (no learned model or additional dependencies):
+
+```bash
+python -m waveform_analysis.scripts.evaluate_mean_ar \
+  --uc-cache-root "$HOME/UC_cache" \
+  --fbk-cache-root "$HOME/FBK_cache" \
+  --output-root "$HOME/mean_ar_knn_results" \
+  --ar-orders 8 16 32 64 128 \
+  --n-cutoffs 10 --max-train-events 1024 --max-eval-events 256 \
+  --with-knn --knn-k 1 5 20
+```
+
+At each cutoff, find the nearest **development-set** events by squared
+Euclidean distance over the same observed, contiguous prefix. For `k=1`,
+copy the nearest event's *real future*; for `k>1`, take the uniform mean
+of the selected events' futures. Only the real prefix of a blind event
+is used to select neighbors: its future never enters the distance.
+Predictions terminate at the next masked boundary, with the same
+development-population mean fallback as AR and GRU. The method is evaluated
+on the exact same blind events and valid-suffix positions. `--with-knn`
+works independently of `--with-gru`. k-NN estimates are deterministic,
+and the comparison plot shows the largest requested `k`.
+
 Optional **cutoff-specific GRU encoder + direct forecasting decoder**:
 
 ```bash
@@ -88,14 +111,14 @@ to the mean baseline.
 
 Each `OUTPUT/BOARD/MODE/detector_N/` contains:
 
-- `metrics.csv`: held-out errors for every cutoff, order and method (including GRU when enabled).\n- `gru_cutoff_XXXXX.pt`: per-cutoff GRU encoder-decoder checkpoints (when enabled).
+- `metrics.csv`: held-out errors for every cutoff, order and method (including kNN/GRU when enabled).\n- `gru_cutoff_XXXXX.pt`: per-cutoff GRU encoder-decoder checkpoints (when enabled).
 - `model.json`: population provenance, selected event indices,
   per-position mean/std, fit settings, AR coefficients and characteristic-root
   stability.
 - `rmse_vs_cutoff.png`: error versus cutoff for mean baseline and the
   largest tested AR order.
 - `waveform_examples/waveform_cutoff_XXXXX.png`: one held-out waveform reconstruction
-  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), optional GRU, the cutoff, and
+  per tested cutoff, always using the same blind event; plots show the original,\n  mean replacement, standardized AR (largest tested order), optional GRU and kNN, the cutoff, and
   the next mask boundary when applicable.
 
 **Limits:** deterministic forecasts approach the learned mean when residual
