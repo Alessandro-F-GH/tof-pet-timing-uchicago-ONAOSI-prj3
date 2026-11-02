@@ -49,7 +49,8 @@ def test_same_reference_used_for_both_coalitions():
         return (data[:, 0] * data[:, 1]).sum(axis=1)
     scores = explainer._calculate_window_attrib_scores(
         predict, sample, baselines, [(-1, 4, 4)])
-    np.testing.assert_allclose(scores, [0.], atol=1e-6)
+    # b=0 gives +4, b=2 gives -12: their mean is -4.
+    np.testing.assert_allclose(scores, [-4.], atol=1e-6)
 
 
 def test_tshap_constant_prediction_is_zero():
