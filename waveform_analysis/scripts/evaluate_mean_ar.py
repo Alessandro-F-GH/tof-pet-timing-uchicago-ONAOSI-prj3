@@ -26,7 +26,7 @@ from waveform_analysis.data.dataset import load_prepared_dataset
 from waveform_analysis.data.named_cache import resolve_alias
 from waveform_analysis.signal.sample_mask import control_clipping_sample_mask
 
-METHODS = ("mean", "mean_ar", "standardized_ar", "gru", "knn", "knn_mean_ar")
+METHODS = ("mean", "mean_ar", "standardized_ar", "gru", "knn", "knn_boundary")
 
 
 def _aliases(root, mode, window, role, dataset_name=None):
@@ -439,57 +439,20 @@ def forecast_knn(training, evaluation, mask, cutoff, end, k_values, batch_size=3
     return forecasts
 
 
-def knn_conditional_mean(reference, queries, mask, cutoff, end, k,
-                         leave_one_out=False, batch_size=32):
-    """Neighbor mean over observed+future contiguous segment for each query."""
-    lo, _ = segment_for_cutoff_for_gru(mask, cutoff)
-    source = np.asarray(reference[:, lo:cutoff], np.float64)
-    query = np.asarray(queries[:, lo:cutoff], np.float64)
-    if leave_one_out and len(reference) != len(queries):
-        raise ValueError("LOO requires matching development event arrays")
-    k = min(k, len(source) - int(leave_one_out))
-    norm = np.einsum("ij,ij->i", source, source)
-    result = np.empty((len(query), end-lo), dtype=np.float64)
-    for first in range(0, len(query), batch_size):
-        last = min(len(query), first+batch_size)
-        chunk = query[first:last]
-        distances = (np.einsum("ij,ij->i", chunk, chunk)[:, None]
-                     + norm[None, :] - 2*chunk @ source.T)
-        if leave_one_out:
-            distances[np.arange(last-first), np.arange(first,last)] = np.inf
-        closest = np.argsort(distances, axis=1, kind="stable")[:, :k]
-        result[first:last] = reference[closest, lo:end].mean(axis=1)
-    return lo, result
+def boundary_correct_knn(evaluation, knn_suffix, cutoff, time_ps,
+                         tau_ns=0.5):
+    """Short exponential offset correction for the kNN forecast at cutoff.
 
-
-def fit_hybrid_ar(training, conditional_mean, lo, end, order, alpha, stride,
-                  batch_events):
-    """Fixed-order Ridge AR on LOO conditional residuals, no blind data."""
-    residuals = np.zeros_like(training, dtype=np.float64)
-    residuals[:, lo:end] = training[:, lo:end] - conditional_mean
-    models = fit_ridge_orders(
-        residuals, np.zeros(training.shape[1]), np.ones(training.shape[1]),
-        [(lo, end)], [order], alpha=alpha, stride=stride,
-        batch_events=batch_events)
-    return models["mean_ar"][order]
-
-
-def forecast_hybrid(evaluation, conditional_mean, lo, cutoff, end, coeff):
-    """kNN conditional mean + recursively forecasted local AR residual."""
-    order = len(coeff)
-    history = evaluation[:, cutoff-order:cutoff] - (
-        conditional_mean[:, cutoff-order-lo:cutoff-lo])
-    output = np.empty((len(evaluation), end-cutoff), dtype=np.float64)
-    for t in range(cutoff, end):
-        next_residual = history[:, ::-1] @ coeff
-        values = np.clip(conditional_mean[:, t-lo] + next_residual, 0., 1.)
-        output[:, t-cutoff] = values
-        # Feed the effective residual after voltage clipping.
-        actual_residual = values - conditional_mean[:, t-lo]
-        if order > 1:
-            history[:, :-1] = history[:, 1:]
-        history[:, -1] = actual_residual
-    return output
+    Only uses the last observed target value and the first kNN future value.
+    The first forecast equals the last observed value; the correction decays
+    toward the ordinary kNN forecast. No blind suffix is accessed.
+    """
+    if cutoff < 1 or tau_ns <= 0:
+        raise ValueError("Boundary correction requires cutoff >= 1 and tau_ns > 0")
+    t = np.asarray(time_ps[cutoff:cutoff + knn_suffix.shape[1]], np.float64)
+    weights = np.exp(-(t - t[0]) / (tau_ns * 1000.0))
+    offset = evaluation[:, cutoff - 1] - knn_suffix[:, 0]
+    return np.clip(knn_suffix + offset[:, None] * weights[None, :], 0., 1.)
 
 
 def select_knn_k(training, mean, mask, cutoff, end, k_values,
@@ -556,18 +519,18 @@ def choose_indices(total, limit, seed):
 def plot_summary(rows, out, title):
     fig, ax = plt.subplots(figsize=(9, 5))
     colors = {"mean": "#333333", "mean_ar": "#1879B3",
-              "standardized_ar": "#35956C", "gru": "#8056B3", "knn": "#B35A7D", "knn_mean_ar": "#B88521"}
+              "standardized_ar": "#35956C", "gru": "#8056B3", "knn": "#B35A7D", "knn_boundary": "#B88521"}
     ar_order = max(r["order"] for r in rows
                    if r["method"] in ("mean_ar", "standardized_ar"))
     for method in METHODS:
         series = sorted(
             (r for r in rows if r["method"] == method and
-             (method in ("mean", "gru", "knn", "knn_mean_ar") or r["order"] == ar_order)),
+             (method in ("mean", "gru", "knn", "knn_boundary") or r["order"] == ar_order)),
             key=lambda r: r["cutoff_sample"])
         if not series:
             continue
         label = ("kNN (selected k)" if method == "knn" else
-                 "kNN + AR (fixed order)" if method == "knn_mean_ar" else method)
+                 "Boundary-corrected kNN" if method == "knn_boundary" else method)
         ax.plot([r["cutoff_ns"] for r in series],
                 [r["rmse_mV"] for r in series],
                 marker="o", color=colors[method], label=label)
@@ -603,8 +566,7 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
     examples = []
     gru_examples = {}
     knn_examples = {}
-    hybrid_examples = {}
-    hybrid_settings = {}
+    boundary_examples = {}
     knn_selection = {}
     for cutoff in cutoffs:
         cutoff = int(cutoff)
@@ -678,47 +640,28 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
                 "stable": True, "root_radius": 0.,
             })
             knn_examples[cutoff] = (best_k, knn_full[0].copy())
-            if args.with_hybrid:
-                lo, dev_mean = knn_conditional_mean(
-                    training, training, mask, cutoff, stop, best_k,
-                    leave_one_out=True, batch_size=args.knn_batch_size)
-                order = min(args.hybrid_ar_order, cutoff-lo, stop-lo-1)
-                if order < 1:
-                    raise ValueError("No valid residual history for hybrid AR")
-                hybrid_ar = fit_hybrid_ar(
-                    training, dev_mean, lo, stop, order,
-                    args.ridge_alpha, args.train_stride, args.batch_events)
-                _, blind_mean = knn_conditional_mean(
-                    training, evaluation, mask, cutoff, stop, best_k,
-                    batch_size=args.knn_batch_size)
-                suffix_hybrid = forecast_hybrid(
-                    evaluation, blind_mean, lo, cutoff, stop,
-                    hybrid_ar["coefficients"])
-                hybrid_full = baseline_full.copy()
-                hybrid_full[:, :stop-cutoff] = suffix_hybrid
-                hybrid_metric = metric_row(
-                    truth, hybrid_full[:, future_valid], mv_scale)
+            if args.with_boundary_knn:
+                corrected = boundary_correct_knn(
+                    evaluation, suffix, cutoff, time_ps[:stop],
+                    tau_ns=args.boundary_tau_ns)
+                corrected_full = baseline_full.copy()
+                corrected_full[:, :stop-cutoff] = corrected
+                corrected_metric = metric_row(
+                    truth, corrected_full[:, future_valid], mv_scale)
                 rows.append({
-                    **hybrid_metric, "method": "knn_mean_ar", "order": order,
+                    **corrected_metric, "method": "knn_boundary", "order": best_k,
                     "cutoff_sample": cutoff,
                     "cutoff_ns": float(time_ps[cutoff]/1000),
                     "n_missing": int(np.count_nonzero(future_valid)),
                     "ar_predicted_samples": stop-cutoff,
                     "n_eval_events": len(eval_ids),
                     "mse_improvement_percent": (
-                        100 * (1 - hybrid_metric["mse_normalized"] /
+                        100 * (1 - corrected_metric["mse_normalized"] /
                                base["mse_normalized"])
                         if base["mse_normalized"] > 0 else 0.),
-                    "stable": hybrid_ar["stable"],
-                    "root_radius": hybrid_ar["root_radius"],
+                    "stable": True, "root_radius": 0.,
                 })
-                hybrid_examples[cutoff] = hybrid_full[0].copy()
-                hybrid_settings[str(cutoff)] = {
-                    "k": best_k, "order": order,
-                    "coefficients": hybrid_ar["coefficients"].tolist(),
-                    "root_radius": hybrid_ar["root_radius"],
-                    "stable": hybrid_ar["stable"]}
-
+                boundary_examples[cutoff] = corrected_full[0].copy()
         if args.with_gru:
             import torch
             checkpoint = out / f"gru_cutoff_{cutoff:05d}.pt"
@@ -787,9 +730,10 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         "cutoffs": cutoffs.tolist(),
         "orders": args.ar_orders, "ridge_alpha": args.ridge_alpha,
         "train_stride": args.train_stride, "seed": args.seed,
-        "hybrid": {"enabled": args.with_hybrid,
-                   "configured_order": args.hybrid_ar_order,
-                   "cutoff_models": hybrid_settings},
+        "boundary_knn": {"enabled": args.with_boundary_knn,
+                         "tau_ns": args.boundary_tau_ns,
+                         "first_sample_anchor": "last_observed_value",
+                         "decay": "exponential"},
         "knn": {"enabled": args.with_knn, "k_values": args.knn_k,
                 "distance": "euclidean_observed_contiguous_prefix",
                 "aggregation": "uniform_mean",
@@ -817,9 +761,9 @@ def evaluate_one(board, mode, detector, x_train, x_eval, time_ps, transform,
         ax.plot(ns[cutoff:], baseline, color="#C98740", label="Mean replacement")
         ax.plot(ns[cutoff:], prediction, color="#2B9C74",
                 label=f"Standardized AR (order {args.ar_orders[-1]})")
-        if cutoff in hybrid_examples:
-            ax.plot(ns[cutoff:], hybrid_examples[cutoff],
-                    color="#B88521", lw=1.2, label="kNN + AR")
+        if cutoff in boundary_examples:
+            ax.plot(ns[cutoff:], boundary_examples[cutoff],
+                    color="#B88521", lw=1.2, label="Boundary-corrected kNN")
         if cutoff in gru_examples:
             ax.plot(ns[cutoff:], gru_examples[cutoff],
                     color="#8056B3", lw=1.2, label="GRU forecast")
@@ -865,9 +809,10 @@ def parse_args(argv=None):
     parser.add_argument("--max-eval-events", type=int, default=128,
                         help="0 uses all blind events")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--with-hybrid", action="store_true",
-                        help="kNN conditional mean plus fixed-order AR residual forecast")
-    parser.add_argument("--hybrid-ar-order", type=int, default=16)
+    parser.add_argument("--with-boundary-knn", action="store_true",
+                        help="kNN with exponentially decaying boundary offset")
+    parser.add_argument("--boundary-tau-ns", type=float, default=0.5,
+                        help="Fixed decay time of boundary correction in ns")
     parser.add_argument("--with-knn", action="store_true",
                         help="Compare nearest development-prefix waveforms")
     parser.add_argument("--knn-k", nargs="+", type=int, default=[1, 5, 20],
@@ -893,9 +838,9 @@ def parse_args(argv=None):
     args.knn_k = sorted(set(args.knn_k))
     if not args.knn_k or min(args.knn_k) < 1 or args.knn_batch_size < 1:
         parser.error("kNN neighbor counts and batch size must be positive")
-    if args.hybrid_ar_order < 1:
-        parser.error("Hybrid AR order must be positive")
-    if args.with_hybrid:
+    if args.boundary_tau_ns <= 0:
+        parser.error("Boundary correction tau must be positive")
+    if args.with_boundary_knn:
         args.with_knn = True
     if args.n_cutoffs < 4:
         parser.error("At least 4 cutoffs required")
