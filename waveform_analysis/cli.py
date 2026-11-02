@@ -164,6 +164,11 @@ def _parser() -> argparse.ArgumentParser:
     cpa.add_argument("--bootstrap", type=int, default=100)
     cpa.add_argument("--predict-batch-size", type=int, default=64)
     cpa.add_argument("--seed", type=int, default=42)
+    cpa.add_argument("--imputer", choices=("ar", "weighted-knn"), default="ar")
+    cpa.add_argument("--knn-k", nargs="+", type=int,
+                     default=[1,3,5,10,20,50,100])
+    cpa.add_argument("--knn-tau-ns", nargs="+", type=float,
+                     default=[0.25,0.5,1.,2.,5.])
     cpa.add_argument("--orders", nargs="+", type=int, default=[8,16,32,64,128])
     cpa.add_argument("--local-samples", type=int, default=100)
     cpa.add_argument("--ridge-alpha", type=float, default=1e-3)
@@ -244,7 +249,10 @@ def main() -> None:
                 predict_batch_size=args.predict_batch_size,
                 orders=tuple(sorted(set(args.orders))),
                 local_samples=args.local_samples, ridge_alpha=args.ridge_alpha,
-                train_stride=args.train_stride, overwrite=args.overwrite,
+                train_stride=args.train_stride,
+                imputer_method=args.imputer,
+                knn_k=tuple(args.knn_k), knn_tau_ns=tuple(args.knn_tau_ns),
+                overwrite=args.overwrite,
                 logger=logger,
             ):
                 print(output)
