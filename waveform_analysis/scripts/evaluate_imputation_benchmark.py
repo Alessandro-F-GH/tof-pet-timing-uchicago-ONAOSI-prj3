@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark waveform imputation methods on held-out, artificially masked signals.
 
-Methods: linear interpolation, cubic Hermite, standard PPCA conditional mean,
-and the calibrated smooth-envelope Hermite-PPCA blend. Outputs pooled RMSE,
+Methods: original TSHAP baselines, interpolation, PPCA, Hermite-PPCA blend,\nand paired nearest-neighbor (k=1); keep-only mode compares PPCA, kNN and\nthe per-detector development median. Outputs pooled RMSE,
 event-bootstrap confidence intervals, RMSE by temporal position, plots and LaTeX.
 """
 from __future__ import annotations
@@ -471,7 +470,7 @@ def write_latex(path, rows):
         r"\caption{Held-out waveform reconstruction RMSE in mV. Confidence intervals are event-bootstrap 95\% intervals.}",
         r"\label{tab:imputation-reconstruction-rmse}",
         r"\begin{tabular}{lllrrr}", r"\toprule",
-        r"Dataset & Channel & Method & RMSE & 95\% CI & $\Delta$ vs.\ Hermite (\%) \\",
+        r"Dataset & Channel & Method & RMSE & 95\% CI & $\Delta$ vs. reference (\%) \\",
         r"\midrule",
     ]
     for dataset, channel in configs:
@@ -583,7 +582,7 @@ def main():
     write_latex(output / "reconstruction_metrics.tex", all_overall)
     save_overall_plot(all_overall, output)
     summary = {
-        "description": "Held-out reconstruction benchmark in physical mV units; original TSHAP multi-baseline substitution is evaluated as expected reconstruction error over reference segments; event-level bootstrap CIs.",
+        "description": "Held-out waveform reconstruction benchmark (remove-window or keep-only) in physical mV units; event-level bootstrap confidence intervals.",
         "configurations": configurations,
         "methods": list(dict.fromkeys(r["method"] for r in all_overall)),
         "occlusion_mode": args.occlusion_mode, "method_labels": LABELS,
