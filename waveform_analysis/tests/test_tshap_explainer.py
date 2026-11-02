@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from waveform_analysis.engine.tshap_explainer import (
-    _choose_indices, _complete, _explanation_destination, _get_window_imputer,
+    _choose_indices, _complete, _explanation_destination, _sample_control_baselines,
     _load_materialized_local_predictions,
     _center_detector_difference, _complete_local, _dataset_mean_difference_mv,
     _detector_difference, _led_line_extent, _led_reference_levels,
@@ -20,95 +20,45 @@ from waveform_analysis.engine.tshap_explainer import (
 )
 
 
-class _MeanImputer:
-    def __init__(self, length=32):
-        self.length = length
-
-    def sample_unconditional(self, samples, rng):
-        return np.zeros((samples, 2, self.length), np.float32)
-
-    def sample_conditional(self, waveforms, start, width, *, keep_only,
-                           samples, rng, sample_mask=None):
-        data = np.asarray(waveforms, np.float32)
-        output = np.zeros((len(data), samples, 2, data.shape[-1]), np.float32)
-        if keep_only:
-            output[:, :, :, start:start+width] = data[:, None, :, start:start+width]
-        else:
-            output[:] = data[:, None]
-            output[:, :, :, start:start+width] = 0
-        return output
-
-    def reconstruct(self, waveforms, start, width, *, keep_only, sample_mask=None):
-        return self.sample_conditional(waveforms, start, width, keep_only=keep_only,
-                                       samples=1, rng=np.random.default_rng(0))[:, 0]
-
-
-
 def test_two_player_shapley_formula_and_coalition_symmetry():
     from waveform_analysis.engine.tshap_explainer import _two_feature_shapley
     assert _two_feature_shapley(10., 2., 5., 7.) == 3.
     assert _two_feature_shapley(10., 2., 7., 5.) == 5.
-    # Both complement scores add to full minus empty.
-    assert 3. + 5. == 10. - 2.
 
 
 @pytest.mark.parametrize("roi", [False, True])
-def test_paired_window_shapley_for_linear_model(roi):
+def test_reference_tshap_linear_model(roi):
     sample = np.ones((2, 32), np.float32)
-    explainer = _new_explainer(8, 4, roi, predict_batch_size=3,
-                              imputer=_MeanImputer())
+    references = np.zeros((3, 2, 32), np.float32)
+    explainer = _new_explainer(8, 4, roi, predict_batch_size=3)
     def predict(values):
         data = np.asarray(values)
         return data[:, 0].sum(axis=1) + 2 * data[:, 1].sum(axis=1)
-    score = explainer._calculate_window_attrib_scores(
-        predict, sample, sample[None], [(-1, 4, 8), (-1, 8, 8)])
-    np.testing.assert_allclose(score, [24., 24.])
-    assert explainer.last_window_positions == [(-1, 4), (-1, 8)]
+    scores = explainer._calculate_window_attrib_scores(
+        predict, sample, references, [(-1, 4, 8), (-1, 8, 8)])
+    np.testing.assert_allclose(scores, [24., 24.])
+
+
+def test_same_reference_used_for_both_coalitions():
+    sample = np.ones((2, 16), np.float32)
+    baselines = np.stack((np.zeros((2, 16), np.float32),
+                          np.full((2, 16), 2., np.float32)))
+    explainer = _new_explainer(4, 4, False, predict_batch_size=3)
+    def predict(x):
+        data = np.asarray(x)
+        return (data[:, 0] * data[:, 1]).sum(axis=1)
+    scores = explainer._calculate_window_attrib_scores(
+        predict, sample, baselines, [(-1, 4, 4)])
+    np.testing.assert_allclose(scores, [0.], atol=1e-6)
 
 
 def test_tshap_constant_prediction_is_zero():
+    explainer = _new_explainer(8, 4, False, 4)
     sample = np.ones((2, 32), np.float32)
-    explainer = _new_explainer(8, 4, False, 4, imputer=_MeanImputer())
-    score = explainer._calculate_window_attrib_scores(
-        lambda data: np.full(len(data), 7.), sample, sample[None],
+    scores = explainer._calculate_window_attrib_scores(
+        lambda x: np.full(len(x), 7.), sample, np.zeros((2, 2, 32), np.float32),
         [(-1, 4, 8)])
-    np.testing.assert_allclose(score, 0.)
-
-
-def test_joint_ppca_cache_reuses_fitted_parameters(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from waveform_analysis.engine import tshap_explainer as t
-    from waveform_analysis.data.dataset import InputTransform
-    rng = np.random.default_rng(3)
-    waves = rng.uniform(.2, .8, (70, 2, 60)).astype(np.float32)
-    transform = InputTransform(np.zeros((1, 2, 1), np.float32),
-                               np.ones((1, 2, 1), np.float32))
-    control = SimpleNamespace(
-        directory=tmp_path / "control",
-        n_events=len(waves), event_index=np.arange(len(waves)),
-        energy_windows=waves, energy_transform=transform,
-        energy_time_ps=np.arange(60) * 12.5,
-        manifest={"analysis_protocol_identity": "control-v1",
-                  "event_population_identity": "population-v1"})
-    config = {"_board": "UC", "window_ns": {"start": -2, "end": 50},
-              "mode": "energy_to_energy",
-              "output_dir": str(tmp_path / "UC" / "test_ridge"),
-              "preprocessing": {"artifact_root": str(tmp_path / "artifact_store")}}
-    options = dict(components=4, fit_events=30, seed=42)
-    first, meta = t._cached_joint_ppca_imputer(
-        control, "energy_to_energy", config, **options)
-    assert not meta["cache_hit"]
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Unexpected joint PPCA refit")
-    monkeypatch.setattr(t, "_fit_joint_ppca_imputer", forbidden)
-    second, metadata = t._cached_joint_ppca_imputer(
-        control, "energy_to_energy", config, **options)
-    assert metadata["cache_hit"]
-    assert metadata["cache_identity"] == meta["cache_identity"]
-    np.testing.assert_allclose(
-        first.reconstruct(waves[:2], 5, 10, keep_only=True),
-        second.reconstruct(waves[:2], 5, 10, keep_only=True),
-        atol=1e-6)
+    np.testing.assert_allclose(scores, 0.)
 
 
 def test_event_selection_is_reproducible():
@@ -591,7 +541,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     }), encoding="utf-8")
     _refresh_presentation(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["plot_version"] == 20
+    assert summary["plot_version"] == 21
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis"
     assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
@@ -680,121 +630,18 @@ def test_tshap_recomputes_fitted_features_for_each_waveform():
     assert first[0] != second[0]
 
 
-def test_paired_event_occlusion_is_independent_of_reference_argument():
-    sample = np.ones((2, 16), dtype=np.float32)
-    explainer = _new_explainer(4, 4, False, predict_batch_size=4, imputer=_MeanImputer(length=16))
-    predict = lambda values: np.asarray(values)[:, 0].sum(axis=1) + 2 * np.asarray(values)[:, 1].sum(axis=1)
-    score_a = explainer._calculate_window_attrib_scores(
-        predict, sample, sample[None], [(-1, 4, 4)]
-    )
-    score_b = explainer._calculate_window_attrib_scores(
-        predict, sample, np.zeros((8, 2, 16)), [(-1, 4, 4)]
-    )
-    np.testing.assert_allclose(score_a, [12.0])
-    np.testing.assert_array_equal(score_a, score_b)
-
-
-
-
-def test_tshap_imputer_is_built_once_and_reused_per_window(tmp_path, monkeypatch):
+def test_reference_cohort_selection_deterministic(tmp_path):
     from types import SimpleNamespace
-    from waveform_analysis.engine import tshap_explainer
-
-    control = SimpleNamespace(
-        manifest={
-            "analysis_protocol_identity": "control-protocol",
-            "event_population_identity": "control-population",
-        },
-        energy_time_ps=np.arange(16, dtype=np.float64),
-        energy_transform=__import__("waveform_analysis.data.dataset", fromlist=["InputTransform"]).InputTransform(
-            np.zeros((1,2,1), np.float32), np.ones((1,2,1), np.float32)),
-        directory=tmp_path / "control",
-    )
-    config = {"mode": "energy_to_energy", "window_name": "wide"}
-    cache = {}
-    built = []
-    published = []
-
-    def build(*args, **kwargs):
-        fitted = object()
-        metadata = {
-            "cache_file": str(tmp_path / "imputer.npz"),
-            "cache_identity": "imputer-product",
-            "cache_hit": False,
-            "n_training_events": 100,
-            "n_tuning_events": 20,
-            "explained_variance_ratio_joint": 0.9,
-        }
-        (tmp_path / "imputer.npz").write_bytes(b"artifact")
-        built.append((args, kwargs))
-        return fitted, metadata
-
-    monkeypatch.setattr(tshap_explainer, "_cached_joint_ppca_imputer", build)
-    monkeypatch.setattr(
-        tshap_explainer, "_publish_window_imputer",
-        lambda destination, metadata, identity: published.append(destination),
-    )
-    monkeypatch.setattr(
-        tshap_explainer, "_window_imputer_destination",
-        lambda output_root, run_directory, config: tmp_path / "window" / "tshap_imputer",
-    )
-
-    kwargs = dict(
-        window_samples=20, stride_samples=20, components=3,
-        fit_events=100, tuning_events=20, slope_points=5,
-        batch_size=64, seed=42,
-    )
-    first = _get_window_imputer(
-        cache, control, config, tmp_path, tmp_path / "run-a", **kwargs
-    )
-    second = _get_window_imputer(
-        cache, control, config, tmp_path, tmp_path / "run-b", **kwargs
-    )
-
-    assert len(built) == 1
-    assert len(published) == 1
-    assert first[0] is second[0]
-    assert first[1] is second[1]
-
-def test_conditional_joint_ppca_draws_preserve_observed_samples():
-    from waveform_analysis.engine.tshap_explainer import _JointPPCAImputer
-    from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
-    from waveform_analysis.data.dataset import InputTransform
-    rng = np.random.default_rng(15)
-    data = rng.uniform(.2, .8, (80, 2, 12)).astype(np.float32)
-    model = ProbabilisticPCA(3).fit(data.reshape(len(data), -1))
-    transform = InputTransform(np.zeros((1,2,1), np.float32),
-                               np.ones((1,2,1), np.float32))
-    imputer = _JointPPCAImputer(model, transform)
-    for keep_only in (True, False):
-        first = imputer.sample_conditional(
-            data[:2], 3, 4, keep_only=keep_only, samples=128,
-            rng=np.random.default_rng(123))
-        second = imputer.sample_conditional(
-            data[:2], 3, 4, keep_only=keep_only, samples=128,
-            rng=np.random.default_rng(123))
-        np.testing.assert_array_equal(first, second)
-        observed = np.zeros(12, dtype=bool)
-        observed[3:7] = True
-        if not keep_only:
-            observed = ~observed
-        np.testing.assert_array_equal(
-            first[:, :, :, observed],
-            np.broadcast_to(data[:2, None, :, observed],
-                            first[:, :, :, observed].shape))
-        assert np.any(np.std(first, axis=1) > 1e-6)
-
-
-
-def test_reference_tshap_constant_prediction_is_zero():
-    explainer = _new_explainer(6, 3, True, 4, imputer=_MeanImputer(length=24))
-    waveforms = np.ones((1, 2, 24), dtype=np.float32)
-    baselines = np.zeros((2, 2, 24), dtype=np.float32)
-    maps = explainer.explain(
-        waveforms, baselines, lambda values: np.full(len(values), 7.0)
-    )
-    for value in maps:
-        np.testing.assert_allclose(value, 0)
+    waves = np.arange(60*2*8, dtype=np.float32).reshape(60,2,8)
+    control = SimpleNamespace(n_events=60, event_index=np.arange(60),
+                              energy_windows=waves)
+    first, ids = _sample_control_baselines(
+        control, "energy_to_energy", n_baselines=8, seed=42)
+    again, again_ids = _sample_control_baselines(
+        control, "energy_to_energy", n_baselines=8, seed=42)
+    np.testing.assert_array_equal(first, again)
+    np.testing.assert_array_equal(ids, again_ids)
+    assert first.shape == (8,2,8)
 
 
 def test_global_plot_validates_waveform_dispersion(tmp_path):
