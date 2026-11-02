@@ -42,7 +42,7 @@ python -m waveform_analysis.scripts.evaluate_mean_ar \
   --with-knn --knn-k 1 5 20
 ```
 
-At each cutoff, find the nearest **development-set** events by squared
+At each cutoff, select the best `k` using development-only leave-one-out\nvalidation, minimizing MSE across the entire valid suffix (including the\nmean fallback after the first mask). Each development event is excluded\nfrom its own neighbor candidates. The selected `k` is then evaluated\nonce on blind events; the chosen value and all candidate development\nMSE scores are stored per cutoff in `model.json`. The `--knn-k` values\nare candidates, not simultaneous blind evaluations.\n\nAt each cutoff, find the nearest **development-set** events by squared
 Euclidean distance over the same observed, contiguous prefix. For `k=1`,
 copy the nearest event's *real future*; for `k>1`, take the uniform mean
 of the selected events' futures. Only the real prefix of a blind event
