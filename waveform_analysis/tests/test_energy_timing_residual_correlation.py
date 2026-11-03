@@ -45,43 +45,26 @@ def test_difference_statistics_use_paired_residuals():
     assert result["difference_rmse_ps"] == pytest.approx(np.sqrt(np.mean((energy-timing)**2)))
 
 
-def test_unit_slope_exact_common_component():
-    from waveform_analysis.scripts.compare_energy_timing_residuals import test_unit_slope
-    timing = np.linspace(-5, 5, 101)
-    energy = timing + 3.0
-    result = test_unit_slope(energy, timing)
-    assert result["beta_energy_on_timing"] == pytest.approx(1.0)
-    assert result["beta_test_p_value_two_sided"] == pytest.approx(1.0)
-    assert result["beta_reject_h0_at_0_05"] is False
+def test_common_component_recovers_known_decomposition():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import common_component_statistics
+    rng = np.random.default_rng(123)
+    n = 50000
+    common = rng.normal(size=n) * 4.0
+    energy = common + rng.normal(size=n) * 6.0
+    timing = common + rng.normal(size=n) * 2.0
+    result = common_component_statistics(energy, timing)
+    expected_fraction = 16.0 / (16.0 + 4.0)
+    assert result["common_fraction_timing"] == pytest.approx(expected_fraction, abs=0.03)
+    assert result["common_component_variances_nonnegative"] is True
+    assert result["dominance_test_p_value_one_sided"] < 0.05
+    assert result["timing_specific_variance_ps2"] == pytest.approx(4.0, abs=0.5)
 
 
-def test_unit_slope_rejects_nonunit_slope():
-    from waveform_analysis.scripts.compare_energy_timing_residuals import test_unit_slope
-    timing = np.linspace(-5, 5, 101)
-    energy = 2.0 * timing + 1.0 + 0.01 * np.sin(np.arange(101))
-    result = test_unit_slope(energy, timing)
-    assert result["beta_energy_on_timing"] == pytest.approx(2.0, abs=0.01)
-    assert result["beta_test_p_value_two_sided"] < 0.05
-    assert result["beta_reject_h0_at_0_05"] is True
-
-
-def test_trimmed_slope_quantile_intersection_and_counts():
-    from waveform_analysis.scripts.compare_energy_timing_residuals import trimmed_slope_statistics
-    timing = np.arange(1001, dtype=float)
-    energy = 2.0 * timing + 10.0
-    stats = trimmed_slope_statistics(energy, timing)
-    assert [row["central_percent_per_channel"] for row in stats] == [99.9, 99.0, 95.0]
-    assert [row["n_retained"] for row in stats] == [999, 991, 951]
-    for row in stats:
-        assert row["beta_energy_on_timing"] == pytest.approx(2.0)
-        assert row["retained_fraction"] == pytest.approx(row["n_retained"] / 1001)
-
-
-def test_trimmed_slope_requires_both_channels_to_pass():
-    from waveform_analysis.scripts.compare_energy_timing_residuals import trimmed_slope_statistics
-    timing = np.arange(1001, dtype=float)
-    energy = timing.copy()
-    energy[500], energy[0] = energy[0], energy[500]
-    trimmed = trimmed_slope_statistics(energy, timing, retained_percentages=(95.0,))[0]
-    # One point in the center of timing is excluded because energy is in its tail.
-    assert trimmed["n_retained"] < 951
+def test_common_component_does_not_claim_majority_when_absent():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import common_component_statistics
+    rng = np.random.default_rng(456)
+    energy = rng.normal(size=30000)
+    timing = rng.normal(size=30000)
+    result = common_component_statistics(energy, timing)
+    assert abs(result["common_fraction_timing"]) < 0.05
+    assert result["dominance_reject_h0_at_0_05"] is False
