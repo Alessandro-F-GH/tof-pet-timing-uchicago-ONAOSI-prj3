@@ -222,7 +222,7 @@ def core_projection_interval(core, axis):
     return mean - half_width, mean + half_width
 
 
-def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
+def plot_core_histograms(led, ml, summaries, output):
     """LED/ML overlays with linear count scale, restricted to the fit interval.
 
     Each channel uses the union of LED and ML projected *iterative fit*
@@ -230,7 +230,7 @@ def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
     Counts are computed on the full population with common fixed-width bins.
     """
     fig, axes = plt.subplots(1, 2, figsize=(13.2, 5), squeeze=False)
-    for j, channel in enumerate(("Energy", "Timing")):
+    for j, (channel, bin_width) in enumerate((("Energy", 10.0), ("Timing", 5.0))):
         ax = axes[0, j]
         intervals = [core_projection_interval(
             summaries[state]["core_gaussian_fit"], j) for state in ("led", "ml")]
