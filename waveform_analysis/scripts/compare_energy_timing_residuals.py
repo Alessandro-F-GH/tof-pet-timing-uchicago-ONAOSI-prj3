@@ -446,7 +446,7 @@ def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
             print(f'    {label}: KS distance={check["ks_distance_descriptive"]:.4f}'
                   f' | merged-bin Poisson deviance={check["poisson_deviance_merged_bins"]:.1f}'
                   f' ({check["n_merged_bins"]} bins)')
-    print(f"\\nPlots and JSON: {output.resolve()}")
+    print(f"\nPlots and JSON: {output.resolve()}")
     return results
 
 
