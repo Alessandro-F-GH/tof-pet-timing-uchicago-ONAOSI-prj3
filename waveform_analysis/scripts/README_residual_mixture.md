@@ -38,8 +38,8 @@ The truncation covariance correction is derived under a bivariate Gaussian core 
 ## Outputs
 
 - `core_tail_summary.json`: core parameters, outside-core counts, empirical tail correlations/covariances, and selection-only Gaussian reference, LED and ML separately.
-- `led_vs_ml_core_distributions.png/.pdf`: LED and ML measured **event counts** overlaid per channel, alongside their separate fitted Gaussian cores. The y-axis is logarithmic and capped just above the observed/fitted count peak. No tail distribution is fitted.
-- `led_vs_ml_joint_scatter.png/.pdf`: paired energy–timing scatter for LED and ML; **all points are gray**, with no artificial colored core boundary.
+- `led_vs_ml_core_distributions.png/.pdf`: LED and ML measured **event counts** overlaid per channel, alongside their separate fitted Gaussian cores. The y-axis is linear; each channel uses a shared LED/ML x-range equal to the union of the projected iterative Gaussian fitting intervals. No tail distribution is fitted.
+- `led_vs_ml_joint_scatter.png/.pdf`: paired energy–timing scatter for LED and ML; **all points are gray**, with no artificial colored core boundary and **identical x/y axis limits** on both panels.
 - `core_radial_exceedance.png/.pdf`: observed radial survival function versus `chi2(df=2)` survival for a Gaussian core.
 
 The fitted `cov_energy_timing_ps2` is the core covariance, whereas outside-core covariance is an **empirical** statistic on a selected subset. Neither is automatically a physically identifiable common-noise variance; that interpretation requires equal common-error loadings and independent channel-specific errors.
