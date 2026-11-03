@@ -445,26 +445,257 @@ def analyze(energy_file, timing_file, output, *, fit_fraction=.95,
     return results
 
 
+def resolve_board_files(root, board):
+    """Locate exactly one energy and one timing NPZ in root/UC or root/FBK.
+
+    Supports energy_predictions.npz/timing_predictions.npz and energy.npz/
+    timing.npz; never guesses from multiple ambiguous candidates.
+    """
+    folder = Path(root) / board
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Missing required board directory: {folder}")
+    found = {}
+    for channel in ("energy", "timing"):
+        candidates = [
+            folder / f"{channel}_predictions.npz",
+            folder / f"{channel}.npz",
+        ]
+        matches = [path for path in candidates if path.is_file()]
+        if len(matches) != 1:
+            raise ValueError(
+                f"{folder}: expected exactly one prediction NPZ for {channel} "
+                f"(energy_predictions.npz / timing_predictions.npz preferred), "
+                f"found {[p.name for p in matches]}.")
+        found[channel] = matches[0]
+    return found
+
+
+def bootstrap_correlations(points, samples=300, seed=42):
+    """Fixed-membership nonparametric bootstrap for selected-event correlation.
+
+    This does NOT re-estimate the robust core or tail membership. It represents
+    conditional sample uncertainty only, not uncertainty in the cut boundary.
+    """
+    x = np.asarray(points, dtype=float)
+    if len(x) < 4 or np.std(x[:, 0]) == 0 or np.std(x[:, 1]) == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    output = []
+    for _ in range(samples):
+        subset = x[rng.integers(0, len(x), len(x))]
+        if np.std(subset[:, 0]) > 0 and np.std(subset[:, 1]) > 0:
+            output.append(float(np.corrcoef(subset[:, 0], subset[:, 1])[0, 1]))
+    if len(output) < samples * .9:
+        return None
+    return np.array(output)
+
+
+def compare_boards(analyses, bootstrap_samples=300, seed=42):
+    """UC-minus-FBK comparisons with conditional bootstrap uncertainty.
+
+    Bootstrap core events are defined by each fitted core's *fit radius*,
+    whereas empirical tail events use the more extreme tail radius.
+    """
+    outcome = {"bootstrap_resamples": bootstrap_samples,
+               "uncertainty_scope": "Fixed core/tail membership; core fits and "
+                                    "selection boundaries not bootstrapped.",
+               "states": {}}
+    for state in ("led", "ml"):
+        comparison = {}
+        for region in ("core", "outside_core"):
+            draws = {}
+            point = {}
+            for board in ("UC", "FBK"):
+                pair = analyses[board]["pairs"][state]
+                report = analyses[board]["results"][state]
+                core = report["core_gaussian_fit"]
+                distance = mahalanobis_squared(
+                    pair, core["mean_ps"], core["covariance_matrix_ps2"])
+                mask = (distance <= core["fit_radius_squared"]) if region == "core" else (
+                    distance > report["tail_definition"]["mahalanobis_squared_above"])
+                selected = pair[mask]
+                stats = empirical_statistics(selected)
+                point[board] = stats["correlation"] if stats is not None else None
+                draws[board] = bootstrap_correlations(
+                    selected, samples=bootstrap_samples,
+                    seed=seed + (0 if board == "UC" else 1777)
+                    + (0 if region == "core" else 3009)
+                    + (0 if state == "led" else 5011))
+            if draws["UC"] is not None and draws["FBK"] is not None:
+                difference = draws["UC"] - draws["FBK"]
+                lower, upper = np.quantile(difference, [.025, .975])
+                ci = [float(lower), float(upper)]
+            else:
+                ci = None
+            difference_point = (point["UC"] - point["FBK"]) if (
+                point["UC"] is not None and point["FBK"] is not None) else None
+            comparison[region] = {
+                "rho_UC": point["UC"],
+                "rho_FBK": point["FBK"],
+                "delta_rho_UC_minus_FBK": difference_point,
+                "delta_rho_bootstrap_95_ci": ci,
+                "zero_within_95_ci": (ci[0] <= 0 <= ci[1]) if ci else None,
+            }
+        # The two core fitted correlations are also reported directly.
+        comparison["fitted_core"] = {
+            "rho_UC": analyses["UC"]["results"][state]["core_gaussian_fit"]["correlation"],
+            "rho_FBK": analyses["FBK"]["results"][state]["core_gaussian_fit"]["correlation"],
+        }
+        comparison["fitted_core"]["delta_rho_UC_minus_FBK"] = (
+            comparison["fitted_core"]["rho_UC"] -
+            comparison["fitted_core"]["rho_FBK"])
+        outcome["states"][state] = comparison
+    outcome["interpretation"] = (
+        "If the conditional bootstrap difference interval includes zero, the "
+        "observed correlation difference is not resolved by this check; it "
+        "does not establish equivalence. Intervals excluding zero indicate "
+        "a detectable difference under fixed selection. Measurements from "
+        "different boards are treated as independent, and systematic effects "
+        "or uncertainty in the fitting/selection method are not included.")
+    return outcome
+
+
+def plot_board_comparison(analyses, output):
+    """UC/FBK overlaid central histograms per state and channel; shared axes."""
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    colors = {"UC": "tab:blue", "FBK": "tab:orange"}
+    for row, state in enumerate(("led", "ml")):
+        for col, (channel, width) in enumerate((("Energy", 10.), ("Timing", 5.))):
+            ax = axes[row, col]
+            intervals = [core_projection_interval(
+                analyses[board]["results"][state]["core_gaussian_fit"], col)
+                for board in ("UC", "FBK")]
+            lower = min(v[0] for v in intervals)
+            upper = max(v[1] for v in intervals)
+            edges = np.arange(np.floor(lower / width)*width,
+                              np.ceil(upper / width)*width + 1.5*width, width)
+            centers = .5*(edges[:-1] + edges[1:])
+            peak = 1.
+            for board in ("UC", "FBK"):
+                pair = analyses[board]["pairs"][state]
+                core = analyses[board]["results"][state]["core_gaussian_fit"]
+                count = np.histogram(pair[:, col], bins=edges)[0]
+                prediction = core_expected_bin_counts(edges, core, col, len(pair))
+                peak = max(peak, float(count.max()), float(prediction.max()))
+                ax.stairs(count, edges, color=colors[board], lw=1.25,
+                          label=f"{board} observed (N={len(pair):,})")
+                ax.plot(centers, prediction, color=colors[board], lw=1.5,
+                        ls="--", label=f"{board} core fit")
+            ax.set_xlim(lower, upper)
+            ax.set_ylim(0, peak*1.12)
+            ax.set_title(f"{state.upper()} — {channel}")
+            ax.set_xlabel("Residual (ps)")
+            ax.set_ylabel(f"Events / {width:g} ps (different sample sizes)")
+            ax.grid(alpha=.2)
+            ax.legend(fontsize=8)
+    fig.suptitle("UC vs FBK — empirical counts and Gaussian cores")
+    fig.tight_layout()
+    fig.savefig(output / "uc_vs_fbk_core_distributions.png", dpi=190)
+    fig.savefig(output / "uc_vs_fbk_core_distributions.pdf")
+    plt.close(fig)
+
+
+def plot_board_scatter(analyses, output, seed=42):
+    """Board-scatter comparison using identical limits across ALL four plots."""
+    pairs = [analyses[board]["pairs"][state]
+             for state in ("led", "ml") for board in ("UC", "FBK")]
+    combined = np.concatenate(pairs, axis=0)
+    min_xy = combined.min(axis=0)
+    max_xy = combined.max(axis=0)
+    padding = np.maximum((max_xy-min_xy)*.03, 1.)
+    rng = np.random.default_rng(seed)
+    fig, axes = plt.subplots(2, 2, figsize=(11.5, 10))
+    for row, state in enumerate(("led", "ml")):
+        for col, board in enumerate(("UC", "FBK")):
+            ax = axes[row, col]
+            points = analyses[board]["pairs"][state]
+            idx = np.arange(len(points))
+            if len(idx) > 20000:
+                idx = rng.choice(idx, size=20000, replace=False)
+            ax.scatter(points[idx, 0], points[idx, 1], color=".35",
+                       alpha=.24, s=6, rasterized=True)
+            ax.set_xlim(min_xy[0]-padding[0], max_xy[0]+padding[0])
+            ax.set_ylim(min_xy[1]-padding[1], max_xy[1]+padding[1])
+            ax.set_title(f"{board} — {state.upper()}")
+            ax.set_xlabel("Energy residual (ps)")
+            ax.set_ylabel("Timing residual (ps)")
+            ax.grid(alpha=.2)
+    fig.tight_layout()
+    fig.savefig(output / "uc_vs_fbk_joint_scatter.png", dpi=190)
+    fig.savefig(output / "uc_vs_fbk_joint_scatter.pdf")
+    plt.close(fig)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--energy", type=Path, required=True)
-    parser.add_argument("--timing", type=Path, required=True)
+    parser.add_argument("--predictions-root", type=Path, required=True,
+                        help="Directory with UC/ and FBK/, each containing "
+                             "energy_predictions.npz and timing_predictions.npz")
     parser.add_argument("--output", type=Path, default=Path("core_tail_results"))
     parser.add_argument("--fit-fraction", type=float, default=.95,
-                        help="Core fit elliptical fraction; default .95")
+                        help="Nominal central Gaussian coverage for iterative fit")
     parser.add_argument("--tail-fraction", type=float, default=.999,
-                        help="Core Gaussian radial probability defining tail; default .999")
+                        help="Nominal Gaussian envelope used to flag extreme events")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--reference-events", type=int, default=300000,
-                        help="Gaussian selection-reference draws")
+    parser.add_argument("--reference-events", type=int, default=300000)
+    parser.add_argument("--bootstrap-resamples", type=int, default=300,
+                        help="Fixed-selection bootstrap for UC-FBK correlation differences")
     args = parser.parse_args(argv)
     if not 0 < args.fit_fraction < args.tail_fraction < 1:
         parser.error("Require 0 < --fit-fraction < --tail-fraction < 1")
     if args.reference_events < 1000:
-        parser.error("--reference-events must be >=1000")
-    analyze(args.energy, args.timing, args.output,
-            fit_fraction=args.fit_fraction, tail_fraction=args.tail_fraction,
-            seed=args.seed, n_reference=args.reference_events)
+        parser.error("--reference-events must be >= 1000")
+    if args.bootstrap_resamples < 50:
+        parser.error("--bootstrap-resamples must be >= 50")
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    analyses = {}
+    for board in ("UC", "FBK"):
+        paths = resolve_board_files(args.predictions_root, board)
+        print("\\n" + "#" * 78)
+        print(f"ANALYSIS FOR BOARD {board}")
+        print("#" * 78, flush=True)
+        result = analyze(paths["energy"], paths["timing"], args.output / board,
+                         fit_fraction=args.fit_fraction,
+                         tail_fraction=args.tail_fraction,
+                         seed=args.seed, n_reference=args.reference_events)
+        _, led, ml = align_prediction_pairs(
+            load_predictions(paths["energy"]),
+            load_predictions(paths["timing"]))
+        analyses[board] = {"results": result, "pairs": {"led": led, "ml": ml}}
+
+    comparison = compare_boards(analyses, bootstrap_samples=args.bootstrap_resamples,
+                                seed=args.seed)
+    (args.output / "uc_fbk_comparison.json").write_text(
+        json.dumps(jsonable(comparison), indent=2) + "\\n", encoding="utf-8")
+    plot_board_comparison(analyses, args.output)
+    plot_board_scatter(analyses, args.output, seed=args.seed)
+
+    print("\\n" + "=" * 78)
+    print("UC vs FBK | CORRELATION COMPATIBILITY (DESCRIPTIVE BOOTSTRAP)")
+    print("=" * 78)
+    print("Each board was analyzed separately with identical fit/tail fractions.")
+    print(f"Bootstrap samples: {args.bootstrap_resamples} per fixed selected population.")
+    print("Confidence intervals exclude core-fit uncertainty and threshold uncertainty.")
+    for state in ("led", "ml"):
+        print(f"\\n{state.upper()}")
+        for region in ("core", "outside_core"):
+            entry = comparison["states"][state][region]
+            print(f'  {region}: rho_UC={entry["rho_UC"]:.5f} '
+                  f'| rho_FBK={entry["rho_FBK"]:.5f} '
+                  f'| delta(UC-FBK)={entry["delta_rho_UC_minus_FBK"]:+.5f}')
+            ci = entry["delta_rho_bootstrap_95_ci"]
+            if ci is not None:
+                print(f"    Conditional 95% CI of difference: [{ci[0]:+.5f}, "
+                      f"{ci[1]:+.5f}] | includes zero: {entry['zero_within_95_ci']}")
+            else:
+                print("    Bootstrap interval unavailable (too few varying events).")
+    print("\\nShared results:")
+    for name in ("uc_fbk_comparison.json", "uc_vs_fbk_core_distributions.png/.pdf",
+                 "uc_vs_fbk_joint_scatter.png/.pdf"):
+        print(f"  {args.output / name}")
+    print("Per-board figures and JSON: output/UC and output/FBK")
+    print("A CI including zero does not prove UC and FBK are equivalent.")
 
 
 if __name__ == "__main__":
