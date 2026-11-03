@@ -11,11 +11,42 @@ import argparse
 import csv
 import json
 import sys
+import os
 from pathlib import Path
 
 import matplotlib
-if "--show-waveforms" not in sys.argv:
+
+def configure_plot_backend(show_requested):
+    """Select an interactive backend before pyplot is imported when possible."""
+    if not show_requested:
+        matplotlib.use("Agg")
+        return None
+    # No graphical display in ordinary headless Linux/SSH sessions.
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        matplotlib.use("Agg")
+        return "No graphical display (DISPLAY/WAYLAND_DISPLAY unset)"
+    # A preconfigured Agg backend silently makes plt.show() a no-op.
+    # Prefer Tk when available; otherwise try Qt.
+    errors = []
+    for backend, modules in (
+        ("TkAgg", ("tkinter",)),
+        ("QtAgg", ("PyQt6", "PySide6", "PyQt5", "PySide2")),
+    ):
+        try:
+            if backend == "TkAgg":
+                import tkinter  # noqa: F401
+            else:
+                import importlib.util
+                if not any(importlib.util.find_spec(m) for m in modules):
+                    raise ImportError("No Qt Python bindings installed")
+            matplotlib.use(backend, force=True)
+            return None
+        except (ImportError, RuntimeError, ValueError) as exc:
+            errors.append(f"{backend}: {exc}")
     matplotlib.use("Agg")
+    return "; ".join(errors)
+
+_BACKEND_PROBLEM = configure_plot_backend("--show-waveforms" in sys.argv)
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pearsonr, spearmanr, linregress, t as student_t
