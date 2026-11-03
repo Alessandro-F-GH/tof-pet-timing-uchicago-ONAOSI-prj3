@@ -506,7 +506,22 @@ def show_grouped_waveforms(ids, energy, timing, summary, responsibilities,
             ax.legend(fontsize=8)
     fig.suptitle("Waveform shapes by joint residual GMM group (mean +/- 1 std)")
     fig.tight_layout()
-    plt.show()
+    if _BACKEND_PROBLEM is not None or "agg" in matplotlib.get_backend().lower():
+        fallback = Path("waveform_groups.png").resolve()
+        fig.savefig(fallback, dpi=180)
+        print(f"Interactive display unavailable ({_BACKEND_PROBLEM or matplotlib.get_backend()}); "
+              f"waveform plot saved to {fallback}", flush=True)
+        plt.close(fig)
+        return
+    try:
+        print(f"Opening waveform figure using {matplotlib.get_backend()}", flush=True)
+        plt.show(block=True)
+    except Exception as exc:
+        fallback = Path("waveform_groups.png").resolve()
+        fig.savefig(fallback, dpi=180)
+        print(f"Interactive window failed ({exc}); waveform plot saved to {fallback}", flush=True)
+    finally:
+        plt.close(fig)
 
 
 def difference_statistics(energy, timing):
