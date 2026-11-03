@@ -278,6 +278,15 @@ def compare_boards(data, samples=300, seed=42):
                 bool(ci[0] <= 0 <= ci[1]) if ci is not None else None)
             result["populations"][region] = section
         comparison["states"][state] = result
+    comparison["model_corrections_led_minus_ml"] = {}
+    for key in ("correlation", "cov_energy_timing_ps2",
+                "sigma_energy_ps", "sigma_timing_ps"):
+        uc = data["UC"]["correction_stats"][key]
+        fbk = data["FBK"]["correction_stats"][key]
+        comparison["model_corrections_led_minus_ml"][key] = {
+            "UC": uc, "FBK": fbk,
+            "UC_minus_FBK": uc - fbk if uc is not None and fbk is not None else None,
+        }
     return comparison
 
 
@@ -342,11 +351,25 @@ def main(argv=None):
         output.mkdir(exist_ok=True)
         save_json(output / "iqr_summary.json", {
             "board": board, "energy_file": str(files["energy"]),
-            "timing_file": str(files["timing"]), "states": reports})
+            "timing_file": str(files["timing"]), "states": reports,
+            "model_corrections_led_minus_ml": correction_stats})
+        corrections = led - ml  # Signed model outputs: LED residual minus ML residual.
+        correction_stats = empirical_statistics(corrections)
         data[board] = {"pairs": {"led": led, "ml": ml}, "reports": reports,
-                       "masks": masks}
+                       "masks": masks, "corrections": corrections,
+                       "correction_stats": correction_stats}
         draw_per_board(board, data[board], output, rng)
         report_board(board, reports, output)
+        print(" MODEL OUTPUT CORRELATION (not residual correlation):")
+        print("   delta_E = LED_energy_residual - ML_energy_residual")
+        print("   delta_T = LED_timing_residual - ML_timing_residual")
+        print(f'   Matched events: {correction_stats["n"]:,}')
+        print(f'   Pearson rho(delta_E, delta_T) = '
+              f'{correction_stats["correlation"]:.5f}')
+        print(f'   Cov(delta_E, delta_T) = '
+              f'{correction_stats["cov_energy_timing_ps2"]:.2f} ps²')
+        print(f'   sigma(delta_E) = {correction_stats["sigma_energy_ps"]:.2f} ps, '
+              f'sigma(delta_T) = {correction_stats["sigma_timing_ps"]:.2f} ps')
 
     comparison = compare_boards(data, samples=args.bootstrap_resamples,
                                 seed=args.seed)
@@ -371,6 +394,14 @@ def main(argv=None):
                 print(f"    Conditional 95% bootstrap delta-rho interval: "
                       f"[{ci[0]:+.5f}, {ci[1]:+.5f}], includes zero="
                       f"{stats['interval_contains_zero']}")
+    model_corr = comparison["model_corrections_led_minus_ml"]
+    print("\\nMODEL-OUTPUT CORRELATION COMPARISON (LED residual - ML residual)")
+    for key in ("correlation", "cov_energy_timing_ps2",
+                "sigma_energy_ps", "sigma_timing_ps"):
+        value = model_corr[key]
+        print(f'  {key}: UC={value["UC"]:.5f}, FBK={value["FBK"]:.5f}, '
+              f'UC-FBK={value["UC_minus_FBK"]:+.5f}')
+    print("  Correlation of model outputs is different from correlation of ML residuals.")
     print("Intervals do not include uncertainty from estimating IQR fences.")
     print("Including zero does not establish statistical equivalence.")
     print(f"Outputs: {args.output.resolve()}")
