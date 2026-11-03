@@ -787,7 +787,7 @@ def main(argv=None):
             led_energy, led_timing, energy, timing,
             seed=args.seed, n_init=args.gmm_n_init)
         (args.output / "led_vs_ml_summary.json").write_text(
-            json.dumps(comparison, indent=2) + "\\n", encoding="utf-8")
+            json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
         save_led_ml_comparison(
             led_energy, led_timing, energy, timing, comparison, args.output)
         with (args.output / "led_ml_paired_residuals.csv").open(
