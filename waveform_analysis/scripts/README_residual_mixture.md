@@ -1,65 +1,47 @@
-# Portable energy/timing residual-mixture analysis
+# Portable Gaussian core and empirical-tail analysis
 
-The standalone script `compare_energy_timing_residuals.py` compares the same coincidence events before (LED) and after ML correction. It uses a full-covariance, two-component **bivariate** Gaussian mixture to identify a central component and a broad component, quantify their correlations, and estimate their shared covariance.
+The standalone script `compare_energy_timing_residuals.py` analyzes event-matched energy and timing coincidence residuals **before** (LED) and **after** ML correction.
 
-## Data to share with a collaborator
+## Sharing data with a collaborator
 
-Copy these three files into a directory:
+Provide just:
+- `compare_energy_timing_residuals.py`
+- `energy_predictions.npz`
+- `timing_predictions.npz`
 
-- `compare_energy_timing_residuals.py` (copy from `waveform_analysis/scripts/`)
-- `energy_predictions.npz` (the desired model's saved prediction artifact)
-- `timing_predictions.npz` (the corresponding model's saved prediction artifact)
+The two NPZ files must contain `event_id`, `led_residual_ps`, and `corrected_ps` (1D arrays). The script matches by event ID and does not use the prepared dataset cache, waveforms, models or any project-specific packages. Both files should come from the same board and evaluation split; blind predictions are preferable to in-sample development diagnostics.
 
-Each NPZ must contain three one-dimensional arrays: `event_id`, `led_residual_ps`, and `corrected_ps`. These are already included in standard project prediction artifacts. The script matches events by `event_id`; it does **not** require a prepared waveform cache, model weights, or raw detector data.
-
-The energy and timing predictions must come from corresponding populations (same board, same blind/development split, same events) and the same control/LED subtraction convention. For publications, prefer **blind** predictions. Development predictions from a final model are generally in-sample.
-
-Install:
+Dependencies:
 ```bash
-python -m pip install numpy scipy matplotlib scikit-learn
+python -m pip install numpy scipy matplotlib
 ```
 
-Run from the directory containing the three files:
+Run:
 ```bash
 python compare_energy_timing_residuals.py --energy energy_predictions.npz --timing timing_predictions.npz --output results
 ```
 
-## Files generated
+## Method
 
-- `mixture_summary.json`: separate LED and ML bivariate fit parameters, BIC difference (one vs two Gaussians), core/tail correlations and covariance decomposition.
-- `gaussian_mixture_distributions.png`/`.pdf`: experimental energy and timing residual histograms, overlaid with the corresponding marginal PDFs of each bivariate Gaussian and their sum, for LED and ML. Logarithmic **event-count** axis displays the broad tails; each fitted curve is normalized to the matching histogram bin width.
-- `gaussian_mixture_joint.png`/`.pdf`: energy vs timing residuals colored by GMM posterior assignment (core blue, tail orange); all tail points are shown.
+A single **bivariate Gaussian core** is estimated independently for LED and ML.
 
-No waveform, per-event classification, beta test, percentile clipping or cache access is performed.
+1. Initialize robustly using medians and compact central observations.
+2. Repeatedly select observations with squared Mahalanobis distance `d² <= chi2.ppf(0.95, 2)`, update the mean and covariance, and correct covariance for radial truncation of a 2D Gaussian. Stop when the parameters stabilize. This is a robust iterative moment estimator, not an exact truncated-likelihood MLE.
+3. After fixing the core, define empirical **outside-core** events with `d² > chi2.ppf(0.999, 2)` by default. This selection is in 2D, not separate marginal clipping. **No distribution is assumed or fitted to these outside-core observations.**
+4. Calculate their sample standard deviations, correlation and covariance directly. Since the selection itself changes correlation, compare against a simulated pure-Gaussian core with exactly the same Mahalanobis cut. This simulated reference is a null benchmark, **not** a Gaussian assumption for the observed tails.
+5. Compare the number of outside-core events against the theoretical Gaussian expectation, `N*(1-0.999)` by default. Some genuine Gaussian events fall outside this envelope naturally.
 
-## Mathematical interpretation
+Set `--fit-fraction 0.95` to control the iterative central fit radius and `--tail-fraction 0.999` for the outside-core envelope. These are **separate choices** and are reported explicitly in results. Sensitivity checks across several tail-fraction values are recommended; changing either cutoff can change empirical correlations.
 
-For each component `k`, the bivariate covariance matrix is
-```
-Sigma_k = [[var_energy,k, cov_energy_timing,k],
-           [cov_energy_timing,k, var_timing,k]]
-```
-The reported `cov_energy_timing_ps2` can be interpreted as the variance of a **unit-loading additive common timing error** only under
+The truncation covariance correction is derived under a bivariate Gaussian core with fixed elliptical selection. It need not be exactly unbiased for contaminated samples or when the fitted parameters determine the selection.
 
-```
-r_E = C + epsilon_E
-r_T = C + epsilon_T
-```
+## Outputs
 
-with `C`, `epsilon_E`, and `epsilon_T` pairwise uncorrelated. The script reports `sigma_common_if_unit_loading_ps` only if both specific variances remain nonnegative; `unit_loading_noise_decomposition_valid` is a check of this physical interpretation, not the statistical Gaussian fit.
+- `core_tail_summary.json`: core parameters, outside-core counts, empirical tail correlations/covariances, and selection-only Gaussian reference, LED and ML separately.
+- `gaussian_core_distributions.png/.pdf`: measured energy/timing **event counts** and Gaussian-core extrapolation to the full range (no parametric tail fit).
+- `core_and_empirical_tails.png/.pdf`: paired residual scatter, colored by whether events lie inside the fitted core envelope; all outside-core points shown with higher opacity.
+- `radial_tail_exceedance.png/.pdf`: observed radial survival function versus `chi2(df=2)` survival for a Gaussian core.
 
-The labels `core` and `tail` are assigned by increasing determinant of the fitted covariance matrix (the central ellipsoid has the smaller area). This is a descriptive two-Gaussian model; a lower BIC does not establish two physical mechanisms. Marginal LED and ML curves shown in the figures are **derived from the joint fits**, not separately optimized histograms.
+The fitted `cov_energy_timing_ps2` is the core covariance, whereas outside-core covariance is an **empirical** statistic on a selected subset. Neither is automatically a physically identifiable common-noise variance; that interpretation requires equal common-error loadings and independent channel-specific errors.
 
-Two independent mixtures are estimated on the *same event population*. Their fitted component weights and widths are not paired event-by-event improvement estimates. There is no preprocessing, retraining or test-set-driven model selection.
-
-## Fit-quality diagnostics
-
-The script additionally creates three plots (PNG and PDF):
-
-- `gmm_fit_residuals`: signed Poisson deviance residuals, for energy, timing and energy-minus-timing. Adjacent bins are merged to roughly five or more expected events; dashed ±2 lines are visual guides, not formal confidence limits.
-- `gmm_exceedance`: observed versus predicted `P(|residual|>threshold)` for LED and ML in all three projections. This emphasizes rare events rather than only the central peak.
-- `gmm_energy_minus_timing`: observed counts versus the **analytic projection** of the fitted bivariate mixture onto energy-minus-timing. No new fit is performed.
-
-`mixture_summary.json` includes `fit_quality`: descriptive KS distances, binned Poisson deviance and expected versus observed exceedance counts at 100, 200, 300, 500 and 1000 ps. A KS p-value is intentionally **not** reported since the same events were used to fit model parameters. BIC compares one versus two Gaussian components, while `em_numerically_converged` only confirms that the numerical EM stopping criterion was satisfied; neither proves good fit quality.
-
-The summary distinguishes `cov_energy_timing_ps2` (a directly fitted covariance) from the conditional interpretation as a physical common-noise variance. For possible model mismatch, inspect the tail exceedance plot and the distribution of energy-minus-timing.
+Importantly, `numerically_converged` indicates iterative parameter stability, **not** a test of Gaussianity, and `tail_definition.nominal_gaussian_probability_outside` defines a reference fraction, not the fitted proportion of a second population. LED and ML classifications are fitted separately and are not themselves a paired correction-effect measure.
