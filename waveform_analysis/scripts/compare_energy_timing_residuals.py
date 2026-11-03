@@ -21,7 +21,6 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
 import numpy as np
 from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
@@ -59,7 +58,7 @@ def align_prediction_pairs(energy_data, timing_data):
     return ids, np.column_stack((eled[ei], tled[ti])), np.column_stack((eml[ei], tml[ti]))
 
 
-def fit_mixture(pairs, seed=42, n_init=5):
+def fit_mixture(pairs, seed=42, n_init=5, *, return_tail_posterior=False):
     """Fit one/two-component 2D Gaussians; return physically scaled parameters.
 
     Components ordered by increasing determinant of covariance (ellipse area).
@@ -102,7 +101,7 @@ def fit_mixture(pairs, seed=42, n_init=5):
             "timing_specific_variance_ps2": float(specific_vars[1]),
             "additive_common_noise_model_admissible": admissible,
         })
-    return {
+    summary = {
         "n_events": int(len(x)),
         "components": components,
         "bic_one_gaussian": float(baseline.bic(normalized)),
@@ -113,6 +112,9 @@ def fit_mixture(pairs, seed=42, n_init=5):
         "delta_rho_tail_minus_core": float(components[1]["correlation"] -
                                             components[0]["correlation"]),
     }
+    if return_tail_posterior:
+        return summary, mixture.predict_proba(normalized)[:, order[1]]
+    return summary
 
 
 def marginal_pdf(values, components, channel_index):
@@ -128,74 +130,94 @@ def marginal_pdf(values, components, channel_index):
 
 
 def save_distribution_plot(led, ml, results, output):
-    """LED/ML by energy/timing: empirical histogram plus fitted 2-Gaussian PDFs.
+    """Measured bin counts and fitted expected counts for the same bin widths.
 
-    Log density exposes both the core and broad tails without clipping data.
-    All histogram bins in a column are shared between LED and ML.
+    The plotted marginal curves come from the fitted *bivariate* mixture.
+    Zero-count histogram bins are omitted on the logarithmic count axis.
     """
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex="col")
-    for j, channel in enumerate(("Energy", "Timing")):
-        all_values = np.concatenate((led[:, j], ml[:, j]))
-        extent = max(float(np.max(np.abs(all_values))), 150.0)
-        # Use sufficiently narrow bins for the core, while retaining full tails.
-        bin_count = int(np.clip(2 * extent / 10, 150, 1200))
-        edges = np.linspace(-extent, extent, bin_count + 1)
-        xx = np.linspace(-extent, extent, 2500)
-        for i, (label, pairs, params) in enumerate((
+    for channel_index, channel in enumerate(("Energy", "Timing")):
+        values = np.concatenate((led[:, channel_index], ml[:, channel_index]))
+        bin_width_ps = 10.0
+        extent = max(
+            bin_width_ps * np.ceil(np.max(np.abs(values)) / bin_width_ps),
+            150.0,
+        )
+        edges = np.arange(-extent, extent + 1.5 * bin_width_ps, bin_width_ps)
+        centers = (edges[:-1] + edges[1:]) / 2
+        grid = np.linspace(edges[0], edges[-1], 3500)
+
+        for row, (label, pairs, fit) in enumerate((
             ("LED", led, results["led"]),
             ("After ML", ml, results["ml"]),
         )):
-            ax = axes[i, j]
-            ax.hist(pairs[:, j], bins=edges, density=True,
-                    histtype="step", linewidth=1.1, color="black",
-                    label="Measured distribution")
-            curves, total = marginal_pdf(xx, params["components"], j)
-            ax.plot(xx, total, color="tab:red", linewidth=1.7, label="2-Gaussian mixture")
-            for curve, part, color in zip(
-                curves, params["components"], ("tab:blue", "tab:orange")
+            ax = axes[row, channel_index]
+            counts, _ = np.histogram(pairs[:, channel_index], bins=edges)
+            valid = counts > 0
+            ax.stairs(counts, edges, color="black", linewidth=1.0,
+                      label="Measured counts")
+
+            pdf_components, fitted_pdf = marginal_pdf(
+                grid, fit["components"], channel_index)
+            expected_factor = len(pairs) * bin_width_ps
+            total_counts = expected_factor * fitted_pdf
+            ax.plot(grid, total_counts, color="tab:red", linewidth=1.9,
+                    label="2-Gaussian mixture")
+
+            for component_pdf, part, color in zip(
+                pdf_components, fit["components"],
+                ("tab:blue", "tab:orange"),
             ):
-                ax.plot(xx, curve, "--", color=color, linewidth=1.2,
-                        label=f'{part["name"]} ({part["weight"]*100:.2f}%)')
+                ax.plot(grid, expected_factor * component_pdf,
+                        "--", color=color, linewidth=1.5,
+                        label=f'{part["name"]} ({100*part["weight"]:.2f}%)')
             ax.set_yscale("log")
-            ax.set_ylim(bottom=1e-8)
+            ax.set_ylim(0.8, max(float(counts.max()),
+                                 float(total_counts.max()), 1.0) * 1.5)
             ax.set_title(f"{label} — {channel}")
             ax.set_xlabel("Coincidence residual (ps)")
-            ax.set_ylabel("Probability density (log)")
+            ax.set_ylabel(f"Events / {bin_width_ps:g} ps (log scale)")
             ax.legend(fontsize=8)
-            ax.grid(alpha=.2)
-    fig.suptitle("Matched-event timing residuals and bivariate Gaussian-mixture marginals")
+            ax.grid(alpha=0.2)
+
+    fig.suptitle("Matched-event residuals and 2-Gaussian-mixture fits")
     fig.tight_layout()
     fig.savefig(output / "gaussian_mixture_distributions.png", dpi=200)
     fig.savefig(output / "gaussian_mixture_distributions.pdf")
     plt.close(fig)
 
 
-def save_joint_plot(led, ml, results, output, seed=42):
-    """2D residual plots with fitted covariance ellipses (2 sigma)."""
+def save_joint_plot(led, ml, results, tail_posteriors, output, seed=42):
+    """Plot core in translucent blue and all high-posterior tail points in orange.
+
+    Posterior threshold defines a visual classification only; correlations and
+    common variances in JSON are fitted component parameters, not hard-group
+    sample statistics.
+    """
     rng = np.random.default_rng(seed)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
-    for ax, (label, pairs, params) in zip(
-        axes, (("LED", led, results["led"]), ("After ML", ml, results["ml"]))
-    ):
-        sample = rng.choice(len(pairs), min(15000, len(pairs)), replace=False)
-        ax.scatter(pairs[sample, 0], pairs[sample, 1],
-                   s=3, alpha=.14, color="0.3", rasterized=True)
-        for part, color in zip(params["components"], ("tab:blue", "tab:orange")):
-            cov = np.asarray(part["covariance_matrix_ps2"])
-            eigenvalues, eigenvectors = np.linalg.eigh(cov)
-            angle = np.degrees(np.arctan2(eigenvectors[1, -1],
-                                          eigenvectors[0, -1]))
-            ax.add_patch(Ellipse(
-                xy=part["mean_ps"], width=4*np.sqrt(eigenvalues[-1]),
-                height=4*np.sqrt(eigenvalues[0]), angle=angle,
-                edgecolor=color, facecolor="none", linewidth=2,
-                label=f'{part["name"]} (rho={part["correlation"]:.3f})'))
+    for ax, (label, pairs, fit, posterior) in zip(axes, (
+        ("LED", led, results["led"], tail_posteriors["led"]),
+        ("After ML", ml, results["ml"], tail_posteriors["ml"]),
+    )):
+        is_tail = np.asarray(posterior) >= 0.5
+        core_indices = np.flatnonzero(~is_tail)
+        tail_indices = np.flatnonzero(is_tail)
+        if len(core_indices) > 15000:
+            core_indices = rng.choice(core_indices, 15000, replace=False)
+        ax.scatter(pairs[core_indices, 0], pairs[core_indices, 1],
+                   s=4, alpha=0.08, color="tab:blue",
+                   label="Core", rasterized=True)
+        ax.scatter(pairs[tail_indices, 0], pairs[tail_indices, 1],
+                   s=12, alpha=0.65, color="tab:orange",
+                   label="Tail", rasterized=True)
         ax.set_xlabel("Energy residual (ps)")
         ax.set_ylabel("Timing residual (ps)")
         ax.set_title(label)
-        ax.grid(alpha=.2)
+        ax.grid(alpha=0.2)
         ax.legend()
-    fig.suptitle("Joint energy/timing residuals: core and tail correlation")
+
+    fig.suptitle("Energy vs timing residuals — GMM component assignment")
     fig.tight_layout()
     fig.savefig(output / "gaussian_mixture_joint.png", dpi=200)
     fig.savefig(output / "gaussian_mixture_joint.pdf")
@@ -208,12 +230,16 @@ def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
     ids, led, ml = align_prediction_pairs(energy, timing)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
+    led_fit, led_tail_probability = fit_mixture(
+        led, seed=seed, n_init=n_init, return_tail_posterior=True)
+    ml_fit, ml_tail_probability = fit_mixture(
+        ml, seed=seed, n_init=n_init, return_tail_posterior=True)
     results = {
         "n_matched_events": int(len(ids)),
         "energy_prediction_file": str(energy_file),
         "timing_prediction_file": str(timing_file),
-        "led": fit_mixture(led, seed=seed, n_init=n_init),
-        "ml": fit_mixture(ml, seed=seed, n_init=n_init),
+        "led": led_fit,
+        "ml": ml_fit,
         "interpretation": (
             "Each component's common variance equals its energy/timing covariance "
             "only if both channels share one additive error with unit coefficients "
@@ -226,7 +252,10 @@ def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
     (output / "mixture_summary.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8")
     save_distribution_plot(led, ml, results, output)
-    save_joint_plot(led, ml, results, output, seed=seed)
+    save_joint_plot(
+        led, ml, results,
+        {"led": led_tail_probability, "ml": ml_tail_probability},
+        output, seed=seed)
     print(f"Matched events: {len(ids)}")
     for state in ("led", "ml"):
         result = results[state]
