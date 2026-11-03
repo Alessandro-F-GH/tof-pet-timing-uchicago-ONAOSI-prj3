@@ -349,12 +349,12 @@ def main(argv=None):
                 points, multiplier=args.iqr_multiplier)
         output = args.output / board
         output.mkdir(exist_ok=True)
+        corrections = led - ml  # Signed model outputs: LED residual minus ML residual.
+        correction_stats = empirical_statistics(corrections)
         save_json(output / "iqr_summary.json", {
             "board": board, "energy_file": str(files["energy"]),
             "timing_file": str(files["timing"]), "states": reports,
             "model_corrections_led_minus_ml": correction_stats})
-        corrections = led - ml  # Signed model outputs: LED residual minus ML residual.
-        correction_stats = empirical_statistics(corrections)
         data[board] = {"pairs": {"led": led, "ml": ml}, "reports": reports,
                        "masks": masks, "corrections": corrections,
                        "correction_stats": correction_stats}
