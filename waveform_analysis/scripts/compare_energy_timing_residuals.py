@@ -10,15 +10,19 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+if "--show-waveforms" not in sys.argv:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pearsonr, spearmanr, linregress, t as student_t
 from sklearn.mixture import GaussianMixture
 from matplotlib.patches import Ellipse
+from waveform_analysis.data.dataset import load_prepared_dataset
+from waveform_analysis.data.named_cache import resolve_alias
 from waveform_analysis.reporting.stats import metric_values
 
 
@@ -317,6 +321,101 @@ def save_bivariate_gmm_plot(energy, timing, summary, responsibilities, output, s
     plt.close(fig)
 
 
+def waveform_groups_from_gmm(energy, timing, gmm_summary, responsibilities):
+    """Classify tail events by their common-mode residual direction.
+
+    A probability >= 0.5 assigns an event to the broad GMM component;
+    the signed average of residuals centered on the tail-component means
+    separates the left and right tails. Remaining events form the core.
+    """
+    tail = responsibilities[:, 1] >= 0.5
+    params = gmm_summary["components"][1]
+    displacement = 0.5 * (
+        (energy - params["mean_energy_ps"]) +
+        (timing - params["mean_timing_ps"])
+    )
+    groups = {
+        "left tail": tail & (displacement < 0),
+        "core": ~tail,
+        "right tail": tail & (displacement >= 0),
+    }
+    return groups
+
+
+def prepared_waveform_means(prepared_path, channel, ids, groups):
+    """Read the already-prepared normalized waveforms, aligned by event_index.
+
+    Inverse normalization uses the dataset's frozen transform, returning
+    signal amplitudes in mV without retraining or additional preprocessing.
+    """
+    prepared = load_prepared_dataset(resolve_alias(prepared_path))
+    windows = getattr(prepared, f"{channel}_windows")
+    time_ps = getattr(prepared, f"{channel}_time_ps")
+    transform = getattr(prepared, f"{channel}_transform")
+    if windows is None or time_ps is None or transform is None:
+        raise ValueError(f"{prepared_path}: missing prepared {channel} waveform/time/transform")
+    if windows.ndim != 3 or windows.shape[1] != 2:
+        raise ValueError(f"{prepared_path}: expected [event, detector, sample] waveforms")
+    cache_ids = np.asarray(prepared.event_index)
+    if len(cache_ids) != len(np.unique(cache_ids)):
+        raise ValueError(f"{prepared_path}: duplicated event_index")
+    common, indices, cache_positions = np.intersect1d(
+        ids, cache_ids, assume_unique=True, return_indices=True)
+    if len(common) != len(ids):
+        raise ValueError(
+            f"{prepared_path}: {len(ids)-len(common)} prediction event IDs "
+            f"missing in prepared {channel} data. Check dataset role/cache.")
+    result = {}
+    for name, selected in groups.items():
+        rows = cache_positions[selected[indices]]
+        if len(rows) == 0:
+            result[name] = None
+            continue
+        # Load only selected rows and invert frozen amplitude normalization.
+        accum = np.zeros((2, windows.shape[-1]), dtype=np.float64)
+        accum_sq = np.zeros_like(accum)
+        for chunk in np.array_split(rows, max(1, (len(rows) + 1023) // 1024)):
+            wave = transform.inverse(np.asarray(windows[chunk], dtype=np.float32))
+            accum += wave.sum(axis=0, dtype=np.float64)
+            accum_sq += np.square(wave, dtype=np.float64).sum(axis=0)
+        mean = accum / len(rows)
+        std = np.sqrt(np.maximum(accum_sq / len(rows) - mean**2, 0))
+        result[name] = {"count": int(len(rows)), "mean": mean, "std": std}
+    return np.asarray(time_ps, dtype=np.float64), result
+
+
+def show_grouped_waveforms(ids, energy, timing, summary, responsibilities,
+                           energy_prepared, timing_prepared):
+    """Interactive 2x2 comparison: energy/timing x detector 1/2."""
+    groups = waveform_groups_from_gmm(energy, timing, summary, responsibilities)
+    e_times, e_groups = prepared_waveform_means(energy_prepared, "energy", ids, groups)
+    t_times, t_groups = prepared_waveform_means(timing_prepared, "timing", ids, groups)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8), squeeze=False)
+    palette = {"left tail": "tab:blue", "core": "tab:green", "right tail": "tab:orange"}
+    for row, (channel, times, data) in enumerate((
+        ("Energy", e_times, e_groups), ("Timing", t_times, t_groups)
+    )):
+        for detector in range(2):
+            ax = axes[row, detector]
+            for label in ("left tail", "core", "right tail"):
+                entry = data[label]
+                if entry is None:
+                    continue
+                mean, std = entry["mean"][detector], entry["std"][detector]
+                ax.plot(times / 1000., mean, color=palette[label],
+                        label=f"{label} (n={entry['count']})", linewidth=1.5)
+                ax.fill_between(times / 1000., mean-std, mean+std,
+                                color=palette[label], alpha=0.10)
+            ax.set_title(f"{channel}, detector {detector+1}")
+            ax.set_xlabel("Time (ns)")
+            ax.set_ylabel("Signal (mV)")
+            ax.grid(alpha=0.2)
+            ax.legend(fontsize=8)
+    fig.suptitle("Waveform shapes by joint residual GMM group (mean +/- 1 std)")
+    fig.tight_layout()
+    plt.show()
+
+
 def difference_statistics(energy, timing):
     """Observed difference and variance-subtraction test on paired events."""
     difference = energy - timing
@@ -396,9 +495,17 @@ def main(argv=None):
     parser.add_argument("--fit-bin-width-ps", type=float, default=10.0,
                         help="Histogram bin width for CTR fits (default: 10 ps)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--show-waveforms", action="store_true",
+                        help="Open interactive waveform comparison for GMM left/core/right groups")
+    parser.add_argument("--energy-prepared", type=Path,
+                        help="Prepared energy dataset directory or named alias, same role as predictions")
+    parser.add_argument("--timing-prepared", type=Path,
+                        help="Prepared timing dataset directory or named alias, same role as predictions")
     parser.add_argument("--gmm-n-init", type=int, default=5,
                         help="GMM random initializations (default: 5)")
     args = parser.parse_args(argv)
+    if args.show_waveforms and (args.energy_prepared is None or args.timing_prepared is None):
+        parser.error("--show-waveforms requires --energy-prepared and --timing-prepared")
     if args.gmm_n_init < 1:
         parser.error("--gmm-n-init must be >= 1")
     if args.fit_bin_width_ps <= 0:
@@ -487,6 +594,11 @@ def main(argv=None):
           f"quadrature prediction={results['predicted_difference_ctr_ps_if_timing_is_common_only']}",
           flush=True)
     print(f"Results: {args.output}", flush=True)
+    if args.show_waveforms:
+        show_grouped_waveforms(
+            ids, energy, timing, gmm_summary, gmm_responsibilities,
+            args.energy_prepared, args.timing_prepared,
+        )
 
 
 if __name__ == "__main__":
