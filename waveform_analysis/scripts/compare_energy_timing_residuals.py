@@ -431,16 +431,22 @@ def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
         print(f"\n{state.upper()} | Delta BIC (one - two) = {result['delta_bic_one_minus_two']:.1f}"
               f" | EM numerically converged={result['em_numerically_converged']}")
         for part in result["components"]:
-            common = (f'{part["sigma_common_if_unit_loading_ps"]:.2f}' if part["sigma_common_ps"]
+            common = (f'{part["sigma_common_if_unit_loading_ps"]:.2f}' if part["sigma_common_if_unit_loading_ps"]
                       is not None else "N/A")
             print(f'  {part["name"]:4s} | weight={part["weight"]*100:.3f}%'
                   f' | rho={part["correlation"]:.4f}'
                   f' | sigma_E={part["sigma_energy_ps"]:.2f} ps'
                   f' | sigma_T={part["sigma_timing_ps"]:.2f} ps'
                   f' | Cov(E,T)={part["cov_energy_timing_ps2"]:.2f} ps^2'
-                  f' | sigma_common={common} ps'
+                  f' | sigma_common_if_unit_loading={common} ps'
                   f' | unit-loading decomposition valid={part["unit_loading_noise_decomposition_valid"]}')
-    print(f"\nPlots and JSON: {output.resolve()}")
+    for state in ("led", "ml"):
+        print(f"  {state.upper()} descriptive fit checks:")
+        for label, check in results["fit_quality"][state].items():
+            print(f'    {label}: KS distance={check["ks_distance_descriptive"]:.4f}'
+                  f' | merged-bin Poisson deviance={check["poisson_deviance_merged_bins"]:.1f}'
+                  f' ({check["n_merged_bins"]} bins)')
+    print(f"\\nPlots and JSON: {output.resolve()}")
     return results
 
 
