@@ -78,6 +78,12 @@ def test_end_to_end_uc_fbk(tmp_path):
           "--bootstrap-resamples", "50"])
     comparison = json.loads((output / "uc_fbk_iqr_comparison.json").read_text())
     assert comparison["bootstrap_draws"] == 50
+    assert "model_corrections_led_minus_ml" in comparison
+    assert "correlation" in comparison["model_corrections_led_minus_ml"]
+    for board in ("UC", "FBK"):
+        board_summary = json.loads((output / board / "iqr_summary.json").read_text())
+        assert "model_corrections_led_minus_ml" in board_summary
+        assert board_summary["model_corrections_led_minus_ml"]["n"] == 2500
     assert "outliers" in comparison["states"]["ml"]["populations"]
     for board in ("UC", "FBK"):
         assert (output / board / "iqr_summary.json").is_file()
