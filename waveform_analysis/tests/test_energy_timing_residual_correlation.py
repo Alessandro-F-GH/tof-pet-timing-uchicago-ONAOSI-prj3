@@ -97,3 +97,21 @@ def test_gaussian_component_cut_is_paired_and_joint():
     fit = gaussian_component_fit_by_central_range(energy, timing, (95.0,))[0]
     assert fit["n_retained"] < 951
     assert fit["retained_fraction"] == pytest.approx(fit["n_retained"] / 1001)
+
+
+def test_bivariate_gmm_recovers_two_distinct_correlations():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import fit_bivariate_gmm
+    rng = np.random.default_rng(2027)
+    core = rng.multivariate_normal([0, 0], [[400, 40], [40, 100]], size=8000)
+    tail = rng.multivariate_normal([0, 0], [[40000, 15000], [15000, 10000]], size=2000)
+    observations = np.vstack([core, tail])
+    rng.shuffle(observations)
+    result, responsibilities = fit_bivariate_gmm(
+        observations[:, 0], observations[:, 1], seed=13, n_init=3)
+    assert responsibilities.shape == (10000, 2)
+    np.testing.assert_allclose(responsibilities.sum(axis=1), 1, atol=1e-10)
+    assert result["components"][0]["label"] == "core"
+    assert result["components"][1]["label"] == "tail"
+    assert result["components"][0]["sigma_energy_ps"] < result["components"][1]["sigma_energy_ps"]
+    assert result["components"][0]["correlation"] < result["components"][1]["correlation"]
+    assert result["delta_bic_one_minus_two"] > 0
