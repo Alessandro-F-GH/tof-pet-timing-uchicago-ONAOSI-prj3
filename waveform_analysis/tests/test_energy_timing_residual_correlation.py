@@ -1,142 +1,96 @@
-"""Standalone Gaussian-core / empirical-tail tests."""
+"""Tests for standalone UC/FBK IQR classification and comparison."""
 import json
 
 import numpy as np
 import pytest
 
 from waveform_analysis.scripts.compare_energy_timing_residuals import (
-    align_prediction_pairs,
-    analyze,
-    analyze_distribution,
-    empirical_statistics,
-    fit_gaussian_core,
-    load_predictions,
-    mahalanobis_squared,
+    align_prediction_pairs, analyze_distribution, compare_boards,
+    empirical_statistics, load_predictions, main, resolve_board_files, tukey_fences,
 )
 
 
-def test_npz_requires_led_and_unique_ids(tmp_path):
-    path = tmp_path / "pred.npz"
-    np.savez(path, event_id=np.arange(30), corrected_ps=np.zeros(30))
+def test_tukey_3iqr_either_channel():
+    # IQR is 2 for both coordinates: fences [-7, 9].
+    points = np.array([
+        [-1., -1.], [0., 0.], [1., 1.], [2., 2.], [3., 3.],
+        [4., 4.], [11., 0.], [0., -20.],
+    ])
+    fences, outlier = tukey_fences(points, multiplier=3.)
+    assert outlier[-2:].all()
+    assert not outlier[:-2].any()
+    assert fences["multiplier"] == 3.
+
+
+def test_no_gaussian_assumption():
+    rng = np.random.default_rng(12)
+    points = rng.laplace(size=(5000, 2))
+    result, mask = analyze_distribution(points)
+    assert result["method"].startswith("Extreme Tukey IQR")
+    assert mask.shape == (len(points),)
+    assert result["empirical_outliers"] is not None
+    assert "core_gaussian_fit" not in result
+    assert result["outlier_count"] == int(mask.sum())
+
+
+def test_npz_validations(tmp_path):
+    p = tmp_path / "x.npz"
+    np.savez(p, event_id=np.arange(25), corrected_ps=np.zeros(25))
     with pytest.raises(ValueError, match="led_residual_ps"):
-        load_predictions(path)
-    np.savez(path, event_id=np.zeros(30, dtype=int),
-             led_residual_ps=np.arange(30.), corrected_ps=np.arange(30.))
+        load_predictions(p)
+    np.savez(p, event_id=np.zeros(25, dtype=int),
+             led_residual_ps=np.zeros(25), corrected_ps=np.zeros(25))
     with pytest.raises(ValueError, match="unique"):
-        load_predictions(path)
+        load_predictions(p)
 
 
-def test_join_same_events_for_both_methods():
+def test_join_is_by_event_id():
     ids = np.arange(30)
     energy = (ids[::-1], 100. + ids[::-1], 200. + ids[::-1])
     timing = (ids, 300. + ids, 400. + ids)
-    matched, led, ml = align_prediction_pairs(energy, timing)
-    np.testing.assert_array_equal(matched, ids)
-    np.testing.assert_array_equal(led[:, 0], 100. + ids)
-    np.testing.assert_array_equal(led[:, 1], 300. + ids)
-    np.testing.assert_array_equal(ml[:, 0], 200. + ids)
+    joined, led, corrected = align_prediction_pairs(energy, timing)
+    np.testing.assert_array_equal(joined, ids)
+    np.testing.assert_array_equal(led[:, 0], ids + 100.)
+    np.testing.assert_array_equal(led[:, 1], ids + 300.)
+    np.testing.assert_array_equal(corrected[:, 0], ids + 200.)
 
 
-def test_gaussian_core_recovers_untruncated_covariance():
-    rng = np.random.default_rng(17)
-    covariance = np.array([[1600., 250.], [250., 450.]])
-    x = rng.multivariate_normal([5., -8.], covariance, size=40000)
-    fit = fit_gaussian_core(x, fit_fraction=.95)
-    np.testing.assert_allclose(fit["mean_ps"], [5., -8.], atol=2.)
-    np.testing.assert_allclose(fit["covariance_matrix_ps2"], covariance, rtol=.13)
-    assert fit["truncation_covariance_factor"] < 1.
-    assert fit["numerically_converged"]
-
-
-def test_tails_are_empirical_not_gaussian_fitted():
-    rng = np.random.default_rng(23)
-    cov = np.array([[1600, 250], [250, 450]])
-    core = rng.multivariate_normal([0, 0], cov, 18000)
-    outliers = rng.normal(size=(150, 1)) * np.array([[180., 165.]])
-    x = np.vstack((core, outliers))
-    report, mask, distance = analyze_distribution(
-        x, tail_fraction=.999, n_reference=10000)
-    assert mask.shape == (len(x),)
-    assert distance.shape == (len(x),)
-    assert report["tail_definition"]["tail_count"] > 20
-    assert report["empirical_outside_core"]["correlation"] > .5
-    assert "cov_energy_timing_ps2" in report["empirical_outside_core"]
-    assert "components" not in report
-
-
-def test_mahalanobis_and_empirical_covariance():
-    x = np.array([[0., 0.], [2., 2.], [-2., -2.], [1., 1.]])
-    distances = mahalanobis_squared(x, np.zeros(2), np.eye(2))
-    np.testing.assert_allclose(distances, [0., 8., 8., 2.])
-    statistics = empirical_statistics(x)
-    assert statistics["correlation"] == pytest.approx(1.)
-
-
-def test_standalone_end_to_end(tmp_path):
-    rng = np.random.default_rng(12)
-    n = 6000
-    ids = rng.permutation(np.arange(n))
-    shared = rng.normal(0, 20, n)
-    tails = rng.random(n) < .015
-    shared[tails] = rng.normal(0, 430, tails.sum())
-    e = shared + rng.normal(0, 35, n)
-    t = shared + rng.normal(0, 15, n)
-    ep, tp = tmp_path / "energy.npz", tmp_path / "timing.npz"
-    np.savez(ep, event_id=ids, led_residual_ps=e, corrected_ps=e*.8)
-    np.savez(tp, event_id=ids[::-1], led_residual_ps=t[::-1],
-             corrected_ps=(t*.8)[::-1])
-    result = analyze(ep, tp, tmp_path / "output", n_reference=5000)
-    assert result["n_matched_events"] == n
-    assert result["led"]["tail_definition"]["tail_count"] > 5
-    summary = json.loads((tmp_path / "output" / "core_tail_summary.json").read_text())
-    assert "empirical_outside_core" in summary["ml"]
-    for filename in ("led_vs_ml_core_distributions.png", "led_vs_ml_joint_scatter.pdf",
-                     "core_radial_exceedance.png"):
-        assert (tmp_path / "output" / filename).is_file()
-
-
-def test_two_board_directory_and_comparison(tmp_path):
-    from waveform_analysis.scripts.compare_energy_timing_residuals import (
-        resolve_board_files, compare_boards, main,
-    )
-    rng = np.random.default_rng(123)
+def test_end_to_end_uc_fbk(tmp_path):
+    rng = np.random.default_rng(13)
     root = tmp_path / "predictions"
-    n = 1500
     for board, scale in (("UC", 1.), ("FBK", 1.1)):
-        folder = root / board
-        folder.mkdir(parents=True)
+        directory = root / board
+        directory.mkdir(parents=True)
+        n = 2500
         ids = rng.permutation(n)
-        common = rng.normal(0, 25 * scale, n)
-        extreme = rng.random(n) < .02
-        common[extreme] += rng.normal(0, 350, extreme.sum())
-        energy = common + rng.normal(0, 40, n)
-        timing = common + rng.normal(0, 15, n)
-        np.savez(folder / "energy_predictions.npz",
-                 event_id=ids, led_residual_ps=energy,
-                 corrected_ps=energy*.85)
-        np.savez(folder / "timing_predictions.npz",
-                 event_id=ids[::-1], led_residual_ps=timing[::-1],
-                 corrected_ps=(timing*.9)[::-1])
-        assert all(p.exists() for p in resolve_board_files(root, board).values())
-    output = tmp_path / "combined_results"
+        common = rng.normal(0, 20*scale, size=n)
+        extreme = rng.random(n) < .03
+        common[extreme] += rng.normal(0, 400, size=extreme.sum())
+        energy = common + rng.normal(0, 40, size=n)
+        timing = common + rng.normal(0, 15, size=n)
+        np.savez(directory / "energy_predictions.npz",
+                 event_id=ids, led_residual_ps=energy, corrected_ps=.8*energy)
+        np.savez(directory / "timing_predictions.npz", event_id=ids[::-1],
+                 led_residual_ps=timing[::-1], corrected_ps=(.85*timing)[::-1])
+        assert len(resolve_board_files(root, board)) == 2
+    output = tmp_path / "result"
     main(["--predictions-root", str(root), "--output", str(output),
-          "--reference-events", "5000", "--bootstrap-resamples", "50"])
-    result = json.loads((output / "uc_fbk_comparison.json").read_text())
-    assert result["bootstrap_resamples"] == 50
-    assert "outside_core" in result["states"]["led"]
-    assert "fitted_core" in result["states"]["ml"]
-    for filename in ("uc_vs_fbk_core_distributions.png",
-                     "uc_vs_fbk_joint_scatter.pdf"):
-        assert (output / filename).is_file()
+          "--bootstrap-resamples", "50"])
+    comparison = json.loads((output / "uc_fbk_iqr_comparison.json").read_text())
+    assert comparison["bootstrap_draws"] == 50
+    assert "outliers" in comparison["states"]["ml"]["populations"]
     for board in ("UC", "FBK"):
-        assert (output / board / "core_tail_summary.json").is_file()
+        assert (output / board / "iqr_summary.json").is_file()
+        assert (output / board / "led_vs_ml_distributions.png").is_file()
+        assert (output / board / "led_vs_ml_iqr_scatter.pdf").is_file()
+    assert (output / "uc_vs_fbk_iqr_scatter.png").is_file()
+    assert (output / "uc_vs_fbk_distributions.pdf").is_file()
 
 
-def test_board_file_lookup_rejects_ambiguous_names(tmp_path):
-    from waveform_analysis.scripts.compare_energy_timing_residuals import resolve_board_files
-    board = tmp_path / "UC"
-    board.mkdir()
-    for filename in ("energy_predictions.npz", "energy.npz", "timing_predictions.npz"):
-        (board / filename).write_bytes(b"example")
+def test_resolve_ambiguous_files(tmp_path):
+    folder = tmp_path / "UC"
+    folder.mkdir()
+    for name in ("energy_predictions.npz", "energy.npz", "timing_predictions.npz"):
+        (folder / name).write_bytes(b"unused")
     with pytest.raises(ValueError, match="exactly one"):
         resolve_board_files(tmp_path, "UC")
