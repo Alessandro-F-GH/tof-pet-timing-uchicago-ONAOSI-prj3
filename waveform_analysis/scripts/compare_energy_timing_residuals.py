@@ -124,6 +124,84 @@ def common_component_statistics(energy, timing):
     }
 
 
+def gaussian_component_fit_by_central_range(energy, timing,
+                                            retained_percentages=(100.0, 99.9, 99.0, 95.0)):
+    """Moment-based Gaussian common-component fit on paired central subsets.
+
+    Each channel is clipped to its own symmetric empirical quantiles and
+    only the intersection of event masks is used. Clipped-sample moments are
+    NOT a truncation-corrected Gaussian MLE: parameters describe the selected
+    core and cannot be extrapolated to the untruncated population.
+    """
+    n_all = len(energy)
+    fits = []
+    for percentage in retained_percentages:
+        if not 0 < percentage <= 100:
+            raise ValueError("Central percentage must be in (0, 100]")
+        if percentage == 100:
+            keep = np.ones(n_all, dtype=bool)
+        else:
+            tail = (100.0 - percentage) / 200.0
+            low_e, high_e = np.quantile(energy, [tail, 1.0 - tail])
+            low_t, high_t = np.quantile(timing, [tail, 1.0 - tail])
+            keep = ((energy >= low_e) & (energy <= high_e)
+                    & (timing >= low_t) & (timing <= high_t))
+        e, t = energy[keep], timing[keep]
+        if len(e) < 3 or np.var(t) == 0 or np.var(e) == 0:
+            raise ValueError(f"Insufficient varying matched events at {percentage}%")
+        # Gaussian maximum-likelihood covariance uses population normalization.
+        var_e = float(np.var(e, ddof=0))
+        var_t = float(np.var(t, ddof=0))
+        covariance = float(np.mean((e - e.mean()) * (t - t.mean())))
+        var_components = {
+            "common": covariance,
+            "energy_specific": var_e - covariance,
+            "timing_specific": var_t - covariance,
+        }
+        admissible = all(v >= 0 for v in var_components.values())
+        fits.append({
+            "central_percent_per_channel": float(percentage),
+            "n_retained": int(len(e)),
+            "retained_fraction": float(len(e) / n_all),
+            "mean_energy_ps": float(np.mean(e)),
+            "mean_timing_ps": float(np.mean(t)),
+            "observed_energy_variance_ps2": var_e,
+            "observed_timing_variance_ps2": var_t,
+            "component_variances_ps2": var_components,
+            "sigma_common_ps": float(np.sqrt(var_components["common"]))
+                if var_components["common"] >= 0 else None,
+            "sigma_energy_specific_ps": float(np.sqrt(var_components["energy_specific"]))
+                if var_components["energy_specific"] >= 0 else None,
+            "sigma_timing_specific_ps": float(np.sqrt(var_components["timing_specific"]))
+                if var_components["timing_specific"] >= 0 else None,
+            "fraction_common_timing": covariance / var_t,
+            "fraction_common_energy": covariance / var_e,
+            "physically_admissible": admissible,
+        })
+    return fits
+
+
+def save_gaussian_component_plot(fits, output):
+    percentages = [x["central_percent_per_channel"] for x in fits]
+    fig, ax = plt.subplots(figsize=(7.2, 4.4))
+    for key, label in (
+        ("sigma_common_ps", "Common component"),
+        ("sigma_energy_specific_ps", "Energy-specific"),
+        ("sigma_timing_specific_ps", "Timing-specific"),
+    ):
+        values = [np.nan if f[key] is None else f[key] for f in fits]
+        ax.plot(percentages, values, marker="o", label=label)
+    ax.set_xlabel("Central percentile retained in each channel (%)")
+    ax.set_ylabel("Estimated component sigma (ps)")
+    ax.set_title("Gaussian core variance decomposition (paired events)")
+    ax.legend()
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(output / "gaussian_component_vs_clipping.png", dpi=180)
+    fig.savefig(output / "gaussian_component_vs_clipping.pdf")
+    plt.close(fig)
+
+
 def difference_statistics(energy, timing):
     """Observed difference and variance-subtraction test on paired events."""
     difference = energy - timing
@@ -212,6 +290,11 @@ def main(argv=None):
         energy_ids, energy_residuals, timing_ids, timing_residuals)
     results = correlations(energy, timing)
     results.update(common_component_statistics(energy, timing))
+    results["gaussian_component_by_clipping"] = gaussian_component_fit_by_central_range(energy, timing)
+    results["gaussian_clipping_note"] = ("Clipped fits use Gaussian sample moments on the "
+        "jointly selected central events, not truncation-corrected likelihood. "
+        "Interpret component sigmas only for the retained subset, under the "
+        "unit-loading, pairwise-independent additive model.")
     results.update(difference_statistics(energy, timing))
     results.update(ctr_quadrature_comparison(
         energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
@@ -235,6 +318,7 @@ def main(argv=None):
         json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     save_plot(energy, timing, args.output)
     save_difference_plot(energy, timing, args.output)
+    save_gaussian_component_plot(results["gaussian_component_by_clipping"], args.output)
     print(f"Matched events: {len(ids)} | Pearson r={results['pearson_r']:.5f} "
           f"(p={results['pearson_p_value']:.3g}) | "
           f"Spearman rho={results['spearman_rho']:.5f} "
@@ -244,6 +328,17 @@ def main(argv=None):
           f"| H0: fraction<=0.5, one-sided p={results['dominance_test_p_value_one_sided']:.3g} "
           f"| nonnegative variance decomposition={results['common_component_variances_nonnegative']}",
           flush=True)
+    print("Gaussian component fit by central percentile (per channel):", flush=True)
+    for fit in results["gaussian_component_by_clipping"]:
+        def fmt(value):
+            return f"{value:.3f}" if value is not None else "N/A"
+        print(f"  {fit['central_percent_per_channel']:5g}% "
+              f"| n={fit['n_retained']} ({100*fit['retained_fraction']:.2f}%) "
+              f"| sigma_common={fmt(fit['sigma_common_ps'])} ps "
+              f"| sigma_energy={fmt(fit['sigma_energy_specific_ps'])} ps "
+              f"| sigma_timing={fmt(fit['sigma_timing_specific_ps'])} ps "
+              f"| f_timing={fit['fraction_common_timing']:.4f} "
+              f"| admissible={fit['physically_admissible']}", flush=True)
     print(f"Difference std={results['difference_std_ps']:.3f} ps | "
           f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
           flush=True)
