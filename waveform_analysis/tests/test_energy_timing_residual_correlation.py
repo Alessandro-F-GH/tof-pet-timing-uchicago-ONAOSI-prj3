@@ -68,3 +68,32 @@ def test_common_component_does_not_claim_majority_when_absent():
     result = common_component_statistics(energy, timing)
     assert abs(result["common_fraction_timing"]) < 0.05
     assert result["dominance_reject_h0_at_0_05"] is False
+
+
+def test_gaussian_component_clipping_levels_and_population_fit():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import gaussian_component_fit_by_central_range
+    rng = np.random.default_rng(2026)
+    n = 100000
+    common = rng.normal(0, 4, n)
+    energy = common + rng.normal(0, 6, n)
+    timing = common + rng.normal(0, 2, n)
+    fits = gaussian_component_fit_by_central_range(energy, timing)
+    assert [f["central_percent_per_channel"] for f in fits] == [100.0, 99.9, 99.0, 95.0]
+    full = fits[0]
+    assert full["n_retained"] == n
+    assert full["physically_admissible"] is True
+    assert full["sigma_common_ps"] == pytest.approx(4, abs=0.15)
+    assert full["sigma_energy_specific_ps"] == pytest.approx(6, abs=0.15)
+    assert full["sigma_timing_specific_ps"] == pytest.approx(2, abs=0.15)
+    assert all(f["n_retained"] <= n for f in fits)
+    assert all(fits[i]["n_retained"] >= fits[i+1]["n_retained"] for i in range(3))
+
+
+def test_gaussian_component_cut_is_paired_and_joint():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import gaussian_component_fit_by_central_range
+    timing = np.arange(1001, dtype=float)
+    energy = timing.copy()
+    energy[500], energy[0] = energy[0], energy[500]
+    fit = gaussian_component_fit_by_central_range(energy, timing, (95.0,))[0]
+    assert fit["n_retained"] < 951
+    assert fit["retained_fraction"] == pytest.approx(fit["n_retained"] / 1001)
