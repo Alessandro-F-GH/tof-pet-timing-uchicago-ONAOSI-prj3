@@ -45,15 +45,15 @@ def test_two_component_fit_recovers_correlated_broad_tail():
     assert probabilities.shape == (len(x),)
     assert np.all((probabilities >= 0) & (probabilities <= 1))
     assert probabilities.max() > 0.9
-    assert result["converged"]
+    assert result["em_numerically_converged"]
     assert result["delta_bic_one_minus_two"] > 0
     assert c["weight"] > t["weight"]
     assert t["correlation"] > c["correlation"]
     assert t["sigma_energy_ps"] > c["sigma_energy_ps"]
-    assert t["shared_variance_ps2"] == pytest.approx(
+    assert t["cov_energy_timing_ps2"] == pytest.approx(
         t["correlation"] * t["sigma_energy_ps"] * t["sigma_timing_ps"],
         rel=1e-9)
-    assert c["sigma_common_ps"] == pytest.approx(np.sqrt(c["shared_variance_ps2"]))
+    assert c["sigma_common_if_unit_loading_ps"] == pytest.approx(np.sqrt(c["cov_energy_timing_ps2"]))
 
 
 def test_gaussian_marginal_mixture_integrates_to_one():
@@ -91,3 +91,27 @@ def test_standalone_full_run_without_cache(tmp_path):
     for filename in ("mixture_summary.json", "gaussian_mixture_distributions.png",
                      "gaussian_mixture_joint.pdf"):
         assert (tmp_path / "output" / filename).is_file()
+
+
+def test_analytical_expected_counts_and_exceedance():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import (
+        expected_bin_counts, goodness_of_fit, projected_cdf,
+    )
+    components = [
+        {"weight": 0.99, "mean_ps": [0., 0.],
+         "covariance_matrix_ps2": [[400., 50.], [50., 100.]]},
+        {"weight": 0.01, "mean_ps": [0., 0.],
+         "covariance_matrix_ps2": [[10000., 8000.], [8000., 10000.]]},
+    ]
+    edges = np.linspace(-1000, 1000, 201)
+    expected = expected_bin_counts(edges, components, (1., 0.), 10000)
+    assert expected.sum() == pytest.approx(10000, rel=1e-8)
+    assert np.all(expected >= 0)
+    assert projected_cdf(0., components, (1., -1.)) == pytest.approx(.5)
+    rng = np.random.default_rng(6)
+    values = rng.normal(0., 20., 2500)
+    fit = goodness_of_fit(values, components, (1., 0.))
+    assert 0 <= fit["ks_distance_descriptive"] <= 1
+    assert fit["n_merged_bins"] > 0
+    assert np.isfinite(fit["poisson_deviance_merged_bins"])
+    assert len(fit["exceedance"]) == 5
