@@ -189,3 +189,40 @@ def test_cache_root_rejects_ambiguous_dataset(tmp_path):
         np.save(alias / "event_index.npy", np.array([1, 2, 3]))
     with pytest.raises(ValueError, match="exactly one"):
         resolve_prepared_from_cache(tmp_path, "energy", "blind", np.array([1, 2]))
+
+
+def test_led_residuals_are_aligned_to_prediction_ids(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.scripts import compare_energy_timing_residuals as analysis
+    dataset = SimpleNamespace(
+        event_index=np.array([30, 10, 20], dtype=np.int64),
+        energy_target_ps=np.array([300., 100., 200.]),
+    )
+    monkeypatch.setattr(analysis, "load_prepared_dataset", lambda _: dataset)
+    observed = analysis.led_residuals_from_cache(
+        tmp_path, "energy", np.array([10, 20, 30]))
+    np.testing.assert_array_equal(observed, [100., 200., 300.])
+
+
+def test_led_vs_ml_tail_comparison_tracks_fixed_led_events():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import compare_led_ml
+    rng = np.random.default_rng(227)
+    n = 4000
+    is_tail = rng.random(n) < .04
+    shared = rng.normal(0, 20, n)
+    shared[is_tail] = rng.normal(0, 350, is_tail.sum())
+    led_e = shared + rng.normal(0, 35, n)
+    led_t = shared + rng.normal(0, 15, n)
+    ml_e = led_e * .8
+    ml_t = led_t * .8
+    comparison, led_probs, ml_probs = compare_led_ml(
+        led_e, led_t, ml_e, ml_t, seed=42, n_init=2)
+    assert led_probs.shape == (n, 2)
+    assert ml_probs.shape == (n, 2)
+    transitions = comparison["transition"]
+    assert transitions["led_tail_count"] > 0
+    assert (transitions["led_tail_still_ml_tail"]
+            + transitions["led_tail_becomes_ml_core"]
+            == transitions["led_tail_count"])
+    assert (comparison["paired_group_statistics"]["initial_led_tail"]["energy"]["ml_rms_ps"]
+            < comparison["paired_group_statistics"]["initial_led_tail"]["energy"]["led_rms_ps"])
