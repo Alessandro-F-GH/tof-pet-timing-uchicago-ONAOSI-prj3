@@ -10,49 +10,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sys
-import os
 from pathlib import Path
 
 import matplotlib
-
-def configure_plot_backend(show_requested):
-    """Select an interactive backend before pyplot is imported when possible."""
-    if not show_requested:
-        matplotlib.use("Agg")
-        return None
-    # No graphical display in ordinary headless Linux/SSH sessions.
-    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        matplotlib.use("Agg")
-        return "No graphical display (DISPLAY/WAYLAND_DISPLAY unset)"
-    # A preconfigured Agg backend silently makes plt.show() a no-op.
-    # Prefer Tk when available; otherwise try Qt.
-    errors = []
-    for backend, modules in (
-        ("TkAgg", ("tkinter",)),
-        ("QtAgg", ("PyQt6", "PySide6", "PyQt5", "PySide2")),
-    ):
-        try:
-            if backend == "TkAgg":
-                import tkinter  # noqa: F401
-            else:
-                import importlib.util
-                if not any(importlib.util.find_spec(m) for m in modules):
-                    raise ImportError("No Qt Python bindings installed")
-            matplotlib.use(backend, force=True)
-            return None
-        except (ImportError, RuntimeError, ValueError) as exc:
-            errors.append(f"{backend}: {exc}")
-    matplotlib.use("Agg")
-    return "; ".join(errors)
-
-_BACKEND_PROBLEM = configure_plot_backend("--show-waveforms" in sys.argv)
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pearsonr, spearmanr, linregress, t as student_t
 from sklearn.mixture import GaussianMixture
 from matplotlib.patches import Ellipse
 from waveform_analysis.data.dataset import load_prepared_dataset
+from waveform_analysis.data.view import model_target
 from waveform_analysis.data.named_cache import resolve_alias
 from waveform_analysis.reporting.stats import metric_values
 
@@ -477,9 +445,9 @@ def prepared_waveform_means(prepared_path, channel, ids, groups):
     return np.asarray(time_ps, dtype=np.float64), result
 
 
-def show_grouped_waveforms(ids, energy, timing, summary, responsibilities,
-                           energy_prepared, timing_prepared):
-    """Interactive 2x2 comparison: energy/timing x detector 1/2."""
+def save_grouped_waveforms(ids, energy, timing, summary, responsibilities,
+                           energy_prepared, timing_prepared, output):
+    """Save a 2x2 comparison: energy/timing x detector 1/2."""
     groups = waveform_groups_from_gmm(energy, timing, summary, responsibilities)
     e_times, e_groups = prepared_waveform_means(energy_prepared, "energy", ids, groups)
     t_times, t_groups = prepared_waveform_means(timing_prepared, "timing", ids, groups)
@@ -506,22 +474,113 @@ def show_grouped_waveforms(ids, energy, timing, summary, responsibilities,
             ax.legend(fontsize=8)
     fig.suptitle("Waveform shapes by joint residual GMM group (mean +/- 1 std)")
     fig.tight_layout()
-    if _BACKEND_PROBLEM is not None or "agg" in matplotlib.get_backend().lower():
-        fallback = Path("waveform_groups.png").resolve()
-        fig.savefig(fallback, dpi=180)
-        print(f"Interactive display unavailable ({_BACKEND_PROBLEM or matplotlib.get_backend()}); "
-              f"waveform plot saved to {fallback}", flush=True)
-        plt.close(fig)
-        return
-    try:
-        print(f"Opening waveform figure using {matplotlib.get_backend()}", flush=True)
-        plt.show(block=True)
-    except Exception as exc:
-        fallback = Path("waveform_groups.png").resolve()
-        fig.savefig(fallback, dpi=180)
-        print(f"Interactive window failed ({exc}); waveform plot saved to {fallback}", flush=True)
-    finally:
-        plt.close(fig)
+    fig.savefig(output / "gmm_waveform_groups.png", dpi=180)
+    fig.savefig(output / "gmm_waveform_groups.pdf")
+    plt.close(fig)
+
+
+def led_residuals_from_cache(prepared_path, channel, ids):
+    """Read frozen LED-corrected target, preserving prediction event order."""
+    prepared = load_prepared_dataset(resolve_alias(prepared_path))
+    event_ids = np.asarray(prepared.event_index, dtype=np.int64)
+    if len(np.unique(event_ids)) != len(event_ids):
+        raise ValueError(f"Duplicated LED event IDs in {prepared_path}")
+    common, i_pred, i_cache = np.intersect1d(
+        ids, event_ids, assume_unique=True, return_indices=True)
+    if len(common) != len(ids):
+        raise ValueError(f"{prepared_path}: missing {len(ids)-len(common)} event IDs")
+    targets = np.asarray(model_target(prepared, f"{channel}_to_{channel}"),
+                         dtype=np.float64)
+    if len(targets) != len(event_ids):
+        raise ValueError(f"{prepared_path}: target/event length mismatch")
+    result = np.full(len(ids), np.nan, dtype=np.float64)
+    result[i_pred] = targets[i_cache]
+    if not np.isfinite(result).all():
+        raise ValueError(f"{prepared_path}: LED residuals contain nonfinite values")
+    return result
+
+
+def compare_led_ml(led_energy, led_timing, energy, timing, *,
+                   seed=42, n_init=5):
+    """Fit separate bivariate mixtures, then compare on identical events."""
+    led_fit, led_prob = fit_bivariate_gmm(
+        led_energy, led_timing, seed=seed, n_init=n_init)
+    ml_fit, ml_prob = fit_bivariate_gmm(
+        energy, timing, seed=seed, n_init=n_init)
+    led_tail = led_prob[:, 1] >= 0.5
+    ml_tail = ml_prob[:, 1] >= 0.5
+    transition = {
+        "led_tail_count": int(led_tail.sum()),
+        "ml_tail_count": int(ml_tail.sum()),
+        "led_tail_still_ml_tail": int(np.sum(led_tail & ml_tail)),
+        "led_tail_becomes_ml_core": int(np.sum(led_tail & ~ml_tail)),
+        "led_core_becomes_ml_tail": int(np.sum(~led_tail & ml_tail)),
+    }
+    def per_group(values_before, values_after, mask):
+        if not np.any(mask):
+            return None
+        initial, corrected = values_before[mask], values_after[mask]
+        return {
+            "n": int(mask.sum()),
+            "led_rms_ps": float(np.sqrt(np.mean(initial**2))),
+            "ml_rms_ps": float(np.sqrt(np.mean(corrected**2))),
+            "led_std_ps": float(np.std(initial)),
+            "ml_std_ps": float(np.std(corrected)),
+        }
+    by_group = {}
+    for name, mask in (("initial_led_tail", led_tail),
+                       ("initial_led_core", ~led_tail),
+                       ("final_ml_tail", ml_tail),
+                       ("final_ml_core", ~ml_tail)):
+        by_group[name] = {
+            channel: per_group(before, after, mask)
+            for channel, before, after in (
+                ("energy", led_energy, energy), ("timing", led_timing, timing))
+        }
+    return {
+        "led_gmm": led_fit,
+        "ml_gmm": ml_fit,
+        "transition": transition,
+        "paired_group_statistics": by_group,
+        "note": "LED and ML share the same event IDs. GMMs are independently fitted; "
+                "tail membership can change after correction, so tail weights alone "
+                "do not quantify corrected events. Paired group RMS is evaluated "
+                "on fixed LED-defined or ML-defined event subsets.",
+    }, led_prob, ml_prob
+
+
+def save_led_ml_comparison(led_energy, led_timing, energy, timing, comparison, output):
+    """Marginal histograms on shared absolute bins: full + log tail views."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    for col, (channel, led, corrected) in enumerate(
+        (("Energy", led_energy, energy), ("Timing", led_timing, timing))
+    ):
+        # Fixed common bins prevent optical differences due to binning.
+        width = max(float(np.quantile(np.abs(np.r_[led, corrected]), 0.9995))*1.1, 300.0)
+        bins = np.linspace(-width, width, 241)
+        for row, log_tail in enumerate((False, True)):
+            ax = axes[row, col]
+            ax.hist(led, bins=bins, histtype="step", density=True, lw=1.6,
+                    label="LED (before ML)", color="tab:orange")
+            ax.hist(corrected, bins=bins, histtype="step", density=True, lw=1.6,
+                    label="After ML", color="tab:blue")
+            if log_tail:
+                ax.set_yscale("log")
+                ax.set_title(f"{channel}: tails (log density)")
+            else:
+                ax.set_xlim(-180, 180)
+                ax.set_title(f"{channel}: central peak")
+            ax.set_xlabel("Coincidence time residual (ps)")
+            ax.set_ylabel("Probability density")
+            ax.legend(fontsize=9)
+            ax.grid(alpha=.2)
+    fig.suptitle("Same-event LED vs ML residual distributions")
+    fig.tight_layout()
+    fig.savefig(output / "led_vs_ml_distributions.png", dpi=180)
+    fig.savefig(output / "led_vs_ml_distributions.pdf")
+    plt.close(fig)
+
+
 
 
 def difference_statistics(energy, timing):
@@ -604,7 +663,9 @@ def main(argv=None):
                         help="Histogram bin width for CTR fits (default: 10 ps)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--show-waveforms", action="store_true",
-                        help="Open interactive waveform comparison for GMM left/core/right groups")
+                        help="Save waveform comparison (legacy flag; no GUI is opened)")
+    parser.add_argument("--waveform-plot", action="store_true",
+                        help="Save mean waveforms for left tail, core, right tail")
     parser.add_argument("--cache-root", type=Path,
                         help="Prepared cache bundle root; resolves energy/timing wide waveform paths automatically")
     parser.add_argument("--dataset-role", choices=("blind", "development"), default="blind",
@@ -616,8 +677,11 @@ def main(argv=None):
     parser.add_argument("--gmm-n-init", type=int, default=5,
                         help="GMM random initializations (default: 5)")
     args = parser.parse_args(argv)
-    if args.show_waveforms and args.cache_root is None and (args.energy_prepared is None or args.timing_prepared is None):
-        parser.error("--show-waveforms requires --cache-root or both explicit prepared paths")
+    want_waveforms = args.show_waveforms or args.waveform_plot
+    want_cache_analysis = args.cache_root is not None or (
+        args.energy_prepared is not None and args.timing_prepared is not None)
+    if want_waveforms and not want_cache_analysis:
+        parser.error("--waveform-plot requires --cache-root or both explicit prepared paths")
     if args.gmm_n_init < 1:
         parser.error("--gmm-n-init must be >= 1")
     if args.fit_bin_width_ps <= 0:
@@ -706,7 +770,7 @@ def main(argv=None):
           f"quadrature prediction={results['predicted_difference_ctr_ps_if_timing_is_common_only']}",
           flush=True)
     print(f"Results: {args.output}", flush=True)
-    if args.show_waveforms:
+    if want_cache_analysis:
         energy_prepared = args.energy_prepared
         timing_prepared = args.timing_prepared
         if energy_prepared is None:
@@ -715,12 +779,39 @@ def main(argv=None):
         if timing_prepared is None:
             timing_prepared = resolve_prepared_from_cache(
                 args.cache_root, "timing", args.dataset_role, ids)
-        print(f"Waveform cache: energy={energy_prepared} | timing={timing_prepared}",
+        print(f"Matched cache: energy={energy_prepared}; timing={timing_prepared}",
               flush=True)
-        show_grouped_waveforms(
-            ids, energy, timing, gmm_summary, gmm_responsibilities,
-            energy_prepared, timing_prepared,
-        )
+        led_energy = led_residuals_from_cache(energy_prepared, "energy", ids)
+        led_timing = led_residuals_from_cache(timing_prepared, "timing", ids)
+        comparison, led_prob, _ = compare_led_ml(
+            led_energy, led_timing, energy, timing,
+            seed=args.seed, n_init=args.gmm_n_init)
+        (args.output / "led_vs_ml_summary.json").write_text(
+            json.dumps(comparison, indent=2) + "\\n", encoding="utf-8")
+        save_led_ml_comparison(
+            led_energy, led_timing, energy, timing, comparison, args.output)
+        with (args.output / "led_ml_paired_residuals.csv").open(
+                "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["event_id", "led_energy_ps", "ml_energy_ps",
+                             "led_timing_ps", "ml_timing_ps",
+                             "p_led_tail", "p_ml_tail"])
+            writer.writerows(zip(ids, led_energy, energy, led_timing, timing,
+                                 led_prob[:, 1], gmm_responsibilities[:, 1]))
+        for state in ("led_gmm", "ml_gmm"):
+            g = comparison[state]
+            print(f"  {state}: tail weight={g['components'][1]['weight']:.4%} "
+                  f"| sigma_E={g['components'][1]['sigma_energy_ps']:.1f} ps "
+                  f"| sigma_T={g['components'][1]['sigma_timing_ps']:.1f} ps "
+                  f"| tail rho={g['components'][1]['correlation']:.4f}", flush=True)
+        print(f"  Tail transitions: {comparison['transition']}", flush=True)
+        print(f"LED vs ML comparison saved in {args.output}", flush=True)
+        if want_waveforms:
+            save_grouped_waveforms(
+                ids, energy, timing, gmm_summary, gmm_responsibilities,
+                energy_prepared, timing_prepared, args.output)
+            print(f"Waveform figure saved: {args.output / 'gmm_waveform_groups.png'}",
+                  flush=True)
 
 
 if __name__ == "__main__":
