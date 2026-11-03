@@ -248,27 +248,26 @@ def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
 
 
 def plot_scatter(led, ml, summaries, tail_masks, output, seed=42):
+    """Show the full joint distributions in neutral gray, without a hard boundary.
+
+    The Gaussian-core envelope is used only for numerical tail diagnostics;
+    no points are colored or separated by that classification.
+    """
     rng = np.random.default_rng(seed)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.4))
-    for ax, (label, pairs, tail) in zip(axes, (
-        ("LED", led, tail_masks["led"]),
-        ("After ML", ml, tail_masks["ml"]),
+    for ax, (label, pairs) in zip(axes, (
+        ("LED", led), ("After ML", ml),
     )):
-        core_idx = np.flatnonzero(~tail)
-        tail_idx = np.flatnonzero(tail)
-        if len(core_idx) > 15000:
-            core_idx = rng.choice(core_idx, 15000, replace=False)
-        ax.scatter(pairs[core_idx, 0], pairs[core_idx, 1],
-                   s=4, alpha=.08, color="tab:blue", label="Inside core envelope",
-                   rasterized=True)
-        ax.scatter(pairs[tail_idx, 0], pairs[tail_idx, 1],
-                   s=12, alpha=.7, color="tab:orange", label="Outside core envelope",
-                   rasterized=True)
+        indices = np.arange(len(pairs))
+        if len(indices) > 20000:
+            indices = rng.choice(indices, 20000, replace=False)
+        ax.scatter(pairs[indices, 0], pairs[indices, 1],
+                   s=6, alpha=0.24, color="0.35", rasterized=True)
         ax.set_xlabel("Energy residual (ps)")
         ax.set_ylabel("Timing residual (ps)")
         ax.set_title(label)
         ax.grid(alpha=.2)
-        ax.legend()
+    fig.suptitle("Paired energy and timing residuals")
     fig.tight_layout()
     fig.savefig(output / "core_and_empirical_tails.png", dpi=190)
     fig.savefig(output / "core_and_empirical_tails.pdf")
