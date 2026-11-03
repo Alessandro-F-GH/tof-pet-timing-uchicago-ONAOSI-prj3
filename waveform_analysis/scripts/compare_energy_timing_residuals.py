@@ -109,6 +109,38 @@ def test_unit_slope(energy, timing):
     }
 
 
+def trimmed_slope_statistics(energy, timing, retained_percentages=(99.9, 99.0, 95.0)):
+    """Estimate slopes after independent central-quantile cuts on both residuals.
+
+    Each pair is retained only if both energy and timing lie within their
+    respective central percentile ranges. Actual retained fraction is reported.
+    The post-selection OLS confidence intervals are descriptive, not
+    selection-adjusted inferential intervals.
+    """
+    output = []
+    n_total = len(energy)
+    for percentage in retained_percentages:
+        tail = (100.0 - percentage) / 200.0
+        lo_e, hi_e = np.quantile(energy, [tail, 1.0 - tail])
+        lo_t, hi_t = np.quantile(timing, [tail, 1.0 - tail])
+        keep = ((energy >= lo_e) & (energy <= hi_e)
+                & (timing >= lo_t) & (timing <= hi_t))
+        n_kept = int(np.sum(keep))
+        if n_kept < 3 or np.ptp(timing[keep]) == 0:
+            raise ValueError(
+                f"Trimming {percentage}% leaves too few or constant timing residuals")
+        estimate = test_unit_slope(energy[keep], timing[keep])
+        output.append({
+            "central_percent_per_channel": float(percentage),
+            "n_retained": n_kept,
+            "retained_fraction": n_kept / n_total,
+            "energy_quantiles_ps": [float(lo_e), float(hi_e)],
+            "timing_quantiles_ps": [float(lo_t), float(hi_t)],
+            **estimate,
+        })
+    return output
+
+
 def difference_statistics(energy, timing):
     """Observed difference and variance-subtraction test on paired events."""
     difference = energy - timing
@@ -197,6 +229,7 @@ def main(argv=None):
         energy_ids, energy_residuals, timing_ids, timing_residuals)
     results = correlations(energy, timing)
     results.update(test_unit_slope(energy, timing))
+    results["trimmed_beta"] = trimmed_slope_statistics(energy, timing)
     results.update(difference_statistics(energy, timing))
     results.update(ctr_quadrature_comparison(
         energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
@@ -228,6 +261,15 @@ def main(argv=None):
           f"| 95% CI=({results['beta_ci_95'][0]:.5f}, {results['beta_ci_95'][1]:.5f}) "
           f"| H0: beta=1, two-sided p={results['beta_test_p_value_two_sided']:.3g}",
           flush=True)
+    for trimmed in results["trimmed_beta"]:
+        ci = trimmed["beta_ci_95"]
+        print(f"Beta central {trimmed['central_percent_per_channel']:g}%/channel "
+              f"| matched={trimmed['n_retained']}/{len(ids)} "
+              f"({100 * trimmed['retained_fraction']:.2f}%) "
+              f"| beta={trimmed['beta_energy_on_timing']:.5f} "
+              f"| 95% CI=({ci[0]:.5f}, {ci[1]:.5f}) "
+              f"| H0: beta=1, p={trimmed['beta_test_p_value_two_sided']:.3g}",
+              flush=True)
     print(f"Difference std={results['difference_std_ps']:.3f} ps | "
           f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
           flush=True)
