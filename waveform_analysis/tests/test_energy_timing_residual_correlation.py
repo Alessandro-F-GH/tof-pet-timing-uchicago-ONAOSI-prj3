@@ -43,3 +43,23 @@ def test_difference_statistics_use_paired_residuals():
     assert result["difference_mean_ps"] == pytest.approx(0.)
     assert result["difference_std_ps"] == pytest.approx(np.std(energy-timing, ddof=1))
     assert result["difference_rmse_ps"] == pytest.approx(np.sqrt(np.mean((energy-timing)**2)))
+
+
+def test_unit_slope_exact_common_component():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import test_unit_slope
+    timing = np.linspace(-5, 5, 101)
+    energy = timing + 3.0
+    result = test_unit_slope(energy, timing)
+    assert result["beta_energy_on_timing"] == pytest.approx(1.0)
+    assert result["beta_test_p_value_two_sided"] == pytest.approx(1.0)
+    assert result["beta_reject_h0_at_0_05"] is False
+
+
+def test_unit_slope_rejects_nonunit_slope():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import test_unit_slope
+    timing = np.linspace(-5, 5, 101)
+    energy = 2.0 * timing + 1.0 + 0.01 * np.sin(np.arange(101))
+    result = test_unit_slope(energy, timing)
+    assert result["beta_energy_on_timing"] == pytest.approx(2.0, abs=0.01)
+    assert result["beta_test_p_value_two_sided"] < 0.05
+    assert result["beta_reject_h0_at_0_05"] is True
