@@ -1,817 +1,265 @@
 #!/usr/bin/env python3
-"""Compare energy and timing residuals for events having the same event_id.
+"""Standalone analysis of common timing errors in paired energy/timing channels.
 
-Read two saved prediction NPZ files; no model/data provenance checks, model
-loading, retraining, or prediction. Users choose matching input populations.
-The corrected_ps values are residuals AFTER the model correction.
+Requires only numpy, scipy, matplotlib and scikit-learn. No project imports,
+cache, models, raw waveform files or retraining are required.
+
+Each prediction NPZ must contain:
+    event_id         unique integer event IDs
+    led_residual_ps  LED-corrected coincidence residual before ML, in ps
+    corrected_ps     coincidence residual after ML, in ps
+
+The two NPZ files must refer to the same physical events and correction
+convention. Events are matched by event_id, never by their array positions.
 """
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
-from scipy.stats import pearsonr, spearmanr, linregress, t as student_t
-from sklearn.mixture import GaussianMixture
 from matplotlib.patches import Ellipse
-from waveform_analysis.data.dataset import load_prepared_dataset
-from waveform_analysis.data.view import model_target
-from waveform_analysis.data.named_cache import resolve_alias
-from waveform_analysis.reporting.stats import metric_values
+import numpy as np
+from scipy.stats import norm
+from sklearn.mixture import GaussianMixture
 
 
-def read_residuals(path: Path):
-    if not path.is_file():
-        raise FileNotFoundError(path)
+def load_predictions(path):
+    """Read both LED and ML residuals, applying strict source validation."""
+    path = Path(path)
     with np.load(path, allow_pickle=False) as data:
-        if "event_id" not in data or "corrected_ps" not in data:
-            raise ValueError(f"{path}: requires event_id and corrected_ps")
-        event_id = np.asarray(data["event_id"])
-        residual = np.asarray(data["corrected_ps"], dtype=np.float64)
-    if event_id.ndim != 1 or residual.ndim != 1 or len(event_id) != len(residual):
-        raise ValueError(f"{path}: event_id and corrected_ps must be same-length 1D arrays")
-    if event_id.dtype.kind not in "iu":
-        raise ValueError(f"{path}: event_id must contain integers")
-    if len(event_id) != len(np.unique(event_id)):
-        raise ValueError(f"{path}: duplicate event_id would produce ambiguous matches")
-    if len(event_id) == 0:
-        raise ValueError(f"{path}: empty prediction file")
-    return event_id.astype(np.int64, copy=False), residual
+        required = ("event_id", "led_residual_ps", "corrected_ps")
+        missing = [name for name in required if name not in data]
+        if missing:
+            raise ValueError(f"{path}: missing fields {missing}; use an original predictions NPZ")
+        ids = np.asarray(data["event_id"])
+        led = np.asarray(data["led_residual_ps"], dtype=np.float64)
+        ml = np.asarray(data["corrected_ps"], dtype=np.float64)
+    if any(array.ndim != 1 for array in (ids, led, ml)):
+        raise ValueError(f"{path}: expected one-dimensional arrays")
+    if len(ids) < 10 or len(ids) != len(led) or len(ids) != len(ml):
+        raise ValueError(f"{path}: inconsistent lengths or fewer than ten events")
+    if ids.dtype.kind not in "iu" or len(np.unique(ids)) != len(ids):
+        raise ValueError(f"{path}: event_id must be unique integers")
+    if not (np.isfinite(led).all() and np.isfinite(ml).all()):
+        raise ValueError(f"{path}: LED and ML residuals must be finite")
+    return ids.astype(np.int64), led, ml
 
 
-def align_residuals(energy_ids, energy_residuals, timing_ids, timing_residuals):
-    """Join on exact event ID; sorted ascending to guarantee reproducibility."""
-    ids, indices_energy, indices_timing = np.intersect1d(
-        energy_ids, timing_ids, assume_unique=True, return_indices=True)
-    if len(ids) < 3:
-        raise ValueError(f"Only {len(ids)} matched event IDs; need at least three")
-    energy = np.asarray(energy_residuals[indices_energy], dtype=np.float64)
-    timing = np.asarray(timing_residuals[indices_timing], dtype=np.float64)
-    valid = np.isfinite(energy) & np.isfinite(timing)
-    if int(np.sum(valid)) < 3:
-        raise ValueError("Fewer than three finite matched residual pairs")
-    return ids[valid], energy[valid], timing[valid], int((~valid).sum())
+def align_prediction_pairs(energy_data, timing_data):
+    """Inner-join event IDs once, applying the same selection to LED and ML."""
+    eids, eled, eml = energy_data
+    tids, tled, tml = timing_data
+    ids, ei, ti = np.intersect1d(eids, tids, assume_unique=True, return_indices=True)
+    if len(ids) < 10:
+        raise ValueError(f"Only {len(ids)} matching events (need >= 10)")
+    return ids, np.column_stack((eled[ei], tled[ti])), np.column_stack((eml[ei], tml[ti]))
 
 
-def correlations(energy, timing):
-    if np.ptp(energy) == 0 or np.ptp(timing) == 0:
-        raise ValueError("Correlation undefined: constant residual values")
-    pearson = pearsonr(energy, timing)
-    spearman = spearmanr(energy, timing)
-    return {
-        "n_matched_finite_events": int(len(energy)),
-        "pearson_r": float(pearson.statistic),
-        "pearson_p_value": float(pearson.pvalue),
-        "spearman_rho": float(spearman.statistic),
-        "spearman_p_value": float(spearman.pvalue),
-        "energy_mean_ps": float(np.mean(energy)),
-        "timing_mean_ps": float(np.mean(timing)),
-        "energy_std_ps": float(np.std(energy, ddof=1)),
-        "timing_std_ps": float(np.std(timing, ddof=1)),
-    }
+def fit_mixture(pairs, seed=42, n_init=5):
+    """Fit one/two-component 2D Gaussians; return physically scaled parameters.
 
-
-def common_component_statistics(energy, timing):
-    """Common-plus-channel-specific variance decomposition, if its assumptions hold.
-
-    Assumes r_E=C+e_E and r_T=C+e_T, where all three centered
-    components are pairwise uncorrelated and C has unit loading in both.
-    H0: common timing fraction <= 0.5, H1: > 0.5.
-    Standard OLS inference assumes independent, homoscedastic events.
+    Components ordered by increasing determinant of covariance (ellipse area).
+    An unconstrained Gaussian mixture does not establish distinct physical
+    populations. Its one-component BIC provides a reference for model selection.
     """
-    if len(energy) < 3 or np.ptp(timing) == 0:
-        raise ValueError("Slope test requires three events and nonconstant timing residuals")
-    fit = linregress(timing, energy)
-    beta = float(fit.slope)
-    se = float(fit.stderr)
-    df = len(energy) - 2
-    threshold = 0.5
-    t_stat = (beta - threshold) / se if se > 0 else (
-        float("inf") if beta > threshold else
-        float("-inf") if beta < threshold else 0.0)
-    p_value = float(student_t.sf(t_stat, df)) if se > 0 else (
-        0.0 if beta > threshold else 1.0)
-    margin = float(student_t.ppf(0.975, df) * se)
-    variance_e = float(np.var(energy, ddof=1))
-    variance_t = float(np.var(timing, ddof=1))
-    common_variance = float(np.cov(energy, timing, ddof=1)[0, 1])
-    specific_e = variance_e - common_variance
-    specific_t = variance_t - common_variance
-    compatible = bool(common_variance >= 0 and specific_e >= 0 and specific_t >= 0)
-    return {
-        "beta_energy_on_timing": beta,
-        "beta_intercept_ps": float(fit.intercept),
-        "beta_standard_error": se,
-        "beta_ci_95": [beta - margin, beta + margin],
-        "common_variance_ps2": common_variance,
-        "energy_specific_variance_ps2": specific_e,
-        "timing_specific_variance_ps2": specific_t,
-        "common_fraction_timing": beta,
-        "common_fraction_energy": common_variance / variance_e,
-        "common_component_variances_nonnegative": compatible,
-        "dominance_null_max_fraction": threshold,
-        "dominance_test_t_statistic": float(t_stat),
-        "dominance_test_df": int(df),
-        "dominance_test_p_value_one_sided": p_value,
-        "dominance_reject_h0_at_0_05": bool(p_value < 0.05),
-        "note_common_component": "Fractions interpreted as independent additive "
-            "noise contributions ONLY if both channels have the same unit-loading "
-            "common component and the three components are pairwise uncorrelated. "
-            "Negative inferred specific variances would invalidate these assumptions. "
-            "One-sided slope t-test H0: beta<=0.5; OLS p-value/CI assume "
-            "independent observations and homoscedastic regression errors. "
-            "Shared time-reference errors may also generate common covariance.",
-    }
-
-
-def gaussian_component_fit_by_central_range(energy, timing,
-                                            retained_percentages=(100.0, 99.9, 99.0, 95.0)):
-    """Moment-based Gaussian common-component fit on paired central subsets.
-
-    Each channel is clipped to its own symmetric empirical quantiles and
-    only the intersection of event masks is used. Clipped-sample moments are
-    NOT a truncation-corrected Gaussian MLE: parameters describe the selected
-    core and cannot be extrapolated to the untruncated population.
-    """
-    n_all = len(energy)
-    fits = []
-    for percentage in retained_percentages:
-        if not 0 < percentage <= 100:
-            raise ValueError("Central percentage must be in (0, 100]")
-        if percentage == 100:
-            keep = np.ones(n_all, dtype=bool)
-        else:
-            tail = (100.0 - percentage) / 200.0
-            low_e, high_e = np.quantile(energy, [tail, 1.0 - tail])
-            low_t, high_t = np.quantile(timing, [tail, 1.0 - tail])
-            keep = ((energy >= low_e) & (energy <= high_e)
-                    & (timing >= low_t) & (timing <= high_t))
-        e, t = energy[keep], timing[keep]
-        if len(e) < 3 or np.var(t) == 0 or np.var(e) == 0:
-            raise ValueError(f"Insufficient varying matched events at {percentage}%")
-        # Gaussian maximum-likelihood covariance uses population normalization.
-        var_e = float(np.var(e, ddof=0))
-        var_t = float(np.var(t, ddof=0))
-        covariance = float(np.mean((e - e.mean()) * (t - t.mean())))
-        var_components = {
-            "common": covariance,
-            "energy_specific": var_e - covariance,
-            "timing_specific": var_t - covariance,
-        }
-        admissible = all(v >= 0 for v in var_components.values())
-        fits.append({
-            "central_percent_per_channel": float(percentage),
-            "n_retained": int(len(e)),
-            "retained_fraction": float(len(e) / n_all),
-            "mean_energy_ps": float(np.mean(e)),
-            "mean_timing_ps": float(np.mean(t)),
-            "observed_energy_variance_ps2": var_e,
-            "observed_timing_variance_ps2": var_t,
-            "component_variances_ps2": var_components,
-            "sigma_common_ps": float(np.sqrt(var_components["common"]))
-                if var_components["common"] >= 0 else None,
-            "sigma_energy_specific_ps": float(np.sqrt(var_components["energy_specific"]))
-                if var_components["energy_specific"] >= 0 else None,
-            "sigma_timing_specific_ps": float(np.sqrt(var_components["timing_specific"]))
-                if var_components["timing_specific"] >= 0 else None,
-            "fraction_common_timing": covariance / var_t,
-            "fraction_common_energy": covariance / var_e,
-            "physically_admissible": admissible,
-        })
-    return fits
-
-
-def save_gaussian_component_plot(fits, output):
-    percentages = [x["central_percent_per_channel"] for x in fits]
-    fig, ax = plt.subplots(figsize=(7.2, 4.4))
-    for key, label in (
-        ("sigma_common_ps", "Common component"),
-        ("sigma_energy_specific_ps", "Energy-specific"),
-        ("sigma_timing_specific_ps", "Timing-specific"),
-    ):
-        values = [np.nan if f[key] is None else f[key] for f in fits]
-        ax.plot(percentages, values, marker="o", label=label)
-    ax.set_xlabel("Central percentile retained in each channel (%)")
-    ax.set_ylabel("Estimated component sigma (ps)")
-    ax.set_title("Gaussian core variance decomposition (paired events)")
-    ax.legend()
-    ax.grid(alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(output / "gaussian_component_vs_clipping.png", dpi=180)
-    fig.savefig(output / "gaussian_component_vs_clipping.pdf")
-    plt.close(fig)
-
-
-def fit_bivariate_gmm(energy, timing, *, seed=42, n_init=5):
-    """Two full-covariance Gaussian components, on matched residual pairs.
-
-    Labels are assigned using the determinant of each covariance matrix:
-    smaller area = core, larger area = tail. This is a statistical naming
-    convention, not evidence of distinct physical hit populations.
-    """
-    x = np.column_stack((energy, timing))
-    if len(x) < 10:
-        raise ValueError("GMM requires at least 10 paired events")
-    scale = np.std(x, axis=0)
+    x = np.asarray(pairs, dtype=np.float64)
+    if x.ndim != 2 or x.shape[1] != 2 or len(x) < 10:
+        raise ValueError("Expected at least 10 paired 2D samples")
+    center = x.mean(axis=0)
+    scale = x.std(axis=0)
     if np.any(scale <= 0):
-        raise ValueError("Both residual coordinates must vary for GMM")
-    center = np.mean(x, axis=0)
+        raise ValueError("Both channels must have nonzero dispersion")
     normalized = (x - center) / scale
-    model = GaussianMixture(
-        n_components=2, covariance_type="full", n_init=n_init,
-        random_state=seed, reg_covar=1e-6, max_iter=300,
-    ).fit(normalized)
-    single = GaussianMixture(
-        n_components=1, covariance_type="full", n_init=1,
-        random_state=seed, reg_covar=1e-6, max_iter=300,
-    ).fit(normalized)
-    means = model.means_ * scale + center
-    covariances = model.covariances_ * scale[None, :, None] * scale[None, None, :]
-    order = np.argsort(np.linalg.det(covariances))
-    responsibilities = model.predict_proba(normalized)[:, order]
-    parts = []
-    for label, index in zip(("core", "tail"), order):
-        cov = covariances[index]
-        sd_energy, sd_timing = np.sqrt(np.diag(cov))
-        covariance = float(cov[0, 1])
-        shared = {
-            "common_variance_ps2": covariance,
-            "energy_specific_variance_ps2": float(cov[0, 0] - covariance),
-            "timing_specific_variance_ps2": float(cov[1, 1] - covariance),
-        }
-        valid = all(v >= 0 for v in shared.values())
-        parts.append({
-            "label": label,
-            "weight": float(model.weights_[index]),
-            "mean_energy_ps": float(means[index, 0]),
-            "mean_timing_ps": float(means[index, 1]),
-            "sigma_energy_ps": float(sd_energy),
-            "sigma_timing_ps": float(sd_timing),
-            "correlation": float(covariance / (sd_energy * sd_timing)),
-            "covariance_ps2": covariance,
+    kwargs = dict(covariance_type="full", random_state=seed, reg_covar=1e-6,
+                  max_iter=400)
+    mixture = GaussianMixture(n_components=2, n_init=n_init, **kwargs).fit(normalized)
+    baseline = GaussianMixture(n_components=1, n_init=1, **kwargs).fit(normalized)
+    means = mixture.means_ * scale + center
+    covariance = mixture.covariances_ * scale[None, :, None] * scale[None, None, :]
+    order = np.argsort(np.linalg.det(covariance))
+    components = []
+    for name, k in zip(("core", "tail"), order):
+        cov = covariance[k]
+        sigma = np.sqrt(np.diag(cov))
+        shared_var = float(cov[0, 1])
+        specific_vars = np.diag(cov) - shared_var
+        admissible = bool(shared_var >= 0 and np.all(specific_vars >= 0))
+        components.append({
+            "name": name,
+            "weight": float(mixture.weights_[k]),
+            "mean_ps": means[k].tolist(),
+            "sigma_energy_ps": float(sigma[0]),
+            "sigma_timing_ps": float(sigma[1]),
+            "correlation": float(shared_var / np.prod(sigma)),
             "covariance_matrix_ps2": cov.tolist(),
-            "common_noise_decomposition_admissible": valid,
-            "sigma_common_ps": float(np.sqrt(shared["common_variance_ps2"]))
-                if shared["common_variance_ps2"] >= 0 else None,
-            "sigma_energy_specific_ps": float(np.sqrt(shared["energy_specific_variance_ps2"]))
-                if shared["energy_specific_variance_ps2"] >= 0 else None,
-            "sigma_timing_specific_ps": float(np.sqrt(shared["timing_specific_variance_ps2"]))
-                if shared["timing_specific_variance_ps2"] >= 0 else None,
+            "shared_variance_ps2": shared_var,
+            "sigma_common_ps": float(np.sqrt(shared_var)) if shared_var >= 0 else None,
+            "energy_specific_variance_ps2": float(specific_vars[0]),
+            "timing_specific_variance_ps2": float(specific_vars[1]),
+            "additive_common_noise_model_admissible": admissible,
         })
-    summary = {
+    return {
         "n_events": int(len(x)),
-        "components": parts,
-        "delta_correlation_tail_minus_core":
-            parts[1]["correlation"] - parts[0]["correlation"],
-        "bic_one_component": float(single.bic(normalized)),
-        "bic_two_components": float(model.bic(normalized)),
-        "delta_bic_one_minus_two": float(single.bic(normalized) - model.bic(normalized)),
-        "converged": bool(model.converged_),
-        "n_iterations": int(model.n_iter_),
-        "n_initializations": int(n_init),
-        "core_tail_label_rule": "Increasing determinant of full 2D covariance matrix",
-        "note": "Correlations are within-component parameters, not correlations "
-                "after hard event assignment. Components are descriptive, "
-                "not proven physical populations. Variance decomposition requires "
-                "additive unit-loading common noise and independent channel-specific noise.",
+        "components": components,
+        "bic_one_gaussian": float(baseline.bic(normalized)),
+        "bic_two_gaussians": float(mixture.bic(normalized)),
+        "delta_bic_one_minus_two": float(baseline.bic(normalized) - mixture.bic(normalized)),
+        "converged": bool(mixture.converged_),
+        "n_iterations": int(mixture.n_iter_),
+        "delta_rho_tail_minus_core": float(components[1]["correlation"] -
+                                            components[0]["correlation"]),
     }
-    return summary, responsibilities
 
 
-def save_bivariate_gmm_plot(energy, timing, summary, responsibilities, output, seed=42):
-    """Scatter colored by tail responsibility with 2-sigma component ellipses."""
-    from matplotlib.colors import Normalize
-    x = np.column_stack((energy, timing))
-    rng = np.random.default_rng(seed)
-    sample = rng.choice(len(x), min(len(x), 10000), replace=False)
-    fig, ax = plt.subplots(figsize=(7.2, 5.8))
-    scatter = ax.scatter(
-        energy[sample], timing[sample], c=responsibilities[sample, 1],
-        cmap="viridis", norm=Normalize(0, 1), s=5, alpha=0.45,
-        rasterized=True,
-    )
-    for part, color in zip(summary["components"], ("tab:blue", "tab:orange")):
-        covariance = np.asarray(part["covariance_matrix_ps2"])
-        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-        direction = eigenvectors[:, -1]
-        angle = np.degrees(np.arctan2(direction[1], direction[0]))
-        ellipse = Ellipse(
-            (part["mean_energy_ps"], part["mean_timing_ps"]),
-            width=4*np.sqrt(eigenvalues[-1]),
-            height=4*np.sqrt(eigenvalues[0]), angle=angle,
-            facecolor="none", edgecolor=color, linewidth=2,
-            label=f'{part["label"]} (rho={part["correlation"]:.3f})',
-        )
-        ax.add_patch(ellipse)
-    fig.colorbar(scatter, ax=ax, label="P(tail | event)")
-    ax.set_xlabel("Energy residual (ps)")
-    ax.set_ylabel("Timing residual (ps)")
-    ax.set_title("Two-component bivariate Gaussian mixture")
-    ax.legend()
-    ax.grid(alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(output / "bivariate_gmm.png", dpi=180)
-    fig.savefig(output / "bivariate_gmm.pdf")
-    plt.close(fig)
-
-
-def waveform_groups_from_gmm(energy, timing, gmm_summary, responsibilities):
-    """Classify tail events by their common-mode residual direction.
-
-    A probability >= 0.5 assigns an event to the broad GMM component;
-    the signed average of residuals centered on the tail-component means
-    separates the left and right tails. Remaining events form the core.
-    """
-    tail = responsibilities[:, 1] >= 0.5
-    params = gmm_summary["components"][1]
-    displacement = 0.5 * (
-        (energy - params["mean_energy_ps"]) +
-        (timing - params["mean_timing_ps"])
-    )
-    groups = {
-        "left tail": tail & (displacement < 0),
-        "core": ~tail,
-        "right tail": tail & (displacement >= 0),
-    }
-    return groups
-
-
-def resolve_prepared_from_cache(cache_root, channel, role, prediction_ids, window="wide"):
-    """Find a prepared dataset by semantic cache alias or bundle manifest.
-
-    Preference is for named aliases. Multiple candidates are disambiguated by
-    exact event-ID population (the predictions may be a subset). No dataset
-    is silently selected when more than one candidate matches.
-    """
-    root = Path(cache_root).expanduser().resolve()
-    if root.name == "artifact_store":
-        root = root.parent
-    if not root.is_dir():
-        raise FileNotFoundError(f"Cache root not found: {root}")
-    candidates = list(root.glob(f"datasets/*/*/{channel}/{window}/{role}"))
-    # Older/portable bundles may expose only product hashes and a manifest.
-    manifests = [
-        *root.glob("*.json"),
-        *root.glob("artifact_store/*.json"),
-        *root.glob("preprocessing/*.json"),
+def marginal_pdf(values, components, channel_index):
+    """Marginal of the *bivariate* fit; no independent univariate refit."""
+    individual = [
+        part["weight"] * norm.pdf(
+            values, loc=part["mean_ps"][channel_index],
+            scale=(part["sigma_energy_ps"] if channel_index == 0
+                   else part["sigma_timing_ps"]))
+        for part in components
     ]
-    for manifest_path in manifests:
-        try:
-            bundle = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(bundle, dict) or not isinstance(bundle.get("prepared_runs"), list):
-            continue
-        for run in bundle["prepared_runs"]:
-            if (run.get("mode") != f"{channel}_to_{channel}"
-                    or run.get("window_name") != window):
-                continue
-            product_id = run.get("datasets", {}).get(role)
-            if not product_id:
-                continue
-            # Product type name is resolved from directory structure, not guessed.
-            product_root = root / "artifact_store" / "products"
-            if product_root.is_dir():
-                candidates.extend(path for path in product_root.rglob(str(product_id))
-                                  if path.is_dir())
-    matched = []
-    for candidate in sorted(set(candidates)):
-        location = resolve_alias(candidate)
-        try:
-            cached_ids = np.load(location / "event_index.npy", mmap_mode="r")
-        except (FileNotFoundError, OSError):
-            continue
-        if len(cached_ids) < len(prediction_ids):
-            continue
-        if len(np.intersect1d(prediction_ids, cached_ids)) != len(prediction_ids):
-            continue
-        matched.append(location)
-    # Aliases may reference the same underlying product as the manifest.
-    matched = sorted(set(matched))
-    if len(matched) != 1:
-        raise ValueError(
-            f"Expected exactly one {channel}/{window}/{role} prepared cache "
-            f"matching all {len(prediction_ids)} prediction IDs under {root}, "
-            f"found {len(matched)}: {[str(p) for p in matched]}. "
-            "Use --energy-prepared/--timing-prepared to select explicitly."
-        )
-    return matched[0]
+    return individual, sum(individual)
 
 
-def prepared_waveform_means(prepared_path, channel, ids, groups):
-    """Read the already-prepared normalized waveforms, aligned by event_index.
+def save_distribution_plot(led, ml, results, output):
+    """LED/ML by energy/timing: empirical histogram plus fitted 2-Gaussian PDFs.
 
-    Inverse normalization uses the dataset's frozen transform, returning
-    signal amplitudes in mV without retraining or additional preprocessing.
+    Log density exposes both the core and broad tails without clipping data.
+    All histogram bins in a column are shared between LED and ML.
     """
-    prepared = load_prepared_dataset(resolve_alias(prepared_path))
-    windows = getattr(prepared, f"{channel}_windows")
-    time_ps = getattr(prepared, f"{channel}_time_ps")
-    transform = getattr(prepared, f"{channel}_transform")
-    if windows is None or time_ps is None or transform is None:
-        raise ValueError(f"{prepared_path}: missing prepared {channel} waveform/time/transform")
-    if windows.ndim != 3 or windows.shape[1] != 2:
-        raise ValueError(f"{prepared_path}: expected [event, detector, sample] waveforms")
-    cache_ids = np.asarray(prepared.event_index)
-    if len(cache_ids) != len(np.unique(cache_ids)):
-        raise ValueError(f"{prepared_path}: duplicated event_index")
-    common, indices, cache_positions = np.intersect1d(
-        ids, cache_ids, assume_unique=True, return_indices=True)
-    if len(common) != len(ids):
-        raise ValueError(
-            f"{prepared_path}: {len(ids)-len(common)} prediction event IDs "
-            f"missing in prepared {channel} data. Check dataset role/cache.")
-    result = {}
-    for name, selected in groups.items():
-        rows = cache_positions[selected[indices]]
-        if len(rows) == 0:
-            result[name] = None
-            continue
-        # Load only selected rows and invert frozen amplitude normalization.
-        accum = np.zeros((2, windows.shape[-1]), dtype=np.float64)
-        accum_sq = np.zeros_like(accum)
-        for chunk in np.array_split(rows, max(1, (len(rows) + 1023) // 1024)):
-            wave = transform.inverse(np.asarray(windows[chunk], dtype=np.float32))
-            accum += wave.sum(axis=0, dtype=np.float64)
-            accum_sq += np.square(wave, dtype=np.float64).sum(axis=0)
-        mean = accum / len(rows)
-        std = np.sqrt(np.maximum(accum_sq / len(rows) - mean**2, 0))
-        result[name] = {"count": int(len(rows)), "mean": mean, "std": std}
-    return np.asarray(time_ps, dtype=np.float64), result
-
-
-def save_grouped_waveforms(ids, energy, timing, summary, responsibilities,
-                           energy_prepared, timing_prepared, output):
-    """Save a 2x2 comparison: energy/timing x detector 1/2."""
-    groups = waveform_groups_from_gmm(energy, timing, summary, responsibilities)
-    e_times, e_groups = prepared_waveform_means(energy_prepared, "energy", ids, groups)
-    t_times, t_groups = prepared_waveform_means(timing_prepared, "timing", ids, groups)
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8), squeeze=False)
-    palette = {"left tail": "tab:blue", "core": "tab:green", "right tail": "tab:orange"}
-    for row, (channel, times, data) in enumerate((
-        ("Energy", e_times, e_groups), ("Timing", t_times, t_groups)
-    )):
-        for detector in range(2):
-            ax = axes[row, detector]
-            for label in ("left tail", "core", "right tail"):
-                entry = data[label]
-                if entry is None:
-                    continue
-                mean, std = entry["mean"][detector], entry["std"][detector]
-                ax.plot(times / 1000., mean, color=palette[label],
-                        label=f"{label} (n={entry['count']})", linewidth=1.5)
-                ax.fill_between(times / 1000., mean-std, mean+std,
-                                color=palette[label], alpha=0.10)
-            ax.set_title(f"{channel}, detector {detector+1}")
-            ax.set_xlabel("Time (ns)")
-            ax.set_ylabel("Signal (mV)")
-            ax.grid(alpha=0.2)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex="col")
+    for j, channel in enumerate(("Energy", "Timing")):
+        all_values = np.concatenate((led[:, j], ml[:, j]))
+        extent = max(float(np.max(np.abs(all_values))), 150.0)
+        # Use sufficiently narrow bins for the core, while retaining full tails.
+        bin_count = int(np.clip(2 * extent / 10, 150, 1200))
+        edges = np.linspace(-extent, extent, bin_count + 1)
+        xx = np.linspace(-extent, extent, 2500)
+        for i, (label, pairs, params) in enumerate((
+            ("LED", led, results["led"]),
+            ("After ML", ml, results["ml"]),
+        )):
+            ax = axes[i, j]
+            ax.hist(pairs[:, j], bins=edges, density=True,
+                    histtype="step", linewidth=1.1, color="black",
+                    label="Measured distribution")
+            curves, total = marginal_pdf(xx, params["components"], j)
+            ax.plot(xx, total, color="tab:red", linewidth=1.7, label="2-Gaussian mixture")
+            for curve, part, color in zip(
+                curves, params["components"], ("tab:blue", "tab:orange")
+            ):
+                ax.plot(xx, curve, "--", color=color, linewidth=1.2,
+                        label=f'{part["name"]} ({part["weight"]*100:.2f}%)')
+            ax.set_yscale("log")
+            ax.set_ylim(bottom=1e-8)
+            ax.set_title(f"{label} — {channel}")
+            ax.set_xlabel("Coincidence residual (ps)")
+            ax.set_ylabel("Probability density (log)")
             ax.legend(fontsize=8)
-    fig.suptitle("Waveform shapes by joint residual GMM group (mean +/- 1 std)")
-    fig.tight_layout()
-    fig.savefig(output / "gmm_waveform_groups.png", dpi=180)
-    fig.savefig(output / "gmm_waveform_groups.pdf")
-    plt.close(fig)
-
-
-def led_residuals_from_cache(prepared_path, channel, ids):
-    """Read frozen LED-corrected target, preserving prediction event order."""
-    prepared = load_prepared_dataset(resolve_alias(prepared_path))
-    event_ids = np.asarray(prepared.event_index, dtype=np.int64)
-    if len(np.unique(event_ids)) != len(event_ids):
-        raise ValueError(f"Duplicated LED event IDs in {prepared_path}")
-    common, i_pred, i_cache = np.intersect1d(
-        ids, event_ids, assume_unique=True, return_indices=True)
-    if len(common) != len(ids):
-        raise ValueError(f"{prepared_path}: missing {len(ids)-len(common)} event IDs")
-    targets = np.asarray(model_target(prepared, f"{channel}_to_{channel}"),
-                         dtype=np.float64)
-    if len(targets) != len(event_ids):
-        raise ValueError(f"{prepared_path}: target/event length mismatch")
-    result = np.full(len(ids), np.nan, dtype=np.float64)
-    result[i_pred] = targets[i_cache]
-    if not np.isfinite(result).all():
-        raise ValueError(f"{prepared_path}: LED residuals contain nonfinite values")
-    return result
-
-
-def compare_led_ml(led_energy, led_timing, energy, timing, *,
-                   seed=42, n_init=5):
-    """Fit separate bivariate mixtures, then compare on identical events."""
-    led_fit, led_prob = fit_bivariate_gmm(
-        led_energy, led_timing, seed=seed, n_init=n_init)
-    ml_fit, ml_prob = fit_bivariate_gmm(
-        energy, timing, seed=seed, n_init=n_init)
-    led_tail = led_prob[:, 1] >= 0.5
-    ml_tail = ml_prob[:, 1] >= 0.5
-    transition = {
-        "led_tail_count": int(led_tail.sum()),
-        "ml_tail_count": int(ml_tail.sum()),
-        "led_tail_still_ml_tail": int(np.sum(led_tail & ml_tail)),
-        "led_tail_becomes_ml_core": int(np.sum(led_tail & ~ml_tail)),
-        "led_core_becomes_ml_tail": int(np.sum(~led_tail & ml_tail)),
-    }
-    def per_group(values_before, values_after, mask):
-        if not np.any(mask):
-            return None
-        initial, corrected = values_before[mask], values_after[mask]
-        return {
-            "n": int(mask.sum()),
-            "led_rms_ps": float(np.sqrt(np.mean(initial**2))),
-            "ml_rms_ps": float(np.sqrt(np.mean(corrected**2))),
-            "led_std_ps": float(np.std(initial)),
-            "ml_std_ps": float(np.std(corrected)),
-        }
-    by_group = {}
-    for name, mask in (("initial_led_tail", led_tail),
-                       ("initial_led_core", ~led_tail),
-                       ("final_ml_tail", ml_tail),
-                       ("final_ml_core", ~ml_tail)):
-        by_group[name] = {
-            channel: per_group(before, after, mask)
-            for channel, before, after in (
-                ("energy", led_energy, energy), ("timing", led_timing, timing))
-        }
-    return {
-        "led_gmm": led_fit,
-        "ml_gmm": ml_fit,
-        "transition": transition,
-        "paired_group_statistics": by_group,
-        "note": "LED and ML share the same event IDs. GMMs are independently fitted; "
-                "tail membership can change after correction, so tail weights alone "
-                "do not quantify corrected events. Paired group RMS is evaluated "
-                "on fixed LED-defined or ML-defined event subsets.",
-    }, led_prob, ml_prob
-
-
-def save_led_ml_comparison(led_energy, led_timing, energy, timing, comparison, output):
-    """Marginal histograms on shared absolute bins: full + log tail views."""
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    for col, (channel, led, corrected) in enumerate(
-        (("Energy", led_energy, energy), ("Timing", led_timing, timing))
-    ):
-        # Fixed common bins prevent optical differences due to binning.
-        width = max(float(np.quantile(np.abs(np.r_[led, corrected]), 0.9995))*1.1, 300.0)
-        bins = np.linspace(-width, width, 241)
-        for row, log_tail in enumerate((False, True)):
-            ax = axes[row, col]
-            ax.hist(led, bins=bins, histtype="step", density=True, lw=1.6,
-                    label="LED (before ML)", color="tab:orange")
-            ax.hist(corrected, bins=bins, histtype="step", density=True, lw=1.6,
-                    label="After ML", color="tab:blue")
-            if log_tail:
-                ax.set_yscale("log")
-                ax.set_title(f"{channel}: tails (log density)")
-            else:
-                ax.set_xlim(-180, 180)
-                ax.set_title(f"{channel}: central peak")
-            ax.set_xlabel("Coincidence time residual (ps)")
-            ax.set_ylabel("Probability density")
-            ax.legend(fontsize=9)
             ax.grid(alpha=.2)
-    fig.suptitle("Same-event LED vs ML residual distributions")
+    fig.suptitle("Matched-event timing residuals and bivariate Gaussian-mixture marginals")
     fig.tight_layout()
-    fig.savefig(output / "led_vs_ml_distributions.png", dpi=180)
-    fig.savefig(output / "led_vs_ml_distributions.pdf")
+    fig.savefig(output / "gaussian_mixture_distributions.png", dpi=200)
+    fig.savefig(output / "gaussian_mixture_distributions.pdf")
     plt.close(fig)
 
 
+def save_joint_plot(led, ml, results, output, seed=42):
+    """2D residual plots with fitted covariance ellipses (2 sigma)."""
+    rng = np.random.default_rng(seed)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+    for ax, (label, pairs, params) in zip(
+        axes, (("LED", led, results["led"]), ("After ML", ml, results["ml"]))
+    ):
+        sample = rng.choice(len(pairs), min(15000, len(pairs)), replace=False)
+        ax.scatter(pairs[sample, 0], pairs[sample, 1],
+                   s=3, alpha=.14, color="0.3", rasterized=True)
+        for part, color in zip(params["components"], ("tab:blue", "tab:orange")):
+            cov = np.asarray(part["covariance_matrix_ps2"])
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+            angle = np.degrees(np.arctan2(eigenvectors[1, -1],
+                                          eigenvectors[0, -1]))
+            ax.add_patch(Ellipse(
+                xy=part["mean_ps"], width=4*np.sqrt(eigenvalues[-1]),
+                height=4*np.sqrt(eigenvalues[0]), angle=angle,
+                edgecolor=color, facecolor="none", linewidth=2,
+                label=f'{part["name"]} (rho={part["correlation"]:.3f})'))
+        ax.set_xlabel("Energy residual (ps)")
+        ax.set_ylabel("Timing residual (ps)")
+        ax.set_title(label)
+        ax.grid(alpha=.2)
+        ax.legend()
+    fig.suptitle("Joint energy/timing residuals: core and tail correlation")
+    fig.tight_layout()
+    fig.savefig(output / "gaussian_mixture_joint.png", dpi=200)
+    fig.savefig(output / "gaussian_mixture_joint.pdf")
+    plt.close(fig)
 
 
-def difference_statistics(energy, timing):
-    """Observed difference and variance-subtraction test on paired events."""
-    difference = energy - timing
-    energy_std = float(np.std(energy, ddof=1))
-    timing_std = float(np.std(timing, ddof=1))
-    variance_excess = energy_std**2 - timing_std**2
-    return {
-        "difference_mean_ps": float(np.mean(difference)),
-        "difference_std_ps": float(np.std(difference, ddof=1)),
-        "difference_rmse_ps": float(np.sqrt(np.mean(difference**2))),
-        "energy_variance_minus_timing_variance_ps2": variance_excess,
-        "predicted_extra_std_ps_if_timing_is_common_only":
-            float(np.sqrt(variance_excess)) if variance_excess >= 0 else None,
-        "note_difference": "The quadrature prediction uses full-sample standard "
-            "deviations, not fitted CTR. It assumes timing=C and energy=C+N, "
-            "with C independent of N.",
+def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
+    energy = load_predictions(energy_file)
+    timing = load_predictions(timing_file)
+    ids, led, ml = align_prediction_pairs(energy, timing)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    results = {
+        "n_matched_events": int(len(ids)),
+        "energy_prediction_file": str(energy_file),
+        "timing_prediction_file": str(timing_file),
+        "led": fit_mixture(led, seed=seed, n_init=n_init),
+        "ml": fit_mixture(ml, seed=seed, n_init=n_init),
+        "interpretation": (
+            "Each component's common variance equals its energy/timing covariance "
+            "only if both channels share one additive error with unit coefficients "
+            "and all channel-specific errors are mutually uncorrelated. "
+            "Components are statistical, not verified physical hit populations. "
+            "Two-component BIC compares descriptive Gaussian models but does not "
+            "prove that exactly two physical mechanisms exist. "
+            "LED and ML fits use the same matched events, independently refitted.")
     }
-
-
-def ctr_quadrature_comparison(energy, timing, *, bin_width_ps, seed):
-    """Fitted CTR for energy, timing, their difference; common+extra prediction."""
-    config = {"histogram_bin_width_ps": float(bin_width_ps)}
-    ctr_energy = float(metric_values(energy, config, seed=seed)["ctr_ps"])
-    ctr_timing = float(metric_values(timing, config, seed=seed)["ctr_ps"])
-    ctr_difference = float(metric_values(energy-timing, config, seed=seed)["ctr_ps"])
-    excess = ctr_energy**2 - ctr_timing**2
-    predicted = float(np.sqrt(excess)) if excess >= 0 else None
-    return {
-        "ctr_energy_ps": ctr_energy,
-        "ctr_timing_ps": ctr_timing,
-        "ctr_difference_ps": ctr_difference,
-        "predicted_difference_ctr_ps_if_timing_is_common_only": predicted,
-        "difference_ctr_minus_prediction_ps": (
-            float(ctr_difference-predicted) if predicted is not None else None),
-        "ctr_bin_width_ps": float(bin_width_ps),
-        "note_ctr": "CTR comparison requires approximately Gaussian residual "
-            "distributions with consistent fitted-width definitions. No "
-            "independent-source decomposition can be established from this alone.",
-    }
-
-
-def save_difference_plot(energy, timing, output):
-    fig, ax = plt.subplots(figsize=(7.2, 4.4))
-    ax.hist(energy - timing, bins=100, density=True, alpha=0.75)
-    ax.set_xlabel("Energy residual - timing residual (ps)")
-    ax.set_ylabel("Density")
-    ax.set_title("Difference of matched corrected residuals")
-    ax.grid(alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(output / "residual_difference.png", dpi=180)
-    fig.savefig(output / "residual_difference.pdf")
-    plt.close(fig)
-
-
-def save_plot(energy, timing, output):
-    fig, ax = plt.subplots(figsize=(6.2, 5.4))
-    ax.scatter(energy, timing, s=7, alpha=0.25, rasterized=True)
-    ax.axhline(0, color="0.5", lw=0.8)
-    ax.axvline(0, color="0.5", lw=0.8)
-    ax.set_xlabel("Energy corrected residual (ps)")
-    ax.set_ylabel("Timing corrected residual (ps)")
-    ax.set_title("Matched-event energy vs timing residuals")
-    ax.grid(alpha=0.2)
-    fig.tight_layout()
-    fig.savefig(output / "residual_correlation.png", dpi=180)
-    fig.savefig(output / "residual_correlation.pdf")
-    plt.close(fig)
+    (output / "mixture_summary.json").write_text(
+        json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    save_distribution_plot(led, ml, results, output)
+    save_joint_plot(led, ml, results, output, seed=seed)
+    print(f"Matched events: {len(ids)}")
+    for state in ("led", "ml"):
+        result = results[state]
+        print(f"\n{state.upper()} | Delta BIC (one - two) = {result['delta_bic_one_minus_two']:.1f}"
+              f" | converged={result['converged']}")
+        for part in result["components"]:
+            common = (f'{part["sigma_common_ps"]:.2f}' if part["sigma_common_ps"]
+                      is not None else "N/A")
+            print(f'  {part["name"]:4s} | weight={part["weight"]*100:.3f}%'
+                  f' | rho={part["correlation"]:.4f}'
+                  f' | sigma_E={part["sigma_energy_ps"]:.2f} ps'
+                  f' | sigma_T={part["sigma_timing_ps"]:.2f} ps'
+                  f' | Var_common={part["shared_variance_ps2"]:.2f} ps^2'
+                  f' | sigma_common={common} ps'
+                  f' | admissible={part["additive_common_noise_model_admissible"]}')
+    print(f"\nPlots and JSON: {output.resolve()}")
+    return results
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--energy", type=Path, required=True,
-                        help="Energy predictions .npz with event_id and corrected_ps")
-    parser.add_argument("--timing", type=Path, required=True,
-                        help="Timing predictions .npz with event_id and corrected_ps")
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--fit-bin-width-ps", type=float, default=10.0,
-                        help="Histogram bin width for CTR fits (default: 10 ps)")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--show-waveforms", action="store_true",
-                        help="Save waveform comparison (legacy flag; no GUI is opened)")
-    parser.add_argument("--waveform-plot", action="store_true",
-                        help="Save mean waveforms for left tail, core, right tail")
-    parser.add_argument("--cache-root", type=Path,
-                        help="Prepared cache bundle root; resolves energy/timing wide waveform paths automatically")
-    parser.add_argument("--dataset-role", choices=("blind", "development"), default="blind",
-                        help="Prepared waveform role (default: blind)")
-    parser.add_argument("--energy-prepared", type=Path,
-                        help="Prepared energy dataset directory or named alias, same role as predictions")
-    parser.add_argument("--timing-prepared", type=Path,
-                        help="Prepared timing dataset directory or named alias, same role as predictions")
-    parser.add_argument("--gmm-n-init", type=int, default=5,
-                        help="GMM random initializations (default: 5)")
+    parser.add_argument("--energy", required=True, type=Path,
+                        help="Energy predictions NPZ (event_id, led_residual_ps, corrected_ps)")
+    parser.add_argument("--timing", required=True, type=Path,
+                        help="Timing predictions NPZ (same fields)")
+    parser.add_argument("--output", default=Path("mixture_results"), type=Path)
+    parser.add_argument("--seed", default=42, type=int)
+    parser.add_argument("--gmm-n-init", default=5, type=int)
     args = parser.parse_args(argv)
-    want_waveforms = args.show_waveforms or args.waveform_plot
-    want_cache_analysis = args.cache_root is not None or (
-        args.energy_prepared is not None and args.timing_prepared is not None)
-    if want_waveforms and not want_cache_analysis:
-        parser.error("--waveform-plot requires --cache-root or both explicit prepared paths")
     if args.gmm_n_init < 1:
         parser.error("--gmm-n-init must be >= 1")
-    if args.fit_bin_width_ps <= 0:
-        parser.error("--fit-bin-width-ps must be positive")
-    energy_ids, energy_residuals = read_residuals(args.energy)
-    timing_ids, timing_residuals = read_residuals(args.timing)
-    ids, energy, timing, n_nonfinite = align_residuals(
-        energy_ids, energy_residuals, timing_ids, timing_residuals)
-    results = correlations(energy, timing)
-    results.update(common_component_statistics(energy, timing))
-    results["gaussian_component_by_clipping"] = gaussian_component_fit_by_central_range(energy, timing)
-    results["gaussian_clipping_note"] = ("Clipped fits use Gaussian sample moments on the "
-        "jointly selected central events, not truncation-corrected likelihood. "
-        "Interpret component sigmas only for the retained subset, under the "
-        "unit-loading, pairwise-independent additive model.")
-    gmm_summary, gmm_responsibilities = fit_bivariate_gmm(
-        energy, timing, seed=args.seed, n_init=args.gmm_n_init)
-    results["bivariate_gmm"] = gmm_summary
-    results.update(difference_statistics(energy, timing))
-    results.update(ctr_quadrature_comparison(
-        energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
-    results.update(
-        n_energy_events=int(len(energy_ids)),
-        n_timing_events=int(len(timing_ids)),
-        n_common_ids=int(len(np.intersect1d(energy_ids, timing_ids, assume_unique=True))),
-        n_nonfinite_pairs=int(n_nonfinite),
-        energy_file=str(args.energy),
-        timing_file=str(args.timing),
-        residual_column="corrected_ps",
-        note="Event IDs paired without source provenance verification. "
-             "Development predictions can be in-sample, not out-of-fold.",
-    )
-    args.output.mkdir(parents=True, exist_ok=True)
-    with (args.output / "matched_residuals.csv").open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["event_id", "energy_corrected_ps", "timing_corrected_ps", "energy_minus_timing_ps"])
-        writer.writerows(zip(ids.tolist(), energy.tolist(), timing.tolist(), (energy-timing).tolist()))
-    (args.output / "correlation_summary.json").write_text(
-        json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    save_plot(energy, timing, args.output)
-    save_difference_plot(energy, timing, args.output)
-    save_gaussian_component_plot(results["gaussian_component_by_clipping"], args.output)
-    save_bivariate_gmm_plot(energy, timing, gmm_summary, gmm_responsibilities,
-                            args.output, seed=args.seed)
-    with (args.output / "gmm_event_responsibilities.csv").open(
-            "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["event_id", "p_core", "p_tail"])
-        writer.writerows(zip(ids.tolist(), gmm_responsibilities[:, 0].tolist(),
-                             gmm_responsibilities[:, 1].tolist()))
-    print(f"Matched events: {len(ids)} | Pearson r={results['pearson_r']:.5f} "
-          f"(p={results['pearson_p_value']:.3g}) | "
-          f"Spearman rho={results['spearman_rho']:.5f} "
-          f"(p={results['spearman_p_value']:.3g})", flush=True)
-    print(f"Common-component timing fraction (beta)={results['common_fraction_timing']:.5f} "
-          f"| 95% CI=({results['beta_ci_95'][0]:.5f}, {results['beta_ci_95'][1]:.5f}) "
-          f"| H0: fraction<=0.5, one-sided p={results['dominance_test_p_value_one_sided']:.3g} "
-          f"| nonnegative variance decomposition={results['common_component_variances_nonnegative']}",
-          flush=True)
-    print("Gaussian component fit by central percentile (per channel):", flush=True)
-    for fit in results["gaussian_component_by_clipping"]:
-        def fmt(value):
-            return f"{value:.3f}" if value is not None else "N/A"
-        print(f"  {fit['central_percent_per_channel']:5g}% "
-              f"| n={fit['n_retained']} ({100*fit['retained_fraction']:.2f}%) "
-              f"| sigma_common={fmt(fit['sigma_common_ps'])} ps "
-              f"| sigma_energy={fmt(fit['sigma_energy_specific_ps'])} ps "
-              f"| sigma_timing={fmt(fit['sigma_timing_specific_ps'])} ps "
-              f"| f_timing={fit['fraction_common_timing']:.4f} "
-              f"| admissible={fit['physically_admissible']}", flush=True)
-    print("Bivariate 2-Gaussian mixture:", flush=True)
-    for part in gmm_summary["components"]:
-        print(f"  {part['label']}: weight={part['weight']:.4f} "
-              f"| sigma_E={part['sigma_energy_ps']:.3f} ps "
-              f"| sigma_T={part['sigma_timing_ps']:.3f} ps "
-              f"| rho={part['correlation']:.5f}", flush=True)
-    print(f"  delta_rho(tail-core)={gmm_summary['delta_correlation_tail_minus_core']:.5f} "
-          f"| delta_BIC(1-2)={gmm_summary['delta_bic_one_minus_two']:.1f} "
-          f"| converged={gmm_summary['converged']}", flush=True)
-    print(f"Difference std={results['difference_std_ps']:.3f} ps | "
-          f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
-          flush=True)
-    print(f"Fitted CTR: energy={results['ctr_energy_ps']:.2f} ps, "
-          f"timing={results['ctr_timing_ps']:.2f} ps, "
-          f"difference={results['ctr_difference_ps']:.2f} ps | "
-          f"quadrature prediction={results['predicted_difference_ctr_ps_if_timing_is_common_only']}",
-          flush=True)
-    print(f"Results: {args.output}", flush=True)
-    if want_cache_analysis:
-        energy_prepared = args.energy_prepared
-        timing_prepared = args.timing_prepared
-        if energy_prepared is None:
-            energy_prepared = resolve_prepared_from_cache(
-                args.cache_root, "energy", args.dataset_role, ids)
-        if timing_prepared is None:
-            timing_prepared = resolve_prepared_from_cache(
-                args.cache_root, "timing", args.dataset_role, ids)
-        print(f"Matched cache: energy={energy_prepared}; timing={timing_prepared}",
-              flush=True)
-        led_energy = led_residuals_from_cache(energy_prepared, "energy", ids)
-        led_timing = led_residuals_from_cache(timing_prepared, "timing", ids)
-        comparison, led_prob, _ = compare_led_ml(
-            led_energy, led_timing, energy, timing,
+    analyze(args.energy, args.timing, args.output,
             seed=args.seed, n_init=args.gmm_n_init)
-        (args.output / "led_vs_ml_summary.json").write_text(
-            json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
-        save_led_ml_comparison(
-            led_energy, led_timing, energy, timing, comparison, args.output)
-        with (args.output / "led_ml_paired_residuals.csv").open(
-                "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["event_id", "led_energy_ps", "ml_energy_ps",
-                             "led_timing_ps", "ml_timing_ps",
-                             "p_led_tail", "p_ml_tail"])
-            writer.writerows(zip(ids, led_energy, energy, led_timing, timing,
-                                 led_prob[:, 1], gmm_responsibilities[:, 1]))
-        for state in ("led_gmm", "ml_gmm"):
-            g = comparison[state]
-            print(f"  {state}: tail weight={g['components'][1]['weight']:.4%} "
-                  f"| sigma_E={g['components'][1]['sigma_energy_ps']:.1f} ps "
-                  f"| sigma_T={g['components'][1]['sigma_timing_ps']:.1f} ps "
-                  f"| tail rho={g['components'][1]['correlation']:.4f}", flush=True)
-        print(f"  Tail transitions: {comparison['transition']}", flush=True)
-        print(f"LED vs ML comparison saved in {args.output}", flush=True)
-        if want_waveforms:
-            save_grouped_waveforms(
-                ids, energy, timing, gmm_summary, gmm_responsibilities,
-                energy_prepared, timing_prepared, args.output)
-            print(f"Waveform figure saved: {args.output / 'gmm_waveform_groups.png'}",
-                  flush=True)
 
 
 if __name__ == "__main__":
