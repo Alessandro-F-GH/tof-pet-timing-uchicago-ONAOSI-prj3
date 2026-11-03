@@ -351,27 +351,85 @@ def analyze(energy_file, timing_file, output, *, fit_fraction=.95,
     plot_core_histograms(led, ml, results, output)
     plot_scatter(led, ml, results, masks, output, seed=seed)
     plot_radial_exceedance(distances, results, output)
-    print(f"Matched events: {len(led)}")
-    for state in ("led", "ml"):
-        result = results[state]
-        core = result["core_gaussian_fit"]
-        tail = result["empirical_outside_core"]
-        null = result["gaussian_selection_only_reference"]
-        definition = result["tail_definition"]
-        print(f"\n{state.upper()} | core fit numerically converged="
-              f'{core["numerically_converged"]} ({core["iterations"]} iterations)')
-        print(f'  CORE Gaussian: sigmaE={core["sigma_energy_ps"]:.2f} ps'
-              f' sigmaT={core["sigma_timing_ps"]:.2f} ps'
-              f' rho={core["correlation"]:.4f}'
-              f' Cov(E,T)={core["cov_energy_timing_ps2"]:.2f} ps^2')
-        print(f'  OUTSIDE core: {definition["tail_count"]} events '
-              f'({100*definition["tail_fraction"]:.4f}%); '
-              f'Gaussian reference count={definition["expected_count_from_core_gaussian"]:.1f}; '
-              f'excess factor={definition["excess_factor_over_core_gaussian"]:.1f}')
-        print(f'  EMPIRICAL outside: rho={tail["correlation"]:.4f} '
-              f'Cov(E,T)={tail["cov_energy_timing_ps2"]:.2f} ps^2'
-              f' | selection-only Gaussian rho={null["correlation"]:.4f}')
-    print(f"\nResults: {output.resolve()}")
+    print("=" * 78, flush=True)
+    print("PAIRED PET RESIDUALS | GAUSSIAN CORE + EMPIRICAL OUTSIDE-CORE EVENTS", flush=True)
+    print("=" * 78, flush=True)
+    print(f"Energy input: {energy_file}", flush=True)
+    print(f"Timing input: {timing_file}", flush=True)
+    print(f"Events matched by event_id: {len(led):,}", flush=True)
+    print(f"Core fitting: iterative bivariate Gaussian, fit_fraction={fit_fraction:.4%} "
+          f"(Mahalanobis squared radius <= {chi2.ppf(fit_fraction, 2):.3f})", flush=True)
+    print("  Gaussian radial-truncation correction is applied to core covariance.", flush=True)
+    print(f"Outside-core definition: tail_fraction={tail_fraction:.4%} "
+          f"(Mahalanobis squared distance > {chi2.ppf(tail_fraction, 2):.3f})", flush=True)
+    print("  The fraction specifies a Gaussian reference envelope, NOT the observed "
+          "fraction of tail events.", flush=True)
+    print("  No distribution is fitted or assumed for events outside that envelope.", flush=True)
+    print(f"Selection-bias reference: {n_reference:,} Gaussian-core Monte Carlo draws "
+          f"(seed={seed}).", flush=True)
+
+    for state, heading in (("led", "BEFORE ML — LED"),
+                           ("ml", "AFTER ML — CORRECTED")):
+        fit = results[state]
+        core = fit["core_gaussian_fit"]
+        ext = fit["tail_definition"]
+        tail = fit["empirical_outside_core"]
+        reference = fit["gaussian_selection_only_reference"]
+        print("\\n" + "-" * 78, flush=True)
+        print(heading, flush=True)
+        print("-" * 78, flush=True)
+        print("GAUSSIAN CORE (corrected for elliptical fit-region truncation)", flush=True)
+        print(f'  Numerical convergence: {core["numerically_converged"]} '
+              f'after {core["iterations"]} iterations '
+              "(this is NOT a Gaussianity test)", flush=True)
+        print(f'  Selected during iterative fit: {core["fit_events"]:,} '
+              f'({100 * core["fit_events_fraction"]:.2f}% of matched events)', flush=True)
+        print(f'  Mean residuals: energy={core["mean_ps"][0]:+.2f} ps, '
+              f'timing={core["mean_ps"][1]:+.2f} ps', flush=True)
+        print(f'  Widths: sigma_energy={core["sigma_energy_ps"]:.2f} ps, '
+              f'sigma_timing={core["sigma_timing_ps"]:.2f} ps', flush=True)
+        print(f'  Energy/timing correlation: rho={core["correlation"]:.5f}', flush=True)
+        print(f'  Energy/timing covariance: '
+              f'{core["cov_energy_timing_ps2"]:.2f} ps^2', flush=True)
+
+        print("EMPIRICAL EVENTS OUTSIDE THE CORE ENVELOPE", flush=True)
+        print(f'  Observed: {ext["tail_count"]:,} events '
+              f'({100 * ext["tail_fraction"]:.4f}% of matched events)', flush=True)
+        print(f'  Gaussian-core reference expectation: '
+              f'{ext["expected_count_from_core_gaussian"]:.1f} events', flush=True)
+        print(f'  Observed / reference expectation: '
+              f'{ext["excess_factor_over_core_gaussian"]:.2f}x', flush=True)
+        if tail is None:
+            print("  Fewer than 3 outside-core events: empirical covariance unavailable.",
+                  flush=True)
+        else:
+            print(f'  Empirical widths: sigma_energy={tail["sigma_energy_ps"]:.2f} ps, '
+                  f'sigma_timing={tail["sigma_timing_ps"]:.2f} ps', flush=True)
+            print(f'  Empirical energy/timing correlation: '
+                  f'rho={tail["correlation"]:.5f}', flush=True)
+            print(f'  Empirical energy/timing covariance: '
+                  f'{tail["cov_energy_timing_ps2"]:.2f} ps^2', flush=True)
+        if reference is not None:
+            print("SELECTION-ONLY GAUSSIAN REFERENCE (NOT A FIT TO OBSERVED TAILS)",
+                  flush=True)
+            print(f'  Reference rho after identical selection: '
+                  f'{reference["correlation"]:.5f} '
+                  f'({reference["n"]:,} simulated outside-envelope draws)', flush=True)
+        print("  Note: empirical outside-core correlation is affected by the "
+              "selection rule.", flush=True)
+
+    print("\\n" + "=" * 78, flush=True)
+    print("OUTPUT FILES", flush=True)
+    for name, description in (
+        ("core_tail_summary.json", "Numerical core and empirical outside-core summary"),
+        ("led_vs_ml_core_distributions.png/.pdf", "Overlaid LED/ML counts and core Gaussian curves"),
+        ("led_vs_ml_joint_scatter.png/.pdf", "Unclassified gray energy/timing scatter"),
+        ("core_radial_exceedance.png/.pdf", "Radial survival against Gaussian-core reference"),
+    ):
+        print(f"  {name}: {description}", flush=True)
+    print(f"Directory: {output.resolve()}", flush=True)
+    print("Covariance is NOT automatically a physically identified common-noise "
+          "variance.", flush=True)
     return results
 
 
