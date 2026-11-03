@@ -53,3 +53,7 @@ All plots show classifications without imposing a Gaussian core or tail shape. O
 - Verbose terminal report detailing the method, fence values, empirical statistics, and board comparisons.
 
 The bootstrap draws resample fixed IQR-selected populations without recalculating fences, so confidence intervals omit threshold-estimation uncertainty. A confidence interval that includes zero does not demonstrate UC/FBK equivalence; formal equivalence requires a scientifically chosen tolerance.
+
+## Correlation of the ML model outputs
+
+The model correction is reconstructed event-by-event as `delta_E = LED_energy_residual - ML_energy_residual` and `delta_T = LED_timing_residual - ML_timing_residual`. The script reports the **Pearson correlation of these two signed corrections**, their covariance and standard deviations, separately for UC and FBK, using the same matched events in both channels. It does **not** correlate the final ML residuals for this statistic, and does not classify/cut the corrections by IQR. The result is saved under `model_corrections_led_minus_ml` in each board's `iqr_summary.json` and in the joint `uc_fbk_iqr_comparison.json`.
