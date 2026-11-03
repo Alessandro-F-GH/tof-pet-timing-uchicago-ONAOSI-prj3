@@ -16,7 +16,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr, linregress, t as student_t
 from waveform_analysis.reporting.stats import metric_values
 
 
@@ -68,6 +68,44 @@ def correlations(energy, timing):
         "timing_mean_ps": float(np.mean(timing)),
         "energy_std_ps": float(np.std(energy, ddof=1)),
         "timing_std_ps": float(np.std(timing, ddof=1)),
+    }
+
+
+def test_unit_slope(energy, timing):
+    """Two-sided OLS test H0: slope=1 for energy residual on timing residual.
+
+    Includes an intercept. The t-test/CI assume independent events and
+    homoscedastic regression errors; results are descriptive otherwise.
+    """
+    if len(energy) < 3 or np.ptp(timing) == 0:
+        raise ValueError("Slope test requires three events and nonconstant timing residuals")
+    fit = linregress(timing, energy)
+    slope = float(fit.slope)
+    se = float(fit.stderr)
+    df = int(len(energy) - 2)
+    if se == 0:
+        t_stat = 0.0 if slope == 1.0 else float("inf")
+        p_value = 1.0 if slope == 1.0 else 0.0
+        ci_low = ci_high = slope
+    else:
+        t_stat = (slope - 1.0) / se
+        p_value = float(2.0 * student_t.sf(abs(t_stat), df))
+        margin = float(student_t.ppf(0.975, df) * se)
+        ci_low, ci_high = slope - margin, slope + margin
+    return {
+        "beta_energy_on_timing": slope,
+        "beta_intercept_ps": float(fit.intercept),
+        "beta_standard_error": se,
+        "beta_null": 1.0,
+        "beta_test_t_statistic": float(t_stat),
+        "beta_test_df": df,
+        "beta_test_p_value_two_sided": p_value,
+        "beta_ci_95": [float(ci_low), float(ci_high)],
+        "beta_reject_h0_at_0_05": bool(p_value < 0.05),
+        "note_beta": "OLS energy residual ~ intercept + beta * timing residual. "
+                     "Two-sided t-test H0: beta=1 (not an equivalence test). "
+                     "p-value and confidence interval assume independent events "
+                     "and homoscedastic regression errors.",
     }
 
 
@@ -158,6 +196,7 @@ def main(argv=None):
     ids, energy, timing, n_nonfinite = align_residuals(
         energy_ids, energy_residuals, timing_ids, timing_residuals)
     results = correlations(energy, timing)
+    results.update(test_unit_slope(energy, timing))
     results.update(difference_statistics(energy, timing))
     results.update(ctr_quadrature_comparison(
         energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
@@ -185,6 +224,10 @@ def main(argv=None):
           f"(p={results['pearson_p_value']:.3g}) | "
           f"Spearman rho={results['spearman_rho']:.5f} "
           f"(p={results['spearman_p_value']:.3g})", flush=True)
+    print(f"Beta (energy on timing)={results['beta_energy_on_timing']:.5f} "
+          f"| 95% CI=({results['beta_ci_95'][0]:.5f}, {results['beta_ci_95'][1]:.5f}) "
+          f"| H0: beta=1, two-sided p={results['beta_test_p_value_two_sided']:.3g}",
+          flush=True)
     print(f"Difference std={results['difference_std_ps']:.3f} ps | "
           f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
           flush=True)
