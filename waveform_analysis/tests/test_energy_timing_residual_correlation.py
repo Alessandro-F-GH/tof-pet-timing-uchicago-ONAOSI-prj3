@@ -39,6 +39,12 @@ def test_two_component_fit_recovers_correlated_broad_tail():
     rng.shuffle(x)
     result = fit_mixture(x, seed=3, n_init=3)
     c, t = result["components"]
+    summary_with_posterior, probabilities = fit_mixture(
+        x, seed=3, n_init=3, return_tail_posterior=True)
+    assert summary_with_posterior == result
+    assert probabilities.shape == (len(x),)
+    assert np.all((probabilities >= 0) & (probabilities <= 1))
+    assert probabilities.max() > 0.9
     assert result["converged"]
     assert result["delta_bic_one_minus_two"] > 0
     assert c["weight"] > t["weight"]
@@ -78,6 +84,10 @@ def test_standalone_full_run_without_cache(tmp_path):
     results = analyze(energy_file, timing_file, tmp_path / "output",
                       seed=4, n_init=2)
     assert results["n_matched_events"] == n
+    import json
+    summary = json.loads((tmp_path / "output" / "mixture_summary.json").read_text())
+    assert "tail_posterior" not in summary["ml"]
+    assert "hard_tail" not in summary["led"]
     for filename in ("mixture_summary.json", "gaussian_mixture_distributions.png",
                      "gaussian_mixture_joint.pdf"):
         assert (tmp_path / "output" / filename).is_file()
