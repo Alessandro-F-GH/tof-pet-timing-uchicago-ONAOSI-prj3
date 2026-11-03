@@ -115,3 +115,43 @@ def test_bivariate_gmm_recovers_two_distinct_correlations():
     assert result["components"][0]["sigma_energy_ps"] < result["components"][1]["sigma_energy_ps"]
     assert result["components"][0]["correlation"] < result["components"][1]["correlation"]
     assert result["delta_bic_one_minus_two"] > 0
+
+
+def test_gmm_waveform_groups_left_core_right():
+    from waveform_analysis.scripts.compare_energy_timing_residuals import waveform_groups_from_gmm
+    energy = np.array([-10., 1., 15., 2.])
+    timing = np.array([-12., 0., 12., 3.])
+    responsibilities = np.array([
+        [0.1, 0.9], [0.9, 0.1], [0.2, 0.8], [0.8, 0.2]
+    ])
+    summary = {"components": [
+        {"label": "core"}, {"label": "tail", "mean_energy_ps": 0., "mean_timing_ps": 0.}
+    ]}
+    groups = waveform_groups_from_gmm(energy, timing, summary, responsibilities)
+    np.testing.assert_array_equal(groups["left tail"], [True, False, False, False])
+    np.testing.assert_array_equal(groups["core"], [False, True, False, True])
+    np.testing.assert_array_equal(groups["right tail"], [False, False, True, False])
+
+
+def test_prepared_waveform_means_match_event_ids(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from waveform_analysis.scripts import compare_energy_timing_residuals as analysis
+    wave = np.zeros((4, 2, 3), dtype=np.float32)
+    for i in range(4):
+        wave[i, :, :] = i + 1
+    prepared = SimpleNamespace(
+        event_index=np.array([40, 10, 30, 20]),
+        energy_windows=wave,
+        energy_time_ps=np.array([0, 1000, 2000]),
+        energy_transform=SimpleNamespace(inverse=lambda x: x * 10),
+    )
+    monkeypatch.setattr(analysis, "load_prepared_dataset", lambda path: prepared)
+    ids = np.array([10, 20, 30, 40])
+    groups = {"left tail": np.array([True, False, False, False]),
+              "core": np.array([False, True, True, False]),
+              "right tail": np.array([False, False, False, True])}
+    times, result = analysis.prepared_waveform_means(tmp_path, "energy", ids, groups)
+    np.testing.assert_array_equal(times, [0, 1000, 2000])
+    np.testing.assert_allclose(result["left tail"]["mean"], np.full((2, 3), 20.0))
+    np.testing.assert_allclose(result["core"]["mean"], np.full((2, 3), 35.0))
+    np.testing.assert_allclose(result["right tail"]["mean"], np.full((2, 3), 10.0))
