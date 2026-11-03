@@ -22,7 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import norm, kstest
 from sklearn.mixture import GaussianMixture
 
 
@@ -95,11 +95,11 @@ def fit_mixture(pairs, seed=42, n_init=5, *, return_tail_posterior=False):
             "sigma_timing_ps": float(sigma[1]),
             "correlation": float(shared_var / np.prod(sigma)),
             "covariance_matrix_ps2": cov.tolist(),
-            "shared_variance_ps2": shared_var,
-            "sigma_common_ps": float(np.sqrt(shared_var)) if shared_var >= 0 else None,
+            "cov_energy_timing_ps2": shared_var,
+            "sigma_common_if_unit_loading_ps": float(np.sqrt(shared_var)) if admissible else None,
             "energy_specific_variance_ps2": float(specific_vars[0]),
             "timing_specific_variance_ps2": float(specific_vars[1]),
-            "additive_common_noise_model_admissible": admissible,
+            "unit_loading_noise_decomposition_valid": admissible,
         })
     summary = {
         "n_events": int(len(x)),
@@ -107,8 +107,8 @@ def fit_mixture(pairs, seed=42, n_init=5, *, return_tail_posterior=False):
         "bic_one_gaussian": float(baseline.bic(normalized)),
         "bic_two_gaussians": float(mixture.bic(normalized)),
         "delta_bic_one_minus_two": float(baseline.bic(normalized) - mixture.bic(normalized)),
-        "converged": bool(mixture.converged_),
-        "n_iterations": int(mixture.n_iter_),
+        "em_numerically_converged": bool(mixture.converged_),
+        "em_n_iterations": int(mixture.n_iter_),
         "delta_rho_tail_minus_core": float(components[1]["correlation"] -
                                             components[0]["correlation"]),
     }
@@ -260,17 +260,17 @@ def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
     for state in ("led", "ml"):
         result = results[state]
         print(f"\n{state.upper()} | Delta BIC (one - two) = {result['delta_bic_one_minus_two']:.1f}"
-              f" | converged={result['converged']}")
+              f" | EM numerically converged={result['em_numerically_converged']}")
         for part in result["components"]:
-            common = (f'{part["sigma_common_ps"]:.2f}' if part["sigma_common_ps"]
+            common = (f'{part["sigma_common_if_unit_loading_ps"]:.2f}' if part["sigma_common_ps"]
                       is not None else "N/A")
             print(f'  {part["name"]:4s} | weight={part["weight"]*100:.3f}%'
                   f' | rho={part["correlation"]:.4f}'
                   f' | sigma_E={part["sigma_energy_ps"]:.2f} ps'
                   f' | sigma_T={part["sigma_timing_ps"]:.2f} ps'
-                  f' | Var_common={part["shared_variance_ps2"]:.2f} ps^2'
+                  f' | Cov(E,T)={part["cov_energy_timing_ps2"]:.2f} ps^2'
                   f' | sigma_common={common} ps'
-                  f' | admissible={part["additive_common_noise_model_admissible"]}')
+                  f' | unit-loading decomposition valid={part["unit_loading_noise_decomposition_valid"]}')
     print(f"\nPlots and JSON: {output.resolve()}")
     return results
 
