@@ -129,6 +129,162 @@ def marginal_pdf(values, components, channel_index):
     return individual, sum(individual)
 
 
+def projected_parameters(components, vector):
+    """Weights, means and standard deviations for a linear 2D projection."""
+    v = np.asarray(vector, float)
+    return [(p["weight"], float(v @ np.asarray(p["mean_ps"])),
+             float(np.sqrt(v @ np.asarray(p["covariance_matrix_ps2"]) @ v)))
+            for p in components]
+
+
+def projected_cdf(x, components, vector):
+    return sum(weight * norm.cdf(x, mu, sigma)
+               for weight, mu, sigma in projected_parameters(components, vector))
+
+
+def expected_bin_counts(edges, components, vector, n):
+    """Integrate fitted probability across bins exactly using the Gaussian CDF."""
+    return n * np.maximum(np.diff(projected_cdf(edges, components, vector)), 0.0)
+
+
+def signed_poisson_deviance(observed, expected):
+    """Signed likelihood-ratio residual for Poisson counts."""
+    observed = np.asarray(observed, float)
+    expected = np.asarray(expected, float)
+    if np.any(expected <= 0):
+        raise ValueError("Expected bin counts must be positive")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        information = np.where(observed > 0,
+                               observed * np.log(observed / expected), 0.0)
+    return np.sign(observed - expected) * np.sqrt(
+        np.maximum(2 * (information - observed + expected), 0.0))
+
+
+def goodness_of_fit(values, components, vector, bin_width=10.0):
+    """Descriptive KS, merged-bin deviance and observed/predicted tail counts.
+
+    The KS statistic is not accompanied by a standard p-value: the fitted
+    distribution was estimated using these same events.
+    """
+    values = np.asarray(values, float)
+    n = len(values)
+    extent = max(150., np.ceil(np.max(np.abs(values)) / bin_width) * bin_width)
+    edges = np.arange(-extent, extent + 1.5 * bin_width, bin_width)
+    observed = np.histogram(values, bins=edges)[0]
+    expected = expected_bin_counts(edges, components, vector, n)
+    # Merge adjoining bins to keep expected counts >= 5 where possible.
+    groups = []
+    start = 0
+    for end in range(1, len(expected) + 1):
+        if expected[start:end].sum() >= 5:
+            groups.append((start, end))
+            start = end
+    if start < len(expected):
+        if groups:
+            groups[-1] = (groups[-1][0], len(expected))
+        else:
+            groups.append((0, len(expected)))
+    merged_obs = np.array([observed[a:b].sum() for a, b in groups])
+    merged_exp = np.array([expected[a:b].sum() for a, b in groups])
+    residuals = signed_poisson_deviance(merged_obs, merged_exp)
+    ks = float(kstest(values, lambda z: projected_cdf(z, components, vector)).statistic)
+    exceedance = []
+    for threshold in (100., 200., 300., 500., 1000.):
+        probability = float(projected_cdf(-threshold, components, vector)
+                            + 1.0 - projected_cdf(threshold, components, vector))
+        exceedance.append({
+            "threshold_ps": threshold,
+            "observed_count": int(np.count_nonzero(np.abs(values) > threshold)),
+            "expected_count": n * probability,
+        })
+    return {
+        "ks_distance_descriptive": ks,
+        "poisson_deviance_merged_bins": float(np.sum(residuals ** 2)),
+        "n_merged_bins": len(groups),
+        "exceedance": exceedance,
+        "_edges": edges,
+        "_observed": observed,
+        "_expected": expected,
+        "_merged_edges": np.array([edges[a] for a, _ in groups] +
+                                   [edges[groups[-1][1]]]),
+        "_deviance_residuals": residuals,
+    }
+
+
+def save_fit_quality_plots(led, ml, results, output):
+    projections = ((("Energy", (1., 0.)),
+                    ("Timing", (0., 1.)),
+                    ("Energy - timing", (1., -1.))))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for row, (state, samples) in enumerate((("led", led), ("ml", ml))):
+        for col, (name, projection) in enumerate(projections):
+            d = goodness_of_fit(samples @ np.asarray(projection),
+                                results[state]["components"], projection)
+            bounds, values = d["_merged_edges"], d["_deviance_residuals"]
+            axes[row, col].bar((bounds[:-1] + bounds[1:])/2, values,
+                               width=np.diff(bounds), color="tab:blue", alpha=.7)
+            axes[row, col].axhline(0, color="black", linewidth=.8)
+            axes[row, col].axhline(2, color="gray", ls="--", linewidth=.8)
+            axes[row, col].axhline(-2, color="gray", ls="--", linewidth=.8)
+            axes[row, col].set_title(
+                f'{state.upper()} {name}: KS={d["ks_distance_descriptive"]:.3f}')
+            axes[row, col].set_xlabel("Residual (ps)")
+            axes[row, col].set_ylabel("Signed Poisson deviance")
+            axes[row, col].grid(alpha=.2)
+    fig.tight_layout()
+    fig.savefig(output / "gmm_fit_residuals.png", dpi=180)
+    fig.savefig(output / "gmm_fit_residuals.pdf")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    for ax, (name, projection) in zip(axes, projections):
+        for state, samples, color in (("led", led, "tab:orange"),
+                                       ("ml", ml, "tab:blue")):
+            x = np.abs(samples @ np.asarray(projection))
+            thresholds = np.linspace(0, max(1000., float(np.max(x))), 300)
+            observed = (len(x) - np.searchsorted(
+                np.sort(x), thresholds, side="right")) / len(x)
+            fit = results[state]["components"]
+            predicted = (projected_cdf(-thresholds, fit, projection) +
+                         1 - projected_cdf(thresholds, fit, projection))
+            ax.plot(thresholds, np.maximum(observed, 1 / len(x)),
+                    color=color, label=f"{state.upper()} observed")
+            ax.plot(thresholds, np.maximum(predicted, 1e-10),
+                    color=color, linestyle="--", label=f"{state.upper()} fit")
+        ax.set_yscale("log")
+        ax.set_ylim(1e-5, 1.1)
+        ax.set_title(name)
+        ax.set_xlabel("Absolute residual threshold (ps)")
+        ax.set_ylabel("P(|r| > threshold)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=.2)
+    fig.tight_layout()
+    fig.savefig(output / "gmm_exceedance.png", dpi=180)
+    fig.savefig(output / "gmm_exceedance.pdf")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    for ax, (state, samples) in zip(axes, (("led", led), ("ml", ml))):
+        difference = samples[:, 0] - samples[:, 1]
+        diagnostic = goodness_of_fit(difference, results[state]["components"],
+                                     (1., -1.))
+        ax.stairs(diagnostic["_observed"], diagnostic["_edges"],
+                  color="black", label="Observed")
+        ax.stairs(diagnostic["_expected"], diagnostic["_edges"],
+                  color="tab:red", label="Predicted by joint GMM")
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=.8)
+        ax.set_title(state.upper())
+        ax.set_xlabel("Energy - timing residual (ps)")
+        ax.set_ylabel("Events per 10 ps")
+        ax.legend()
+        ax.grid(alpha=.2)
+    fig.tight_layout()
+    fig.savefig(output / "gmm_energy_minus_timing.png", dpi=180)
+    fig.savefig(output / "gmm_energy_minus_timing.pdf")
+    plt.close(fig)
+
+
 def save_distribution_plot(led, ml, results, output):
     """Measured bin counts and fitted expected counts for the same bin widths.
 
@@ -249,9 +405,22 @@ def analyze(energy_file, timing_file, output, *, seed=42, n_init=5):
             "prove that exactly two physical mechanisms exist. "
             "LED and ML fits use the same matched events, independently refitted.")
     }
+    fit_checks = {}
+    for state, pairs in (("led", led), ("ml", ml)):
+        fit_checks[state] = {}
+        for label, vec in (("energy", (1., 0.)),
+                           ("timing", (0., 1.)),
+                           ("energy_minus_timing", (1., -1.))):
+            d = goodness_of_fit(pairs @ np.asarray(vec),
+                                results[state]["components"], vec)
+            fit_checks[state][label] = {
+                key: value for key, value in d.items() if not key.startswith("_")
+            }
+    results["fit_quality"] = fit_checks
     (output / "mixture_summary.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8")
     save_distribution_plot(led, ml, results, output)
+    save_fit_quality_plots(led, ml, results, output)
     save_joint_plot(
         led, ml, results,
         {"led": led_tail_probability, "ml": ml_tail_probability},
