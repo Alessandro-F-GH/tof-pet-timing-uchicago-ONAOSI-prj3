@@ -544,6 +544,18 @@ def compare_boards(analyses, bootstrap_samples=300, seed=42):
         comparison["fitted_core"]["delta_rho_UC_minus_FBK"] = (
             comparison["fitted_core"]["rho_UC"] -
             comparison["fitted_core"]["rho_FBK"])
+        comparison["core_widths_and_tail_frequency"] = {}
+        for field, section, key in (
+            ("core_sigma_energy_ps", "core_gaussian_fit", "sigma_energy_ps"),
+            ("core_sigma_timing_ps", "core_gaussian_fit", "sigma_timing_ps"),
+            ("outside_core_fraction", "tail_definition", "tail_fraction"),
+            ("outside_core_excess_factor", "tail_definition", "excess_factor_over_core_gaussian"),
+        ):
+            uc = float(analyses["UC"]["results"][state][section][key])
+            fbk = float(analyses["FBK"]["results"][state][section][key])
+            comparison["core_widths_and_tail_frequency"][field] = {
+                "UC": uc, "FBK": fbk, "UC_minus_FBK": uc - fbk,
+            }
         outcome["states"][state] = comparison
     outcome["interpretation"] = (
         "If the conditional bootstrap difference interval includes zero, the "
@@ -679,6 +691,17 @@ def main(argv=None):
     print("Confidence intervals exclude core-fit uncertainty and threshold uncertainty.")
     for state in ("led", "ml"):
         print(f"\\n{state.upper()}")
+        for field, entry in comparison["states"][state][
+                "core_widths_and_tail_frequency"].items():
+            suffix = "%" if field == "outside_core_fraction" else ""
+            multiplier = 100 if suffix else 1
+            print(f'  {field}: UC={entry["UC"]*multiplier:.4f}{suffix}'
+                  f' | FBK={entry["FBK"]*multiplier:.4f}{suffix}'
+                  f' | delta={entry["UC_minus_FBK"]*multiplier:+.4f}{suffix}')
+        fitted = comparison["states"][state]["fitted_core"]
+        print(f'  fitted Gaussian-core rho: UC={fitted["rho_UC"]:.5f}'
+              f' | FBK={fitted["rho_FBK"]:.5f}'
+              f' | delta={fitted["delta_rho_UC_minus_FBK"]:+.5f}')
         for region in ("core", "outside_core"):
             entry = comparison["states"][state][region]
             print(f'  {region}: rho_UC={entry["rho_UC"]:.5f} '
