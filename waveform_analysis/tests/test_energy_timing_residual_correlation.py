@@ -155,3 +155,37 @@ def test_prepared_waveform_means_match_event_ids(tmp_path, monkeypatch):
     np.testing.assert_allclose(result["left tail"]["mean"], np.full((2, 3), 20.0))
     np.testing.assert_allclose(result["core"]["mean"], np.full((2, 3), 35.0))
     np.testing.assert_allclose(result["right tail"]["mean"], np.full((2, 3), 10.0))
+
+
+def test_cache_root_resolves_wide_blind_from_named_alias(tmp_path):
+    from waveform_analysis.scripts.compare_energy_timing_residuals import resolve_prepared_from_cache
+    alias = tmp_path / "datasets" / "R0" / "R1_R2" / "energy" / "wide" / "blind"
+    alias.mkdir(parents=True)
+    np.save(alias / "event_index.npy", np.array([1, 3, 5, 7]))
+    assert resolve_prepared_from_cache(
+        tmp_path, "energy", "blind", np.array([3, 7])) == alias.resolve()
+
+
+def test_cache_root_resolves_hash_from_manifest(tmp_path):
+    import json
+    from waveform_analysis.scripts.compare_energy_timing_residuals import resolve_prepared_from_cache
+    product_id = "a" * 64
+    folder = tmp_path / "artifact_store" / "products" / "prepared_dataset" / product_id
+    folder.mkdir(parents=True)
+    np.save(folder / "event_index.npy", np.array([10, 20, 30]))
+    (tmp_path / "cache_manifest.json").write_text(json.dumps({
+        "prepared_runs": [{"mode": "timing_to_timing", "window_name": "wide",
+                           "datasets": {"blind": product_id}}]
+    }), encoding="utf-8")
+    assert resolve_prepared_from_cache(
+        tmp_path, "timing", "blind", np.array([20, 30])) == folder.resolve()
+
+
+def test_cache_root_rejects_ambiguous_dataset(tmp_path):
+    from waveform_analysis.scripts.compare_energy_timing_residuals import resolve_prepared_from_cache
+    for name in ("A", "B"):
+        alias = tmp_path / "datasets" / "control" / name / "energy" / "wide" / "blind"
+        alias.mkdir(parents=True)
+        np.save(alias / "event_index.npy", np.array([1, 2, 3]))
+    with pytest.raises(ValueError, match="exactly one"):
+        resolve_prepared_from_cache(tmp_path, "energy", "blind", np.array([1, 2]))
