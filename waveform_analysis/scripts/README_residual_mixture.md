@@ -1,66 +1,55 @@
-# Portable Gaussian core and empirical-tail analysis
+# UC/FBK paired residual analysis: empirical IQR outliers
 
-The standalone script `compare_energy_timing_residuals.py` analyzes event-matched energy and timing coincidence residuals **before** (LED) and **after** ML correction.
+The standalone `compare_energy_timing_residuals.py` compares energy/timing coincidence residuals for UC and FBK, before (LED) and after ML correction. It uses **no Gaussian fit or Gaussian assumption** for either the central population or the outliers.
 
-## Sharing data with a collaborator
-
-Provide the standalone Python script and a directory containing both boards:
+## Expected input layout
 
 ```text
 predictions/
-├── UC/
-│   ├── energy_predictions.npz
-│   └── timing_predictions.npz
-└── FBK/
-    ├── energy_predictions.npz
-    └── timing_predictions.npz
+  UC/
+    energy_predictions.npz
+    timing_predictions.npz
+  FBK/
+    energy_predictions.npz
+    timing_predictions.npz
 ```
 
-The shorter names `energy.npz` and `timing.npz` are also accepted, provided there is exactly one matching file per channel. Files must contain one-dimensional arrays `event_id`, `led_residual_ps`, and `corrected_ps`. The script matches by event ID **within each board**; UC/FBK populations are independent and must never be joined.
+The shorter names `energy.npz` / `timing.npz` are also supported, but each folder must have exactly one matching file per channel. Each NPZ contains `event_id`, `led_residual_ps`, and `corrected_ps`. Energy and timing predictions are matched **within their board by event ID**; never align UC events with FBK.
 
-Dependencies:
-```bash
-python -m pip install numpy scipy matplotlib
+Dependencies: `numpy` and `matplotlib`.
+
+```powershell
+python -m pip install numpy matplotlib
+python compare_energy_timing_residuals.py --predictions-root "$HOME\predictions" --output "$HOME\iqr_results"
 ```
 
-Run:
-```bash
-python compare_energy_timing_residuals.py --predictions-root predictions --output comparison_results
+For module execution from the repository root:
+
+```powershell
+python -m waveform_analysis.scripts.compare_energy_timing_residuals --predictions-root "$HOME\predictions" --output "$HOME\iqr_results"
 ```
 
-No prepared cache, waveforms, models or project-specific packages are required.
+## Nonparametric selection
 
-## Method
+For each board and each correction state (UC/LED, UC/ML, FBK/LED, FBK/ML), compute the 25th and 75th percentiles independently for energy and timing. Extreme Tukey fences are `[Q1 − k*IQR, Q3 + k*IQR]`, with `k=3` by default. An event is marked as an outlier if **either** its energy or timing residual falls outside its respective interval. This is an axis-aligned rule, and does not require a distributional model.
 
-A single **bivariate Gaussian core** is estimated independently for LED and ML.
+Use `--iqr-multiplier 3` to adjust the threshold. It is stricter (fewer flagged events) than the conventional exploratory `1.5*IQR` rule. Samples are not assumed normal and no second component is fitted to the outliers.
 
-1. Initialize robustly using medians and compact central observations.
-2. Repeatedly select observations with squared Mahalanobis distance `d² <= chi2.ppf(0.95, 2)`, update the mean and covariance, and correct covariance for radial truncation of a 2D Gaussian. Stop when the parameters stabilize. This is a robust iterative moment estimator, not an exact truncated-likelihood MLE.
-3. After fixing the core, define empirical **outside-core** events with `d² > chi2.ppf(0.999, 2)` by default. This selection is in 2D, not separate marginal clipping. **No distribution is assumed or fitted to these outside-core observations.**
-4. Calculate their sample standard deviations, correlation and covariance directly. Since the selection itself changes correlation, compare against a simulated pure-Gaussian core with exactly the same Mahalanobis cut. This simulated reference is a null benchmark, **not** a Gaussian assumption for the observed tails.
-5. Compare the number of outside-core events against the theoretical Gaussian expectation, `N*(1-0.999)` by default. Some genuine Gaussian events fall outside this envelope naturally.
+The inlier and outlier correlations/covariances are **empirical** on the selected subsets. The cut itself affects correlations; do not interpret them as fitted parameters of physically separated populations. Membership is independently determined per board and correction state, so the LED and ML flagged events need not be identical.
 
-Set `--fit-fraction 0.95` to control the iterative central fit radius and `--tail-fraction 0.999` for the outside-core envelope. These are **separate choices** and are reported explicitly in results. Sensitivity checks across several tail-fraction values are recommended; changing either cutoff can change empirical correlations.
+## Plots
 
-The truncation covariance correction is derived under a bivariate Gaussian core with fixed elliptical selection. It need not be exactly unbiased for contaminated samples or when the fitted parameters determine the selection.
+- `UC/led_vs_ml_distributions.png/.pdf` and `FBK/led_vs_ml_distributions.png/.pdf`: LED and ML raw-count histograms on a **linear y-axis** and shared per-channel x-range spanning the respective IQR fences. Energy uses 10 ps bins; timing 5 ps bins.
+- `UC/led_vs_ml_iqr_scatter.png/.pdf` and `FBK/led_vs_ml_iqr_scatter.png/.pdf`: **gray inliers, orange IQR outliers**. Same x/y limits for LED and ML within each board.
+- `uc_vs_fbk_distributions.png/.pdf`: UC and FBK count histograms on shared axes per state/channel. The boards can have different event counts; compare shapes with that caveat.
+- `uc_vs_fbk_iqr_scatter.png/.pdf`: four-panel UC/FBK and LED/ML scatterplot with **the same x and y limits** for all four panels, gray inliers and orange outliers.
 
-## Outputs
+All plots show classifications without imposing a Gaussian core or tail shape. Outliers are all drawn; the background inliers may be downsampled to at most 20,000 per panel to keep output small.
 
-The output directory contains:
+## Numerical output
 
-- `UC/core_tail_summary.json` and `FBK/core_tail_summary.json`: per-board Gaussian core fits and empirical outside-core tail statistics.
-- Per-board `led_vs_ml_core_distributions.png/.pdf`, `led_vs_ml_joint_scatter.png/.pdf`, `core_radial_exceedance.png/.pdf`.
-- `uc_fbk_comparison.json`: UC−FBK differences in empirical core/outside-core correlations; conditional bootstrap percentile 95% confidence intervals, plus fitted core point estimates.
-- `uc_vs_fbk_core_distributions.png/.pdf`: UC and FBK histograms and Gaussian core fits on shared per-channel x-limits, with 10-ps energy and 5-ps timing bins. Histograms are raw event counts; N is shown because the boards may have different sample sizes.
-- `uc_vs_fbk_joint_scatter.png/.pdf`: LED and ML scatterplots for both boards using identical x and y limits, gray points only.
+- `UC/iqr_summary.json` and `FBK/iqr_summary.json`: quartiles, IQR fence boundaries, observed outlier counts/fractions, and empirical correlations, covariances, and widths for inliers, outliers and all events.
+- `uc_fbk_iqr_comparison.json`: UC−FBK differences for those statistics, including conditional percentile bootstrap 95% intervals for **correlation differences** (default `--bootstrap-resamples 300`).
+- Verbose terminal report detailing the method, fence values, empirical statistics, and board comparisons.
 
-Use `--bootstrap-resamples 300` (default) to choose the number of bootstrap draws for correlation differences. The bootstrap resamples observations **after** their core/tail membership has been determined; it does not refit the core or recalculate membership. These intervals only measure conditional sampling uncertainty, not uncertainty from the iterative fitting procedure, thresholds, or systematic effects. Confidence intervals containing zero indicate an unresolved difference, **not statistical equivalence**. To establish equivalence, a scientifically justified tolerance would be needed.
-
-
-The fitted `cov_energy_timing_ps2` is the core covariance, whereas outside-core covariance is an **empirical** statistic on a selected subset. Neither is automatically a physically identifiable common-noise variance; that interpretation requires equal common-error loadings and independent channel-specific errors.
-
-Importantly, `numerically_converged` indicates iterative parameter stability, **not** a test of Gaussianity, and `tail_definition.nominal_gaussian_probability_outside` defines a reference fraction, not the fitted proportion of a second population. LED and ML classifications are fitted separately and are not themselves a paired correction-effect measure.
-
-## Terminal report
-
-The terminal output is intentionally verbose and self-contained. It explains the difference between the fit region and the outside-core detection region, reports numerical convergence and fitted core moments, then empirical outside-core statistics and the Gaussian-selection-only reference. Numerical convergence does **not** demonstrate Gaussian goodness of fit. The output names listed in the report are the only plots created by the current version; older plots from previous runs may remain if the same output directory is reused.
+The bootstrap draws resample fixed IQR-selected populations without recalculating fences, so confidence intervals omit threshold-estimation uncertainty. A confidence interval that includes zero does not demonstrate UC/FBK equivalence; formal equivalence requires a scientifically chosen tolerance.
