@@ -214,20 +214,33 @@ def analyze_distribution(points, *, fit_fraction=.95, tail_fraction=.999,
     }, tail, distances
 
 
-def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
-    """Overlay LED/ML observed counts and fitted Gaussian cores per channel.
+def core_projection_interval(core, axis):
+    """Coordinate projection of the elliptical region used in core fitting."""
+    mean = float(core["mean_ps"][axis])
+    sigma = core["sigma_energy_ps"] if axis == 0 else core["sigma_timing_ps"]
+    half_width = np.sqrt(core["fit_radius_squared"]) * sigma
+    return mean - half_width, mean + half_width
 
-    The y-axis is set using the actual observed peak and fitted peak, not
-    extrapolated low-density tails. The x-axis remains full-range to expose
-    rare anomalous events, and counts are plotted with logarithmic scale.
+
+def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
+    """LED/ML overlays with linear count scale, restricted to the fit interval.
+
+    Each channel uses the union of LED and ML projected *iterative fit*
+    ellipses, giving both datasets exactly the same display range.
+    Counts are computed on the full population with common fixed-width bins.
     """
     fig, axes = plt.subplots(1, 2, figsize=(13.2, 5), squeeze=False)
     for j, channel in enumerate(("Energy", "Timing")):
         ax = axes[0, j]
-        max_abs = max(float(np.max(np.abs(led[:, j]))),
-                      float(np.max(np.abs(ml[:, j]))))
-        extent = max(200., np.ceil(max_abs / bin_width) * bin_width)
-        edges = np.arange(-extent, extent + 1.5 * bin_width, bin_width)
+        intervals = [core_projection_interval(
+            summaries[state]["core_gaussian_fit"], j) for state in ("led", "ml")]
+        lower = min(interval[0] for interval in intervals)
+        upper = max(interval[1] for interval in intervals)
+        edges = np.arange(
+            np.floor(lower / bin_width) * bin_width,
+            np.ceil(upper / bin_width) * bin_width + 1.5 * bin_width,
+            bin_width,
+        )
         centers = (edges[:-1] + edges[1:]) / 2
         peak = 1.
         for state, pairs, color, label in (
@@ -238,22 +251,18 @@ def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
             counts = np.histogram(pairs[:, j], bins=edges)[0]
             expected = core_expected_bin_counts(edges, core, j, len(pairs))
             peak = max(peak, float(counts.max()), float(expected.max()))
-            # Zero-count bins are not drawn on the logarithmic axis.
-            ax.stairs(np.where(counts > 0, counts, np.nan), edges,
-                      color=color, linewidth=1.25,
+            ax.stairs(counts, edges, color=color, linewidth=1.3,
                       label=f"{label}: observed")
-            ax.plot(centers, np.where(expected > 0, expected, np.nan),
-                    color=color, linewidth=1.6, linestyle="--",
-                    label=f"{label}: fitted Gaussian core")
-        ax.set_yscale("log")
-        ax.set_ylim(0.8, peak * 1.25)
-        ax.set_xlim(edges[0], edges[-1])
+            ax.plot(centers, expected, color=color, linewidth=1.8,
+                    linestyle="--", label=f"{label}: Gaussian core fit")
+        ax.set_xlim(lower, upper)
+        ax.set_ylim(0, peak * 1.12)
         ax.set_xlabel("Coincidence residual (ps)")
-        ax.set_ylabel(f"Observed / expected events per {bin_width:g} ps")
+        ax.set_ylabel(f"Events per {bin_width:g} ps")
         ax.set_title(channel)
         ax.legend(fontsize=9)
         ax.grid(alpha=.2)
-    fig.suptitle("LED vs ML: observed distributions and Gaussian-core fits")
+    fig.suptitle("LED vs ML — central iterative Gaussian-fit intervals")
     fig.tight_layout()
     fig.savefig(output / "led_vs_ml_core_distributions.png", dpi=190)
     fig.savefig(output / "led_vs_ml_core_distributions.pdf")
@@ -261,13 +270,14 @@ def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
 
 
 def plot_scatter(led, ml, summaries, tail_masks, output, seed=42):
-    """Show the full joint distributions in neutral gray, without a hard boundary.
-
-    The Gaussian-core envelope is used only for numerical tail diagnostics;
-    no points are colored or separated by that classification.
-    """
+    """Unclassified gray scatter with identical LED/ML x and y limits."""
     rng = np.random.default_rng(seed)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.4))
+    combined = np.vstack((led, ml))
+    x_min, y_min = np.min(combined, axis=0)
+    x_max, y_max = np.max(combined, axis=0)
+    x_padding = max(0.03 * (x_max - x_min), 1.)
+    y_padding = max(0.03 * (y_max - y_min), 1.)
     for ax, (label, pairs) in zip(axes, (
         ("LED", led), ("After ML", ml),
     )):
@@ -276,11 +286,13 @@ def plot_scatter(led, ml, summaries, tail_masks, output, seed=42):
             indices = rng.choice(indices, 20000, replace=False)
         ax.scatter(pairs[indices, 0], pairs[indices, 1],
                    s=6, alpha=0.24, color="0.35", rasterized=True)
+        ax.set_xlim(x_min - x_padding, x_max + x_padding)
+        ax.set_ylim(y_min - y_padding, y_max + y_padding)
         ax.set_xlabel("Energy residual (ps)")
         ax.set_ylabel("Timing residual (ps)")
         ax.set_title(label)
         ax.grid(alpha=.2)
-    fig.suptitle("Paired energy and timing residuals")
+    fig.suptitle("Paired energy and timing residuals — identical axis limits")
     fig.tight_layout()
     fig.savefig(output / "led_vs_ml_joint_scatter.png", dpi=190)
     fig.savefig(output / "led_vs_ml_joint_scatter.pdf")
