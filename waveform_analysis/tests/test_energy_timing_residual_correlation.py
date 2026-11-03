@@ -90,6 +90,6 @@ def test_standalone_end_to_end(tmp_path):
     assert result["led"]["tail_definition"]["tail_count"] > 5
     summary = json.loads((tmp_path / "output" / "core_tail_summary.json").read_text())
     assert "empirical_outside_core" in summary["ml"]
-    for filename in ("gaussian_core_distributions.png", "core_and_empirical_tails.pdf",
-                     "radial_tail_exceedance.png"):
+    for filename in ("led_vs_ml_core_distributions.png", "led_vs_ml_joint_scatter.pdf",
+                     "core_radial_exceedance.png"):
         assert (tmp_path / "output" / filename).is_file()
