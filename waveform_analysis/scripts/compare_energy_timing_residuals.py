@@ -71,74 +71,57 @@ def correlations(energy, timing):
     }
 
 
-def test_unit_slope(energy, timing):
-    """Two-sided OLS test H0: slope=1 for energy residual on timing residual.
+def common_component_statistics(energy, timing):
+    """Common-plus-channel-specific variance decomposition, if its assumptions hold.
 
-    Includes an intercept. The t-test/CI assume independent events and
-    homoscedastic regression errors; results are descriptive otherwise.
+    Assumes r_E=C+e_E and r_T=C+e_T, where all three centered
+    components are pairwise uncorrelated and C has unit loading in both.
+    H0: common timing fraction <= 0.5, H1: > 0.5.
+    Standard OLS inference assumes independent, homoscedastic events.
     """
     if len(energy) < 3 or np.ptp(timing) == 0:
         raise ValueError("Slope test requires three events and nonconstant timing residuals")
     fit = linregress(timing, energy)
-    slope = float(fit.slope)
+    beta = float(fit.slope)
     se = float(fit.stderr)
-    df = int(len(energy) - 2)
-    if se == 0:
-        t_stat = 0.0 if slope == 1.0 else float("inf")
-        p_value = 1.0 if slope == 1.0 else 0.0
-        ci_low = ci_high = slope
-    else:
-        t_stat = (slope - 1.0) / se
-        p_value = float(2.0 * student_t.sf(abs(t_stat), df))
-        margin = float(student_t.ppf(0.975, df) * se)
-        ci_low, ci_high = slope - margin, slope + margin
+    df = len(energy) - 2
+    threshold = 0.5
+    t_stat = (beta - threshold) / se if se > 0 else (
+        float("inf") if beta > threshold else
+        float("-inf") if beta < threshold else 0.0)
+    p_value = float(student_t.sf(t_stat, df)) if se > 0 else (
+        0.0 if beta > threshold else 1.0)
+    margin = float(student_t.ppf(0.975, df) * se)
+    variance_e = float(np.var(energy, ddof=1))
+    variance_t = float(np.var(timing, ddof=1))
+    common_variance = float(np.cov(energy, timing, ddof=1)[0, 1])
+    specific_e = variance_e - common_variance
+    specific_t = variance_t - common_variance
+    compatible = bool(common_variance >= 0 and specific_e >= 0 and specific_t >= 0)
     return {
-        "beta_energy_on_timing": slope,
+        "beta_energy_on_timing": beta,
         "beta_intercept_ps": float(fit.intercept),
         "beta_standard_error": se,
-        "beta_null": 1.0,
-        "beta_test_t_statistic": float(t_stat),
-        "beta_test_df": df,
-        "beta_test_p_value_two_sided": p_value,
-        "beta_ci_95": [float(ci_low), float(ci_high)],
-        "beta_reject_h0_at_0_05": bool(p_value < 0.05),
-        "note_beta": "OLS energy residual ~ intercept + beta * timing residual. "
-                     "Two-sided t-test H0: beta=1 (not an equivalence test). "
-                     "p-value and confidence interval assume independent events "
-                     "and homoscedastic regression errors.",
+        "beta_ci_95": [beta - margin, beta + margin],
+        "common_variance_ps2": common_variance,
+        "energy_specific_variance_ps2": specific_e,
+        "timing_specific_variance_ps2": specific_t,
+        "common_fraction_timing": beta,
+        "common_fraction_energy": common_variance / variance_e,
+        "common_component_variances_nonnegative": compatible,
+        "dominance_null_max_fraction": threshold,
+        "dominance_test_t_statistic": float(t_stat),
+        "dominance_test_df": int(df),
+        "dominance_test_p_value_one_sided": p_value,
+        "dominance_reject_h0_at_0_05": bool(p_value < 0.05),
+        "note_common_component": "Fractions interpreted as independent additive "
+            "noise contributions ONLY if both channels have the same unit-loading "
+            "common component and the three components are pairwise uncorrelated. "
+            "Negative inferred specific variances would invalidate these assumptions. "
+            "One-sided slope t-test H0: beta<=0.5; OLS p-value/CI assume "
+            "independent observations and homoscedastic regression errors. "
+            "Shared time-reference errors may also generate common covariance.",
     }
-
-
-def trimmed_slope_statistics(energy, timing, retained_percentages=(99.9, 99.0, 95.0)):
-    """Estimate slopes after independent central-quantile cuts on both residuals.
-
-    Each pair is retained only if both energy and timing lie within their
-    respective central percentile ranges. Actual retained fraction is reported.
-    The post-selection OLS confidence intervals are descriptive, not
-    selection-adjusted inferential intervals.
-    """
-    output = []
-    n_total = len(energy)
-    for percentage in retained_percentages:
-        tail = (100.0 - percentage) / 200.0
-        lo_e, hi_e = np.quantile(energy, [tail, 1.0 - tail])
-        lo_t, hi_t = np.quantile(timing, [tail, 1.0 - tail])
-        keep = ((energy >= lo_e) & (energy <= hi_e)
-                & (timing >= lo_t) & (timing <= hi_t))
-        n_kept = int(np.sum(keep))
-        if n_kept < 3 or np.ptp(timing[keep]) == 0:
-            raise ValueError(
-                f"Trimming {percentage}% leaves too few or constant timing residuals")
-        estimate = test_unit_slope(energy[keep], timing[keep])
-        output.append({
-            "central_percent_per_channel": float(percentage),
-            "n_retained": n_kept,
-            "retained_fraction": n_kept / n_total,
-            "energy_quantiles_ps": [float(lo_e), float(hi_e)],
-            "timing_quantiles_ps": [float(lo_t), float(hi_t)],
-            **estimate,
-        })
-    return output
 
 
 def difference_statistics(energy, timing):
@@ -228,8 +211,7 @@ def main(argv=None):
     ids, energy, timing, n_nonfinite = align_residuals(
         energy_ids, energy_residuals, timing_ids, timing_residuals)
     results = correlations(energy, timing)
-    results.update(test_unit_slope(energy, timing))
-    results["trimmed_beta"] = trimmed_slope_statistics(energy, timing)
+    results.update(common_component_statistics(energy, timing))
     results.update(difference_statistics(energy, timing))
     results.update(ctr_quadrature_comparison(
         energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
@@ -257,19 +239,11 @@ def main(argv=None):
           f"(p={results['pearson_p_value']:.3g}) | "
           f"Spearman rho={results['spearman_rho']:.5f} "
           f"(p={results['spearman_p_value']:.3g})", flush=True)
-    print(f"Beta (energy on timing)={results['beta_energy_on_timing']:.5f} "
+    print(f"Common-component timing fraction (beta)={results['common_fraction_timing']:.5f} "
           f"| 95% CI=({results['beta_ci_95'][0]:.5f}, {results['beta_ci_95'][1]:.5f}) "
-          f"| H0: beta=1, two-sided p={results['beta_test_p_value_two_sided']:.3g}",
+          f"| H0: fraction<=0.5, one-sided p={results['dominance_test_p_value_one_sided']:.3g} "
+          f"| nonnegative variance decomposition={results['common_component_variances_nonnegative']}",
           flush=True)
-    for trimmed in results["trimmed_beta"]:
-        ci = trimmed["beta_ci_95"]
-        print(f"Beta central {trimmed['central_percent_per_channel']:g}%/channel "
-              f"| matched={trimmed['n_retained']}/{len(ids)} "
-              f"({100 * trimmed['retained_fraction']:.2f}%) "
-              f"| beta={trimmed['beta_energy_on_timing']:.5f} "
-              f"| 95% CI=({ci[0]:.5f}, {ci[1]:.5f}) "
-              f"| H0: beta=1, p={trimmed['beta_test_p_value_two_sided']:.3g}",
-              flush=True)
     print(f"Difference std={results['difference_std_ps']:.3f} ps | "
           f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
           flush=True)
