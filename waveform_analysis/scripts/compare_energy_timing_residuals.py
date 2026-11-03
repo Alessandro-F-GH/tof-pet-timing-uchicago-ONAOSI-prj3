@@ -17,6 +17,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pearsonr, spearmanr, linregress, t as student_t
+from sklearn.mixture import GaussianMixture
+from matplotlib.patches import Ellipse
 from waveform_analysis.reporting.stats import metric_values
 
 
@@ -202,6 +204,119 @@ def save_gaussian_component_plot(fits, output):
     plt.close(fig)
 
 
+def fit_bivariate_gmm(energy, timing, *, seed=42, n_init=5):
+    """Two full-covariance Gaussian components, on matched residual pairs.
+
+    Labels are assigned using the determinant of each covariance matrix:
+    smaller area = core, larger area = tail. This is a statistical naming
+    convention, not evidence of distinct physical hit populations.
+    """
+    x = np.column_stack((energy, timing))
+    if len(x) < 10:
+        raise ValueError("GMM requires at least 10 paired events")
+    scale = np.std(x, axis=0)
+    if np.any(scale <= 0):
+        raise ValueError("Both residual coordinates must vary for GMM")
+    center = np.mean(x, axis=0)
+    normalized = (x - center) / scale
+    model = GaussianMixture(
+        n_components=2, covariance_type="full", n_init=n_init,
+        random_state=seed, reg_covar=1e-6, max_iter=300,
+    ).fit(normalized)
+    single = GaussianMixture(
+        n_components=1, covariance_type="full", n_init=1,
+        random_state=seed, reg_covar=1e-6, max_iter=300,
+    ).fit(normalized)
+    means = model.means_ * scale + center
+    covariances = model.covariances_ * scale[None, :, None] * scale[None, None, :]
+    order = np.argsort(np.linalg.det(covariances))
+    responsibilities = model.predict_proba(normalized)[:, order]
+    parts = []
+    for label, index in zip(("core", "tail"), order):
+        cov = covariances[index]
+        sd_energy, sd_timing = np.sqrt(np.diag(cov))
+        covariance = float(cov[0, 1])
+        shared = {
+            "common_variance_ps2": covariance,
+            "energy_specific_variance_ps2": float(cov[0, 0] - covariance),
+            "timing_specific_variance_ps2": float(cov[1, 1] - covariance),
+        }
+        valid = all(v >= 0 for v in shared.values())
+        parts.append({
+            "label": label,
+            "weight": float(model.weights_[index]),
+            "mean_energy_ps": float(means[index, 0]),
+            "mean_timing_ps": float(means[index, 1]),
+            "sigma_energy_ps": float(sd_energy),
+            "sigma_timing_ps": float(sd_timing),
+            "correlation": float(covariance / (sd_energy * sd_timing)),
+            "covariance_ps2": covariance,
+            "covariance_matrix_ps2": cov.tolist(),
+            "common_noise_decomposition_admissible": valid,
+            "sigma_common_ps": float(np.sqrt(shared["common_variance_ps2"]))
+                if shared["common_variance_ps2"] >= 0 else None,
+            "sigma_energy_specific_ps": float(np.sqrt(shared["energy_specific_variance_ps2"]))
+                if shared["energy_specific_variance_ps2"] >= 0 else None,
+            "sigma_timing_specific_ps": float(np.sqrt(shared["timing_specific_variance_ps2"]))
+                if shared["timing_specific_variance_ps2"] >= 0 else None,
+        })
+    summary = {
+        "n_events": int(len(x)),
+        "components": parts,
+        "delta_correlation_tail_minus_core":
+            parts[1]["correlation"] - parts[0]["correlation"],
+        "bic_one_component": float(single.bic(normalized)),
+        "bic_two_components": float(model.bic(normalized)),
+        "delta_bic_one_minus_two": float(single.bic(normalized) - model.bic(normalized)),
+        "converged": bool(model.converged_),
+        "n_iterations": int(model.n_iter_),
+        "n_initializations": int(n_init),
+        "core_tail_label_rule": "Increasing determinant of full 2D covariance matrix",
+        "note": "Correlations are within-component parameters, not correlations "
+                "after hard event assignment. Components are descriptive, "
+                "not proven physical populations. Variance decomposition requires "
+                "additive unit-loading common noise and independent channel-specific noise.",
+    }
+    return summary, responsibilities
+
+
+def save_bivariate_gmm_plot(energy, timing, summary, responsibilities, output, seed=42):
+    """Scatter colored by tail responsibility with 2-sigma component ellipses."""
+    from matplotlib.colors import Normalize
+    x = np.column_stack((energy, timing))
+    rng = np.random.default_rng(seed)
+    sample = rng.choice(len(x), min(len(x), 10000), replace=False)
+    fig, ax = plt.subplots(figsize=(7.2, 5.8))
+    scatter = ax.scatter(
+        energy[sample], timing[sample], c=responsibilities[sample, 1],
+        cmap="viridis", norm=Normalize(0, 1), s=5, alpha=0.45,
+        rasterized=True,
+    )
+    for part, color in zip(summary["components"], ("tab:blue", "tab:orange")):
+        covariance = np.asarray(part["covariance_matrix_ps2"])
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        direction = eigenvectors[:, -1]
+        angle = np.degrees(np.arctan2(direction[1], direction[0]))
+        ellipse = Ellipse(
+            (part["mean_energy_ps"], part["mean_timing_ps"]),
+            width=4*np.sqrt(eigenvalues[-1]),
+            height=4*np.sqrt(eigenvalues[0]), angle=angle,
+            facecolor="none", edgecolor=color, linewidth=2,
+            label=f'{part["label"]} (rho={part["correlation"]:.3f})',
+        )
+        ax.add_patch(ellipse)
+    fig.colorbar(scatter, ax=ax, label="P(tail | event)")
+    ax.set_xlabel("Energy residual (ps)")
+    ax.set_ylabel("Timing residual (ps)")
+    ax.set_title("Two-component bivariate Gaussian mixture")
+    ax.legend()
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(output / "bivariate_gmm.png", dpi=180)
+    fig.savefig(output / "bivariate_gmm.pdf")
+    plt.close(fig)
+
+
 def difference_statistics(energy, timing):
     """Observed difference and variance-subtraction test on paired events."""
     difference = energy - timing
@@ -281,7 +396,11 @@ def main(argv=None):
     parser.add_argument("--fit-bin-width-ps", type=float, default=10.0,
                         help="Histogram bin width for CTR fits (default: 10 ps)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--gmm-n-init", type=int, default=5,
+                        help="GMM random initializations (default: 5)")
     args = parser.parse_args(argv)
+    if args.gmm_n_init < 1:
+        parser.error("--gmm-n-init must be >= 1")
     if args.fit_bin_width_ps <= 0:
         parser.error("--fit-bin-width-ps must be positive")
     energy_ids, energy_residuals = read_residuals(args.energy)
@@ -295,6 +414,9 @@ def main(argv=None):
         "jointly selected central events, not truncation-corrected likelihood. "
         "Interpret component sigmas only for the retained subset, under the "
         "unit-loading, pairwise-independent additive model.")
+    gmm_summary, gmm_responsibilities = fit_bivariate_gmm(
+        energy, timing, seed=args.seed, n_init=args.gmm_n_init)
+    results["bivariate_gmm"] = gmm_summary
     results.update(difference_statistics(energy, timing))
     results.update(ctr_quadrature_comparison(
         energy, timing, bin_width_ps=args.fit_bin_width_ps, seed=args.seed))
@@ -319,6 +441,14 @@ def main(argv=None):
     save_plot(energy, timing, args.output)
     save_difference_plot(energy, timing, args.output)
     save_gaussian_component_plot(results["gaussian_component_by_clipping"], args.output)
+    save_bivariate_gmm_plot(energy, timing, gmm_summary, gmm_responsibilities,
+                            args.output, seed=args.seed)
+    with (args.output / "gmm_event_responsibilities.csv").open(
+            "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["event_id", "p_core", "p_tail"])
+        writer.writerows(zip(ids.tolist(), gmm_responsibilities[:, 0].tolist(),
+                             gmm_responsibilities[:, 1].tolist()))
     print(f"Matched events: {len(ids)} | Pearson r={results['pearson_r']:.5f} "
           f"(p={results['pearson_p_value']:.3g}) | "
           f"Spearman rho={results['spearman_rho']:.5f} "
@@ -339,6 +469,15 @@ def main(argv=None):
               f"| sigma_timing={fmt(fit['sigma_timing_specific_ps'])} ps "
               f"| f_timing={fit['fraction_common_timing']:.4f} "
               f"| admissible={fit['physically_admissible']}", flush=True)
+    print("Bivariate 2-Gaussian mixture:", flush=True)
+    for part in gmm_summary["components"]:
+        print(f"  {part['label']}: weight={part['weight']:.4f} "
+              f"| sigma_E={part['sigma_energy_ps']:.3f} ps "
+              f"| sigma_T={part['sigma_timing_ps']:.3f} ps "
+              f"| rho={part['correlation']:.5f}", flush=True)
+    print(f"  delta_rho(tail-core)={gmm_summary['delta_correlation_tail_minus_core']:.5f} "
+          f"| delta_BIC(1-2)={gmm_summary['delta_bic_one_minus_two']:.1f} "
+          f"| converged={gmm_summary['converged']}", flush=True)
     print(f"Difference std={results['difference_std_ps']:.3f} ps | "
           f"quadrature prediction={results['predicted_extra_std_ps_if_timing_is_common_only']} ps",
           flush=True)
