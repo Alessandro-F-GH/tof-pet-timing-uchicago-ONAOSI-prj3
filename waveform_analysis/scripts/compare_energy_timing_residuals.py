@@ -67,7 +67,7 @@ def robust_start(points):
     return center, cov
 
 
-def fit_gaussian_core(points, fit_fraction=.95, max_iter=100, tol=1e-6):
+def fit_gaussian_core(points, fit_fraction=.99, max_iter=100, tol=1e-6):
     """Iteratively fit a bivariate Gaussian core with radial-truncation correction.
 
     An inlier is selected using squared Mahalanobis distance <= chi2.ppf(p,2).
@@ -183,7 +183,7 @@ def core_expected_bin_counts(edges, core, axis, n):
     return n * np.diff(core_cdf(edges, mu, sd))
 
 
-def analyze_distribution(points, *, fit_fraction=.95, tail_fraction=.999,
+def analyze_distribution(points, *, fit_fraction=.99, tail_fraction=.999,
                          seed=42, n_reference=300000):
     core = fit_gaussian_core(points, fit_fraction=fit_fraction)
     threshold = float(chi2.ppf(tail_fraction, df=2))
@@ -333,7 +333,7 @@ def jsonable(value):
     return value
 
 
-def analyze(energy_file, timing_file, output, *, fit_fraction=.95,
+def analyze(energy_file, timing_file, output, *, fit_fraction=.99,
             tail_fraction=.999, seed=42, n_reference=300000):
     _, led, ml = align_prediction_pairs(load_predictions(energy_file),
                                         load_predictions(timing_file))
@@ -644,8 +644,8 @@ def main(argv=None):
                         help="Directory with UC/ and FBK/, each containing "
                              "energy_predictions.npz and timing_predictions.npz")
     parser.add_argument("--output", type=Path, default=Path("core_tail_results"))
-    parser.add_argument("--fit-fraction", type=float, default=.95,
-                        help="Nominal central Gaussian coverage for iterative fit")
+    parser.add_argument("--fit-fraction", type=float, default=.99,
+                        help="Nominal central Gaussian coverage for iterative fit; 0.99 is a 3.035-sigma Mahalanobis radius")
     parser.add_argument("--tail-fraction", type=float, default=.999,
                         help="Nominal Gaussian envelope used to flag extreme events")
     parser.add_argument("--seed", type=int, default=42)
