@@ -15,7 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.stats import chi2, norm, pearsonr
+from scipy.stats import chi2, norm
 
 
 def load_predictions(path):
@@ -215,35 +215,48 @@ def analyze_distribution(points, *, fit_fraction=.95, tail_fraction=.999,
 
 
 def plot_core_histograms(led, ml, summaries, output, bin_width=10.):
-    """Only a central Gaussian is fitted; no Gaussian curve fitted to tails."""
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex="col")
+    """Overlay LED/ML observed counts and fitted Gaussian cores per channel.
+
+    The y-axis is set using the actual observed peak and fitted peak, not
+    extrapolated low-density tails. The x-axis remains full-range to expose
+    rare anomalous events, and counts are plotted with logarithmic scale.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13.2, 5), squeeze=False)
     for j, channel in enumerate(("Energy", "Timing")):
-        extent = max(200., np.ceil(max(np.max(np.abs(led[:, j])),
-                                       np.max(np.abs(ml[:, j]))) / bin_width)*bin_width)
-        edges = np.arange(-extent, extent+1.5*bin_width, bin_width)
-        centers = (edges[:-1] + edges[1:])/2
-        for i, (label, pairs, summary) in enumerate((
-            ("LED", led, summaries["led"]),
-            ("After ML", ml, summaries["ml"]),
-        )):
-            ax = axes[i, j]
+        ax = axes[0, j]
+        max_abs = max(float(np.max(np.abs(led[:, j]))),
+                      float(np.max(np.abs(ml[:, j]))))
+        extent = max(200., np.ceil(max_abs / bin_width) * bin_width)
+        edges = np.arange(-extent, extent + 1.5 * bin_width, bin_width)
+        centers = (edges[:-1] + edges[1:]) / 2
+        peak = 1.
+        for state, pairs, color, label in (
+            ("led", led, "tab:orange", "LED"),
+            ("ml", ml, "tab:blue", "ML"),
+        ):
+            core = summaries[state]["core_gaussian_fit"]
             counts = np.histogram(pairs[:, j], bins=edges)[0]
-            expected = core_expected_bin_counts(edges, summary["core_gaussian_fit"],
-                                                j, len(pairs))
-            ax.stairs(counts, edges, color="black", label="Observed counts")
-            ax.plot(centers, expected, color="tab:blue", lw=1.6,
-                    label="Gaussian core extrapolation")
-            ax.set_yscale("log")
-            ax.set_ylim(bottom=.8)
-            ax.set_title(f"{label} — {channel}")
-            ax.set_xlabel("Residual (ps)")
-            ax.set_ylabel(f"Events per {bin_width:g} ps (log)")
-            ax.legend(fontsize=8)
-            ax.grid(alpha=.2)
-    fig.suptitle("Gaussian core fits; empirical tails not parametrically modeled")
+            expected = core_expected_bin_counts(edges, core, j, len(pairs))
+            peak = max(peak, float(counts.max()), float(expected.max()))
+            # Zero-count bins are not drawn on the logarithmic axis.
+            ax.stairs(np.where(counts > 0, counts, np.nan), edges,
+                      color=color, linewidth=1.25,
+                      label=f"{label}: observed")
+            ax.plot(centers, np.where(expected > 0, expected, np.nan),
+                    color=color, linewidth=1.6, linestyle="--",
+                    label=f"{label}: fitted Gaussian core")
+        ax.set_yscale("log")
+        ax.set_ylim(0.8, peak * 1.25)
+        ax.set_xlim(edges[0], edges[-1])
+        ax.set_xlabel("Coincidence residual (ps)")
+        ax.set_ylabel(f"Observed / expected events per {bin_width:g} ps")
+        ax.set_title(channel)
+        ax.legend(fontsize=9)
+        ax.grid(alpha=.2)
+    fig.suptitle("LED vs ML: observed distributions and Gaussian-core fits")
     fig.tight_layout()
-    fig.savefig(output / "gaussian_core_distributions.png", dpi=190)
-    fig.savefig(output / "gaussian_core_distributions.pdf")
+    fig.savefig(output / "led_vs_ml_core_distributions.png", dpi=190)
+    fig.savefig(output / "led_vs_ml_core_distributions.pdf")
     plt.close(fig)
 
 
@@ -269,8 +282,8 @@ def plot_scatter(led, ml, summaries, tail_masks, output, seed=42):
         ax.grid(alpha=.2)
     fig.suptitle("Paired energy and timing residuals")
     fig.tight_layout()
-    fig.savefig(output / "core_and_empirical_tails.png", dpi=190)
-    fig.savefig(output / "core_and_empirical_tails.pdf")
+    fig.savefig(output / "led_vs_ml_joint_scatter.png", dpi=190)
+    fig.savefig(output / "led_vs_ml_joint_scatter.pdf")
     plt.close(fig)
 
 
@@ -291,8 +304,8 @@ def plot_radial_exceedance(distances, summaries, output):
     ax.legend()
     ax.grid(alpha=.2)
     fig.tight_layout()
-    fig.savefig(output / "radial_tail_exceedance.png", dpi=190)
-    fig.savefig(output / "radial_tail_exceedance.pdf")
+    fig.savefig(output / "core_radial_exceedance.png", dpi=190)
+    fig.savefig(output / "core_radial_exceedance.pdf")
     plt.close(fig)
 
 
