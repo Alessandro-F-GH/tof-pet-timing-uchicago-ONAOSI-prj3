@@ -93,3 +93,50 @@ def test_standalone_end_to_end(tmp_path):
     for filename in ("led_vs_ml_core_distributions.png", "led_vs_ml_joint_scatter.pdf",
                      "core_radial_exceedance.png"):
         assert (tmp_path / "output" / filename).is_file()
+
+
+def test_two_board_directory_and_comparison(tmp_path):
+    from waveform_analysis.scripts.compare_energy_timing_residuals import (
+        resolve_board_files, compare_boards, main,
+    )
+    rng = np.random.default_rng(123)
+    root = tmp_path / "predictions"
+    n = 1500
+    for board, scale in (("UC", 1.), ("FBK", 1.1)):
+        folder = root / board
+        folder.mkdir(parents=True)
+        ids = rng.permutation(n)
+        common = rng.normal(0, 25 * scale, n)
+        extreme = rng.random(n) < .02
+        common[extreme] += rng.normal(0, 350, extreme.sum())
+        energy = common + rng.normal(0, 40, n)
+        timing = common + rng.normal(0, 15, n)
+        np.savez(folder / "energy_predictions.npz",
+                 event_id=ids, led_residual_ps=energy,
+                 corrected_ps=energy*.85)
+        np.savez(folder / "timing_predictions.npz",
+                 event_id=ids[::-1], led_residual_ps=timing[::-1],
+                 corrected_ps=(timing*.9)[::-1])
+        assert all(p.exists() for p in resolve_board_files(root, board).values())
+    output = tmp_path / "combined_results"
+    main(["--predictions-root", str(root), "--output", str(output),
+          "--reference-events", "5000", "--bootstrap-resamples", "50"])
+    result = json.loads((output / "uc_fbk_comparison.json").read_text())
+    assert result["bootstrap_resamples"] == 50
+    assert "outside_core" in result["states"]["led"]
+    assert "fitted_core" in result["states"]["ml"]
+    for filename in ("uc_vs_fbk_core_distributions.png",
+                     "uc_vs_fbk_joint_scatter.pdf"):
+        assert (output / filename).is_file()
+    for board in ("UC", "FBK"):
+        assert (output / board / "core_tail_summary.json").is_file()
+
+
+def test_board_file_lookup_rejects_ambiguous_names(tmp_path):
+    from waveform_analysis.scripts.compare_energy_timing_residuals import resolve_board_files
+    board = tmp_path / "UC"
+    board.mkdir()
+    for filename in ("energy_predictions.npz", "energy.npz", "timing_predictions.npz"):
+        (board / filename).write_bytes(b"example")
+    with pytest.raises(ValueError, match="exactly one"):
+        resolve_board_files(tmp_path, "UC")
