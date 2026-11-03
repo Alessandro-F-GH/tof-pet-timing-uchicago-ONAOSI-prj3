@@ -342,6 +342,68 @@ def waveform_groups_from_gmm(energy, timing, gmm_summary, responsibilities):
     return groups
 
 
+def resolve_prepared_from_cache(cache_root, channel, role, prediction_ids, window="wide"):
+    """Find a prepared dataset by semantic cache alias or bundle manifest.
+
+    Preference is for named aliases. Multiple candidates are disambiguated by
+    exact event-ID population (the predictions may be a subset). No dataset
+    is silently selected when more than one candidate matches.
+    """
+    root = Path(cache_root).expanduser().resolve()
+    if root.name == "artifact_store":
+        root = root.parent
+    if not root.is_dir():
+        raise FileNotFoundError(f"Cache root not found: {root}")
+    candidates = list(root.glob(f"datasets/*/*/{channel}/{window}/{role}"))
+    # Older/portable bundles may expose only product hashes and a manifest.
+    manifests = [
+        *root.glob("*.json"),
+        *root.glob("artifact_store/*.json"),
+        *root.glob("preprocessing/*.json"),
+    ]
+    for manifest_path in manifests:
+        try:
+            bundle = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("prepared_runs"), list):
+            continue
+        for run in bundle["prepared_runs"]:
+            if (run.get("mode") != f"{channel}_to_{channel}"
+                    or run.get("window_name") != window):
+                continue
+            product_id = run.get("datasets", {}).get(role)
+            if not product_id:
+                continue
+            # Product type name is resolved from directory structure, not guessed.
+            product_root = root / "artifact_store" / "products"
+            if product_root.is_dir():
+                candidates.extend(path for path in product_root.rglob(str(product_id))
+                                  if path.is_dir())
+    matched = []
+    for candidate in sorted(set(candidates)):
+        location = resolve_alias(candidate)
+        try:
+            cached_ids = np.load(location / "event_index.npy", mmap_mode="r")
+        except (FileNotFoundError, OSError):
+            continue
+        if len(cached_ids) < len(prediction_ids):
+            continue
+        if len(np.intersect1d(prediction_ids, cached_ids)) != len(prediction_ids):
+            continue
+        matched.append(location)
+    # Aliases may reference the same underlying product as the manifest.
+    matched = sorted(set(matched))
+    if len(matched) != 1:
+        raise ValueError(
+            f"Expected exactly one {channel}/{window}/{role} prepared cache "
+            f"matching all {len(prediction_ids)} prediction IDs under {root}, "
+            f"found {len(matched)}: {[str(p) for p in matched]}. "
+            "Use --energy-prepared/--timing-prepared to select explicitly."
+        )
+    return matched[0]
+
+
 def prepared_waveform_means(prepared_path, channel, ids, groups):
     """Read the already-prepared normalized waveforms, aligned by event_index.
 
@@ -497,6 +559,10 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--show-waveforms", action="store_true",
                         help="Open interactive waveform comparison for GMM left/core/right groups")
+    parser.add_argument("--cache-root", type=Path,
+                        help="Prepared cache bundle root; resolves energy/timing wide waveform paths automatically")
+    parser.add_argument("--dataset-role", choices=("blind", "development"), default="blind",
+                        help="Prepared waveform role (default: blind)")
     parser.add_argument("--energy-prepared", type=Path,
                         help="Prepared energy dataset directory or named alias, same role as predictions")
     parser.add_argument("--timing-prepared", type=Path,
@@ -504,8 +570,8 @@ def main(argv=None):
     parser.add_argument("--gmm-n-init", type=int, default=5,
                         help="GMM random initializations (default: 5)")
     args = parser.parse_args(argv)
-    if args.show_waveforms and (args.energy_prepared is None or args.timing_prepared is None):
-        parser.error("--show-waveforms requires --energy-prepared and --timing-prepared")
+    if args.show_waveforms and args.cache_root is None and (args.energy_prepared is None or args.timing_prepared is None):
+        parser.error("--show-waveforms requires --cache-root or both explicit prepared paths")
     if args.gmm_n_init < 1:
         parser.error("--gmm-n-init must be >= 1")
     if args.fit_bin_width_ps <= 0:
@@ -595,9 +661,19 @@ def main(argv=None):
           flush=True)
     print(f"Results: {args.output}", flush=True)
     if args.show_waveforms:
+        energy_prepared = args.energy_prepared
+        timing_prepared = args.timing_prepared
+        if energy_prepared is None:
+            energy_prepared = resolve_prepared_from_cache(
+                args.cache_root, "energy", args.dataset_role, ids)
+        if timing_prepared is None:
+            timing_prepared = resolve_prepared_from_cache(
+                args.cache_root, "timing", args.dataset_role, ids)
+        print(f"Waveform cache: energy={energy_prepared} | timing={timing_prepared}",
+              flush=True)
         show_grouped_waveforms(
             ids, energy, timing, gmm_summary, gmm_responsibilities,
-            args.energy_prepared, args.timing_prepared,
+            energy_prepared, timing_prepared,
         )
 
 
