@@ -38,10 +38,14 @@ The truncation covariance correction is derived under a bivariate Gaussian core 
 ## Outputs
 
 - `core_tail_summary.json`: core parameters, outside-core counts, empirical tail correlations/covariances, and selection-only Gaussian reference, LED and ML separately.
-- `gaussian_core_distributions.png/.pdf`: measured energy/timing **event counts** and Gaussian-core extrapolation to the full range (no parametric tail fit).
-- `core_and_empirical_tails.png/.pdf`: paired residual scatter, colored by whether events lie inside the fitted core envelope; all outside-core points shown with higher opacity.
-- `radial_tail_exceedance.png/.pdf`: observed radial survival function versus `chi2(df=2)` survival for a Gaussian core.
+- `led_vs_ml_core_distributions.png/.pdf`: LED and ML measured **event counts** overlaid per channel, alongside their separate fitted Gaussian cores. The y-axis is logarithmic and capped just above the observed/fitted count peak. No tail distribution is fitted.
+- `led_vs_ml_joint_scatter.png/.pdf`: paired energy–timing scatter for LED and ML; **all points are gray**, with no artificial colored core boundary.
+- `core_radial_exceedance.png/.pdf`: observed radial survival function versus `chi2(df=2)` survival for a Gaussian core.
 
 The fitted `cov_energy_timing_ps2` is the core covariance, whereas outside-core covariance is an **empirical** statistic on a selected subset. Neither is automatically a physically identifiable common-noise variance; that interpretation requires equal common-error loadings and independent channel-specific errors.
 
 Importantly, `numerically_converged` indicates iterative parameter stability, **not** a test of Gaussianity, and `tail_definition.nominal_gaussian_probability_outside` defines a reference fraction, not the fitted proportion of a second population. LED and ML classifications are fitted separately and are not themselves a paired correction-effect measure.
+
+## Terminal report
+
+The terminal output is intentionally verbose and self-contained. It explains the difference between the fit region and the outside-core detection region, reports numerical convergence and fitted core moments, then empirical outside-core statistics and the Gaussian-selection-only reference. Numerical convergence does **not** demonstrate Gaussian goodness of fit. The output names listed in the report are the only plots created by the current version; older plots from previous runs may remain if the same output directory is reused.
