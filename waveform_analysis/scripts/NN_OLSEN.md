@@ -273,3 +273,31 @@ pooling. This overwrites the previous InceptionTime implementation: its
 checkpoints are incompatible because the output head shape changed. Use a
 fresh output directory when comparing experiments, or explicitly overwrite the
 old run knowing the original outputs will be lost. The original CNN is unchanged.
+
+
+## Normalized full-signal kNN (PowerShell/CPU)
+
+Unlike the older conditional kNN, this diagnostic uses the **same train-only
+per-time-sample mean and scale** as the neural full-signal experiments. Each
+query is matched to the 74,714 training reference events only, never itself
+or other tuning/holdout events. Entire paired waveforms of 4,159 samples
+per detector are used; no W/R windows. All nearest neighbours are computed
+by exact Euclidean distance in standardized waveform space, with reference
+blocks to limit RAM. Tuning selects k and inverse-distance versus uniform
+weights, holdout is evaluated only with that frozen choice.
+
+```powershell
+python -m waveform_analysis.scripts.evaluate_full_signal_knn `
+  --model-dir ".\\waveform_analysis\\results\\UC\\multirocket_rdst\\energy\\wide\\direct_multirocket_rdst" `
+  --cache-root "$HOME\\UC_cache" `
+  --output-root "$HOME\\full_signal_knn\\UC_normalized" `
+  --k 1 3 5 10 20 50 100 `
+  --weighted `
+  --reference-batch 1024 `
+  --query-batch 16
+```
+
+Saved: `summary.json`, `metrics.csv`, `diagnostics.npz`, and
+`evaluation.log`. This is a computationally intensive exact kNN
+baseline on CPU; adjust query/reference batch sizes to fit RAM.
+Tests: `python -m pytest waveform_analysis/tests/test_full_signal_knn.py -q`.
