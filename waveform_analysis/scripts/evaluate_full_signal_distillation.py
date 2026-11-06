@@ -167,6 +167,7 @@ def run(args):
             bottleneck=args.inception_bottleneck,
             depth=args.inception_depth,
             kernel_size=args.inception_kernel_size,
+            bins=args.inception_bins,
         ).to(device)
     else:
         raise ValueError(f"Unsupported full-signal architecture: {architecture}")
@@ -248,6 +249,7 @@ def run(args):
             "inception_bottleneck": args.inception_bottleneck,
             "inception_depth": args.inception_depth,
             "inception_kernel_size": args.inception_kernel_size,
+            "inception_bins": args.inception_bins,
         },
         "input_normalization": args.input_normalization,
         "input_sample_mean": mean_array,
@@ -311,6 +313,7 @@ def _parser():
     p.add_argument("--inception-bottleneck", type=int, default=32)
     p.add_argument("--inception-depth", type=int, default=6)
     p.add_argument("--inception-kernel-size", type=int, default=39)
+    p.add_argument("--inception-bins", type=int, default=8)
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--temporal-bins", type=int, default=8)
