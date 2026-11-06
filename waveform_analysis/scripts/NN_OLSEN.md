@@ -100,3 +100,59 @@ Tests:
 ```powershell
 python -m pytest waveform_analysis/tests/test_nn_olsen.py -q
 ```
+
+
+## Parallel temporal CNN variant (experimental)
+
+The original `--architecture mlp` remains unchanged. The separate
+`--architecture temporal_cnn` variant tests whether temporal inductive
+bias and higher capacity improve conditional fidelity.
+
+- Shared **five-channel temporal input**: two masked original waveforms,
+  two explicit presence masks, and a deterministic absolute-time coordinate.
+- Initial Conv1d(kernel=9, stride=4), then residual temporal blocks using
+  kernels 7 and 5, progressive downsampling and increasing dilation.
+- GroupNorm (instead of BatchNorm) avoids mixing running statistics from
+  the radically different W/R mask distributions.
+- Adaptive average and max pooling preserve **eight ordered temporal bins**
+  (by default) before a 3-layer dense regression head. No global
+  permutation-invariant pooling; window position remains identifiable.
+- The exact same `augment`, `paired_batch`, `coalitions`,
+  `predict_coalitions`, saved targets, disjoint train/tuning/holdout split,
+  early stopping criterion, and variance diagnostics are reused.
+- This is an **original temporal architectural variant** of the
+  NN-Olsen-style objective, **not** the published Olsen architecture.
+  Any gain should be attributed to the architecture in this comparison,
+  not presented as a replication of published NN-Olsen results.
+
+Run after `git pull` from repository root:
+
+```powershell
+python -m waveform_analysis.scripts.evaluate_nn_olsen `
+  --architecture temporal_cnn `
+  --model-dir ".\\waveform_analysis\\results\\UC\\multirocket_rdst\\energy\\wide\\direct_multirocket_rdst" `
+  --cache-root "$HOME\\UC_cache" `
+  --output-root "$HOME\\conditional_temporal_cnn\\UC" `
+  --window-samples 20 `
+  --stride-samples 20 `
+  --tuning-queries 500 `
+  --holdout-queries 500 `
+  --width 64 `
+  --depth 3 `
+  --temporal-bins 8 `
+  --epochs 50 `
+  --batch-size 128 `
+  --learning-rate 0.0003 `
+  --patience 8
+```
+
+The CNN costs more memory and computation than the MLP. This example uses
+a smaller batch and learning rate for stability; for an architecture-only
+comparison, keep all hyperparameters identical. Run results in **separate
+output roots**; `temporal_conditional_cnn.pt` is the CNN checkpoint.
+No existing NN-Olsen output is overwritten.
+
+Tests:
+```powershell
+python -m pytest waveform_analysis/tests/test_nn_olsen.py waveform_analysis/tests/test_temporal_conditional_cnn.py -q
+```
