@@ -156,3 +156,38 @@ Tests:
 ```powershell
 python -m pytest waveform_analysis/tests/test_nn_olsen.py waveform_analysis/tests/test_temporal_conditional_cnn.py -q
 ```
+
+
+## Optional streaming per-time-sample standardization
+
+Enable `--input-normalization per_sample` on either architecture. For each
+detector channel and temporal index `t`, fit `mean[c,t]` and `std[c,t]`
+on **training events only** in two float64 streaming passes. Use
+`safe_std[c,t] = max(std[c,t], 0.05 * detector_rms_std[c])` by default
+(the floor is configurable with `--normalization-scale-floor-ratio`).
+Then form masked inputs **per minibatch** as
+`((wave - mean) / safe_std) * observed_mask`. Missing entries stay exactly
+zero and explicit masks remain unchanged. Never normalize after masking:
+that would expose a mean-derived pattern in hidden positions. We do not
+create or persist a second full waveform dataset.
+
+To compare against the original CNN, specify a **new output directory**
+since this is a different trained model. Fitted statistics and the scale-floor
+metadata are stored inside the checkpoint; summary.json records settings.
+
+Example:
+
+```bash
+python -m waveform_analysis.scripts.evaluate_nn_olsen \
+  --architecture temporal_cnn \
+  --input-normalization per_sample \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/conditional_temporal_cnn/UC_per_sample" \
+  --window-samples 20 --stride-samples 20 \
+  --tuning-queries 500 --holdout-queries 500 \
+  --width 64 --depth 3 --temporal-bins 8 \
+  --epochs 50 --batch-size 256 --learning-rate 0.001 --patience 8
+```
+
+Run `python -m pytest waveform_analysis/tests/test_sample_normalization.py -q`.
