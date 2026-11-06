@@ -23,6 +23,7 @@ import numpy as np
 import torch
 
 from waveform_analysis.engine.conditional_knn import tshap_windows
+from waveform_analysis.engine.temporal_conditional_cnn import TemporalConditionalCNN
 from waveform_analysis.engine.nn_olsen import (
     NNOlsenSurrogate, coalitions, paired_batch, predict_coalitions,
 )
@@ -82,7 +83,10 @@ def _evaluate(model, waves, labels, indices, starts, keep, args, device, log, na
 def run(args):
     root = args.output_root.expanduser().resolve()
     log = _logger(root)
-    log.info("NN-Olsen-style benchmark | no original model inference | W/R complementary masks")
+    architecture = getattr(args, "architecture", "mlp")
+    if architecture not in ("mlp", "temporal_cnn"):
+        raise ValueError(f"Unsupported surrogate architecture: {architecture}")
+    log.info("CONDITIONAL SURROGATE | architecture=%s | no original model inference | W/R complementary masks", architecture)
     log.info("Arguments=%s", vars(args))
     waves, predictions, keep, provenance = _load_inputs(args, log)
     starts, keep = tshap_windows(waves.shape[-1], args.window_samples,
@@ -111,7 +115,7 @@ def run(args):
     log.info("TARGET | cached original model predictions only, shape=%s", predictions.shape)
     log.info("WINDOWS | count=%d width=%d stride=%d starts=%s",
              len(starts), args.window_samples, args.stride_samples, starts.tolist())
-    log.info("METHOD | architecture=fully connected ELU+BatchNorm residual NN, shared across all TSHAP windows")
+    log.info("METHOD | architecture=%s, shared across all TSHAP windows", architecture)
     log.info("METHOD | masks=(W, complement), paired for each sampled event/window, loss=MSE")
     log.info("METHOD | train on n=%d reference events (no reference cap), never blind", len(train_idx))
     # The original waveforms are passed to the model unchanged; only a binary
@@ -129,7 +133,13 @@ def run(args):
         raise ValueError("Original model predictions are effectively constant")
     log.info("ORIGINAL TRAIN TARGET | mean=%.6f ps | variance=%.6f ps2 | std=%.6f ps",
              ymean, ystd**2, ystd)
-    model = NNOlsenSurrogate(waves.shape[-1], width=args.width, depth=args.depth).to(device)
+    if architecture == "mlp":
+        model = NNOlsenSurrogate(waves.shape[-1], width=args.width, depth=args.depth).to(device)
+    else:
+        model = TemporalConditionalCNN(waves.shape[-1], width=args.width, depth=args.depth,
+                                       bins=args.temporal_bins).to(device)
+    log.info("MODEL | %s | parameters=%d", type(model).__name__,
+             sum(p.numel() for p in model.parameters()))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
                                  weight_decay=args.weight_decay)
     masks = coalitions(starts, args.window_samples, keep, device=device)
@@ -205,15 +215,18 @@ def run(args):
     log.info("UNCONDITIONAL REFERENCE | full training predictions mean=%.6f ps, std=%.6f ps",
              ymean, ystd)
     log.info("DIAGNOSTIC NOTE | conditional estimates have smaller expected population variance than original predictions at exact conditional optimum; finite-sample errors may violate this inequality.")
+    checkpoint_name = "nn_olsen.pt" if architecture == "mlp" else "temporal_conditional_cnn.pt"
     torch.save({
         "model_state": best_state,
+        "architecture_name": architecture,
         "architecture": {"n_samples": int(waves.shape[-1]), "width": args.width,
-                         "depth": args.depth},
+                         "depth": args.depth,
+                         "temporal_bins": args.temporal_bins if architecture == "temporal_cnn" else None},
         "target_mean_ps": ymean, "target_std_ps": ystd,
         "window_starts": starts.tolist(), "window_samples": args.window_samples,
         "retained_sample_mask": keep.tolist(), "provenance": provenance,
         "best_epoch": best_epoch,
-    }, root / "nn_olsen.pt")
+    }, root / checkpoint_name)
     np.savez_compressed(root / "diagnostics.npz",
         tuning_query_rows=tune_idx, holdout_query_rows=hold_idx,
         training_rows=train_idx, window_starts=starts,
@@ -223,7 +236,8 @@ def run(args):
         holdout_conditional_prediction_ps=hold_est,
     )
     summary = {
-        "method": "NN-Olsen-style masked surrogate regression with paired TSHAP W/R mask adaptation",
+        "method": ("NN-Olsen MLP" if architecture == "mlp" else "Temporal residual CNN")
+                  + " masked surrogate regression with paired TSHAP W/R masks",
         "source_model_predict_calls": 0, "source_model_loaded": False,
         "source_feature_transform_calls": 0,
         "provenance": provenance,
@@ -232,7 +246,10 @@ def run(args):
             "stride_samples": args.stride_samples,
             "n_windows": len(starts), "training_events": len(train_idx),
             "tuning_events": len(tune_idx), "holdout_events": len(hold_idx),
-            "width": args.width, "depth": args.depth, "epochs_requested": args.epochs,
+            "architecture": architecture, "width": args.width, "depth": args.depth,
+            "temporal_bins": args.temporal_bins if architecture == "temporal_cnn" else None,
+            "model_parameters": sum(p.numel() for p in model.parameters()),
+            "epochs_requested": args.epochs,
             "epochs_run": len(history), "batch_size": args.batch_size,
             "learning_rate": args.learning_rate, "weight_decay": args.weight_decay,
             "patience": args.patience, "device": device,
@@ -259,6 +276,8 @@ def _parser():
     p.add_argument("--tuning-queries", type=int, default=500)
     p.add_argument("--holdout-queries", type=int, default=500)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--architecture", choices=["mlp", "temporal_cnn"], default="mlp")
+    p.add_argument("--temporal-bins", type=int, default=8)
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--epochs", type=int, default=50)
