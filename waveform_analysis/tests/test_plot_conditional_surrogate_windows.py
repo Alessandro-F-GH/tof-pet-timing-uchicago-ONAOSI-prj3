@@ -31,7 +31,7 @@ def test_plots_csv_and_all_metrics_without_waveform_sources(tmp_path):
     _write_case(mlp, offset=1.)
     _write_case(cnn, offset=2.)
     paths = generate(mlp, cnn, output, sample_period_ps=12.5)
-    assert len(paths) == 6
+    assert len(paths) == 7
     assert all(p.is_file() and p.stat().st_size > 0 for p in paths)
     with (output / "per_window_metrics.csv").open(newline="") as file:
         rows = list(csv.DictReader(file))
