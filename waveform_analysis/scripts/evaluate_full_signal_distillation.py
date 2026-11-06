@@ -72,7 +72,7 @@ def evaluate(model, waves, labels, indices, device, batch_size, ymean, ystd,
     return result, full_metrics(labels[indices], result)
 
 
-def _plots(output, target, prediction, title):
+def _plots(output, target, prediction, title, model_label="CNN"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -83,7 +83,7 @@ def _plots(output, target, prediction, title):
     lo = float(min(target.min(), prediction.min()))
     hi = float(max(target.max(), prediction.max()))
     ax.plot([lo, hi], [lo, hi], "k--", linewidth=1)
-    ax.set(xlabel="Original prediction (ps)", ylabel="CNN reconstruction (ps)",
+    ax.set(xlabel="Original prediction (ps)", ylabel=f"{model_label} reconstruction (ps)",
            title=title)
     ax.grid(alpha=0.2)
     fig.tight_layout()
@@ -93,8 +93,8 @@ def _plots(output, target, prediction, title):
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.scatter(target, residual, s=8, alpha=0.4, rasterized=True)
     ax.axhline(0, color="k", linestyle="--", linewidth=1)
-    ax.set(xlabel="Original prediction (ps)", ylabel="CNN - original (ps)",
-           title="Full-signal distillation | holdout residual")
+    ax.set(xlabel="Original prediction (ps)", ylabel=f"{model_label} - original (ps)",
+           title=f"Full-signal {model_label} | holdout residual")
     ax.grid(alpha=0.2)
     fig.tight_layout()
     fig.savefig(output / "holdout_residual_vs_original.png", dpi=180)
@@ -103,7 +103,7 @@ def _plots(output, target, prediction, title):
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.hist(residual, bins=70)
     ax.set(xlabel="CNN - original (ps)", ylabel="Events",
-           title="Full-signal distillation | holdout residual distribution")
+           title=f"Full-signal {model_label} | holdout residual distribution")
     fig.tight_layout()
     fig.savefig(output / "holdout_residual_hist.png", dpi=180)
     plt.close(fig)
@@ -289,7 +289,8 @@ def run(args):
     }
     (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _plots(root, predictions[holdout], holdout_prediction,
-           f"Full-signal {architecture}: original vs reconstructed (holdout)")
+           f"Full-signal {architecture}: original vs reconstructed (holdout)",
+           model_label=architecture)
     log.info("COMPLETE | %s | no original model inference", root)
     return summary
 
