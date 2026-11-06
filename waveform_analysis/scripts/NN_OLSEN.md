@@ -191,3 +191,40 @@ python -m waveform_analysis.scripts.evaluate_nn_olsen \
 ```
 
 Run `python -m pytest waveform_analysis/tests/test_sample_normalization.py -q`.
+
+
+## Full-signal CNN distillation control (no temporal windows)
+
+Before relying on the conditional W/R surrogate, test whether the **same
+architecture** can reproduce the cached original-model predictions with
+the *entire paired waveform observable*. This is a **separately trained
+model** (do not extrapolate the W/R-trained model to an unseen full mask).
+
+Uses exactly the same random train/tuning/holdout event selection as the
+conditional experiment (same seed and cohort sizes), cached predictions,
+train-only two-pass normalization, CNN settings, normalized-MSE training,
+and early stopping on tuning RMSE. The input is all observed and every
+mask bit equals one; no temporal coalitions, window sampling, or feature
+transform from the original model.
+
+```bash
+python -m waveform_analysis.scripts.evaluate_full_signal_distillation \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/full_signal_distillation/UC" \
+  --input-normalization per_sample \
+  --tuning-queries 500 --holdout-queries 500 \
+  --width 64 --depth 3 --temporal-bins 8 \
+  --epochs 50 --batch-size 256 --learning-rate 0.001 --patience 8
+```
+
+Outputs: `summary.json` (tuning and untouched holdout RMSE, MAE, error
+quantiles, bias, correlation and prediction spread), `diagnostics.npz`
+with per-event predictions/targets, `temporal_cnn_full_signal.pt`
+including normalization statistics, and three holdout diagnostic PNGs
+(scatter, residual scatter, residual histogram).
+
+A high full-signal holdout error would flag approximation/optimization
+limits of this CNN; a low error would strengthen the case for investigating
+masked conditional estimation separately. Low full-signal error alone does
+not establish accurate Shapley attributions.
