@@ -141,6 +141,24 @@ def _scores(errors):
             "by_window_rmse": np.sqrt(np.mean(errors * errors, axis=0))}
 
 
+def _variance_diagnostics(errors, originals):
+    """Output spread versus saved full-model predictions; [coalition,k,weight]."""
+    originals = np.asarray(originals, dtype=np.float64)
+    estimated = errors + originals[:, None, None, None, None]
+    original_std = float(np.std(originals))
+    std = np.std(estimated, axis=(0, 1))
+    return {
+        "original_mean_ps": float(np.mean(originals)),
+        "original_variance_ps2": float(np.var(originals)),
+        "original_std_ps": original_std,
+        "estimated_mean_ps": np.mean(estimated, axis=(0, 1)).tolist(),
+        "estimated_variance_ps2": np.var(estimated, axis=(0, 1)).tolist(),
+        "estimated_std_ps": std.tolist(),
+        "estimated_to_original_std_ratio": (std / max(original_std, 1e-12)).tolist(),
+        "original_unconditional_rmse_ps": original_std,
+    }
+
+
 def _choose(errors, k_values, weighted):
     # Balance W and complement equally. Each event and window contributes once.
     mse = np.mean(errors * errors, axis=(0, 1))
@@ -241,11 +259,19 @@ def run(args):
     tune, near_tune, rad_tune = _evaluate(engine, tuning_ids, predictions, log,
                                           "TUNING", args.log_every)
     tuning_scores = _scores(tune)
+    tuning_spread = _variance_diagnostics(tune, predictions[tuning_ids])
+    log.info("TUNING SPREAD | original std=%.4f ps, variance=%.4f ps2 | conditional std [W,R,k,weights]=%s",
+             tuning_spread["original_std_ps"], tuning_spread["original_variance_ps2"],
+             np.round(tuning_spread["estimated_std_ps"], 4).tolist())
     selection = _choose(tune, k, args.weighted)
     log.info("Selection on tuning only: %s", json.dumps(selection))
     test, near_test, rad_test = _evaluate(engine, holdout_ids, predictions, log,
                                           "HOLDOUT", args.log_every)
     holdout_scores = _scores(test)
+    holdout_spread = _variance_diagnostics(test, predictions[holdout_ids])
+    log.info("HOLDOUT SPREAD | original std=%.4f ps, variance=%.4f ps2 | conditional std [W,R,k,weights]=%s",
+             holdout_spread["original_std_ps"], holdout_spread["original_variance_ps2"],
+             np.round(holdout_spread["estimated_std_ps"], 4).tolist())
     test_choice = _selected_mse(test, selection, k)
     log.info("Independent LOO query holdout | selected single/separate k metrics: %s", test_choice)
     output = args.output_root.expanduser().resolve()
@@ -272,6 +298,8 @@ def run(args):
         "selection": selection, "holdout_selected": test_choice,
         "tuning_rmse_by_coalition": tuning_scores["rmse"].tolist(),
         "holdout_rmse_by_coalition": holdout_scores["rmse"].tolist(),
+        "tuning_prediction_spread": tuning_spread,
+        "holdout_prediction_spread": holdout_spread,
         "output_files": ["evaluation.log", "metrics.csv", "diagnostics.npz", "summary.json"],
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
