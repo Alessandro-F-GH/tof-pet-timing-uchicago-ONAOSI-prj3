@@ -24,6 +24,7 @@ import torch
 
 from waveform_analysis.engine.conditional_knn import tshap_windows
 from waveform_analysis.engine.temporal_conditional_cnn import TemporalConditionalCNN
+from waveform_analysis.engine.sample_normalization import fit_time_sample_stats, tensor_stats
 from waveform_analysis.engine.nn_olsen import (
     NNOlsenSurrogate, coalitions, paired_batch, predict_coalitions,
 )
@@ -58,7 +59,7 @@ def _metrics(estimated, true):
 
 
 def _evaluate(model, waves, labels, indices, starts, keep, args, device, log, name,
-              mean, std):
+              mean, std, *, sample_mean=None, sample_scale=None):
     start = time.monotonic()
     log.info("%s | evaluating %d held-out events x %d windows x 2 coalitions",
              name, len(indices), len(starts))
@@ -67,7 +68,8 @@ def _evaluate(model, waves, labels, indices, starts, keep, args, device, log, na
     for i in range(0, len(indices), args.eval_batch):
         ids = indices[i:i + args.eval_batch]
         prediction = predict_coalitions(model, waves[ids], starts, args.window_samples,
-                                        keep, batch_size=args.eval_batch, device=device)
+                                        keep, batch_size=args.eval_batch, device=device,
+                                        sample_mean=sample_mean, sample_scale=sample_scale)
         out[i:i+len(ids)] = prediction * std + mean
         if i == 0 or i + len(ids) == len(indices):
             log.info("%s | processed %d/%d queries | elapsed=%.1fs",
@@ -100,7 +102,7 @@ def run(args):
            args.width, args.depth) < 1:
         raise ValueError("Batch sizes, epochs, patience, width and depth must be positive")
     if args.batch_size < 2:
-        raise ValueError("Batch normalization needs training batch size >= 2")
+        raise ValueError("Training batch size must be >= 2")
     rng = np.random.default_rng(args.seed)
     selected = rng.choice(n, args.tuning_queries + args.holdout_queries, replace=False)
     tune_idx = selected[:args.tuning_queries]
@@ -138,6 +140,17 @@ def run(args):
     else:
         model = TemporalConditionalCNN(waves.shape[-1], width=args.width, depth=args.depth,
                                        bins=args.temporal_bins).to(device)
+    sample_mean, sample_scale, normalization_metadata = None, None, None
+    if args.input_normalization == "per_sample":
+        log.info("INPUT NORMALIZATION | fitting train-only per-time mean/std in two streaming passes")
+        mean_array, scale_array, normalization_metadata = fit_time_sample_stats(
+            waves, train_idx, chunk_size=args.normalization_chunk_size,
+            scale_floor_ratio=args.normalization_scale_floor_ratio,
+        )
+        sample_mean, sample_scale = tensor_stats(mean_array, scale_array, device=device)
+        log.info("INPUT NORMALIZATION | per_sample | %s", normalization_metadata)
+    else:
+        log.info("INPUT NORMALIZATION | none (legacy unmodified input)")
     log.info("MODEL | %s | parameters=%d", type(model).__name__,
              sum(p.numel() for p in model.parameters()))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
@@ -167,7 +180,9 @@ def run(args):
                                    dtype=torch.float32, device=device)
             target = torch.as_tensor(((predictions[ids] - ymean) / ystd).astype(np.float32),
                                      dtype=torch.float32, device=device)
-            features, pair_targets = paired_batch(wave, target, window_ix, masks)
+            features, pair_targets = paired_batch(
+                wave, target, window_ix, masks,
+                sample_mean=sample_mean, sample_scale=sample_scale)
             optimizer.zero_grad(set_to_none=True)
             predicted = model(features)
             loss = torch.mean((predicted - pair_targets) ** 2)
@@ -178,7 +193,8 @@ def run(args):
         train_mse = weighted_sum / max(n_outputs, 1)
         tune_out, tune_stats = _evaluate(model, waves, predictions, tune_idx,
                                          starts, keep, args, device, log,
-                                         f"TUNING EPOCH {epoch}", ymean, ystd)
+                                         f"TUNING EPOCH {epoch}", ymean, ystd,
+                                         sample_mean=sample_mean, sample_scale=sample_scale)
         tuning_mse = (tune_stats["rmse_ps"][0]**2 + tune_stats["rmse_ps"][1]**2) / 2
         history.append({"epoch": epoch, "train_normalized_mse": train_mse,
                         "tuning_mse_ps2": tuning_mse,
@@ -208,10 +224,12 @@ def run(args):
              best_epoch, best_loss)
     tune_est, tune_stats = _evaluate(model, waves, predictions, tune_idx,
                                      starts, keep, args, device, log,
-                                     "TUNING FINAL", ymean, ystd)
+                                     "TUNING FINAL", ymean, ystd,
+                                     sample_mean=sample_mean, sample_scale=sample_scale)
     hold_est, hold_stats = _evaluate(model, waves, predictions, hold_idx,
                                      starts, keep, args, device, log,
-                                     "HOLDOUT FINAL", ymean, ystd)
+                                     "HOLDOUT FINAL", ymean, ystd,
+                                     sample_mean=sample_mean, sample_scale=sample_scale)
     log.info("UNCONDITIONAL REFERENCE | full training predictions mean=%.6f ps, std=%.6f ps",
              ymean, ystd)
     log.info("DIAGNOSTIC NOTE | conditional estimates have smaller expected population variance than original predictions at exact conditional optimum; finite-sample errors may violate this inequality.")
@@ -223,6 +241,10 @@ def run(args):
                          "depth": args.depth,
                          "temporal_bins": args.temporal_bins if architecture == "temporal_cnn" else None},
         "target_mean_ps": ymean, "target_std_ps": ystd,
+        "input_normalization": args.input_normalization,
+        "input_sample_mean": None if sample_mean is None else mean_array,
+        "input_sample_scale": None if sample_scale is None else scale_array,
+        "input_normalization_metadata": normalization_metadata,
         "window_starts": starts.tolist(), "window_samples": args.window_samples,
         "retained_sample_mask": keep.tolist(), "provenance": provenance,
         "best_epoch": best_epoch,
@@ -249,12 +271,16 @@ def run(args):
             "architecture": architecture, "width": args.width, "depth": args.depth,
             "temporal_bins": args.temporal_bins if architecture == "temporal_cnn" else None,
             "model_parameters": sum(p.numel() for p in model.parameters()),
+            "input_normalization": args.input_normalization,
+            "normalization_chunk_size": args.normalization_chunk_size,
+            "normalization_scale_floor_ratio": args.normalization_scale_floor_ratio,
             "epochs_requested": args.epochs,
             "epochs_run": len(history), "batch_size": args.batch_size,
             "learning_rate": args.learning_rate, "weight_decay": args.weight_decay,
             "patience": args.patience, "device": device,
         },
         "best_epoch": best_epoch,
+        "input_normalization_metadata": normalization_metadata,
         "training_prediction_variance_ps2": ystd**2,
         "training_prediction_std_ps": ystd,
         "tuning": tune_stats, "holdout": hold_stats, "history": history,
@@ -278,6 +304,9 @@ def _parser():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--architecture", choices=["mlp", "temporal_cnn"], default="mlp")
     p.add_argument("--temporal-bins", type=int, default=8)
+    p.add_argument("--input-normalization", choices=["none", "per_sample"], default="none")
+    p.add_argument("--normalization-chunk-size", type=int, default=256)
+    p.add_argument("--normalization-scale-floor-ratio", type=float, default=0.05)
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--epochs", type=int, default=50)
