@@ -23,6 +23,7 @@ import torch
 from waveform_analysis.engine.nn_olsen import augment
 from waveform_analysis.engine.sample_normalization import fit_time_sample_stats, tensor_stats
 from waveform_analysis.engine.temporal_conditional_cnn import TemporalConditionalCNN
+from waveform_analysis.engine.inception_time_surrogate import InceptionTimeSurrogate
 from waveform_analysis.scripts.evaluate_conditional_knn import _load_inputs, _logger
 
 
@@ -156,8 +157,19 @@ def run(args):
         log.info("INPUT NORMALIZATION | per_sample | %s", normalization_details)
     else:
         log.info("INPUT NORMALIZATION | none")
-    model = TemporalConditionalCNN(waves.shape[-1], width=args.width,
-                                    depth=args.depth, bins=args.temporal_bins).to(device)
+    architecture = getattr(args, "architecture", "temporal_cnn")
+    if architecture == "temporal_cnn":
+        model = TemporalConditionalCNN(waves.shape[-1], width=args.width,
+                                        depth=args.depth, bins=args.temporal_bins).to(device)
+    elif architecture == "inception_time":
+        model = InceptionTimeSurrogate(
+            waves.shape[-1], filters=args.inception_filters,
+            bottleneck=args.inception_bottleneck,
+            depth=args.inception_depth,
+            kernel_size=args.inception_kernel_size,
+        ).to(device)
+    else:
+        raise ValueError(f"Unsupported full-signal architecture: {architecture}")
     log.info("MODEL | %s parameters=%d | device=%s",
              type(model).__name__, sum(p.numel() for p in model.parameters()), device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
@@ -224,12 +236,18 @@ def run(args):
              "holdout RMSE=%.4f ps MAE=%.4f ps | original std=%.4f ps",
              best_epoch, tuning_metrics["rmse_ps"], holdout_metrics["rmse_ps"],
              holdout_metrics["mae_ps"], holdout_metrics["original_std_ps"])
+    checkpoint_name = ("temporal_cnn_full_signal.pt" if architecture == "temporal_cnn"
+                       else "inception_time_full_signal.pt")
     torch.save({
         "model_state": best_state,
-        "architecture_name": "temporal_cnn_full_signal",
+        "architecture_name": architecture + "_full_signal",
         "architecture": {
             "n_samples": int(waves.shape[-1]), "width": args.width,
             "depth": args.depth, "temporal_bins": args.temporal_bins,
+            "inception_filters": args.inception_filters,
+            "inception_bottleneck": args.inception_bottleneck,
+            "inception_depth": args.inception_depth,
+            "inception_kernel_size": args.inception_kernel_size,
         },
         "input_normalization": args.input_normalization,
         "input_sample_mean": mean_array,
@@ -237,7 +255,7 @@ def run(args):
         "input_normalization_metadata": normalization_details,
         "target_mean_ps": ymean, "target_std_ps": ystd,
         "best_epoch": best_epoch, "provenance": provenance,
-    }, root / "temporal_cnn_full_signal.pt")
+    }, root / checkpoint_name)
     np.savez_compressed(
         root / "diagnostics.npz",
         tuning_query_rows=tuning, holdout_query_rows=holdout,
@@ -247,14 +265,19 @@ def run(args):
         holdout_reconstructed_prediction_ps=holdout_prediction,
     )
     summary = {
-        "method": "full-signal temporal CNN distillation control (no masks/windows)",
+        "method": f"full-signal {architecture} distillation control (no masks/windows)",
         "source_model_loaded": False, "source_model_predict_calls": 0,
         "provenance": provenance, "best_epoch": best_epoch,
         "settings": {
             "seed": args.seed, "training_events": len(training),
             "tuning_events": len(tuning), "holdout_events": len(holdout),
+            "architecture": architecture,
             "width": args.width, "depth": args.depth,
             "temporal_bins": args.temporal_bins,
+            "inception_filters": args.inception_filters,
+            "inception_bottleneck": args.inception_bottleneck,
+            "inception_depth": args.inception_depth,
+            "inception_kernel_size": args.inception_kernel_size,
             "input_normalization": args.input_normalization,
             "normalization_scale_floor_ratio": args.normalization_scale_floor_ratio,
             "batch_size": args.batch_size, "learning_rate": args.learning_rate,
@@ -266,7 +289,7 @@ def run(args):
     }
     (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _plots(root, predictions[holdout], holdout_prediction,
-           "Full-signal CNN: original vs reconstructed (holdout)")
+           f"Full-signal {architecture}: original vs reconstructed (holdout)")
     log.info("COMPLETE | %s | no original model inference", root)
     return summary
 
@@ -281,6 +304,12 @@ def _parser():
     p.add_argument("--tuning-queries", type=int, default=500)
     p.add_argument("--holdout-queries", type=int, default=500)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--architecture", choices=("temporal_cnn", "inception_time"),
+                   default="temporal_cnn")
+    p.add_argument("--inception-filters", type=int, default=16)
+    p.add_argument("--inception-bottleneck", type=int, default=32)
+    p.add_argument("--inception-depth", type=int, default=6)
+    p.add_argument("--inception-kernel-size", type=int, default=39)
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--temporal-bins", type=int, default=8)
