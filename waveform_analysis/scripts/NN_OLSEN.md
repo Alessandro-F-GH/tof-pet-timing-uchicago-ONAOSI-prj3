@@ -246,15 +246,14 @@ python -m waveform_analysis.scripts.evaluate_full_signal_distillation \
   --input-normalization per_sample \
   --tuning-queries 500 --holdout-queries 500 \
   --inception-filters 16 --inception-bottleneck 32 \
-  --inception-depth 6 --inception-kernel-size 39 \
+  --inception-depth 6 --inception-kernel-size 39 --inception-bins 8 \
   --epochs 50 --batch-size 32 --eval-batch 32 \
   --learning-rate 0.001 --patience 8
 ```
 
 This is an independent PyTorch adaptation of InceptionTime with three
 different convolutional kernels per module, a max-pooling branch, bottleneck
-1x1 convolutions, BN/ReLU, residual links every three modules, and global
-average pooling. The two waveform channels plus two explicit full-observation
+1x1 convolutions, BN/ReLU, residual links every three modules, and position-aware ordered\n8-bin average/max pooling followed by a regression head. The two waveform channels plus two explicit full-observation
 mask channels are provided in the same `[B,4*T]` interface as the previous
 CNN so the pipeline can later be adapted to masked coalitions. In this
 experiment all mask bits are one. It does **not** use or inspect any internal
@@ -267,3 +266,10 @@ head here is scalar regression. Activation memory scales with waveform length
 Outputs are separated from the previous CNN run, and the checkpoint is named
 `inception_time_full_signal.pt`. Tests:
 `python -m pytest waveform_analysis/tests/test_inception_time_surrogate.py waveform_analysis/tests/test_full_signal_distillation.py -q`.
+
+**Position-aware change (2026-11-06):** This implementation now uses ordered
+adaptive average and max temporal bins rather than the classic global average
+pooling. This overwrites the previous InceptionTime implementation: its
+checkpoints are incompatible because the output head shape changed. Use a
+fresh output directory when comparing experiments, or explicitly overwrite the
+old run knowing the original outputs will be lost. The original CNN is unchanged.
