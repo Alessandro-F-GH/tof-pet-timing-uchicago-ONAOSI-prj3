@@ -273,7 +273,10 @@ def fit_on_indices(
         # FrozenFeatureSet.rows uses advanced indexing and owns its result.
         # Only this disposable copy may be centered in place by Ridge.
         cfg["_fit_input_owned"] = bool(
-            x.flags.writeable and not np.shares_memory(x, frozen_features.features)
+            x.flags.writeable and (
+                frozen_features._features is None
+                or not np.shares_memory(x, frozen_features._features)
+            )
         )
     cfg["_early_stopping_seed"] = int(seed)
     cfg["_input_time_ps"] = np.asarray(time, np.float64)
@@ -472,12 +475,13 @@ def detector_swap_rmse(
     return float(np.sqrt(np.mean(np.square(epsilon))))
 
 
-def save_model(spec, fitted, directory, parameters):
+def save_model(spec, fitted, directory, parameters, *, include_feature_transform=True):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     spec.save(fitted.artifact, directory)
     if (
-        fitted.feature_transform is not None
+        include_feature_transform
+        and fitted.feature_transform is not None
         and fitted.feature_transform.spec.save is not None
     ):
         fitted.feature_transform.spec.save(
@@ -489,17 +493,24 @@ def save_model(spec, fitted, directory, parameters):
 
 
 def _load_pickle_feature_transform(spec, directory):
-    tpath = directory / "feature_transform" / "transform.pkl"
+    """Load the fitted feature transform bundled with its model artifact."""
+    if spec.feature_transform is None:
+        return None
+    tpath = Path(directory) / "feature_transform" / "transform.pkl"
     if not tpath.is_file():
+        if spec.feature_transform.save is not None:
+            raise FileNotFoundError(
+                f"Model directory is missing its fitted feature transform: {tpath}"
+            )
         return None
     with tpath.open("rb") as stream:
         artifact = pickle.load(stream)
     metadata = getattr(artifact, "metadata", {})
-    identity = metadata.get("transform_identity", "reloaded") if spec.requires_frozen_features else "reloaded"
-    return FittedFeatureTransform(
-        spec.feature_transform, artifact, identity, {}, 0, {}
+    identity = (
+        metadata.get("transform_identity", "reloaded")
+        if spec.requires_frozen_features else "reloaded"
     )
-
+    return FittedFeatureTransform(spec.feature_transform, artifact, identity, {}, 0, {})
 
 def _loaded_metadata(artifact, config):
     metadata = dict(getattr(artifact, "metadata", {}) or {})
@@ -516,9 +527,13 @@ def saved_model_complete(spec, directory) -> bool:
     if not directory.is_dir() or not (directory / "sample_mask.npy").is_file():
         return False
     if spec.artifact_format == "pickle":
-        return (directory / "model.pkl").is_file() and (
-            spec.feature_transform.save is None or
-            (directory / "feature_transform/transform.pkl").is_file())
+        transform_spec = spec.feature_transform
+        transform_ok = (
+            transform_spec is None
+            or transform_spec.save is None
+            or (directory / "feature_transform/transform.pkl").is_file()
+        )
+        return (directory / "model.pkl").is_file() and transform_ok
     return (directory / "model.pt").is_file()
 
 
@@ -530,7 +545,9 @@ def load_fitted_model(spec, directory, parameters, config):
     if spec.artifact_format == "pickle":
         with (directory / "model.pkl").open("rb") as stream:
             artifact = pickle.load(stream)
-        if spec.feature_transform.fit_role == "deterministic":
+        if spec.feature_transform is None:
+            feature_transform = None
+        elif spec.feature_transform.fit_role == "deterministic":
             from waveform_analysis.models.linear.linear_ridge_common import (
                 LinearTransformArtifact,
             )

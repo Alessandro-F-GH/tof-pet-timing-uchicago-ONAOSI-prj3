@@ -128,7 +128,17 @@ def test_shared_minirocket_transform_is_exactly_antisymmetric():
 
 
 def test_linear_ridge_variants_share_same_alpha_grid_contract():
-    config = {"ridge_cv": {"alphas": {"low": 0.1, "high": 10.0, "num": 3}}}
+    # Match the current model-space schema: categorical alpha choices under
+    # parameters.ridge_alpha, rather than the removed ridge_cv range syntax.
+    config = {
+        "optimization": {"strategy": "grid"},
+        "parameters": {
+            "ridge_alpha": {
+                "type": "categorical",
+                "choices": [0.1, 1.0, 10.0],
+            }
+        },
+    }
     expected = [
         {"ridge_alpha": 0.1},
         {"ridge_alpha": 1.0},
@@ -138,8 +148,8 @@ def test_linear_ridge_variants_share_same_alpha_grid_contract():
     assert direct_linear_ridge_candidates(config) == expected
     for name in ("shared_linear_ridge", "direct_linear_ridge"):
         transform = get_model(name).feature_transform
-        assert transform.parameters(expected[0], {}) == {}
-        assert transform.parameters(expected[2], {}) == {}
+        assert transform.parameters(expected[0], config) == {}
+        assert transform.parameters(expected[2], config) == {}
 
 
 def test_shared_linear_ridge_uses_detector_difference():

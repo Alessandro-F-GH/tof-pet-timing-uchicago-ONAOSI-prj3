@@ -3,7 +3,6 @@ import json, logging, pickle, shutil
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.dependencies import stage_fingerprint as _stage
-from waveform_analysis.core.ridge import RIDGE_CV_VERSION
 from waveform_analysis.data.feature_cache import (
     prepare_frozen_features,
     prepare_frozen_transform,
@@ -73,10 +72,19 @@ def _bool(v):
 
 
 
-def _sync(store, stage, fp):
+def _sync(store, stage, fp, logger=None):
     status = store.stage_status(stage, fp)
     if status == "stale":
-        store.invalidate_from(stage)
+        previous = store.read_state()["stages"].get(str(stage), {})
+        if logger is not None:
+            logger.warning(
+                "Invalidating stale stage | stage=%s | previous_fingerprint=%s "
+                "current_fingerprint=%s",
+                stage,
+                previous.get("fingerprint"),
+                fp,
+            )
+        store.invalidate_stage(stage)
         return "missing"
     return status
 
@@ -491,7 +499,7 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
         config["mode"],
         config.get("window_name"),
         spec.name,
-        "ridge_cv" if spec.selection_method == "ridge_cv" else best["candidate_id"],
+        best["candidate_id"],
         "final_fit",
     )
     fitted = fit_on_indices(
@@ -519,14 +527,14 @@ def _model(
         logger.warning(
             "Saved final model is incomplete or incompatible | retraining on full development set"
         )
-        store.invalidate_from("final_fit")
+        store.invalidate_stage("final_fit")
     fitted, seed = _fit_final(
         spec, space, config, development, best, logger, frozen_development
     )
     if config["save_model"]:
-        if store.model_dir.exists():
-            shutil.rmtree(store.model_dir)
-        save_model(spec, fitted, store.model_dir, best["parameters"])
+        store.save_model_artifact(
+            spec, fitted, best["parameters"], final_fit_fingerprint=fp
+        )
     store.write_final_fit(
         {
             "candidate_id": best["candidate_id"],
@@ -535,124 +543,13 @@ def _model(
             "n_train": int(development.n_events),
             "seed": int(seed),
             "model_saved": bool(config["save_model"]),
-            **(
-                {
-                    "selection_method": "ridge_cv",
-                    "internal_cv_mse_ps2": fitted.artifact.metadata[
-                        "internal_cv_mse_ps2"
-                    ],
-                }
-                if spec.selection_method == "ridge_cv"
-                else {}
-            ),
+
         }
     )
     store.mark_stage(
         "final_fit", fp, metadata={"model_saved": bool(config["save_model"])}
     )
     return fitted
-
-
-def _ridge_cv_selection_and_fit(
-    store,
-    spec,
-    space,
-    config,
-    development,
-    logger,
-    frozen_development=None,
-):
-    """Select lambda and fit once on all development events using sklearn CV.
-
-    Existing stage names are retained for resume compatibility; the outer CV
-    stage is explicitly marked skipped and writes no fold/candidate scores.
-    """
-    cv_fp = _stage(
-        "cv",
-        {
-            "selection_method": "ridge_cv",
-            "version": RIDGE_CV_VERSION,
-            "development": development.manifest["analysis_protocol_identity"],
-            "model": config["model"],
-            "frozen_transform": None
-            if frozen_development is None
-            else frozen_development.identity,
-        },
-    )
-    if _sync(store, "cv", cv_fp) != "complete":
-        store.mark_stage(
-            "cv", cv_fp, metadata={"skipped": True, "selection_method": "ridge_cv"}
-        )
-    selection_fp = _stage("selection", {"ridge_cv": cv_fp})
-    selection_status = _sync(store, "selection", selection_fp)
-    best = store.read_json(store.best_path) if selection_status == "complete" else None
-    final_fp = _stage("final_fit", {"selection": selection_fp, "seed": config["seed"]})
-    final_status = _sync(store, "final_fit", final_fp)
-    fitted = None
-    model_available = not config["save_model"] or saved_model_complete(
-        spec, store.model_dir
-    )
-    if not isinstance(best, dict) or final_status != "complete" or not model_available:
-        store.invalidate_from("final_fit")
-        logger.info(
-            "RidgeCV | %s | selecting lambda and fitting full development set | n=%d",
-            _model_label(spec.name),
-            int(development.n_events),
-        )
-        provisional = {"candidate_id": "ridge_cv", "parameters": {}}
-        fitted, seed = _fit_final(
-            spec, space, config, development, provisional, logger, frozen_development
-        )
-        metadata = fitted.artifact.metadata
-        parameters = {"ridge_alpha": metadata["ridge_alpha"]}
-        identifier = candidate_id(parameters)
-        best = {
-            "candidate_id": identifier,
-            "parameters": parameters,
-            "selection_method": "ridge_cv",
-            "selection_metric": "neg_mean_squared_error",
-            "selected_from": "development_ridge_cv_only",
-            "folds": 0,
-            "internal_cv": metadata["internal_cv"],
-            "internal_cv_mse_ps2": metadata["internal_cv_mse_ps2"],
-            "ridge_cv": metadata["ridge_cv"],
-            "n_train": int(development.n_events),
-            "validation_ctr_mean_ps": None,
-            "validation_ctr_std_ps": None,
-            "validation_rmse_mean_ps": None,
-            "validation_rmse_std_ps": None,
-        }
-        if config["save_model"]:
-            if store.model_dir.exists():
-                shutil.rmtree(store.model_dir)
-            save_model(spec, fitted, store.model_dir, parameters)
-        store.write_best(best)
-        store.write_final_fit(
-            {
-                "candidate_id": identifier,
-                "parameters": parameters,
-                "training_dataset_role": "development",
-                "n_train": int(development.n_events),
-                "seed": int(seed),
-                "model_saved": bool(config["save_model"]),
-                "selection_method": "ridge_cv",
-                "internal_cv_mse_ps2": metadata["internal_cv_mse_ps2"],
-            }
-        )
-        store.mark_stage(
-            "selection", selection_fp, metadata={"selection_method": "ridge_cv"}
-        )
-        store.mark_stage(
-            "final_fit", final_fp, metadata={"model_saved": bool(config["save_model"])}
-        )
-        logger.info(
-            "RidgeCV selected | lambda=%.6g | internal CV MSE=%.6g ps²",
-            parameters["ridge_alpha"],
-            metadata["internal_cv_mse_ps2"],
-        )
-    else:
-        logger.info("RidgeCV | reusing full-development fit and selected lambda")
-    return cv_fp, selection_fp, final_fp, best, fitted
 
 
 def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
@@ -674,7 +571,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             else frozen_transform.identity,
         },
     )
-    if _sync(store, "cv", cv_fp) != "complete":
+    if _sync(store, "cv", cv_fp, logger) != "complete":
         candidates = _search(
             store,
             spec,
@@ -694,11 +591,12 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             for i, v in (store.read_json(store.candidates_path, {}) or {}).items()
         }
     selection_fp = _stage(
-        "selection", {"cv": cv_fp, "metric": config["cross_validation"]["metric"]}
+        "selection", {"metric": config["cross_validation"]["metric"]},
+        parents={"cv": cv_fp},
     )
     best = (
         store.read_json(store.best_path)
-        if _sync(store, "selection", selection_fp) == "complete"
+        if _sync(store, "selection", selection_fp, logger) == "complete"
         else None
     )
     if not isinstance(best, dict):
@@ -729,9 +627,10 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             if frozen_transform is None
             else frozen_transform.identity,
         },
+        parents={"selection": selection_fp},
     )
     fitted = None
-    if _sync(store, "final_fit", final_fp) != "complete":
+    if _sync(store, "final_fit", final_fp, logger) != "complete":
         logger.info(
             "Final fit | %s | training on full development set | n=%d",
             _model_label(spec.name),
@@ -779,16 +678,16 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
     blind_fp = _stage(
         "blind",
         {
-            "final_fit": final_fp,
             "blind": blind.manifest["analysis_protocol_identity"],
             "fit": config["fit"],
             "frozen_transform": None
             if frozen_transform is None
             else frozen_transform.identity,
         },
+        parents={"final_fit": final_fp},
     )
     if (
-        _sync(store, "blind", blind_fp) != "complete"
+        _sync(store, "blind", blind_fp, logger) != "complete"
         or not store.predictions_path.is_file()
     ):
         logger.info(
@@ -829,7 +728,13 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
             prediction_ps=prediction,
             corrected_ps=corrected,
             led_residual_ps=led,
-            metadata={"led_control_mean_ps": np.asarray(blind.manifest["led_control_mean_ps"])},
+            metadata={
+                "led_control_mean_ps": np.asarray(blind.manifest["led_control_mean_ps"]),
+                "final_fit_fingerprint": np.asarray(final_fp),
+                "analysis_protocol_identity": np.asarray(
+                    blind.manifest["analysis_protocol_identity"]
+                ),
+            },
         )
         store.write_blind(
             {
@@ -863,11 +768,11 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
 def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
     pred = store.load_predictions()
     bootstrap_fp = _stage(
-        "bootstrap",
-        {"blind": blind_fp, "bootstrap": config["bootstrap"], "seed": config["seed"]},
+        "bootstrap", {"bootstrap": config["bootstrap"], "seed": config["seed"]},
+        parents={"blind": blind_fp},
     )
     if (
-        _sync(store, "bootstrap", bootstrap_fp) != "complete"
+        _sync(store, "bootstrap", bootstrap_fp, logger) != "complete"
         or not store.bootstrap_path.is_file()
     ):
         logger.info(
@@ -882,7 +787,9 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
             seed=semantic_seed(config["seed"], spec.name, "bootstrap"),
         )
         store.write_bootstrap(summary)
-        store.save_bootstrap_draws(draws)
+        store.save_bootstrap_draws(
+            draws, fingerprint=bootstrap_fp, blind_fingerprint=blind_fp
+        )
         store.mark_stage("bootstrap", bootstrap_fp)
         logger.info(
             "Blind uncertainty | CTR ± %.1f ps | RMSE ± %.1f ps",
@@ -894,10 +801,16 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
     return bootstrap_fp
 
 
-def _record_external_xai_stage(store, final_fp):
-    """Preserve legacy stage bookkeeping without running legacy XAI."""
-    fingerprint = _stage("xai", {"final_fit": final_fp, "enabled": False, "method": None})
-    store.mark_stage("xai", fingerprint, metadata={"enabled": False, "reason": "post_training_tshap_only"})
+def _record_external_xai_stage(store, final_fp, blind_fp):
+    """Record that in-pipeline XAI is disabled; temporal TSHAP runs separately."""
+    fingerprint = _stage(
+        "xai", {"enabled": False, "method": None},
+        parents={"final_fit": final_fp, "blind": blind_fp},
+    )
+    store.mark_stage(
+        "xai", fingerprint,
+        metadata={"enabled": False, "reason": "post_training_tshap_only"},
+    )
     return fingerprint
 
 
@@ -935,6 +848,18 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
         "development_dataset": config["development"],
         "blind_dataset": config["blind"],
         "control_artifact": str(Path(control_dir).resolve()),
+        "prepared_artifact_refs": {
+            role: {
+                "product_type": "prepared-datasets",
+                "product_id": dataset.directory.name,
+            }
+            for role, dataset in (
+                ("control", control_prepared),
+                ("development", development),
+                ("blind", blind),
+            )
+            if dataset is not None
+        },
         "preprocessing_fit_role": "control",
         "led_control_mean_ps": development.manifest["led_control_mean_ps"],
         "led_centering_fit_role": "control",
@@ -946,26 +871,14 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
         "blind_role": "final_one_time_evaluation_only",
         "blind_used_in_selection": False,
         "selection_method": spec.selection_method,
-        "cv": (
-            {
-                "enabled": False,
-                "selection_method": "ridge_cv",
-                "internal_cv": best["internal_cv"],
-            }
-            if spec.selection_method == "ridge_cv"
-            else config["cross_validation"]
-        ),
+        "cv": config["cross_validation"],
         "selected_candidate_id": best["candidate_id"],
         "selected_hyperparameters": best["parameters"],
         "validation_ctr_mean_ps": best["validation_ctr_mean_ps"],
         "validation_ctr_std_ps": best["validation_ctr_std_ps"],
         "validation_rmse_mean_ps": best["validation_rmse_mean_ps"],
         "validation_rmse_std_ps": best["validation_rmse_std_ps"],
-        "validation_std_interpretation": (
-            None
-            if spec.selection_method == "ridge_cv"
-            else "fold-to-fold development validation variability"
-        ),
+        "validation_std_interpretation": "fold-to-fold development validation variability",
         "blind_bootstrap_interpretation": "event-level uncertainty conditional on final fitted model; no retraining",
         "bootstrap_unit": "blind_event",
         "single_configured_seed": int(config["seed"]),
@@ -983,7 +896,8 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
 
 def run_study(config, *, logger=None):
     run_dir = Path(config["output_dir"]).resolve()
-    store = RunStore(run_dir)
+    artifact_root = Path(config["preprocessing"]["artifact_root"]).expanduser().resolve()
+    store = RunStore(run_dir, artifact_root=artifact_root)
     logger = logger or _logger(run_dir)
     spec = get_model(config["model"]["name"])
     space = config["model"]["space"]
@@ -1023,26 +937,15 @@ def run_study(config, *, logger=None):
             cache_root=config["preprocessing"]["cache_dir"],
             logger=logger,
         )
-    if spec.selection_method == "ridge_cv":
-        cv_fp, selection_fp, final_fp, best, fitted = _ridge_cv_selection_and_fit(
-            store,
-            spec,
-            space,
-            config,
-            development,
-            logger,
-            frozen_development,
-        )
-    else:
-        cv_fp, selection_fp, final_fp, best, fitted = _outer_cv_selection_and_fit(
-            store, spec, space, config, development, logger, frozen_transform, frozen_development
-        )
+    cv_fp, selection_fp, final_fp, best, fitted = _outer_cv_selection_and_fit(
+        store, spec, space, config, development, logger, frozen_transform, frozen_development
+    )
     blind, blind_fp, fitted = _evaluate_blind(
         store, spec, space, config, control, development, best, final_fp, fitted,
         logger, frozen_transform, frozen_development,
     )
     bootstrap_fp = _estimate_blind_uncertainty(store, spec, config, blind_fp, logger)
-    xai_fp = _record_external_xai_stage(store, final_fp)
+    xai_fp = _record_external_xai_stage(store, final_fp, blind_fp)
     _publish_run_metadata(
         store, spec, config, control, control_dir, development, blind, fitted, best,
         control_prepared, cv_fp, selection_fp, final_fp, blind_fp, bootstrap_fp, xai_fp,

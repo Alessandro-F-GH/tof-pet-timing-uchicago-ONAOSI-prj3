@@ -14,6 +14,7 @@ ModelExplain = Callable[[Any, np.ndarray], np.ndarray]
 TransformParameterSelector = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 TransformFit = Callable[..., tuple[Any, np.ndarray]]
 TransformApply = Callable[[Any, np.ndarray], np.ndarray]
+TransformBlockApply = Callable[[Any, np.ndarray, str], np.ndarray]
 TransformSave = Callable[[Any, Path], None]
 
 
@@ -33,6 +34,8 @@ class FeatureTransformSpec:
     save: TransformSave | None = None
     log_fit: bool = True
     fit_role: str = "control"
+    block_names: tuple[str, ...] = ()
+    transform_block: TransformBlockApply | None = None
 
     def __post_init__(self) -> None:
         name = str(self.name).strip()
@@ -58,8 +61,8 @@ class ModelSpec:
     inplace_fit_input: bool = False
 
     def __post_init__(self) -> None:
-        if self.selection_method not in {"development_cv", "ridge_cv"}:
-            raise ValueError("selection_method must be development_cv or ridge_cv")
+        if self.selection_method != "development_cv":
+            raise ValueError("selection_method must be development_cv")
         formulation = str(self.estimator_formulation).strip().lower()
         if formulation not in {"shared", "direct"}:
             raise ValueError(

@@ -192,7 +192,7 @@ def test_empty_control_bookkeeping_does_not_relax_training_requirements(
     )
     assert dataset.n_events == 0
     assert dataset.manifest["n_dropped_window"] == 2
-    with pytest.raises(RuntimeError, match="No events remain"):
+    with pytest.raises(RuntimeError, match="no events"):
         preparation.prepare_ml_dataset(
             native, artifact, config, dataset_role="control", cache_dir=tmp_path
         )

@@ -5,11 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from waveform_analysis.data.results import (
-    discover_runs,
     resolve_run_config,
     read_run_manifest,
 )
-from waveform_analysis.data.prepared_cache import PreparedCacheLookup, _cache_root
+from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,32 +21,53 @@ def root_relative(path):
 
 
 def load_wide_development(results, channel, cache_root=None, *, return_transform=False,
-                          include_control=False, include_sample_mask=False):
+                          include_control=False, include_sample_mask=False, include_target=False):
     """Load prepared wide-window development waveforms for one channel.
 
     If ``return_transform`` is true, also return the frozen input transform so
     diagnostics can be expressed in the original configured signal units.
     ``include_sample_mask`` additionally returns the retained-sample mask from
     preprocessing (all samples are valid for energy-channel inputs).
+    ``cache_root`` explicitly selects the portable named prepared cache when
+    provided; stored run paths are otherwise used as a fallback.
     """
     matches = []
-    for run in discover_runs(results):
-        directory = Path(run["directory"])
+    # Scan run configs directly: discover_runs() opens every manifest and fails
+    # when a separate model's result directory is only partially populated.
+    # Missing manifests must not block this waveform-only experiment.
+    for config_path in sorted(Path(results).expanduser().rglob("metadata/config.json")):
+        directory = config_path.parent.parent
+        if not (directory / "metadata" / "manifest.json").is_file():
+            continue
         cfg = resolve_run_config(directory)
         if (
             "wide" in str(cfg.get("window_name", "")).lower()
             and cfg.get("mode") == f"{channel}_to_{channel}"
         ):
-            matches.append((directory, cfg))
+            manifest = read_run_manifest(directory)
+            if manifest.get("status") == "complete":
+                matches.append((directory, cfg, manifest))
     if not matches:
         raise ValueError(f"No wide {channel} runs found under {results}")
-    directory, cfg = matches[0]
-    manifest = read_run_manifest(directory)
-    roles = ("development", "control") if include_control else ("development",)
-    cache = _cache_root(cfg, directory, cache_root, roles=roles)
+    directory, cfg, manifest = matches[0]
+    cfg = dict(cfg)
+    cfg["preprocessing"] = dict(cfg["preprocessing"])
+    prep = cfg["preprocessing"]
+    if cache_root is not None:
+        root = Path(cache_root).expanduser().resolve()
+        prep["named_cache_root"] = str(root)
+        prep["cache_dir"] = str(root / "preprocessing")
+        prep["artifact_root"] = str(root / "artifact_store")
+    elif "artifact_root" not in prep:
+        raise ValueError(
+            "This result has no stored artifact_root; supply --cache-root "
+            "pointing to the prepared waveform cache"
+        )
+    # Keep cache_root in the public signature for older callers, but canonical
+    # prepared datasets are resolved through immutable manifest references.
     lookup = PreparedCacheLookup()
-    dataset = lookup.find(cache, "development", cfg, manifest)
-    control_dataset = lookup.find(cache, "control", cfg, manifest) if include_control else None
+    dataset = lookup.find("development", cfg, manifest)
+    control_dataset = lookup.find("control", cfg, manifest) if include_control else None
     waves = dataset.energy_windows if channel == "energy" else dataset.timing_windows
     times = dataset.energy_time_ps if channel == "energy" else dataset.timing_time_ps
     transform = dataset.energy_transform if channel == "energy" else dataset.timing_transform
@@ -65,7 +85,7 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
             raise ValueError("Control and development waveform transforms differ")
     if waves is None or times is None or waves.ndim != 3 or waves.shape[1] != 2:
         raise ValueError("Expected development waveforms [events, 2 detectors, samples]")
-    if include_sample_mask and not return_transform:
+    if (include_sample_mask or include_target) and not return_transform:
         raise ValueError("include_sample_mask requires return_transform=True")
     if return_transform:
         if transform is None:
@@ -82,5 +102,11 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
             else:
                 mask = np.ones(len(times), dtype=bool)
             extra += (mask,)
+        if include_target:
+            target = (dataset.energy_target_ps if channel == "energy"
+                      else dataset.timing_target_ps)
+            if target is None or len(target) != len(waves):
+                raise ValueError(f"Missing development {channel} correction targets")
+            extra += (np.asarray(target, dtype=np.float64),)
         return (waves, np.asarray(times), directory, dataset.manifest, transform, *extra)
     return waves, np.asarray(times), directory, dataset.manifest

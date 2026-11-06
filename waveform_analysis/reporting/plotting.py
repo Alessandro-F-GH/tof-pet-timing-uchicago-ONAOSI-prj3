@@ -7,7 +7,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from waveform_analysis.reporting.stats import residual_summary
-from waveform_analysis.data.results import read_run_manifest
+from waveform_analysis.data.results import read_run_manifest, resolve_run_config
+from waveform_analysis.data.storage import RunStore
 
 
 def load_plot_config(root):
@@ -143,8 +144,6 @@ def plot_run_cv(run, cfg):
         return None
     rows = _csv(path)
     manifest = read_run_manifest(run)
-    if manifest.get("selection_method") == "ridge_cv":
-        return None
     metric = manifest["cv"]["metric"]
     mean = f"{metric}_mean_ps"
     std = f"{metric}_std_ps"
@@ -196,11 +195,25 @@ def _plot_run_residual_distribution(run, cfg, *, dataset_role):
     filename = "pred.npz" if dataset_role == "blind" else "development_pred.npz"
     stem = "blind" if dataset_role == "blind" else "development"
     path = run / "artifacts" / filename
+    manifest_path = run / "metadata" / "manifest.json"
+    manifest = {}
+    if manifest_path.is_file():
+        # New runs pin predictions in the shared immutable artifact store.
+        # Resolve the role-specific reference instead of assuming payloads are
+        # copied into the run directory; RunStore retains local fallback paths.
+        run_config = resolve_run_config(run)
+        artifact_root = run_config.get("preprocessing", {}).get("artifact_root")
+        if artifact_root:
+            store = RunStore(run, artifact_root=artifact_root)
+            path = (
+                store.predictions_path
+                if dataset_role == "blind"
+                else store.development_predictions_path
+            )
+        manifest = read_run_manifest(run)
     if not path.is_file():
         output_path(run / "plots", stem, cfg).unlink(missing_ok=True)
         return None
-    manifest_path = run / "metadata" / "manifest.json"
-    manifest = read_run_manifest(run) if manifest_path.is_file() else {}
     led_label = "LED (control-centered)" if manifest.get('led_centering_fit_role') == 'control' else "LED (saved calibration)"
     with np.load(path) as d:
         if dataset_role == "development":

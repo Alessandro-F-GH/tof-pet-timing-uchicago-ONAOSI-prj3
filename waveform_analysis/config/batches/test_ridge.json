@@ -53,6 +53,20 @@
   "protocol": {
     "seed": 1001,
     "preprocessing_config": "../preprocessing/UC.json",
+    "cross_validation": {
+      "folds": 3,
+      "shuffle": true,
+      "metric": "ctr",
+      "minimum_events_per_fold": 50,
+      "pruning": {
+        "enabled": false,
+        "startup_complete_candidates": 1,
+        "min_folds_before_prune": 1,
+        "max_degradation_ps": 3.0,
+        "prune_if_worse_than_led": false,
+        "led_max_degradation_ps": 0.0
+      }
+    },
     "bootstrap": {
       "n_resamples": 200
     },
