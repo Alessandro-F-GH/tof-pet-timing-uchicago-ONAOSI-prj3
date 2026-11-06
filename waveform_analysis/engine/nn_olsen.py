@@ -59,7 +59,7 @@ def coalitions(starts, width, retained, device="cpu"):
     return torch.as_tensor(mask, device=device)
 
 
-def augment(waves, masks):
+def augment(waves, masks, *, sample_mean=None, sample_scale=None):
     """Zero-fill unobserved raw prepared samples and append binary mask.
 
     waves [B,2,T], masks [B,T] -> [B,4T]. No waveform transforms.
@@ -67,10 +67,23 @@ def augment(waves, masks):
     if waves.ndim != 3 or waves.shape[1] != 2 or masks.shape != (waves.shape[0], waves.shape[2]):
         raise ValueError("Incompatible prepared waveform and temporal mask shapes")
     both = masks[:, None, :].expand(-1, 2, -1)
-    return torch.cat((waves * both, both), dim=1).reshape(waves.shape[0], -1)
+    if (sample_mean is None) != (sample_scale is None):
+        raise ValueError('Mean and scale must both be specified or both absent')
+    if sample_mean is not None:
+        if sample_mean.shape != (2, waves.shape[-1]) or sample_scale.shape != sample_mean.shape:
+            raise ValueError('Normalization statistics must have shape [2,T]')
+        if torch.any(sample_scale <= 0):
+            raise ValueError('Normalization scales must be positive')
+        # Only materialize the current minibatch; hidden coordinates are zero
+        # AFTER centering, never minus-mean values leaking into masked inputs.
+        scaled = (waves - sample_mean.unsqueeze(0)) / sample_scale.unsqueeze(0)
+        observed = scaled * both
+    else:
+        observed = waves * both
+    return torch.cat((observed, both), dim=1).reshape(waves.shape[0], -1)
 
 
-def paired_batch(waves, targets, window_index, masks):
+def paired_batch(waves, targets, window_index, masks, *, sample_mean=None, sample_scale=None):
     """Return W/R pairs for each event with identical saved-prediction targets."""
     if waves.ndim != 3 or waves.shape[1] != 2 or targets.shape != (len(waves),):
         raise ValueError("Invalid paired training batch")
@@ -79,13 +92,14 @@ def paired_batch(waves, targets, window_index, masks):
     chosen = masks[window_index]  # [B, 2 coalitions, T]
     pair_wave = waves[:, None, :, :].expand(-1, 2, -1, -1)
     pair_in = augment(pair_wave.reshape(-1, 2, waves.shape[-1]),
-                      chosen.reshape(-1, waves.shape[-1]))
+                      chosen.reshape(-1, waves.shape[-1]),
+                      sample_mean=sample_mean, sample_scale=sample_scale)
     return pair_in, targets.repeat_interleave(2)
 
 
 @torch.no_grad()
 def predict_coalitions(model, waveforms, starts, width, retained, *,
-                       batch_size=1024, device="cpu"):
+                       batch_size=1024, device="cpu", sample_mean=None, sample_scale=None):
     """Compute [events, windows, W/R] conditional estimates (surrogate only)."""
     model.eval()
     masks = coalitions(starts, width, retained, device=device)
@@ -98,7 +112,8 @@ def predict_coalitions(model, waveforms, starts, width, retained, *,
         for j in range(len(starts)):
             ms = masks[j].unsqueeze(0).expand(len(wave), -1, -1)
             pair = wave[:, None, :, :].expand(-1, 2, -1, -1).reshape(-1, 2, wave.shape[-1])
-            features = augment(pair, ms.reshape(-1, wave.shape[-1]))
+            features = augment(pair, ms.reshape(-1, wave.shape[-1]),
+                               sample_mean=sample_mean, sample_scale=sample_scale)
             result[left:right, j, :] = (model(features).reshape(-1, 2)
                                         .detach().cpu().numpy())
     return result
