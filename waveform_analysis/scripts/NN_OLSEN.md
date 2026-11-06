@@ -228,3 +228,42 @@ A high full-signal holdout error would flag approximation/optimization
 limits of this CNN; a low error would strengthen the case for investigating
 masked conditional estimation separately. Low full-signal error alone does
 not establish accurate Shapley attributions.
+
+
+## Full-signal InceptionTime student (black-box)
+
+Run the **independent** multiscale InceptionTime student against saved full-signal
+teacher predictions, with the same seed, train/tuning/holdout cohorts,
+train-only per-time-sample normalization, MSE, metrics, and early stopping
+as the full-signal temporal CNN control:
+
+```bash
+python -m waveform_analysis.scripts.evaluate_full_signal_distillation \
+  --architecture inception_time \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/full_signal_distillation/UC_inception_time" \
+  --input-normalization per_sample \
+  --tuning-queries 500 --holdout-queries 500 \
+  --inception-filters 16 --inception-bottleneck 32 \
+  --inception-depth 6 --inception-kernel-size 39 \
+  --epochs 50 --batch-size 32 --eval-batch 32 \
+  --learning-rate 0.001 --patience 8
+```
+
+This is an independent PyTorch adaptation of InceptionTime with three
+different convolutional kernels per module, a max-pooling branch, bottleneck
+1x1 convolutions, BN/ReLU, residual links every three modules, and global
+average pooling. The two waveform channels plus two explicit full-observation
+mask channels are provided in the same `[B,4*T]` interface as the previous
+CNN so the pipeline can later be adapted to masked coalitions. In this
+experiment all mask bits are one. It does **not** use or inspect any internal
+teacher features or transformations.
+
+The reference InceptionTime architecture is for classification; the final
+head here is scalar regression. Activation memory scales with waveform length
+(4159 samples) and batch size, so the example starts at batch 32.
+
+Outputs are separated from the previous CNN run, and the checkpoint is named
+`inception_time_full_signal.pt`. Tests:
+`python -m pytest waveform_analysis/tests/test_inception_time_surrogate.py waveform_analysis/tests/test_full_signal_distillation.py -q`.
