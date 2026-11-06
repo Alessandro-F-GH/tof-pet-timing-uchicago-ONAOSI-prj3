@@ -2,7 +2,7 @@
 
 Based on the InceptionTime architectural family: multiscale convolution branches,
 max-pooling branch, bottleneck 1x1 projections, BN/ReLU, skip connections every
-three modules, and global average pooling. This implementation is an independent
+three modules, and ordered temporal-bin average/max pooling. This implementation is an independent
 PyTorch regression adaptation, not a reproduction of a particular trained model.
 It uses ONLY the two input waveforms and their explicit observation masks.
 No teacher features, transforms or model code are accessed.
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 
 class InceptionModule1D(nn.Module):
@@ -47,15 +48,16 @@ class InceptionTimeSurrogate(nn.Module):
     """
 
     def __init__(self, n_samples: int, filters: int = 16, bottleneck: int = 32,
-                 depth: int = 6, kernel_size: int = 39):
+                 depth: int = 6, kernel_size: int = 39, bins: int = 8):
         super().__init__()
-        if n_samples < 8 or depth < 1:
+        if n_samples < 8 or depth < 1 or not (1 <= bins <= n_samples):
             raise ValueError("Invalid InceptionTime configuration")
         self.n_samples = int(n_samples)
         self.filters = int(filters)
         self.bottleneck_size = int(bottleneck)
         self.depth = int(depth)
         self.kernel_size = int(kernel_size)
+        self.bins = int(bins)
         modules = []
         residuals = nn.ModuleDict()
         current = 4
@@ -72,7 +74,13 @@ class InceptionTimeSurrogate(nn.Module):
                 block_start = current
         self.modules_list = nn.ModuleList(modules)
         self.residuals = residuals
-        self.output = nn.Linear(current, 1)
+        # Preserve absolute temporal order rather than collapsing all times.
+        # Average captures persistent activity; max captures brief transients.
+        self.output = nn.Sequential(
+            nn.Linear(current * 2 * bins, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
 
     def forward(self, augmented):
         if augmented.ndim != 2 or augmented.shape[1] != 4 * self.n_samples:
@@ -84,5 +92,6 @@ class InceptionTimeSurrogate(nn.Module):
             if str(index) in self.residuals:
                 x = torch.relu(x + self.residuals[str(index)](shortcut))
                 shortcut = x
-        x = x.mean(dim=-1)  # Standard InceptionTime global average pooling.
-        return self.output(x).squeeze(-1)
+        pooled = torch.cat((F.adaptive_avg_pool1d(x, self.bins),
+                            F.adaptive_max_pool1d(x, self.bins)), dim=1)
+        return self.output(pooled.flatten(start_dim=1)).squeeze(-1)
