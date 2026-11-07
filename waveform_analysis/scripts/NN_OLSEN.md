@@ -371,3 +371,26 @@ Checkpoint `nn_olsen_derivative.pt` includes the derivative normalization
 metadata and flags. This is a model-input modification; it does not alter
 the underlying teacher or teacher features. Test with
 `python -m pytest waveform_analysis/tests/test_nn_olsen.py -q`.
+
+
+### Matching full-signal Olsen MLP experiment
+
+To measure ability to reproduce the original teacher **before** testing
+conditional expectations, run the same expanded Olsen MLP on whole waveforms:
+
+```bash
+python -m waveform_analysis.scripts.evaluate_full_signal_distillation \
+  --architecture olsen_mlp --width 256 --depth 3 --use-derivative \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/full_signal_distillation/UC_olsen256_derivative" \
+  --input-normalization per_sample \
+  --tuning-queries 500 --holdout-queries 500 \
+  --epochs 50 --batch-size 256 --eval-batch 256 \
+  --learning-rate 0.001 --patience 8
+```
+
+This experiment uses **all-ones masks** and two standardized raw first
+difference channels; the same data split/targets and teacher-free procedure
+as the CNN full-signal experiment. Checkpoint name:
+`olsen_mlp_derivative_full_signal.pt`.
