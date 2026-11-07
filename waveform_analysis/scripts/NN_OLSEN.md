@@ -431,3 +431,19 @@ optimizer can memorize this subset; it does not prove faithful generalization
 to new waveforms or accuracy of conditional W/R expectations.
 
 Test: `python -m pytest waveform_analysis/tests/test_temporal_cnn_capacity.py -q`.
+
+
+### Adaptive learning rate for capacity test
+
+The capacity test now uses `torch.optim.lr_scheduler.ReduceLROnPlateau`
+on **same-event eval-mode training RMSE**, computed **every epoch** even
+when `--report-every` is larger. By default, 20 consecutive epochs
+without improvement of at least 0.05 ps cause an LR reduction by 0.5;
+minimum LR is 1e-6, followed by a 5-epoch cooldown. No early stopping.
+Every evaluation is eligible for the best checkpoint. Log and CSV contain
+the current learning rate and reduction events. `--no-lr-decay` reproduces
+the original fixed-LR behavior.
+
+CLI flags: `--lr-factor 0.5 --lr-patience 20 --lr-threshold-ps 0.05
+--lr-min 1e-6 --lr-cooldown 5`.
+Use a **new output folder** for adaptive runs, to retain original results.
