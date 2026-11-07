@@ -46,7 +46,7 @@ class TemporalConditionalCNN(nn.Module):
     """
 
     def __init__(self, n_samples: int, width: int = 64, depth: int = 3,
-                 bins: int = 8):
+                 bins: int = 8, use_derivative: bool = False):
         super().__init__()
         if n_samples < 8 or width < 8 or depth < 1 or bins < 1:
             raise ValueError("Invalid temporal CNN architecture")
@@ -54,9 +54,10 @@ class TemporalConditionalCNN(nn.Module):
         self.width = int(width)
         self.depth = int(depth)
         self.bins = int(bins)
+        self.use_derivative = bool(use_derivative)
         stem_width = max(16, width // 2)
         self.stem = nn.Sequential(
-            nn.Conv1d(5, stem_width, kernel_size=9, stride=4, padding=4),
+            nn.Conv1d(7 if self.use_derivative else 5, stem_width, kernel_size=9, stride=4, padding=4),
             nn.GroupNorm(_groups(stem_width), stem_width),
             nn.GELU(),
         )
@@ -85,9 +86,10 @@ class TemporalConditionalCNN(nn.Module):
         )
 
     def forward(self, augmented):
-        if augmented.ndim != 2 or augmented.shape[1] != 4 * self.n_samples:
-            raise ValueError("Expected [B,4*T] masked two-channel NN-Olsen inputs")
-        x = augmented.reshape(-1, 4, self.n_samples)
+        expected_channels = 6 if self.use_derivative else 4
+        if augmented.ndim != 2 or augmented.shape[1] != expected_channels * self.n_samples:
+            raise ValueError(f"Expected [B,{expected_channels}*T] two-detector inputs")
+        x = augmented.reshape(-1, expected_channels, self.n_samples)
         position = self.time_coordinate.expand(x.shape[0], -1, -1)
         x = torch.cat((x, position), dim=1)
         x = self.stages(self.stem(x))
