@@ -131,6 +131,10 @@ def run(args):
             args.width, args.depth, args.temporal_bins) < 1
             or args.learning_rate <= 0):
         raise ValueError("Invalid training parameters")
+    if (not 0 < args.lr_factor < 1 or args.lr_patience < 1
+            or args.lr_min <= 0 or args.lr_threshold_ps < 0
+            or args.lr_cooldown < 0 or args.train_eval_events < 0):
+        raise ValueError("Invalid scheduler or training diagnostics settings")
     waves, predictions, retained, provenance = _load_inputs(args, log)
     if len(retained) != waves.shape[-1] or not np.asarray(retained).all():
         log.warning("Some samples are excluded by prepared-data retention mask; "
@@ -150,6 +154,10 @@ def run(args):
     training = np.flatnonzero(training_flag)
     log.info("EVENT SPLIT | train=%d tuning=%d holdout=%d seed=%d",
              len(training), len(tuning), len(holdout), args.seed)
+    train_diagnostic = np.sort(np.random.default_rng(args.seed + 1001).choice(
+        training, size=min(args.train_eval_events, len(training)), replace=False))
+    log.info("TRAIN DIAGNOSTIC | fixed training subset=%d events, not used for model selection",
+             len(train_diagnostic))
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -206,6 +214,14 @@ def run(args):
              type(model).__name__, sum(p.numel() for p in model.parameters()), device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
                                  weight_decay=args.weight_decay)
+    scheduler = None if args.no_lr_decay else torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=args.lr_factor, patience=args.lr_patience,
+        threshold=args.lr_threshold_ps, threshold_mode="abs",
+        cooldown=args.lr_cooldown, min_lr=args.lr_min)
+    log.info("LR SCHEDULER | %s", "disabled" if scheduler is None else
+             f"ReduceLROnPlateau on tuning RMSE (ps): factor={args.lr_factor}, "
+             f"patience={args.lr_patience}, threshold={args.lr_threshold_ps} ps, "
+             f"minimum={args.lr_min}")
     best_loss, best_epoch, best_state = float("inf"), -1, None
     history, patience_used = [], 0
     clock = time.monotonic()
@@ -235,6 +251,13 @@ def run(args):
             model, waves, predictions, tuning, device, args.eval_batch,
             ymean, ystd, sample_mean, sample_scale,
             derivative_mean, derivative_scale)
+        if train_diagnostic.size:
+            _, train_metrics = evaluate(
+                model, waves, predictions, train_diagnostic, device, args.eval_batch,
+                ymean, ystd, sample_mean, sample_scale,
+                derivative_mean, derivative_scale)
+        else:
+            train_metrics = None
         val_mse = tuning_metrics["rmse_ps"] ** 2
         improved = val_mse < best_loss - args.min_delta
         if improved:
@@ -245,18 +268,31 @@ def run(args):
             patience_used = 0
         else:
             patience_used += 1
+        lr_before = float(optimizer.param_groups[0]["lr"])
+        if scheduler is not None:
+            scheduler.step(float(tuning_metrics["rmse_ps"]))
+        current_lr = float(optimizer.param_groups[0]["lr"])
+        reduced = current_lr < lr_before
+        if reduced:
+            log.info("LR REDUCED | epoch=%d | %.8g -> %.8g | tuning RMSE=%.4f ps",
+                     epoch, lr_before, current_lr, tuning_metrics["rmse_ps"])
         history.append({
             "epoch": epoch, "train_normalized_mse": sum_squared / max(count, 1),
-            "tuning": tuning_metrics,
+            "train_probe": train_metrics, "learning_rate": current_lr,
+            "lr_reduced": reduced, "tuning": tuning_metrics,
         })
         log.info("EPOCH %03d/%03d | train normalized MSE=%.6f | "
                  "tuning RMSE=%.4f ps MAE=%.4f ps std=%.4f ps "
-                 "| best_epoch=%d patience=%d/%d elapsed=%.1fs",
+                 "| train probe RMSE=%s ps | LR=%.8g | best_epoch=%d "
+                 "patience=%d/%d elapsed=%.1fs",
                  epoch, args.epochs, sum_squared / max(count, 1),
                  tuning_metrics["rmse_ps"], tuning_metrics["mae_ps"],
                  tuning_metrics["reconstructed_std_ps"],
-                 best_epoch, patience_used, args.patience, time.monotonic()-clock)
-        if patience_used >= args.patience:
+                 "%.4f" % train_metrics["rmse_ps"] if train_metrics else "disabled",
+                 current_lr, best_epoch, patience_used, args.patience,
+                 time.monotonic()-clock)
+        if not args.no_early_stopping and patience_used >= args.patience:
+            log.info("EARLY STOP | epoch=%d patience=%d", epoch, args.patience)
             break
     if best_state is None:
         raise RuntimeError("No valid best checkpoint")
@@ -297,6 +333,7 @@ def run(args):
         "input_normalization_metadata": normalization_details,
         "target_mean_ps": ymean, "target_std_ps": ystd,
         "best_epoch": best_epoch, "provenance": provenance,
+        "scheduler": None if scheduler is None else scheduler.state_dict(),
     }, root / checkpoint_name)
     np.savez_compressed(
         root / "diagnostics.npz",
@@ -326,6 +363,13 @@ def run(args):
             "batch_size": args.batch_size, "learning_rate": args.learning_rate,
             "weight_decay": args.weight_decay, "epochs": args.epochs,
             "patience": args.patience, "device": device,
+            "no_early_stopping": args.no_early_stopping,
+            "lr_scheduler": "disabled" if scheduler is None else "ReduceLROnPlateau",
+            "lr_factor": args.lr_factor, "lr_patience": args.lr_patience,
+            "lr_threshold_ps": args.lr_threshold_ps,
+            "lr_min": args.lr_min, "lr_cooldown": args.lr_cooldown,
+            "train_eval_events": len(train_diagnostic),
+            "lr_reductions": sum(int(h["lr_reduced"]) for h in history),
         },
         "input_normalization_metadata": normalization_details,
         "input_derivative_normalization_metadata": derivative_details,
@@ -372,6 +416,17 @@ def _parser():
     p.add_argument("--weight-decay", type=float, default=0.)
     p.add_argument("--patience", type=int, default=8)
     p.add_argument("--min-delta", type=float, default=0.01)
+    p.add_argument("--no-early-stopping", action="store_true",
+                   help="Train all epochs, retaining only best tuning checkpoint")
+    p.add_argument("--no-lr-decay", action="store_true",
+                   help="Preserve prior fixed learning rate (default now schedules)")
+    p.add_argument("--lr-factor", type=float, default=0.5)
+    p.add_argument("--lr-patience", type=int, default=20)
+    p.add_argument("--lr-threshold-ps", type=float, default=0.05)
+    p.add_argument("--lr-min", type=float, default=1e-6)
+    p.add_argument("--lr-cooldown", type=int, default=5)
+    p.add_argument("--train-eval-events", type=int, default=1024,
+                   help="Fixed training-event subset to evaluate in eval mode each epoch; 0 disables")
     p.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     return p
 
