@@ -301,3 +301,40 @@ Saved: `summary.json`, `metrics.csv`, `diagnostics.npz`, and
 `evaluation.log`. This is a computationally intensive exact kNN
 baseline on CPU; adjust query/reference batch sizes to fit RAM.
 Tests: `python -m pytest waveform_analysis/tests/test_full_signal_knn.py -q`.
+
+
+## Full-signal temporal CNN + independent first-difference channels
+
+Ablation: compare the original `TemporalConditionalCNN` with an otherwise
+identical architecture receiving **two additional channels**, one temporal
+first difference per detector (`d[:, :, 0] = 0`,
+`d[:, :, t] = x[:, :, t] - x[:, :, t-1]` for `t >= 1`).
+Differences are calculated from **raw** waveform samples first, and
+standardized independently using per-detector/per-position training-only
+mean and scale; they are *not* computed from normalized waveforms.
+The network sees seven channels: two standardized signals, two full
+observation masks, two standardized differences and the absolute time
+coordinate. No additional model-feature extraction, teacher inference,
+windowing or TSHAP coalition estimation is involved.
+
+```bash
+python -m waveform_analysis.scripts.evaluate_full_signal_distillation \
+  --architecture temporal_cnn --use-derivative \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/full_signal_distillation/UC_temporal_derivative" \
+  --input-normalization per_sample \
+  --tuning-queries 500 --holdout-queries 500 \
+  --width 64 --depth 3 --temporal-bins 8 \
+  --epochs 50 --batch-size 256 --eval-batch 256 \
+  --learning-rate 0.001 --patience 8
+```
+
+Outputs include `temporal_cnn_derivative_full_signal.pt`,
+`summary.json`, `diagnostics.npz` and holdout PNGs. Derivative
+statistics and the feature flag are saved in the checkpoint.
+The default (flag omitted) preserves the original CNN and its input format.
+This derivative option currently applies **only to full-signal CNN
+distillation**, not the conditional W/R NN-Olsen workflow. For future
+masked experiments, derivative values must be hidden unless both adjacent
+samples are observed, to avoid boundary information leakage.
