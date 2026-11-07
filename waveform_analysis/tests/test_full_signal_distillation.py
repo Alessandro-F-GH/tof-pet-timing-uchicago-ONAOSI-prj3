@@ -98,3 +98,17 @@ def test_full_signal_wide_olsen_with_derivatives():
     predicted.square().mean().backward()
     assert all(p.grad is not None and torch.isfinite(p.grad).all()
                for p in model.parameters())
+
+
+def test_full_signal_tuning_scheduler_decay():
+    # Scheduler reacts to the same eval-mode tuning RMSE used for checkpoint selection.
+    parameter = torch.nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.Adam([parameter], lr=0.001)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=2,
+        threshold=0.05, threshold_mode="abs", cooldown=0, min_lr=1e-6)
+    for rmse in [10.0, 9.9, 9.92, 9.91, 9.93]:
+        scheduler.step(rmse)
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0005)
+    scheduler.step(8.0)
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0005)
