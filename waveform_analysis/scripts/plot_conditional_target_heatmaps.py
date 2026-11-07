@@ -83,7 +83,80 @@ def load_prediction_difference(args, reference_predictions, reference_provenance
     log.info("DIFFERENCE | reference %s minus %s | aligned events=%d | "
              "waveform checks passed",
              reference_provenance["model"], second["model"], len(ref_ids))
-    return reference_predictions - other_predictions[aligned_rows], second
+    return reference_predictions - other_predictions[aligned_rows], second, other_predictions[aligned_rows]
+
+
+def prediction_comparison_metrics(reference, comparison, *, reference_name="reference",
+                                  comparison_name="comparison"):
+    """Paired saved-output agreement; never claim these are errors to physical truth."""
+    a = np.asarray(reference, dtype=np.float64)
+    b = np.asarray(comparison, dtype=np.float64)
+    if a.ndim != 1 or b.shape != a.shape or a.size < 2:
+        raise ValueError("Need matching 1D prediction arrays with >=2 events")
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        raise ValueError("Nonfinite model predictions")
+    delta = a - b
+    abs_delta = np.abs(delta)
+    std_a = float(np.std(a))
+    std_b = float(np.std(b))
+    corr = (float(np.corrcoef(a, b)[0, 1])
+            if std_a > 0 and std_b > 0 else None)
+    thresholds = np.percentile(a, [0, 2, 10, 25, 50, 75, 90, 98, 100])
+    bins = []
+    for i in range(len(thresholds)-1):
+        lower, upper = float(thresholds[i]), float(thresholds[i+1])
+        subset = (a >= lower) & ((a <= upper) if i == len(thresholds)-2
+                                 else (a < upper))
+        if not np.any(subset):
+            continue
+        error = delta[subset]
+        bins.append({
+            "reference_quantiles": [int(v) for v in (0, 2, 10, 25, 50, 75, 90, 98, 100)[i:i+2]],
+            "n": int(subset.sum()), "bias_ps": float(np.mean(error)),
+            "rmse_ps": float(np.sqrt(np.mean(error**2))),
+            "mae_ps": float(np.mean(np.abs(error))),
+        })
+    return {
+        "n_events": int(len(a)),
+        "reference": reference_name, "comparison": comparison_name,
+        "difference_definition": "reference prediction minus comparison prediction",
+        "reference_mean_ps": float(np.mean(a)),
+        "reference_std_ps": std_a,
+        "comparison_mean_ps": float(np.mean(b)),
+        "comparison_std_ps": std_b,
+        "pearson_correlation": corr,
+        "bias_ps": float(np.mean(delta)),
+        "difference_std_ps": float(np.std(delta)),
+        "rmse_difference_ps": float(np.sqrt(np.mean(delta ** 2))),
+        "mae_difference_ps": float(np.mean(abs_delta)),
+        "median_abs_difference_ps": float(np.median(abs_delta)),
+        "p90_abs_difference_ps": float(np.percentile(abs_delta, 90)),
+        "p95_abs_difference_ps": float(np.percentile(abs_delta, 95)),
+        "p99_abs_difference_ps": float(np.percentile(abs_delta, 99)),
+        "max_abs_difference_ps": float(abs_delta.max()),
+        "by_reference_prediction_quantile": bins,
+    }
+
+
+def log_prediction_comparison(log, label, result):
+    log.info("MODEL AGREEMENT | %s | N=%d | Pearson r=%s | "
+             "ref std=%.4f ps comparison std=%.4f ps",
+             label, result["n_events"], result["pearson_correlation"],
+             result["reference_std_ps"], result["comparison_std_ps"])
+    log.info("MODEL DIFFERENCE | %s | reference-comparison | bias=%.4f ps "
+             "std=%.4f ps RMSE=%.4f ps MAE=%.4f ps | "
+             "median|delta|=%.4f ps p90=%.4f p95=%.4f p99=%.4f max=%.4f ps",
+             label, result["bias_ps"], result["difference_std_ps"],
+             result["rmse_difference_ps"], result["mae_difference_ps"],
+             result["median_abs_difference_ps"], result["p90_abs_difference_ps"],
+             result["p95_abs_difference_ps"], result["p99_abs_difference_ps"],
+             result["max_abs_difference_ps"])
+    for band in result["by_reference_prediction_quantile"]:
+        lo, hi = band["reference_quantiles"]
+        log.info("MODEL DIFFERENCE BY ROCKET QUANTILE | %s | P%d-P%d n=%d "
+                 "bias=%.4f ps RMSE=%.4f ps MAE=%.4f ps",
+                 label, lo, hi, band["n"], band["bias_ps"],
+                 band["rmse_ps"], band["mae_ps"])
 
 
 def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
@@ -153,8 +226,10 @@ def run(args):
     log = _logger(root)
     waves, predictions, retained, provenance = _load_inputs(args, log)
     comparison_provenance = None
+    reference_predictions = predictions
+    comparison_predictions = None
     if args.comparison_model_dir is not None:
-        predictions, comparison_provenance = load_prediction_difference(
+        predictions, comparison_provenance, comparison_predictions = load_prediction_difference(
             args, predictions, provenance, waves, log)
     n = len(predictions)
     if args.tuning_queries < 1 or args.holdout_queries < 1:
@@ -170,6 +245,22 @@ def run(args):
     mask = np.ones(n, dtype=bool)
     mask[excluded] = False
     training = np.flatnonzero(mask)
+    comparison_metrics = None
+    if comparison_predictions is not None:
+        comparison_metrics = {}
+        subsets = {"all_development": np.arange(n),
+                   "training": training,
+                   "tuning": excluded[:args.tuning_queries],
+                   "holdout": excluded[args.tuning_queries:]}
+        for split_name, indices in subsets.items():
+            result = prediction_comparison_metrics(
+                reference_predictions[indices], comparison_predictions[indices],
+                reference_name=provenance["model"],
+                comparison_name=comparison_provenance["model"])
+            comparison_metrics[split_name] = result
+            log_prediction_comparison(log, split_name, result)
+        (root / "prediction_comparison_metrics.json").write_text(
+            json.dumps(comparison_metrics, indent=2), encoding="utf-8")
     log.info("TRAIN ONLY | n=%d | tuning=%d holdout=%d seed=%d",
              len(training), args.tuning_queries, args.holdout_queries, args.seed)
     means, scales, signal_meta = fit_time_sample_stats(
@@ -249,6 +340,8 @@ def run(args):
     (root / "summary.json").write_text(json.dumps({
         "provenance": provenance,
         "comparison_provenance": comparison_provenance,
+        "comparison_metrics_file": ("prediction_comparison_metrics.json"
+                                     if comparison_metrics is not None else None),
         "prediction_sign": "reference minus comparison" if comparison_provenance else None,
         "events": int(len(training)), "seed": args.seed,
         "target": ("SAVED reference minus comparison prediction, not calibrated ground truth"
