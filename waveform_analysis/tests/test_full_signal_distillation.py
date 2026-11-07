@@ -81,3 +81,20 @@ def test_first_difference_is_not_derivative_of_z_scored_waveform():
                            derivative_scale=dscale).reshape(1, 6, 8)
     torch.testing.assert_close(result[0, 4, 1:], x[0, 0, 1:] - x[0, 0, :-1])
     torch.testing.assert_close(result[0, 0], (x[0, 0] - 3) / 2)
+
+
+def test_full_signal_wide_olsen_with_derivatives():
+    from waveform_analysis.engine.nn_olsen import NNOlsenSurrogate
+    torch.manual_seed(23)
+    waves = torch.randn(4, 2, 64)
+    mean = torch.zeros(2, 64)
+    scale = torch.ones(2, 64)
+    features = full_features(waves, mean, scale,
+                             derivative_mean=mean, derivative_scale=scale)
+    model = NNOlsenSurrogate(64, width=256, depth=3, use_derivative=True)
+    assert model.input.in_features == 6 * 64
+    predicted = model(features)
+    assert predicted.shape == (4,)
+    predicted.square().mean().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in model.parameters())
