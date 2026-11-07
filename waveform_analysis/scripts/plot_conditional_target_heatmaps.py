@@ -22,29 +22,68 @@ CHANNEL_NAMES = ("detector_1", "detector_2", "detector_2_minus_1")
 
 
 
-def load_prediction_difference(args, reference_predictions, reference_provenance, log):
-    """Only subtract predictions aligned to exactly the same prepared dataset."""
+def load_prediction_difference(args, reference_predictions, reference_provenance,
+                               reference_waves, log):
+    """Match two independently loaded models by prepared event ID, not row index.
+
+    The output heatmap always uses reference-model waveform coordinates.
+    Refuse a comparison if matched waveform inputs disagree.
+    """
     from argparse import Namespace
+    from waveform_analysis.data.results import read_run, resolve_run_config
+    from waveform_analysis.data.prepared_cache import PreparedCacheLookup
+    from waveform_analysis.data.view import mode_family
+
     second_args = Namespace(**vars(args))
     second_args.model_dir = args.comparison_model_dir
     other_waves, other_predictions, _, second = _load_inputs(second_args, log)
     if reference_provenance["mode"] != second["mode"]:
-        raise ValueError("Different mode between runs")
-    if reference_provenance["dataset"] != second["dataset"]:
-        raise ValueError(
-            "Different prepared dataset artifacts: event row ordering and waveform "
-            "identity are not guaranteed. Refusing unsafe subtraction.")
-    with np.load(reference_provenance["prediction_artifact"], allow_pickle=False) as archive:
-        a = np.asarray(archive["event_id"], dtype=np.int64)
-    with np.load(second["prediction_artifact"], allow_pickle=False) as archive:
-        b = np.asarray(archive["event_id"], dtype=np.int64)
-    if a.size != b.size or not np.array_equal(np.sort(a), np.sort(b)):
-        raise ValueError("Different event populations; cannot subtract predictions")
-    if len(other_predictions) != len(reference_predictions):
-        raise ValueError("Different prediction array lengths")
-    log.info("DIFFERENCE | reference %s minus comparison %s",
-             reference_provenance["model"], second["model"])
-    return reference_predictions - other_predictions, second
+        raise ValueError("Different modes: cannot compare prediction outputs")
+
+    def dataset_for(model_dir):
+        run = read_run(model_dir.expanduser().resolve())
+        config = resolve_run_config(model_dir.expanduser().resolve())
+        if args.cache_root is not None:
+            root = args.cache_root.expanduser().resolve()
+            config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
+            config["preprocessing"]["artifact_root"] = str(root / "artifact_store")
+            config["preprocessing"]["named_cache_root"] = str(root)
+        elif args.artifact_root is not None:
+            config["preprocessing"]["artifact_root"] = str(
+                args.artifact_root.expanduser().resolve())
+            config["preprocessing"].pop("named_cache_root", None)
+        return PreparedCacheLookup().find("development", config, run["manifest"])
+
+    ref_dataset = dataset_for(args.model_dir)
+    other_dataset = dataset_for(args.comparison_model_dir)
+    ref_ids = np.asarray(ref_dataset.event_index, dtype=np.int64)
+    other_ids = np.asarray(other_dataset.event_index, dtype=np.int64)
+    if (len(ref_ids) != len(reference_predictions) or
+            len(other_ids) != len(other_predictions) or
+            np.unique(ref_ids).size != len(ref_ids) or
+            np.unique(other_ids).size != len(other_ids)):
+        raise ValueError("Ambiguous or inconsistent development event IDs")
+    if not np.array_equal(np.sort(ref_ids), np.sort(other_ids)):
+        raise ValueError("Development event populations differ")
+    order = np.argsort(other_ids, kind="stable")
+    aligned_rows = order[np.searchsorted(other_ids[order], ref_ids)]
+    if reference_waves.shape != other_waves.shape:
+        raise ValueError("Prepared waveform shapes differ")
+    # Check waveform identity using paired channels and selected positions,
+    # not only event IDs, because model runs may have different preprocessing.
+    sample_rows = np.unique(np.linspace(0, len(ref_ids) - 1, 64, dtype=np.int64))
+    sample_times = np.unique(np.linspace(
+        0, reference_waves.shape[-1] - 1, 128, dtype=np.int64))
+    for row in sample_rows:
+        left = np.asarray(reference_waves[int(row)], dtype=np.float32)
+        right = np.asarray(other_waves[int(aligned_rows[row])], dtype=np.float32)
+        if not np.allclose(left[:, sample_times], right[:, sample_times],
+                           rtol=1e-5, atol=1e-6):
+            raise ValueError("Prepared waveforms differ between runs after event-ID alignment")
+    log.info("DIFFERENCE | reference %s minus %s | aligned events=%d | "
+             "waveform checks passed",
+             reference_provenance["model"], second["model"], len(ref_ids))
+    return reference_predictions - other_predictions[aligned_rows], second
 
 
 def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
@@ -116,7 +155,7 @@ def run(args):
     comparison_provenance = None
     if args.comparison_model_dir is not None:
         predictions, comparison_provenance = load_prediction_difference(
-            args, predictions, provenance, log)
+            args, predictions, provenance, waves, log)
     n = len(predictions)
     if args.tuning_queries < 1 or args.holdout_queries < 1:
         raise ValueError("Tuning/holdout must be nonempty")
