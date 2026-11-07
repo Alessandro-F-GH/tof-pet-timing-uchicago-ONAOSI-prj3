@@ -24,7 +24,8 @@ import torch
 
 from waveform_analysis.engine.conditional_knn import tshap_windows
 from waveform_analysis.engine.temporal_conditional_cnn import TemporalConditionalCNN
-from waveform_analysis.engine.sample_normalization import fit_time_sample_stats, tensor_stats
+from waveform_analysis.engine.sample_normalization import (fit_time_sample_stats,
+    fit_first_difference_stats, tensor_stats)
 from waveform_analysis.engine.nn_olsen import (
     NNOlsenSurrogate, coalitions, paired_batch, predict_coalitions,
 )
@@ -59,7 +60,8 @@ def _metrics(estimated, true):
 
 
 def _evaluate(model, waves, labels, indices, starts, keep, args, device, log, name,
-              mean, std, *, sample_mean=None, sample_scale=None):
+              mean, std, *, sample_mean=None, sample_scale=None,
+              derivative_mean=None, derivative_scale=None):
     start = time.monotonic()
     log.info("%s | evaluating %d held-out events x %d windows x 2 coalitions",
              name, len(indices), len(starts))
@@ -69,7 +71,9 @@ def _evaluate(model, waves, labels, indices, starts, keep, args, device, log, na
         ids = indices[i:i + args.eval_batch]
         prediction = predict_coalitions(model, waves[ids], starts, args.window_samples,
                                         keep, batch_size=args.eval_batch, device=device,
-                                        sample_mean=sample_mean, sample_scale=sample_scale)
+                                        sample_mean=sample_mean, sample_scale=sample_scale,
+                                        derivative_mean=derivative_mean,
+                                        derivative_scale=derivative_scale)
         out[i:i+len(ids)] = prediction * std + mean
         if i == 0 or i + len(ids) == len(indices):
             log.info("%s | processed %d/%d queries | elapsed=%.1fs",
@@ -90,6 +94,11 @@ def run(args):
         raise ValueError(f"Unsupported surrogate architecture: {architecture}")
     log.info("CONDITIONAL SURROGATE | architecture=%s | no original model inference | W/R complementary masks", architecture)
     log.info("Arguments=%s", vars(args))
+    use_derivative = getattr(args, "use_derivative", False)
+    if use_derivative and architecture != "mlp":
+        raise ValueError("--use-derivative is currently supported for NN-Olsen MLP only")
+    if use_derivative and args.input_normalization != "per_sample":
+        raise ValueError("--use-derivative requires --input-normalization per_sample")
     waves, predictions, keep, provenance = _load_inputs(args, log)
     starts, keep = tshap_windows(waves.shape[-1], args.window_samples,
                                 args.stride_samples, keep)
@@ -136,7 +145,8 @@ def run(args):
     log.info("ORIGINAL TRAIN TARGET | mean=%.6f ps | variance=%.6f ps2 | std=%.6f ps",
              ymean, ystd**2, ystd)
     if architecture == "mlp":
-        model = NNOlsenSurrogate(waves.shape[-1], width=args.width, depth=args.depth).to(device)
+        model = NNOlsenSurrogate(waves.shape[-1], width=args.width, depth=args.depth,
+                                  use_derivative=use_derivative).to(device)
     else:
         model = TemporalConditionalCNN(waves.shape[-1], width=args.width, depth=args.depth,
                                        bins=args.temporal_bins).to(device)
@@ -151,6 +161,15 @@ def run(args):
         log.info("INPUT NORMALIZATION | per_sample | %s", normalization_metadata)
     else:
         log.info("INPUT NORMALIZATION | none (legacy unmodified input)")
+    derivative_mean = derivative_scale = None
+    derivative_mean_array = derivative_scale_array = derivative_metadata = None
+    if use_derivative:
+        derivative_mean_array, derivative_scale_array, derivative_metadata = fit_first_difference_stats(
+            waves, train_idx, chunk_size=args.normalization_chunk_size,
+            scale_floor_ratio=args.normalization_scale_floor_ratio)
+        derivative_mean, derivative_scale = tensor_stats(
+            derivative_mean_array, derivative_scale_array, device=device)
+        log.info("DERIVATIVE NORMALIZATION | first differences, train only | %s", derivative_metadata)
     log.info("MODEL | %s | parameters=%d", type(model).__name__,
              sum(p.numel() for p in model.parameters()))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
@@ -182,7 +201,8 @@ def run(args):
                                      dtype=torch.float32, device=device)
             features, pair_targets = paired_batch(
                 wave, target, window_ix, masks,
-                sample_mean=sample_mean, sample_scale=sample_scale)
+                sample_mean=sample_mean, sample_scale=sample_scale,
+                derivative_mean=derivative_mean, derivative_scale=derivative_scale)
             optimizer.zero_grad(set_to_none=True)
             predicted = model(features)
             loss = torch.mean((predicted - pair_targets) ** 2)
@@ -194,7 +214,9 @@ def run(args):
         tune_out, tune_stats = _evaluate(model, waves, predictions, tune_idx,
                                          starts, keep, args, device, log,
                                          f"TUNING EPOCH {epoch}", ymean, ystd,
-                                         sample_mean=sample_mean, sample_scale=sample_scale)
+                                         sample_mean=sample_mean, sample_scale=sample_scale,
+                                         derivative_mean=derivative_mean,
+                                         derivative_scale=derivative_scale)
         tuning_mse = (tune_stats["rmse_ps"][0]**2 + tune_stats["rmse_ps"][1]**2) / 2
         history.append({"epoch": epoch, "train_normalized_mse": train_mse,
                         "tuning_mse_ps2": tuning_mse,
@@ -225,7 +247,9 @@ def run(args):
     tune_est, tune_stats = _evaluate(model, waves, predictions, tune_idx,
                                      starts, keep, args, device, log,
                                      "TUNING FINAL", ymean, ystd,
-                                     sample_mean=sample_mean, sample_scale=sample_scale)
+                                     sample_mean=sample_mean, sample_scale=sample_scale,
+                                     derivative_mean=derivative_mean,
+                                     derivative_scale=derivative_scale)
     hold_est, hold_stats = _evaluate(model, waves, predictions, hold_idx,
                                      starts, keep, args, device, log,
                                      "HOLDOUT FINAL", ymean, ystd,
@@ -233,12 +257,18 @@ def run(args):
     log.info("UNCONDITIONAL REFERENCE | full training predictions mean=%.6f ps, std=%.6f ps",
              ymean, ystd)
     log.info("DIAGNOSTIC NOTE | conditional estimates have smaller expected population variance than original predictions at exact conditional optimum; finite-sample errors may violate this inequality.")
-    checkpoint_name = "nn_olsen.pt" if architecture == "mlp" else "temporal_conditional_cnn.pt"
+    checkpoint_name = ("nn_olsen_derivative.pt" if use_derivative
+                       else "nn_olsen.pt" if architecture == "mlp"
+                       else "temporal_conditional_cnn.pt")
     torch.save({
         "model_state": best_state,
         "architecture_name": architecture,
+        "use_derivative": use_derivative,
+        "input_derivative_mean": derivative_mean_array,
+        "input_derivative_scale": derivative_scale_array,
+        "input_derivative_normalization_metadata": derivative_metadata,
         "architecture": {"n_samples": int(waves.shape[-1]), "width": args.width,
-                         "depth": args.depth,
+                         "depth": args.depth, "use_derivative": use_derivative,
                          "temporal_bins": args.temporal_bins if architecture == "temporal_cnn" else None},
         "target_mean_ps": ymean, "target_std_ps": ystd,
         "input_normalization": args.input_normalization,
@@ -269,6 +299,7 @@ def run(args):
             "n_windows": len(starts), "training_events": len(train_idx),
             "tuning_events": len(tune_idx), "holdout_events": len(hold_idx),
             "architecture": architecture, "width": args.width, "depth": args.depth,
+            "use_derivative": use_derivative,
             "temporal_bins": args.temporal_bins if architecture == "temporal_cnn" else None,
             "model_parameters": sum(p.numel() for p in model.parameters()),
             "input_normalization": args.input_normalization,
@@ -281,6 +312,7 @@ def run(args):
         },
         "best_epoch": best_epoch,
         "input_normalization_metadata": normalization_metadata,
+        "input_derivative_normalization_metadata": derivative_metadata,
         "training_prediction_variance_ps2": ystd**2,
         "training_prediction_std_ps": ystd,
         "tuning": tune_stats, "holdout": hold_stats, "history": history,
@@ -307,6 +339,8 @@ def _parser():
     p.add_argument("--input-normalization", choices=["none", "per_sample"], default="none")
     p.add_argument("--normalization-chunk-size", type=int, default=256)
     p.add_argument("--normalization-scale-floor-ratio", type=float, default=0.05)
+    p.add_argument("--use-derivative", action="store_true",
+                   help="Add two independently standardized, leakage-safe first-difference channels (MLP)")
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--epochs", type=int, default=50)
