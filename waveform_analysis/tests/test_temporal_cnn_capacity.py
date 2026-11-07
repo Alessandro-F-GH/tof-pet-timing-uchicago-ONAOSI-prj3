@@ -47,3 +47,15 @@ def test_insufficient_train_events_rejected():
     with pytest.raises(ValueError, match="Insufficient"):
         training_rows(120, seed=42, tuning_queries=50,
                       holdout_queries=50, fit_events=30)
+
+
+def test_plateau_scheduler_reduces_lr_after_nonimprovements():
+    optimizer = torch.optim.Adam([torch.nn.Parameter(torch.ones(()))], lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=2,
+        threshold=0.05, threshold_mode="abs", min_lr=1e-6)
+    for rmse in (4., 3.9, 3.95, 3.91, 3.93):
+        scheduler.step(rmse)
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(5e-5)
+    scheduler.step(2.0)
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(5e-5)
