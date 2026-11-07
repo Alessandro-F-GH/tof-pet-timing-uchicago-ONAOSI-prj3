@@ -56,6 +56,9 @@ def run(args):
         raise ValueError("All sizes and counts must be positive")
     if args.fit_events < 2 or args.batch_size < 2 or args.learning_rate <= 0:
         raise ValueError("Need >=2 fit events, batch >=2, and positive learning rate")
+    if not (0 < args.lr_factor < 1 and args.lr_patience >= 1
+            and args.lr_min > 0 and args.lr_threshold_ps >= 0):
+        raise ValueError("Invalid plateau scheduler settings")
     if args.weight_decay != 0:
         raise ValueError("Memorization diagnostic requires --weight-decay 0")
     log.info("CNN CAPACITY / MEMORIZATION TEST | target = saved full teacher predictions")
@@ -106,6 +109,14 @@ def run(args):
              target_mean, target_scale, float(labels[selected].std()))
     opt = torch.optim.Adam(model.parameters(), lr=args.learning_rate,
                            weight_decay=0.)
+    scheduler = None if args.no_lr_decay else torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, mode="min", factor=args.lr_factor, patience=args.lr_patience,
+        threshold=args.lr_threshold_ps, threshold_mode="abs",
+        cooldown=args.lr_cooldown, min_lr=args.lr_min)
+    log.info("LR SCHEDULER | %s", "disabled" if scheduler is None else
+             f"ReduceLROnPlateau on SAME-EVENT eval RMSE each epoch | "
+             f"patience={args.lr_patience} factor={args.lr_factor} "
+             f"threshold_ps={args.lr_threshold_ps} min_lr={args.lr_min}")
     rng = np.random.default_rng(args.seed + 1)
     best_rmse = float("inf")
     best_epoch = 0
@@ -135,34 +146,49 @@ def run(args):
             opt.step()
             epoch_loss += float(loss.detach().cpu()) * len(indices)
             trained += len(indices)
-        if epoch % args.report_every == 0 or epoch == 1 or epoch == args.epochs:
-            prediction, metrics = evaluate(
-                model, waveforms, labels, selected, device, args.eval_batch,
-                target_mean, target_scale, sample_mean, sample_scale,
-                deriv_mean, deriv_scale)
-            metric = float(metrics["rmse_ps"])
-            if metric < best_rmse:
-                best_rmse = metric
-                best_epoch = epoch
-                best_state = {key: value.detach().cpu().clone()
-                              for key, value in model.state_dict().items()}
-            row = {
-                "epoch": epoch,
-                "online_train_normalized_mse": epoch_loss / max(trained, 1),
-                "eval_train_rmse_ps": metric,
-                "eval_train_mae_ps": metrics["mae_ps"],
-                "eval_train_max_abs_error_ps": float(
-                    np.max(np.abs(prediction - labels[selected]))),
-                "elapsed_s": time.monotonic() - clock,
-            }
-            rows.append(row)
+        # Evaluate the SAME fixed events EVERY epoch, even when logging less
+        # often. This keeps LR plateau patience in actual epochs rather than
+        # report intervals, and the best checkpoint is never missed.
+        prediction, metrics = evaluate(
+            model, waveforms, labels, selected, device, args.eval_batch,
+            target_mean, target_scale, sample_mean, sample_scale,
+            deriv_mean, deriv_scale)
+        metric = float(metrics["rmse_ps"])
+        if not np.isfinite(metric):
+            raise RuntimeError(f"Non-finite same-event evaluation RMSE at epoch {epoch}")
+        if metric < best_rmse:
+            best_rmse = metric
+            best_epoch = epoch
+            best_state = {key: value.detach().cpu().clone()
+                          for key, value in model.state_dict().items()}
+        old_lr = float(opt.param_groups[0]["lr"])
+        if scheduler is not None:
+            scheduler.step(metric)
+        current_lr = float(opt.param_groups[0]["lr"])
+        reduced = current_lr < old_lr
+        if reduced:
+            log.info("LR REDUCED | epoch=%d | %.8g -> %.8g | eval RMSE=%.5f ps "
+                     "| best=%.5f ps", epoch, old_lr, current_lr, metric, best_rmse)
+        row = {
+            "epoch": epoch,
+            "online_train_normalized_mse": epoch_loss / max(trained, 1),
+            "eval_train_rmse_ps": metric,
+            "eval_train_mae_ps": metrics["mae_ps"],
+            "eval_train_max_abs_error_ps": float(
+                np.max(np.abs(prediction - labels[selected]))),
+            "learning_rate": current_lr,
+            "lr_reduced": reduced,
+            "elapsed_s": time.monotonic() - clock,
+        }
+        rows.append(row)
+        if epoch % args.report_every == 0 or epoch == 1 or epoch == args.epochs or reduced:
             log.info("EPOCH %04d/%04d | online normalized MSE=%.7f | "
                      "SAME-EVENT eval RMSE=%.5f ps MAE=%.5f ps maxAE=%.5f ps "
-                     "| best=%.5f ps (epoch %d) | elapsed=%.1fs",
+                     "| LR=%.8g | best=%.5f ps (epoch %d) | elapsed=%.1fs",
                      epoch, args.epochs, row["online_train_normalized_mse"],
                      metric, metrics["mae_ps"],
-                     row["eval_train_max_abs_error_ps"], best_rmse, best_epoch,
-                     row["elapsed_s"])
+                     row["eval_train_max_abs_error_ps"], current_lr,
+                     best_rmse, best_epoch, row["elapsed_s"])
     if best_state is None:
         raise RuntimeError("No evaluation of trained network")
     model.load_state_dict(best_state)
@@ -215,6 +241,9 @@ def run(args):
         "normalization_population": "all eligible training events",
         "tuning_or_holdout_used_for_training": False,
         "early_stopping": False, "weight_decay": 0.,
+        "lr_schedule": "disabled" if scheduler is None else "ReduceLROnPlateau",
+        "final_learning_rate": float(opt.param_groups[0]["lr"]),
+        "lr_reductions": int(sum(row["lr_reduced"] for row in rows)),
         "settings": vars(args) | {
             "model_dir": str(args.model_dir),
             "cache_root": str(args.cache_root) if args.cache_root else None,
@@ -255,6 +284,15 @@ def _parser():
     p.add_argument("--eval-batch", type=int, default=64)
     p.add_argument("--learning-rate", type=float, default=0.0005)
     p.add_argument("--weight-decay", type=float, default=0.)
+    p.add_argument("--no-lr-decay", action="store_true",
+                   help="Disable adaptive LR decay to reproduce old fixed-LR behavior")
+    p.add_argument("--lr-factor", type=float, default=0.5)
+    p.add_argument("--lr-patience", type=int, default=20,
+                   help="Plateau patience in epochs (eval every epoch)")
+    p.add_argument("--lr-threshold-ps", type=float, default=0.05,
+                   help="Minimum RMSE reduction treated as an improvement")
+    p.add_argument("--lr-min", type=float, default=1e-6)
+    p.add_argument("--lr-cooldown", type=int, default=5)
     p.add_argument("--normalization-chunk-size", type=int, default=256)
     p.add_argument("--normalization-scale-floor-ratio", type=float, default=0.05)
     p.add_argument("--report-every", type=int, default=5)
