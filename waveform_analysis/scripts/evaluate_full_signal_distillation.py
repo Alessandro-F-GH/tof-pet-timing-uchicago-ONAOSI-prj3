@@ -115,7 +115,7 @@ def _plots(output, target, prediction, title, model_label="CNN"):
 
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.hist(residual, bins=70)
-    ax.set(xlabel="CNN - original (ps)", ylabel="Events",
+    ax.set(xlabel=f"{model_label} - original (ps)", ylabel="Events",
            title=f"Full-signal {model_label} | holdout residual distribution")
     fig.tight_layout()
     fig.savefig(output / "holdout_residual_hist.png", dpi=180)
@@ -293,7 +293,6 @@ def run(args):
         "input_sample_mean": mean_array,
         "input_sample_scale": scale_array,
         "input_normalization_metadata": normalization_details,
-        "input_derivative_normalization_metadata": derivative_details,
         "target_mean_ps": ymean, "target_std_ps": ystd,
         "best_epoch": best_epoch, "provenance": provenance,
     }, root / checkpoint_name)
@@ -327,6 +326,7 @@ def run(args):
             "patience": args.patience, "device": device,
         },
         "input_normalization_metadata": normalization_details,
+        "input_derivative_normalization_metadata": derivative_details,
         "tuning": tuning_metrics, "holdout": holdout_metrics, "history": history,
     }
     (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
