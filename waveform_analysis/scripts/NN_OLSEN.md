@@ -394,3 +394,40 @@ This experiment uses **all-ones masks** and two standardized raw first
 difference channels; the same data split/targets and teacher-free procedure
 as the CNN full-signal experiment. Checkpoint name:
 `olsen_mlp_derivative_full_signal.pt`.
+
+
+## Temporal CNN capacity: deliberate 256-event overfitting
+
+Diagnostic for whether the **same temporal CNN with derivatives** can memorize
+a small fixed set of original-model outputs. The teacher is never loaded.
+
+```bash
+python -m waveform_analysis.scripts.test_temporal_cnn_capacity \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/full_signal_distillation/UC_capacity_256" \
+  --fit-events 256 --use-derivative \
+  --width 64 --depth 3 --temporal-bins 8 \
+  --epochs 400 --batch-size 64 --eval-batch 64 \
+  --learning-rate 0.0005 --report-every 5
+```
+
+The exact seed-42 74,714-event training cohort from full-signal distillation
+is retained as the **normalization and target-standardization reference**;
+256 fixed distinct events are sampled from it for optimization. All other
+events have no effect on weight updates. No tuning-based checkpoint selection,
+holdout evaluation, early stopping or weight decay. The best checkpoint is
+selected only by the measured RMSE on the very same memorization events.
+Normalizing with the wider original training population avoids making the
+small-subset test easier or harder merely by changing the input scaling.
+
+Per-epoch online train MSE and **eval-mode, same-event RMSE and MAE** are logged.
+Files: `learning_curve.csv`, `memorization_rmse.png`,
+`best_capacity_model.pt`, `diagnostics.npz`, `summary.json`.
+
+This tests **finite-sample interpolation**, not out-of-sample function
+approximation. Nearly zero training error demonstrates that the network and
+optimizer can memorize this subset; it does not prove faithful generalization
+to new waveforms or accuracy of conditional W/R expectations.
+
+Test: `python -m pytest waveform_analysis/tests/test_temporal_cnn_capacity.py -q`.
