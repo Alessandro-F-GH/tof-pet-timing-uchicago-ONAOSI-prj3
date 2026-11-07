@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from waveform_analysis.engine.nn_olsen import augment
+from waveform_analysis.engine.nn_olsen import augment, NNOlsenSurrogate
 from waveform_analysis.engine.sample_normalization import (fit_time_sample_stats,
     fit_first_difference_stats, tensor_stats)
 from waveform_analysis.engine.temporal_conditional_cnn import TemporalConditionalCNN
@@ -173,8 +173,8 @@ def run(args):
     derivative_mean_array = derivative_scale_array = derivative_details = None
     derivative_mean = derivative_scale = None
     if args.use_derivative:
-        if args.architecture != "temporal_cnn":
-            raise ValueError("--use-derivative requires --architecture temporal_cnn")
+        if args.architecture not in ("temporal_cnn", "olsen_mlp"):
+            raise ValueError("--use-derivative requires temporal_cnn or olsen_mlp")
         if args.input_normalization != "per_sample":
             raise ValueError("--use-derivative requires --input-normalization per_sample")
         derivative_mean_array, derivative_scale_array, derivative_details = fit_first_difference_stats(
@@ -188,6 +188,10 @@ def run(args):
         model = TemporalConditionalCNN(waves.shape[-1], width=args.width,
                                         depth=args.depth, bins=args.temporal_bins,
                                         use_derivative=args.use_derivative).to(device)
+    elif architecture == "olsen_mlp":
+        model = NNOlsenSurrogate(waves.shape[-1], width=args.width,
+                                 depth=args.depth,
+                                 use_derivative=args.use_derivative).to(device)
     elif architecture == "inception_time":
         model = InceptionTimeSurrogate(
             waves.shape[-1], filters=args.inception_filters,
@@ -269,9 +273,7 @@ def run(args):
              "holdout RMSE=%.4f ps MAE=%.4f ps | original std=%.4f ps",
              best_epoch, tuning_metrics["rmse_ps"], holdout_metrics["rmse_ps"],
              holdout_metrics["mae_ps"], holdout_metrics["original_std_ps"])
-    checkpoint_name = ("temporal_cnn_derivative_full_signal.pt" if args.use_derivative
-                       else ("temporal_cnn_full_signal.pt" if architecture == "temporal_cnn"
-                             else "inception_time_full_signal.pt"))
+    checkpoint_name = f"{architecture}{'_derivative' if args.use_derivative else ''}_full_signal.pt"
     torch.save({
         "model_state": best_state,
         "architecture_name": architecture + "_full_signal",
@@ -347,7 +349,7 @@ def _parser():
     p.add_argument("--tuning-queries", type=int, default=500)
     p.add_argument("--holdout-queries", type=int, default=500)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--architecture", choices=("temporal_cnn", "inception_time"),
+    p.add_argument("--architecture", choices=("temporal_cnn", "inception_time", "olsen_mlp"),
                    default="temporal_cnn")
     p.add_argument("--inception-filters", type=int, default=16)
     p.add_argument("--inception-bottleneck", type=int, default=32)
@@ -355,7 +357,7 @@ def _parser():
     p.add_argument("--inception-kernel-size", type=int, default=39)
     p.add_argument("--inception-bins", type=int, default=8)
     p.add_argument("--use-derivative", action="store_true",
-                   help="Add separately standardized first-difference channels to Temporal CNN")
+                   help="Add separately standardized first-difference channels to Temporal CNN or Olsen MLP")
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--temporal-bins", type=int, default=8)
