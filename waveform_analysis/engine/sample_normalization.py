@@ -50,3 +50,30 @@ def fit_time_sample_stats(waves, train_idx, *, chunk_size=256, scale_floor_ratio
 def tensor_stats(mean, scale, *, device):
     return (torch.as_tensor(mean, device=device),
             torch.as_tensor(scale, device=device))
+
+
+class FirstDifferenceView:
+    """Lazy first-difference waveform view (no entire-dataset copy).
+
+    d[...,0] = 0; d[...,t] = x[...,t] - x[...,t-1] for t >= 1.
+    Differences are in waveform-amplitude units per sample, not volts/second.
+    """
+
+    def __init__(self, waves):
+        self.waves = waves
+        self.shape = waves.shape
+
+    def __getitem__(self, indices):
+        x = np.asarray(self.waves[indices], dtype=np.float32)
+        result = np.empty_like(x)
+        result[..., 0] = 0
+        result[..., 1:] = x[..., 1:] - x[..., :-1]
+        return result
+
+
+def fit_first_difference_stats(waves, train_idx, *, chunk_size=256,
+                               scale_floor_ratio=0.05):
+    """Train-only, streaming statistics for per-detector temporal differences."""
+    return fit_time_sample_stats(
+        FirstDifferenceView(waves), train_idx, chunk_size=chunk_size,
+        scale_floor_ratio=scale_floor_ratio)
