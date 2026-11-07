@@ -338,3 +338,36 @@ This derivative option currently applies **only to full-signal CNN
 distillation**, not the conditional W/R NN-Olsen workflow. For future
 masked experiments, derivative values must be hidden unless both adjacent
 samples are observed, to avoid boundary information leakage.
+
+
+## Wider NN-Olsen MLP with masked first differences
+
+Run conditional W/R regression with `--architecture mlp --width 256 --use-derivative`.
+The original 64-unit 4T-input network remains the default when the flag is
+not supplied. The 256-unit variant has **six T-length channels** per event:
+two normalized detector waveform channels, two binary observation masks and
+two separately normalized first-difference channels. Each derivative sample
+at t is observed only when both t and t-1 are retained; boundary derivatives
+are hard zeroed to avoid revealing hidden waveform samples.
+
+For an informative comparison, use the **same cached teacher predictions**,
+`seed=42`, 500 tuning/500 holdout, width 20/stride 20, input standardization
+`per_sample`, and identical other training settings:
+
+```bash
+python -m waveform_analysis.scripts.evaluate_nn_olsen \
+  --architecture mlp --width 256 --depth 3 --use-derivative \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/conditional_nn/UC_mlp256_derivative" \
+  --input-normalization per_sample \
+  --window-samples 20 --stride-samples 20 \
+  --tuning-queries 500 --holdout-queries 500 \
+  --epochs 50 --batch-size 256 --eval-batch 256 \
+  --learning-rate 0.001 --patience 8
+```
+
+Checkpoint `nn_olsen_derivative.pt` includes the derivative normalization
+metadata and flags. This is a model-input modification; it does not alter
+the underlying teacher or teacher features. Test with
+`python -m pytest waveform_analysis/tests/test_nn_olsen.py -q`.
