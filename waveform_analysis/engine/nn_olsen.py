@@ -28,7 +28,8 @@ class ResidualBlock(nn.Module):
 class NNOlsenSurrogate(nn.Module):
     """Fully connected 3-block ELU/BN residual surrogate (default paper settings)."""
 
-    def __init__(self, n_samples: int, width: int = 64, depth: int = 3,\n                 use_derivative: bool = False):
+    def __init__(self, n_samples: int, width: int = 64, depth: int = 3,
+                 use_derivative: bool = False):
         super().__init__()
         if n_samples < 1 or width < 1 or depth < 1:
             raise ValueError("Invalid surrogate architecture")
@@ -59,7 +60,8 @@ def coalitions(starts, width, retained, device="cpu"):
     return torch.as_tensor(mask, device=device)
 
 
-def augment(waves, masks, *, sample_mean=None, sample_scale=None,\n            derivative_mean=None, derivative_scale=None):
+def augment(waves, masks, *, sample_mean=None, sample_scale=None,
+            derivative_mean=None, derivative_scale=None):
     """Zero-fill unobserved raw prepared samples and append binary mask.
 
     waves [B,2,T], masks [B,T] -> [B,4T]. No waveform transforms.
@@ -80,10 +82,27 @@ def augment(waves, masks, *, sample_mean=None, sample_scale=None,\n            d
         observed = scaled * both
     else:
         observed = waves * both
-    channels = [observed, both]\n    if (derivative_mean is None) != (derivative_scale is None):\n        raise ValueError("Derivative mean and scale must be supplied together")\n    if derivative_mean is not None:\n        if derivative_mean.shape != (2, waves.shape[-1]) or derivative_scale.shape != derivative_mean.shape:\n            raise ValueError("Derivative normalization statistics must have shape [2,T]")\n        if torch.any(derivative_scale <= 0):\n            raise ValueError("Derivative normalization scales must be positive")\n        difference = torch.zeros_like(waves)\n        difference[..., 1:] = waves[..., 1:] - waves[..., :-1]\n        # A difference at t requires BOTH original samples t and t-1.\n        # Never compute differences across the masked boundary.\n        valid = torch.zeros_like(masks)\n        valid[:, 1:] = masks[:, 1:] * masks[:, :-1]\n        normalized = (difference - derivative_mean[None, :, :]) / derivative_scale[None, :, :]\n        channels.append(normalized * valid[:, None, :])\n    return torch.cat(channels, dim=1).reshape(waves.shape[0], -1)
+    channels = [observed, both]
+    if (derivative_mean is None) != (derivative_scale is None):
+        raise ValueError("Derivative mean and scale must be supplied together")
+    if derivative_mean is not None:
+        if derivative_mean.shape != (2, waves.shape[-1]) or derivative_scale.shape != derivative_mean.shape:
+            raise ValueError("Derivative normalization statistics must have shape [2,T]")
+        if torch.any(derivative_scale <= 0):
+            raise ValueError("Derivative normalization scales must be positive")
+        difference = torch.zeros_like(waves)
+        difference[..., 1:] = waves[..., 1:] - waves[..., :-1]
+        # A difference at t requires BOTH original samples t and t-1.
+        # Never compute differences across the masked boundary.
+        valid = torch.zeros_like(masks)
+        valid[:, 1:] = masks[:, 1:] * masks[:, :-1]
+        normalized = (difference - derivative_mean[None, :, :]) / derivative_scale[None, :, :]
+        channels.append(normalized * valid[:, None, :])
+    return torch.cat(channels, dim=1).reshape(waves.shape[0], -1)
 
 
-def paired_batch(waves, targets, window_index, masks, *, sample_mean=None, sample_scale=None,\n                 derivative_mean=None, derivative_scale=None):
+def paired_batch(waves, targets, window_index, masks, *, sample_mean=None, sample_scale=None,
+                 derivative_mean=None, derivative_scale=None):
     """Return W/R pairs for each event with identical saved-prediction targets."""
     if waves.ndim != 3 or waves.shape[1] != 2 or targets.shape != (len(waves),):
         raise ValueError("Invalid paired training batch")
@@ -93,13 +112,15 @@ def paired_batch(waves, targets, window_index, masks, *, sample_mean=None, sampl
     pair_wave = waves[:, None, :, :].expand(-1, 2, -1, -1)
     pair_in = augment(pair_wave.reshape(-1, 2, waves.shape[-1]),
                       chosen.reshape(-1, waves.shape[-1]),
-                      sample_mean=sample_mean, sample_scale=sample_scale,\n                      derivative_mean=derivative_mean, derivative_scale=derivative_scale)
+                      sample_mean=sample_mean, sample_scale=sample_scale,
+                      derivative_mean=derivative_mean, derivative_scale=derivative_scale)
     return pair_in, targets.repeat_interleave(2)
 
 
 @torch.no_grad()
 def predict_coalitions(model, waveforms, starts, width, retained, *,
-                       batch_size=1024, device="cpu", sample_mean=None, sample_scale=None,\n                       derivative_mean=None, derivative_scale=None):
+                       batch_size=1024, device="cpu", sample_mean=None, sample_scale=None,
+                       derivative_mean=None, derivative_scale=None):
     """Compute [events, windows, W/R] conditional estimates (surrogate only)."""
     model.eval()
     masks = coalitions(starts, width, retained, device=device)
@@ -113,7 +134,8 @@ def predict_coalitions(model, waveforms, starts, width, retained, *,
             ms = masks[j].unsqueeze(0).expand(len(wave), -1, -1)
             pair = wave[:, None, :, :].expand(-1, 2, -1, -1).reshape(-1, 2, wave.shape[-1])
             features = augment(pair, ms.reshape(-1, wave.shape[-1]),
-                               sample_mean=sample_mean, sample_scale=sample_scale,\n                               derivative_mean=derivative_mean, derivative_scale=derivative_scale)
+                               sample_mean=sample_mean, sample_scale=sample_scale,
+                               derivative_mean=derivative_mean, derivative_scale=derivative_scale)
             result[left:right, j, :] = (model(features).reshape(-1, 2)
                                         .detach().cpu().numpy())
     return result
