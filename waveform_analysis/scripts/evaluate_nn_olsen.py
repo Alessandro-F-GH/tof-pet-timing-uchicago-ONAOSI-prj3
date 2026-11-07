@@ -253,7 +253,9 @@ def run(args):
     hold_est, hold_stats = _evaluate(model, waves, predictions, hold_idx,
                                      starts, keep, args, device, log,
                                      "HOLDOUT FINAL", ymean, ystd,
-                                     sample_mean=sample_mean, sample_scale=sample_scale)
+                                     sample_mean=sample_mean, sample_scale=sample_scale,
+                                     derivative_mean=derivative_mean,
+                                     derivative_scale=derivative_scale)
     log.info("UNCONDITIONAL REFERENCE | full training predictions mean=%.6f ps, std=%.6f ps",
              ymean, ystd)
     log.info("DIAGNOSTIC NOTE | conditional estimates have smaller expected population variance than original predictions at exact conditional optimum; finite-sample errors may violate this inequality.")
