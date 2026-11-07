@@ -21,6 +21,32 @@ from waveform_analysis.scripts.evaluate_conditional_knn import _load_inputs, _lo
 CHANNEL_NAMES = ("detector_1", "detector_2", "detector_2_minus_1")
 
 
+
+def load_prediction_difference(args, reference_predictions, reference_provenance, log):
+    """Only subtract predictions aligned to exactly the same prepared dataset."""
+    from argparse import Namespace
+    second_args = Namespace(**vars(args))
+    second_args.model_dir = args.comparison_model_dir
+    other_waves, other_predictions, _, second = _load_inputs(second_args, log)
+    if reference_provenance["mode"] != second["mode"]:
+        raise ValueError("Different mode between runs")
+    if reference_provenance["dataset"] != second["dataset"]:
+        raise ValueError(
+            "Different prepared dataset artifacts: event row ordering and waveform "
+            "identity are not guaranteed. Refusing unsafe subtraction.")
+    with np.load(reference_provenance["prediction_artifact"], allow_pickle=False) as archive:
+        a = np.asarray(archive["event_id"], dtype=np.int64)
+    with np.load(second["prediction_artifact"], allow_pickle=False) as archive:
+        b = np.asarray(archive["event_id"], dtype=np.int64)
+    if a.size != b.size or not np.array_equal(np.sort(a), np.sort(b)):
+        raise ValueError("Different event populations; cannot subtract predictions")
+    if len(other_predictions) != len(reference_predictions):
+        raise ValueError("Different prediction array lengths")
+    log.info("DIFFERENCE | reference %s minus comparison %s",
+             reference_provenance["model"], second["model"])
+    return reference_predictions - other_predictions, second
+
+
 def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
                         derivative_mean, derivative_scale, *,
                         bins=80, z_limit=3., chunk_size=128):
@@ -87,6 +113,10 @@ def run(args):
     root.mkdir(parents=True, exist_ok=True)
     log = _logger(root)
     waves, predictions, retained, provenance = _load_inputs(args, log)
+    comparison_provenance = None
+    if args.comparison_model_dir is not None:
+        predictions, comparison_provenance = load_prediction_difference(
+            args, predictions, provenance, log)
     n = len(predictions)
     if args.tuning_queries < 1 or args.holdout_queries < 1:
         raise ValueError("Tuning/holdout must be nonempty")
@@ -138,7 +168,9 @@ def run(args):
                 np.ma.masked_invalid(mean_target[kind, channel]),
                 origin="lower", aspect="auto", interpolation="nearest",
                 extent=extent, cmap="coolwarm", norm=target_norm)
-            fig.colorbar(im, ax=ax_mean, label="Mean saved teacher prediction (ps)")
+            fig.colorbar(im, ax=ax_mean, label=(
+                "Mean prediction difference (reference - comparison, ps)"
+                if comparison_provenance else "Mean saved teacher prediction (ps)"))
             count_array = counts[kind, channel]
             supported = np.ma.masked_where(count_array == 0, count_array)
             positive = count_array[count_array > 0]
@@ -171,12 +203,17 @@ def run(args):
         positions=positions, z_edges=edges, target_mean_ps=mean_target,
         support_counts=counts, target_sums_ps=sums,
         training_prediction_mean_ps=baseline,
+        prediction_type=np.array("reference_minus_comparison" if comparison_provenance
+                                 else "saved_teacher"),
         channel_names=np.array(CHANNEL_NAMES),
         feature_names=np.array(["waveform", "first_difference"]))
     (root / "summary.json").write_text(json.dumps({
         "provenance": provenance,
+        "comparison_provenance": comparison_provenance,
+        "prediction_sign": "reference minus comparison" if comparison_provenance else None,
         "events": int(len(training)), "seed": args.seed,
-        "target": "SAVED full teacher prediction, not calibrated ground truth",
+        "target": ("SAVED reference minus comparison prediction, not calibrated ground truth"
+                   if comparison_provenance else "SAVED full teacher prediction, not calibrated ground truth"),
         "signal_normalization": signal_meta,
         "first_difference_normalization": derivative_meta,
         "differential_definition": "z(detector2)-z(detector1); not separately standardized",
@@ -193,6 +230,8 @@ def run(args):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-dir", type=Path, required=True)
+    p.add_argument("--comparison-model-dir", type=Path,
+                   help="Second saved model run; map reference minus comparison predictions")
     p.add_argument("--cache-root", type=Path)
     p.add_argument("--artifact-root", type=Path)
     p.add_argument("--output-root", type=Path, required=True)
