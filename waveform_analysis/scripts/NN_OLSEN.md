@@ -447,3 +447,37 @@ the original fixed-LR behavior.
 CLI flags: `--lr-factor 0.5 --lr-patience 20 --lr-threshold-ps 0.05
 --lr-min 1e-6 --lr-cooldown 5`.
 Use a **new output folder** for adaptive runs, to retain original results.
+
+
+## Full-development CNN distillation with adaptive LR
+
+Use **the full 74,714-event development training set**, fixed seed-42
+500-event tuning/500-event holdout and the CNN derivative input.
+Unlike the 256/1024-event capacity test, checkpoint selection and the
+plateau LR scheduler both use **tuning RMSE**. Holdout is never
+evaluated until training ends. A fixed 1,024-event training subset is
+evaluated in `eval()` mode every epoch for diagnostic comparison only.
+
+```bash
+python -m waveform_analysis.scripts.evaluate_full_signal_distillation \
+  --model-dir "$PWD/waveform_analysis/results/UC/multirocket_rdst/energy/wide/direct_multirocket_rdst" \
+  --cache-root "$HOME/UC_cache" \
+  --output-root "$HOME/full_signal_distillation/UC_temporal_derivative_scheduler" \
+  --architecture temporal_cnn --use-derivative \
+  --input-normalization per_sample \
+  --width 64 --depth 2 --temporal-bins 8 \
+  --tuning-queries 500 --holdout-queries 500 \
+  --epochs 100 --batch-size 64 --eval-batch 256 \
+  --learning-rate 0.001 --weight-decay 0 \
+  --no-early-stopping \
+  --lr-factor 0.5 --lr-patience 10 --lr-threshold-ps 0.05 \
+  --lr-min 1e-6 --lr-cooldown 5 \
+  --train-eval-events 1024
+```
+
+`--no-early-stopping` disables premature termination so the scheduler
+can reduce the LR several times; only the **best tuning checkpoint**
+is used for the final holdout test. `--no-lr-decay` restores fixed LR.
+Training history includes learning rate, reductions, fixed training
+probe RMSE, and tuning metrics per epoch. Keep outputs in a new folder
+to preserve prior results.
