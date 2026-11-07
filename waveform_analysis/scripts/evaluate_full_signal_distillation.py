@@ -219,7 +219,9 @@ def run(args):
             target = torch.as_tensor(
                 ((predictions[ids] - ymean) / ystd).astype(np.float32), device=device)
             optimizer.zero_grad(set_to_none=True)
-            estimated = model(full_features(wave, sample_mean, sample_scale))
+            estimated = model(full_features(wave, sample_mean, sample_scale,
+                                            derivative_mean=derivative_mean,
+                                            derivative_scale=derivative_scale))
             loss = (estimated - target).square().mean()
             loss.backward()
             optimizer.step()
@@ -257,16 +259,19 @@ def run(args):
     model.load_state_dict(best_state)
     tuning_prediction, tuning_metrics = evaluate(
         model, waves, predictions, tuning, device, args.eval_batch,
-        ymean, ystd, sample_mean, sample_scale)
+        ymean, ystd, sample_mean, sample_scale,
+        derivative_mean, derivative_scale)
     holdout_prediction, holdout_metrics = evaluate(
         model, waves, predictions, holdout, device, args.eval_batch,
-        ymean, ystd, sample_mean, sample_scale)
+        ymean, ystd, sample_mean, sample_scale,
+        derivative_mean, derivative_scale)
     log.info("FINAL | best_epoch=%d tuning RMSE=%.4f ps | "
              "holdout RMSE=%.4f ps MAE=%.4f ps | original std=%.4f ps",
              best_epoch, tuning_metrics["rmse_ps"], holdout_metrics["rmse_ps"],
              holdout_metrics["mae_ps"], holdout_metrics["original_std_ps"])
-    checkpoint_name = ("temporal_cnn_full_signal.pt" if architecture == "temporal_cnn"
-                       else "inception_time_full_signal.pt")
+    checkpoint_name = ("temporal_cnn_derivative_full_signal.pt" if args.use_derivative
+                       else ("temporal_cnn_full_signal.pt" if architecture == "temporal_cnn"
+                             else "inception_time_full_signal.pt"))
     torch.save({
         "model_state": best_state,
         "architecture_name": architecture + "_full_signal",
