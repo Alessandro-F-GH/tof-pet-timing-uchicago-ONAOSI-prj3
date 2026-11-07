@@ -34,14 +34,16 @@ class NNOlsenSurrogate(nn.Module):
         if n_samples < 1 or width < 1 or depth < 1:
             raise ValueError("Invalid surrogate architecture")
         self.n_samples = int(n_samples)
-        self.input = nn.Linear(4 * n_samples, width)
+        self.use_derivative = bool(use_derivative)
+        self.input = nn.Linear((6 if use_derivative else 4) * n_samples, width)
         self.input_activation = nn.ELU()
         self.blocks = nn.Sequential(*(ResidualBlock(width) for _ in range(depth)))
         self.output = nn.Linear(width, 1)
 
     def forward(self, augmented):
-        if augmented.ndim != 2 or augmented.shape[1] != 4 * self.n_samples:
-            raise ValueError("Expected concatenated [masked two-channel waveform, mask] input")
+        channels = 6 if self.use_derivative else 4
+        if augmented.ndim != 2 or augmented.shape[1] != channels * self.n_samples:
+            raise ValueError(f"Expected concatenated [B,{channels}*T] masked input")
         x = self.input_activation(self.input(augmented))
         return self.output(self.blocks(x)).squeeze(-1)
 
