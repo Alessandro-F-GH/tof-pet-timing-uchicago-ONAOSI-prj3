@@ -44,3 +44,19 @@ def test_heatmap_excludes_out_of_range_values():
         waves, labels, np.arange(2), np.arange(3),
         mean, scale, mean, scale, bins=8, z_limit=3, chunk_size=2)
     assert int(counts[0, 0].sum()) == 5
+
+
+def test_prediction_comparison_metrics_agreement_and_quantiles():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        prediction_comparison_metrics,
+    )
+    ref = np.linspace(-100., 100., 201)
+    other = ref - 3.
+    metrics = prediction_comparison_metrics(ref, other)
+    assert metrics["n_events"] == 201
+    assert metrics["pearson_correlation"] == 1.0
+    assert np.isclose(metrics["bias_ps"], 3.)
+    assert np.isclose(metrics["rmse_difference_ps"], 3.)
+    assert np.isclose(metrics["mae_difference_ps"], 3.)
+    assert np.isclose(metrics["p99_abs_difference_ps"], 3.)
+    assert sum(x["n"] for x in metrics["by_reference_prediction_quantile"]) == 201
