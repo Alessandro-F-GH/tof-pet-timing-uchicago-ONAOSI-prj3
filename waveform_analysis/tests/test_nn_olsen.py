@@ -82,3 +82,52 @@ def test_training_graph_uses_only_masked_values():
     loss.backward()
     assert any(p.grad is not None and torch.isfinite(p.grad).all()
                for p in model.parameters())
+
+
+def test_wide_derivative_mlp_masks_hidden_neighbours():
+    torch.manual_seed(31)
+    t = 24
+    network = NNOlsenSurrogate(t, width=256, depth=3, use_derivative=True)
+    network.eval()
+    assert network.input.in_features == 6 * t
+    wave = torch.randn(3, 2, t)
+    mask = torch.zeros(3, t)
+    mask[:, 8:14] = 1.0
+    derivative_mean = torch.zeros(2, t)
+    derivative_scale = torch.ones(2, t)
+    encoded = augment(wave, mask, derivative_mean=derivative_mean,
+                      derivative_scale=derivative_scale)
+    channels = encoded.reshape(3, 6, t)
+    assert torch.all(channels[:, 4:, :9] == 0)
+    assert torch.all(channels[:, 4:, 14:] == 0)
+    torch.testing.assert_close(
+        channels[:, 4:, 9:14], wave[:, :, 9:14] - wave[:, :, 8:13])
+    changed = wave.clone()
+    changed[:, :, :8] += 500
+    changed[:, :, 14:] -= 500
+    other = augment(changed, mask, derivative_mean=derivative_mean,
+                    derivative_scale=derivative_scale)
+    torch.testing.assert_close(encoded, other, atol=0, rtol=0)
+    with torch.no_grad():
+        torch.testing.assert_close(network(encoded), network(other),
+                                   atol=0, rtol=0)
+
+
+def test_derivative_paired_masks_keep_W_R_target_contract():
+    torch.manual_seed(41)
+    starts, keep = tshap_windows(24, 6, 6)
+    masks = coalitions(starts, 6, keep)
+    wave = torch.randn(4, 2, 24)
+    target = torch.randn(4)
+    dmean, dscale = torch.zeros(2, 24), torch.ones(2, 24)
+    values, labels = paired_batch(
+        wave, target, torch.tensor([0, 1, 2, 3]), masks,
+        derivative_mean=dmean, derivative_scale=dscale)
+    assert values.shape == (8, 6 * 24)
+    torch.testing.assert_close(labels, target.repeat_interleave(2))
+    model = NNOlsenSurrogate(24, width=32, use_derivative=True)
+    outputs = model(values)
+    outputs.square().mean().backward()
+    assert outputs.shape == (8,)
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in model.parameters())
