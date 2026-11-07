@@ -21,17 +21,28 @@ import numpy as np
 import torch
 
 from waveform_analysis.engine.nn_olsen import augment
-from waveform_analysis.engine.sample_normalization import fit_time_sample_stats, tensor_stats
+from waveform_analysis.engine.sample_normalization import (fit_time_sample_stats,
+    fit_first_difference_stats, tensor_stats)
 from waveform_analysis.engine.temporal_conditional_cnn import TemporalConditionalCNN
 from waveform_analysis.engine.inception_time_surrogate import InceptionTimeSurrogate
 from waveform_analysis.scripts.evaluate_conditional_knn import _load_inputs, _logger
 
 
-def full_features(waves, mean, scale):
+def full_features(waves, mean, scale, *, derivative_mean=None, derivative_scale=None):
     """Use every coordinate; no missing windows and no hidden values."""
     mask = torch.ones((waves.shape[0], waves.shape[-1]),
                       dtype=waves.dtype, device=waves.device)
-    return augment(waves, mask, sample_mean=mean, sample_scale=scale)
+    original = augment(waves, mask, sample_mean=mean, sample_scale=scale)
+    if derivative_mean is None and derivative_scale is None:
+        return original
+    if derivative_mean is None or derivative_scale is None:
+        raise ValueError("Derivative mean and scale must be supplied together")
+    difference = torch.zeros_like(waves)
+    difference[..., 1:] = waves[..., 1:] - waves[..., :-1]
+    difference = (difference - derivative_mean[None, :, :]) / derivative_scale[None, :, :]
+    # [wave1, wave2, mask1, mask2, diff1, diff2], then flatten.
+    return torch.cat((original.reshape(-1, 4, waves.shape[-1]), difference),
+                     dim=1).flatten(start_dim=1)
 
 
 def full_metrics(y, prediction):
@@ -60,14 +71,16 @@ def full_metrics(y, prediction):
 
 @torch.inference_mode()
 def evaluate(model, waves, labels, indices, device, batch_size, ymean, ystd,
-             sample_mean, sample_scale):
+             sample_mean, sample_scale, derivative_mean=None, derivative_scale=None):
     model.eval()
     result = np.empty(len(indices), dtype=np.float64)
     for start in range(0, len(indices), batch_size):
         ids = indices[start:start + batch_size]
         wave = torch.as_tensor(np.asarray(waves[ids], dtype=np.float32),
                                device=device)
-        out = model(full_features(wave, sample_mean, sample_scale))
+        out = model(full_features(wave, sample_mean, sample_scale,
+                                derivative_mean=derivative_mean,
+                                derivative_scale=derivative_scale))
         result[start:start + len(ids)] = out.cpu().numpy() * ystd + ymean
     return result, full_metrics(labels[indices], result)
 
@@ -157,10 +170,24 @@ def run(args):
         log.info("INPUT NORMALIZATION | per_sample | %s", normalization_details)
     else:
         log.info("INPUT NORMALIZATION | none")
+    derivative_mean_array = derivative_scale_array = derivative_details = None
+    derivative_mean = derivative_scale = None
+    if args.use_derivative:
+        if args.architecture != "temporal_cnn":
+            raise ValueError("--use-derivative requires --architecture temporal_cnn")
+        if args.input_normalization != "per_sample":
+            raise ValueError("--use-derivative requires --input-normalization per_sample")
+        derivative_mean_array, derivative_scale_array, derivative_details = fit_first_difference_stats(
+            waves, training, chunk_size=args.normalization_chunk_size,
+            scale_floor_ratio=args.normalization_scale_floor_ratio)
+        derivative_mean, derivative_scale = tensor_stats(
+            derivative_mean_array, derivative_scale_array, device=device)
+        log.info("FIRST DIFFERENCE | separate train-only standardization | %s", derivative_details)
     architecture = getattr(args, "architecture", "temporal_cnn")
     if architecture == "temporal_cnn":
         model = TemporalConditionalCNN(waves.shape[-1], width=args.width,
-                                        depth=args.depth, bins=args.temporal_bins).to(device)
+                                        depth=args.depth, bins=args.temporal_bins,
+                                        use_derivative=args.use_derivative).to(device)
     elif architecture == "inception_time":
         model = InceptionTimeSurrogate(
             waves.shape[-1], filters=args.inception_filters,
@@ -200,7 +227,8 @@ def run(args):
             count += len(ids)
         tuning_prediction, tuning_metrics = evaluate(
             model, waves, predictions, tuning, device, args.eval_batch,
-            ymean, ystd, sample_mean, sample_scale)
+            ymean, ystd, sample_mean, sample_scale,
+            derivative_mean, derivative_scale)
         val_mse = tuning_metrics["rmse_ps"] ** 2
         improved = val_mse < best_loss - args.min_delta
         if improved:
@@ -242,8 +270,13 @@ def run(args):
     torch.save({
         "model_state": best_state,
         "architecture_name": architecture + "_full_signal",
+        "use_derivative": args.use_derivative,
+        "input_derivative_mean": derivative_mean_array,
+        "input_derivative_scale": derivative_scale_array,
+        "input_derivative_normalization_metadata": derivative_details,
         "architecture": {
             "n_samples": int(waves.shape[-1]), "width": args.width,
+            "use_derivative": args.use_derivative,
             "depth": args.depth, "temporal_bins": args.temporal_bins,
             "inception_filters": args.inception_filters,
             "inception_bottleneck": args.inception_bottleneck,
@@ -255,6 +288,7 @@ def run(args):
         "input_sample_mean": mean_array,
         "input_sample_scale": scale_array,
         "input_normalization_metadata": normalization_details,
+        "input_derivative_normalization_metadata": derivative_details,
         "target_mean_ps": ymean, "target_std_ps": ystd,
         "best_epoch": best_epoch, "provenance": provenance,
     }, root / checkpoint_name)
@@ -274,6 +308,7 @@ def run(args):
             "seed": args.seed, "training_events": len(training),
             "tuning_events": len(tuning), "holdout_events": len(holdout),
             "architecture": architecture,
+            "use_derivative": args.use_derivative,
             "width": args.width, "depth": args.depth,
             "temporal_bins": args.temporal_bins,
             "inception_filters": args.inception_filters,
@@ -314,6 +349,8 @@ def _parser():
     p.add_argument("--inception-depth", type=int, default=6)
     p.add_argument("--inception-kernel-size", type=int, default=39)
     p.add_argument("--inception-bins", type=int, default=8)
+    p.add_argument("--use-derivative", action="store_true",
+                   help="Add separately standardized first-difference channels to Temporal CNN")
     p.add_argument("--width", type=int, default=64)
     p.add_argument("--depth", type=int, default=3)
     p.add_argument("--temporal-bins", type=int, default=8)
