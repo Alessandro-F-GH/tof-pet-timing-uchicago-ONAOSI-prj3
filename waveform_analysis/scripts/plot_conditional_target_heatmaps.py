@@ -94,6 +94,8 @@ def run(args):
         raise ValueError("Insufficient training population")
     if args.time_stride < 1 or args.z_bins < 2 or args.z_limit <= 0:
         raise ValueError("Invalid grid settings")
+    if args.derivative_end_sample is not None and args.derivative_end_sample <= 0:
+        raise ValueError("--derivative-end-sample must be positive")
     rng = np.random.default_rng(args.seed)
     excluded = rng.choice(n, args.tuning_queries + args.holdout_queries, replace=False)
     mask = np.ones(n, dtype=bool)
@@ -154,6 +156,11 @@ def run(args):
             ax_mean.set_ylabel(ylabel)
             ax_count.set_ylabel(ylabel)
             ax_count.set_xlabel("Waveform sample position")
+            if kind == 1 and args.derivative_end_sample is not None:
+                # Zoom just the derivative plots: keep full-resolution analysis
+                # and all data in the NPZ unchanged.
+                ax_count.set_xlim(0, min(args.derivative_end_sample,
+                                         waves.shape[-1] - 1))
             filename = f"{title}_{channel_name}_target_heatmap.png"
             fig.savefig(root / filename, dpi=180)
             plt.close(fig)
@@ -176,6 +183,7 @@ def run(args):
         "z_range": [-args.z_limit, args.z_limit],
         "z_bins": args.z_bins, "time_stride": args.time_stride,
         "min_count": args.min_count, "figures": result_files,
+        "derivative_end_sample": args.derivative_end_sample,
         "target_mean_ps": baseline, "symmetric_color_radius_ps": radius,
         "note": "Descriptive 1D conditional mean per time coordinate, not model attribution.",
     }, indent=2), encoding="utf-8")
@@ -197,6 +205,9 @@ def parser():
     p.add_argument("--z-bins", type=int, default=80)
     p.add_argument("--z-limit", type=float, default=3.)
     p.add_argument("--min-count", type=int, default=25)
+    p.add_argument("--derivative-end-sample", type=int, default=1200,
+                   help="Rightmost sample shown in derivative plots; 0-1200 by default. "
+                        "The saved numerical heatmap remains full-length.")
     p.add_argument("--retained-only", action="store_true")
     return p
 
