@@ -138,3 +138,20 @@ def test_each_representation_has_its_own_train_statistics():
     assert len(edges) == 21
     assert counts.shape == (1, 3, 20, 6)
     assert int(counts[0, 0].sum()) == 4 * 6
+
+
+def test_heatmap_physical_time_edges():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        sample_centers_to_edges,
+    )
+    import pytest
+    # 12.5 ps native sampling and plotting stride 8 => 0.1 ns bins.
+    centers_ns = np.array([-2.0, -1.9, -1.8, -1.7])
+    expected = np.array([-2.05, -1.95, -1.85, -1.75, -1.65])
+    np.testing.assert_allclose(sample_centers_to_edges(centers_ns), expected)
+    # Retained timing windows need not be uniformly spaced.
+    np.testing.assert_allclose(
+        sample_centers_to_edges(np.array([0., .1, .4])),
+        np.array([-.05, .05, .25, .55]))
+    with pytest.raises(ValueError, match="strictly increasing"):
+        sample_centers_to_edges(np.array([0., 0., .1]))
