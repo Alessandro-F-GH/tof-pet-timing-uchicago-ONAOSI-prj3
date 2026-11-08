@@ -269,3 +269,52 @@ def test_cross_window_intersection_rejects_duplicate_ids_and_target_mismatch():
     with pytest.raises(ValueError, match="Fewer than two"):
         match_event_populations(
             [2, 3], [4, 3], [0., 1.], [2., 1.])
+
+
+def test_timing_representations_skip_amplitude_normalization():
+    import pytest
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        effective_representations,
+    )
+    requested = ["original", "baseline_subtracted", "amplitude_normalized"]
+    assert effective_representations("energy_to_energy", requested) == tuple(requested)
+    assert effective_representations("timing_to_timing", requested) == (
+        "original", "baseline_subtracted")
+    with pytest.raises(ValueError, match="No applicable"):
+        effective_representations("timing_to_timing", ["amplitude_normalized"])
+
+
+def test_cropped_timing_spans_on_full_physical_grid():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        mask_excluded_spans,
+    )
+    # 0.1 ns steps; consecutive masked samples become contiguous intervals.
+    centers_ps = np.arange(6) * 100.
+    kept = np.array([True, False, False, True, False, True])
+    assert mask_excluded_spans(kept, centers_ps) == [
+        (0.05, 0.25), (0.35, 0.45)]
+    assert mask_excluded_spans(np.ones(6, dtype=bool), centers_ps) == []
+
+
+def test_onishi_window_bounds_use_sibling_context_and_respect_override(tmp_path):
+    import json
+    import pytest
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        onishi_window_bounds,
+    )
+    base = tmp_path / "results" / "energy"
+    (base / "wide" / "rocket").mkdir(parents=True)
+    (base / "onishi").mkdir()
+    (base / "onishi" / "context.json").write_text(
+        json.dumps({"window_ns": {"start": -1.25, "end": 2.75}}),
+        encoding="utf-8")
+    model_dir = base / "wide" / "rocket"
+    assert onishi_window_bounds(model_dir) == (-1.25, 2.75)
+    assert onishi_window_bounds(model_dir, start_ns=-1.5, end_ns=2.) == (-1.5, 2.)
+    assert onishi_window_bounds(model_dir, disabled=True) is None
+    with pytest.raises(ValueError, match="Specify both"):
+        onishi_window_bounds(model_dir, start_ns=-1.5)
+    with pytest.raises(ValueError, match="Invalid"):
+        onishi_window_bounds(model_dir, start_ns=2., end_ns=-2.)
+    (base / "onishi" / "context.json").unlink()
+    assert onishi_window_bounds(model_dir) is None
