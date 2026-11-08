@@ -299,6 +299,29 @@ def explain_conditional_knn(
                     tuned, tuned_artifact = _load_tuning(
                         store, recipe, engine, validation_waves, logger
                     )
+                    suffix = "tshap_conditional_knn_local" if local else "tshap_conditional_knn"
+                    destination = base._explanation_destination(output_root, directory).parent / suffix
+                    identity = {
+                        "method": "paired_conditional_knn_mean_imputation",
+                        "version": METHOD_VERSION,
+                        "final_fit": manifest["stage_fingerprints"]["final_fit"],
+                        "blind": manifest["dataset_populations"]["blind"]["analysis_protocol_identity"],
+                        "tuning_artifact": tuned_artifact.product_id,
+                        "model": spec.name, "mode": config["mode"], "seed": int(seed),
+                        "max_events": None if local else int(max_events),
+                        "events_per_group": int(events_per_group) if local else None,
+                        "extreme_margin": float(extreme_margin) if local else None,
+                        "predict_batch_size": int(predict_batch_size),
+                    }
+                    fingerprint = canonical_hash(identity)
+                    if destination.exists() and not overwrite:
+                        summary_path = destination / "summary.json"
+                        if summary_path.is_file():
+                            cached = json.loads(summary_path.read_text(encoding="utf-8"))
+                            if cached.get("identity_sha256") == fingerprint:
+                                logger.info("KNN TSHAP | cache hit | %s", destination)
+                                completed.append(destination)
+                                continue
                     if local:
                         saved, targets = base._load_materialized_local_predictions(
                             run_store, blind, manifest, config["mode"]
@@ -336,29 +359,6 @@ def explain_conditional_knn(
                 finally:
                     del fitted
                     release_training_memory()
-            suffix = "tshap_conditional_knn_local" if local else "tshap_conditional_knn"
-            destination = base._explanation_destination(output_root, directory).parent / suffix
-            identity = {
-                "method": "paired_conditional_knn_mean_imputation",
-                "version": METHOD_VERSION,
-                "final_fit": manifest["stage_fingerprints"]["final_fit"],
-                "blind": manifest["dataset_populations"]["blind"]["analysis_protocol_identity"],
-                "tuning_artifact": tuned_artifact.product_id,
-                "model": spec.name, "mode": config["mode"], "seed": int(seed),
-                "max_events": None if local else int(max_events),
-                "events_per_group": int(events_per_group) if local else None,
-                "extreme_margin": float(extreme_margin) if local else None,
-                "predict_batch_size": int(predict_batch_size),
-            }
-            fingerprint = canonical_hash(identity)
-            if destination.exists() and not overwrite:
-                summary_path = destination / "summary.json"
-                if summary_path.is_file():
-                    cached = json.loads(summary_path.read_text(encoding="utf-8"))
-                    if cached.get("identity_sha256") == fingerprint:
-                        logger.info("KNN TSHAP | cache hit | %s", destination)
-                        completed.append(destination)
-                        continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=".knn-tshap-", dir=destination.parent))
             try:
