@@ -227,3 +227,45 @@ def test_grouped_amplitude_normalized_overlays_are_not_physical_mv():
         amplitude[:, 1], np.broadcast_to(shape, (3, t)), atol=1e-6)
     np.testing.assert_allclose(amplitude[:, 2], 0., atol=1e-6)
     assert not np.allclose(original[:, 0], amplitude[:, 0])
+
+
+def test_cross_window_intersection_preserves_reference_order_and_targets():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        match_event_populations, EventSubsetView,
+    )
+    reference_ids = np.array([12, 10, 14, 13, 11], dtype=np.int64)
+    comparison_ids = np.array([11, 10, 15, 13], dtype=np.int64)
+    reference_targets = np.array([1., 2., 3., 4., 5.])
+    comparison_targets = np.array([5., 2., 9., 4.])
+    ref_rows, cmp_rows, event_ids, details = match_event_populations(
+        reference_ids, comparison_ids, reference_targets, comparison_targets)
+    np.testing.assert_array_equal(event_ids, [10, 13, 11])
+    np.testing.assert_array_equal(ref_rows, [1, 3, 4])
+    np.testing.assert_array_equal(cmp_rows, [1, 3, 0])
+    assert details["common_events"] == 3
+    assert details["reference_only_events"] == 2
+    assert details["comparison_only_events"] == 1
+    waves = np.arange(5 * 2 * 6).reshape(5, 2, 6).astype(np.float32)
+    view = EventSubsetView(waves, ref_rows)
+    assert view.shape == (3, 2, 6)
+    np.testing.assert_array_equal(view[np.array([2, 0])],
+                                  waves[[4, 1]])
+    np.testing.assert_array_equal(view[1], waves[3])
+    # A comparison window can have another waveform length; event
+    # intersection does not require identical time dimensions.
+
+
+def test_cross_window_intersection_rejects_duplicate_ids_and_target_mismatch():
+    import pytest
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        match_event_populations,
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        match_event_populations(
+            [3, 3, 4], [3, 4], [1., 1., 2.], [1., 2.])
+    with pytest.raises(ValueError, match="Calibrated targets disagree"):
+        match_event_populations(
+            [2, 3, 4], [4, 2, 3], [0., 1., 2.], [2., 0., 5.])
+    with pytest.raises(ValueError, match="Fewer than two"):
+        match_event_populations(
+            [2, 3], [4, 3], [0., 1.], [2., 1.])
