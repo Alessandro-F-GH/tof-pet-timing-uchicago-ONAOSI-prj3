@@ -80,6 +80,8 @@ def args(root, out, **overrides):
         representations=list(batch.REPRESENTATIONS),
         include_original_derivative=False, derivative_end_sample=1200,
         retained_only=False,
+        onishi_start_ns=None, onishi_end_ns=None,
+        disable_onishi_highlight=False,
         overwrite=False, continue_on_error=False, dry_run=False,
     )
     defaults.update(overrides)
@@ -89,14 +91,16 @@ def args(root, out, **overrides):
 def fake_runner(options):
     path = options.output_root
     path.mkdir(parents=True, exist_ok=True)
-    for rep in options.representations:
+    reps = batch.effective_representations(
+        batch.MODES[options.model_dir.parts[-3]], options.representations)
+    for rep in reps:
         (path / rep).mkdir(exist_ok=True)
         (path / rep / "conditional_target_heatmaps.npz").write_bytes(b"test")
         (path / rep / "figure.png").write_bytes(b"test")
     (path / "summary.json").write_text(
         json.dumps({
-            "representations": options.representations,
-            "figures": [f"{r}/figure.png" for r in options.representations],
+            "representations": list(reps),
+            "figures": [f"{r}/figure.png" for r in reps],
         }), encoding="utf-8",
     )
 
