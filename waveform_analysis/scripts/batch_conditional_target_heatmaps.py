@@ -13,7 +13,7 @@ from pathlib import Path
 
 from waveform_analysis.data.results import read_run, resolve_run_config
 from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
-    REPRESENTATIONS, parser as single_parser, run as single_run,
+    REPRESENTATIONS, effective_representations, parser as single_parser, run as single_run,
 )
 
 MODES = {"energy": "energy_to_energy", "timing": "timing_to_timing"}
@@ -22,6 +22,7 @@ CONFIG_KEYS = (
     "normalization_scale_floor_ratio", "time_stride", "z_bins", "z_limit",
     "min_count", "baseline_start_ns", "baseline_end_ns", "peak_floor",
     "include_original_derivative", "derivative_end_sample", "retained_only",
+    "onishi_start_ns", "onishi_end_ns", "disable_onishi_highlight",
 )
 
 
@@ -113,7 +114,9 @@ def _is_complete(job, identity):
         if record != identity:
             return False
         representations = summary["representations"]
-        if representations != identity["settings"]["representations"]:
+        expected_reps = list(effective_representations(
+            MODES[job["mode"]], identity["settings"]["representations"]))
+        if representations != expected_reps:
             return False
         if not all((folder / rep / "conditional_target_heatmaps.npz").is_file()
                    for rep in representations):
@@ -241,6 +244,9 @@ def parser():
     p.add_argument("--include-original-derivative", action="store_true")
     p.add_argument("--derivative-end-sample", type=int, default=1200)
     p.add_argument("--retained-only", action="store_true")
+    p.add_argument("--onishi-start-ns", type=float)
+    p.add_argument("--onishi-end-ns", type=float)
+    p.add_argument("--disable-onishi-highlight", action="store_true")
     return p
 
 
