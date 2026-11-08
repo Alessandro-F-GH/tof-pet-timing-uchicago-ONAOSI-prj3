@@ -571,6 +571,21 @@ def run(args):
         reference_predictions = reference_predictions[reference_rows]
         waves = EventSubsetView(waves, reference_rows)
         np.save(root / "matched_event_ids.npy", common_event_ids)
+    target_kind = getattr(args, "comparison_target", "difference")
+    if target_kind not in ("difference", "reference", "comparison"):
+        raise ValueError("Invalid comparison target")
+    if target_kind != "difference" and comparison_predictions is None:
+        raise ValueError("--comparison-target reference/comparison requires --comparison-model-dir")
+    if comparison_predictions is not None:
+        if target_kind == "reference":
+            predictions = reference_predictions
+        elif target_kind == "comparison":
+            predictions = comparison_predictions
+    is_difference = comparison_predictions is not None and target_kind == "difference"
+    label_description = (
+        "Mean prediction difference (reference - comparison, ps)" if is_difference else
+        ("Mean saved comparison-model prediction (ps)" if target_kind == "comparison"
+         else "Mean saved reference-model prediction (ps)"))
     n = len(predictions)
     if args.tuning_queries < 1 or args.holdout_queries < 1:
         raise ValueError("Tuning/holdout must be nonempty")
@@ -805,8 +820,7 @@ def run(args):
                     np.ma.masked_invalid(result["mean_target"][kind, channel]),
                     shading="flat", cmap="coolwarm", norm=target_norm)
                 fig.colorbar(im, cax=cax, label=(
-                    "Mean prediction difference (reference - comparison, ps)"
-                    if comparison_provenance else "Mean saved teacher prediction (ps)"))
+                    label_description))
                 # Shade excluded timing samples without removing existing
                 # heatmap cells. No crop shading for energy mode.
                 for crop_left, crop_right in cropped_spans:
@@ -848,8 +862,9 @@ def run(args):
             training_prediction_mean_ps=baseline,
             normalization_mean=result["means"],
             normalization_scale=result["scales"],
-            prediction_type=np.array("reference_minus_comparison" if comparison_provenance
-                                     else "saved_teacher"),
+            prediction_type=np.array("reference_minus_comparison" if is_difference
+                                     else ("saved_comparison" if target_kind == "comparison"
+                                           else "saved_reference")),
             channel_names=np.array(CHANNEL_NAMES),
             feature_names=np.array(result["feature_names"]),
             representation=np.array(representation))
@@ -897,10 +912,14 @@ def run(args):
         "matched_event_ids_file": ("matched_event_ids.npy" if matching else None),
         "comparison_metrics_file": ("prediction_comparison_metrics.json"
                                      if comparison_metrics is not None else None),
-        "prediction_sign": "reference minus comparison" if comparison_provenance else None,
+        "prediction_sign": "reference minus comparison" if is_difference else None,
+        "comparison_target": target_kind if comparison_predictions is not None else "reference",
         "events": int(len(training)), "seed": args.seed,
         "target": ("SAVED reference minus comparison prediction, not calibrated ground truth"
-                   if comparison_provenance else "SAVED full teacher prediction, not calibrated ground truth"),
+                   if is_difference else
+                   ("SAVED comparison-model prediction visualized on reference waveforms"
+                    if target_kind == "comparison" else
+                    "SAVED reference-model prediction, not calibrated ground truth")),
         "representations": list(choices),
         "baseline_window_ns": [args.baseline_start_ns, args.baseline_end_ns],
         "baseline_sample_count": (int(len(baseline_positions))
@@ -936,6 +955,11 @@ def parser():
     p.add_argument("--model-dir", type=Path, required=True)
     p.add_argument("--comparison-model-dir", type=Path,
                    help="Second saved model run; map reference minus comparison predictions")
+    p.add_argument("--comparison-target", choices=("difference", "reference", "comparison"),
+                   default="difference",
+                   help="With --comparison-model-dir, select difference (default), "
+                        "reference saved prediction, or comparison saved prediction; "
+                        "always visualize reference-model waveforms on common event IDs")
     p.add_argument("--cache-root", type=Path)
     p.add_argument("--artifact-root", type=Path)
     p.add_argument("--output-root", type=Path, required=True)
