@@ -600,7 +600,7 @@ def run(args):
                      if channel == 2 else
                      f"Detector {channel + 1} ({signal_units})"))
                 ax_signal.set_title(
-                    f"{representation} | {feature_name} | {channel_name} | "
+                    f"{representation} | {feature_name} | {channel_name} | " +
                     ("peak-normalized waveforms by saved prediction" if
                      representation == "amplitude_normalized" else
                      "original physical waveforms by saved prediction"))
