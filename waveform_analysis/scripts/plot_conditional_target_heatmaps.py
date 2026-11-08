@@ -23,6 +23,56 @@ PERCENTILE_BANDS = ((2., 12.), (45., 55.), (88., 98.))
 REPRESENTATIONS = ("original", "baseline_subtracted", "amplitude_normalized")
 
 
+def effective_representations(mode, requested):
+    """Timing waveforms saturate: skip amplitude normalization in timing mode."""
+    selected = tuple(dict.fromkeys(requested))
+    if mode == "timing_to_timing":
+        selected = tuple(r for r in selected if r != "amplitude_normalized")
+    if not selected:
+        raise ValueError("No applicable heatmap representations for this mode")
+    return selected
+
+
+def mask_excluded_spans(mask, time_ps):
+    """Contiguous excluded spans in ns on the full LED-relative input grid."""
+    kept = np.asarray(mask, dtype=bool)
+    times = np.asarray(time_ps, dtype=np.float64)
+    if kept.ndim != 1 or times.ndim != 1 or kept.size != times.size:
+        raise ValueError("Sample mask and time grid must have equal 1D shape")
+    edges = sample_centers_to_edges(times / 1000.)
+    excluded = ~kept
+    changes = np.diff(np.r_[False, excluded, False].astype(np.int8))
+    starts = np.flatnonzero(changes == 1)
+    stops = np.flatnonzero(changes == -1)
+    return [(float(edges[start]), float(edges[stop]))
+            for start, stop in zip(starts, stops)]
+
+
+def onishi_window_bounds(model_dir, *, start_ns=None, end_ns=None,
+                         disabled=False):
+    """Read Onishi context window from the SAME batch/mode.
+
+    No guessed default bounds: a missing context disables the overlay unless
+    the user supplies both limits explicitly.
+    """
+    if disabled:
+        return None
+    if (start_ns is None) != (end_ns is None):
+        raise ValueError("Specify both --onishi-start-ns and --onishi-end-ns")
+    if start_ns is not None:
+        left, right = float(start_ns), float(end_ns)
+    else:
+        context_path = Path(model_dir).expanduser().resolve().parent.parent / "onishi" / "context.json"
+        if not context_path.is_file():
+            return None
+        context = json.loads(context_path.read_text(encoding="utf-8-sig"))
+        window = context.get("window_ns") or {}
+        left, right = float(window["start"]), float(window["end"])
+    if not np.isfinite(left) or not np.isfinite(right) or left >= right:
+        raise ValueError("Invalid Onishi window limits")
+    return (left, right)
+
+
 def baseline_indices(time_ps, start_ns=-2., end_ns=-1.):
     """Indices in the prepared LED-relative grid, covering [start,end] ns."""
     time_ps = np.asarray(time_ps, dtype=np.float64)
@@ -557,7 +607,23 @@ def run(args):
     time_ps = np.asarray(np.load(time_file, mmap_mode="r"), dtype=np.float64)
     if time_ps.shape != (waves.shape[-1],):
         raise ValueError("Prepared time grid does not match waveform samples")
-    choices = tuple(dict.fromkeys(args.representations))
+    choices = effective_representations(provenance["mode"], args.representations)
+    if "amplitude_normalized" in args.representations and "amplitude_normalized" not in choices:
+        log.info("TIMING MODE | amplitude_normalized skipped: saturated timing pulses")
+    cropped_spans = (mask_excluded_spans(retained, time_ps)
+                     if provenance["mode"] == "timing_to_timing" else [])
+    onishi_bounds = onishi_window_bounds(
+        args.model_dir,
+        start_ns=args.onishi_start_ns, end_ns=args.onishi_end_ns,
+        disabled=args.disable_onishi_highlight)
+    if onishi_bounds is None and not args.disable_onishi_highlight:
+        log.warning("ONISHI | sibling onishi/context.json not found; "
+                    "use --onishi-start-ns/--onishi-end-ns to highlight the window")
+    elif onishi_bounds is not None:
+        log.info("ONISHI | highlight signal region [%.3f, %.3f] ns",
+                 *onishi_bounds)
+    if cropped_spans:
+        log.info("TIMING CROP | %d excluded time spans shaded", len(cropped_spans))
     baseline_positions = None
     if any(name != "original" for name in choices):
         baseline_positions = baseline_indices(
@@ -715,6 +781,17 @@ def run(args):
                     ("peak-normalized waveforms by saved prediction" if
                      representation == "amplitude_normalized" else
                      "original physical waveforms by saved prediction"))
+                # Onishi marks the baseline+rising-edge region of interest.
+                # Crop spans indicate samples unused by the timing model.
+                # Keep the overlays behind the physical waveforms.
+                if onishi_bounds is not None:
+                    ax_signal.axvspan(
+                        *onishi_bounds, facecolor="0.82",
+                        alpha=0.45, edgecolor="none", zorder=0.3)
+                for crop_left, crop_right in cropped_spans:
+                    ax_signal.axvspan(
+                        crop_left, crop_right, facecolor="0.91",
+                        alpha=0.75, edgecolor="none", zorder=0.5)
                 ax_signal.grid(True, which="major", alpha=0.18, linewidth=0.6)
                 ax_signal.legend(loc="best", fontsize="small")
                 ax_signal.tick_params(labelbottom=False)
@@ -727,6 +804,12 @@ def run(args):
                 fig.colorbar(im, cax=cax, label=(
                     "Mean prediction difference (reference - comparison, ps)"
                     if comparison_provenance else "Mean saved teacher prediction (ps)"))
+                # Shade excluded timing samples without removing existing
+                # heatmap cells. No crop shading for energy mode.
+                for crop_left, crop_right in cropped_spans:
+                    ax.axvspan(
+                        crop_left, crop_right, facecolor="0.88",
+                        alpha=0.38, edgecolor="none", zorder=3)
                 if kind == 1:
                     ylabel = ("Difference of standardized first differences"
                               if channel == 2 else "Standardized first difference (z)")
@@ -800,6 +883,8 @@ def run(args):
                 representation == "amplitude_normalized" else
                 "grouped_physical_waveforms.npz"),
             "support_counts": "retained in NPZ, not plotted",
+            "timing_cropped_spans_ns": cropped_spans,
+            "onishi_highlight_ns": onishi_bounds,
         }, indent=2), encoding="utf-8")
 
     (root / "summary.json").write_text(json.dumps({
@@ -834,6 +919,8 @@ def run(args):
         "waveform_group_means_file": "grouped_physical_waveforms.npz",
         "waveform_units": "mV (inverse of clipped prepared input transform)",
         "support_counts": "saved in each NPZ, not plotted",
+        "timing_cropped_spans_ns": cropped_spans,
+        "onishi_highlight_ns": onishi_bounds,
         "target_mean_ps": baseline, "shared_symmetric_color_radius_ps": radius,
         "note": "Descriptive 1D conditional mean per time coordinate, not model attribution.",
     }, indent=2), encoding="utf-8")
@@ -871,6 +958,12 @@ def parser():
                    help="Rightmost sample shown in derivative plots; 0-1200 by default. "
                         "The saved numerical heatmap remains full-length.")
     p.add_argument("--retained-only", action="store_true")
+    p.add_argument("--onishi-start-ns", type=float,
+                   help="Override Onishi window start; otherwise read sibling onishi/context.json")
+    p.add_argument("--onishi-end-ns", type=float,
+                   help="Override Onishi window end; requires --onishi-start-ns")
+    p.add_argument("--disable-onishi-highlight", action="store_true",
+                   help="Disable the Onishi reference band in signal panels")
     return p
 
 
