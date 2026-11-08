@@ -18,7 +18,7 @@ import numpy as np
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.artifact_store import ArtifactStore, ArtifactMissing
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.results import batch_root, discover_runs, read_run, resolve_run_config
 from waveform_analysis.data.storage import RunStore
@@ -466,11 +466,18 @@ def explain_conditional_knn(
                     difference_mean, _ = base._dataset_mean_difference_mv(
                         blind, config["mode"], scale, int(seed), max_events=1000
                     )
-                    led_baselines = base._native_led_baselines(
-                        config["preprocessing"]["artifact_root"], blind, config["mode"],
-                        ids, config["preprocessing"]["selection"]["baseline_window_ns"]
-                    )
+                    led_baselines = None
+                    led_status = "available"
+                    try:
+                        led_baselines = base._native_led_baselines(
+                            config["preprocessing"]["artifact_root"], blind, config["mode"],
+                            ids, config["preprocessing"]["selection"]["baseline_window_ns"]
+                        )
+                    except (ArtifactMissing, FileNotFoundError) as exc:
+                        led_status = f"native LED reference unavailable: {exc}"
+                        logger.warning("KNN LOCAL PLOT | LED lines omitted | %s", exc)
                     threshold = float(blind.manifest["fixed_led_threshold_mV"])
+                    metadata["led_reference_status"] = led_status
                     names, event_rows = [], []
                     for i,(group,event_id) in enumerate(zip(groups,event_ids)):
                         filename = f"{group}__event_{event_id}.png"
@@ -478,7 +485,7 @@ def explain_conditional_knn(
                             temporary / filename, time_ps=time_ps,
                             waveform_mv=raw_mv[i],
                             dataset_mean_difference_mv=difference_mean,
-                            led_baseline_mv=led_baselines[i],
+                            led_baseline_mv=None if led_baselines is None else led_baselines[i],
                             attribution=values["maps"][i], group=group, event_id=int(event_id),
                             target_ps=float(targets[ids[i]]),
                             prediction_ps=float(saved[ids[i]]),
