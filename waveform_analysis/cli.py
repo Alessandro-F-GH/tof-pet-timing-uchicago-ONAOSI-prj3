@@ -140,6 +140,17 @@ def _parser() -> argparse.ArgumentParser:
     tshap_local.add_argument("--imputer-slope-points", type=int, default=5)
     tshap_local.add_argument("--overwrite", action="store_true",
                              help="Force recomputation of local explanations")
+    for cmd in (tshap, tshap_local):
+        cmd.add_argument("--method", choices=("reference", "conditional-knn"), default="reference",
+                         help="Choose original control-reference Shapley or deterministic conditional KNN")
+        cmd.add_argument("--knn-k", nargs="+", type=int, default=[1, 3, 5, 10, 20, 50, 100],
+                         help="KNN candidate neighbor counts; each window and complement is tuned independently")
+        cmd.add_argument("--knn-tuning-events", type=int, default=512,
+                         help="Development events held out for KNN reconstruction MSE tuning")
+        cmd.add_argument("--knn-reference-events", type=int, default=None,
+                         help="Maximum remaining Development events used as KNN reference (default: all)")
+        cmd.add_argument("--knn-reference-block", type=int, default=512,
+                         help="Number of reference waveforms processed per distance block")
     cpa = sub.add_parser("explain-cpa",
                          help="Chronological prefix attribution using frozen wide-window models")
     cpa_source = cpa.add_mutually_exclusive_group(required=True)
@@ -261,6 +272,20 @@ def main() -> None:
             ):
                 print(output)
         return
+    if args.command == "explain-tshap" and args.method == "conditional-knn":
+        from .engine.conditional_knn_tshap import explain_conditional_knn
+        for output in explain_conditional_knn(
+                args.results, model_dir=args.model_dir, models=args.models,
+                ml_window=args.windows, mode=args.mode, cache_root=args.cache_root,
+                artifact_root=args.artifact_root, output_root=args.output_root,
+                max_events=args.max_events, window_samples=args.window_samples,
+                stride_samples=args.stride_samples, predict_batch_size=args.predict_batch_size,
+                seed=args.seed, overwrite=args.overwrite, knn_k=tuple(args.knn_k),
+                knn_tuning_events=args.knn_tuning_events,
+                knn_reference_events=args.knn_reference_events,
+                knn_reference_block=args.knn_reference_block, logger=logger):
+            print(output)
+        return
     if args.command == "explain-tshap":
         from .engine.tshap_explainer import explain_tshap
         for output in explain_tshap(args.results, model_dir=args.model_dir, models=args.models,
@@ -277,6 +302,22 @@ def main() -> None:
                 n_baselines=args.n_baselines, logger=logger):
             print(output)
         return
+    if args.command == "explain-tshap-local" and args.method == "conditional-knn":
+        from .engine.conditional_knn_tshap import explain_conditional_knn
+        for output in explain_conditional_knn(
+                args.results, model_dir=args.model_dir, models=args.models,
+                ml_window=args.windows, mode=args.mode, cache_root=args.cache_root,
+                artifact_root=args.artifact_root, output_root=args.output_root,
+                local=True, events_per_group=args.events_per_group,
+                extreme_margin=args.extreme_margin,
+                window_samples=args.window_samples, stride_samples=args.stride_samples,
+                predict_batch_size=args.predict_batch_size, seed=args.seed,
+                overwrite=args.overwrite, knn_k=tuple(args.knn_k),
+                knn_tuning_events=args.knn_tuning_events,
+                knn_reference_events=args.knn_reference_events,
+                knn_reference_block=args.knn_reference_block, logger=logger):
+            print(output)
+        return
     if args.command == "explain-tshap-local":
         from .engine.tshap_explainer import explain_tshap_local
         for output in explain_tshap_local(
@@ -291,7 +332,6 @@ def main() -> None:
                 imputer_fit_events=args.imputer_fit_events,
                 imputer_tuning_events=args.imputer_tuning_events,
                 imputer_slope_points=args.imputer_slope_points,
-                conditional_samples=args.conditional_samples,
                 logger=logger):
             print(output)
         return
