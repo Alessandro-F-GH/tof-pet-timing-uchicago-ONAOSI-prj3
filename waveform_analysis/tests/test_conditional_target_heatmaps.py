@@ -200,3 +200,30 @@ def test_grouped_waveforms_unchanged_by_heatmap_representation():
     again, again_info = grouped_physical_waveforms(*args)
     np.testing.assert_array_equal(originals, again)
     assert info == again_info
+
+
+def test_grouped_amplitude_normalized_overlays_are_not_physical_mv():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        grouped_amplitude_normalized_waveforms, grouped_physical_waveforms,
+    )
+    # Same physical shape with distinct event/detector offsets and amplitudes.
+    n, t = 100, 6
+    shape = np.array([0., 0., .1, .5, 1., .7], np.float32)
+    waves = np.zeros((n, 2, t), dtype=np.float32)
+    for i in range(n):
+        waves[i, 0] = .1 + (.15 + i * .001) * shape
+        waves[i, 1] = .2 + (.25 + i * .001) * shape
+    preds = np.arange(n, dtype=np.float64)
+    original, groups = grouped_physical_waveforms(
+        waves, preds, np.arange(n), np.arange(t),
+        np.array([[-50.], [-20.]]), np.array([[350.], [140.]]))
+    amplitude = grouped_amplitude_normalized_waveforms(
+        waves, preds, np.arange(n), np.arange(t), [0, 1], groups,
+        chunk_size=13)
+    assert amplitude.shape == (3, 3, t)
+    np.testing.assert_allclose(
+        amplitude[:, 0], np.broadcast_to(shape, (3, t)), atol=1e-6)
+    np.testing.assert_allclose(
+        amplitude[:, 1], np.broadcast_to(shape, (3, t)), atol=1e-6)
+    np.testing.assert_allclose(amplitude[:, 2], 0., atol=1e-6)
+    assert not np.allclose(original[:, 0], amplitude[:, 0])
