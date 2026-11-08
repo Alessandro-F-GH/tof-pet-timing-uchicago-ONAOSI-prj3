@@ -1222,12 +1222,17 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     attribution = np.asarray(attribution, dtype=np.float64)
     if waveform_mv.shape != (2, time_ns.size) or attribution.shape != waveform_mv.shape:
         raise ValueError("Local TSHAP plot arrays must have shape [2 detectors, samples]")
-    if not np.all(np.isfinite(waveform_mv)) or not np.isfinite(led_threshold_mv):
-        raise ValueError("Waveforms and LED threshold must be finite")
+    if not np.all(np.isfinite(waveform_mv)) or (
+        led_baseline_mv is not None and not np.isfinite(led_threshold_mv)
+    ):
+        raise ValueError("Waveforms and supplied LED threshold must be finite")
 
     waveform_difference = _center_detector_difference(waveform_mv, dataset_mean_difference_mv)
-    led_levels_mv = _led_reference_levels(led_baseline_mv, led_threshold_mv)
-    led_line_start_ns, led_line_end_ns = _led_line_extent(time_ns)
+    if led_baseline_mv is None:
+        led_levels_mv = None
+    else:
+        led_levels_mv = _led_reference_levels(led_baseline_mv, led_threshold_mv)
+        led_line_start_ns, led_line_end_ns = _led_line_extent(time_ns)
 
     fig, axes = plt.subplots(
         3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
@@ -1246,12 +1251,13 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax = axes[0]
     ax.plot(time_ns, waveform_mv[0], linewidth=1.15, label="Detector 1")
     ax.plot(time_ns, waveform_mv[1], linewidth=1.15, label="Detector 2")
-    ax.hlines(led_levels_mv[0], xmin=led_line_start_ns, xmax=led_line_end_ns,
-              linestyle="--", linewidth=0.9,
-              label=f"Detector 1 LED threshold ({led_levels_mv[0]:.1f} mV)")
-    ax.hlines(led_levels_mv[1], xmin=led_line_start_ns, xmax=led_line_end_ns,
-              linestyle=":", linewidth=0.9,
-              label=f"Detector 2 LED threshold ({led_levels_mv[1]:.1f} mV)")
+    if led_levels_mv is not None:
+        ax.hlines(led_levels_mv[0], xmin=led_line_start_ns, xmax=led_line_end_ns,
+                  linestyle="--", linewidth=0.9,
+                  label=f"Detector 1 LED threshold ({led_levels_mv[0]:.1f} mV)")
+        ax.hlines(led_levels_mv[1], xmin=led_line_start_ns, xmax=led_line_end_ns,
+                  linestyle=":", linewidth=0.9,
+                  label=f"Detector 2 LED threshold ({led_levels_mv[1]:.1f} mV)")
     ax.set_title("Detector waveforms")
     ax.set_ylabel("Amplitude (mV)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
