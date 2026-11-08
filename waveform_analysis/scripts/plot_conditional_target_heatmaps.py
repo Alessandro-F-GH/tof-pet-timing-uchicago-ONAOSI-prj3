@@ -19,6 +19,7 @@ from waveform_analysis.engine.sample_normalization import (
 from waveform_analysis.scripts.evaluate_conditional_knn import _load_inputs, _logger
 
 CHANNEL_NAMES = ("detector_1", "detector_2", "detector_2_minus_1")
+PERCENTILE_BANDS = ((2., 12.), (45., 55.), (88., 98.))
 REPRESENTATIONS = ("original", "baseline_subtracted", "amplitude_normalized")
 
 
@@ -242,6 +243,58 @@ def log_prediction_comparison(log, label, result):
                  band["rmse_ps"], band["mae_ps"])
 
 
+def grouped_physical_waveforms(waves, predictions, training, positions, minimum, maximum,
+                               *, bands=PERCENTILE_BANDS, chunk_size=128):
+    """Mean original ML input waveform in mV by SAVED-output percentile band.
+
+    Inverse the fixed prepared-input [0,1] affine transformation, not a
+    representation-specific z-score. Prepared clipping remains in effect.
+    Grouping and means use exactly the heatmap training subset.
+    Returns group means [group, D1/D2/(D2-D1), plotted_time].
+    """
+    predictions = np.asarray(predictions, dtype=np.float64)
+    training = np.asarray(training, dtype=np.int64)
+    positions = np.asarray(positions, dtype=np.int64)
+    minimum = np.asarray(minimum, dtype=np.float64).reshape(2, 1)
+    maximum = np.asarray(maximum, dtype=np.float64).reshape(2, 1)
+    if (waves.ndim != 3 or waves.shape[1] != 2
+            or predictions.shape != (waves.shape[0],)
+            or training.ndim != 1 or training.size < 2
+            or positions.ndim != 1 or not positions.size
+            or chunk_size < 1 or not np.all(np.isfinite(minimum))
+            or not np.all(np.isfinite(maximum))
+            or not np.all(maximum > minimum)):
+        raise ValueError("Invalid waveform input or physical affine transform")
+    train_predictions = predictions[training]
+    group_means, group_info = [], []
+    for lower_pct, upper_pct in bands:
+        lower, upper = np.percentile(train_predictions, [lower_pct, upper_pct])
+        selected = training[
+            (train_predictions >= lower) & (train_predictions < upper)]
+        if len(selected) == 0:
+            raise ValueError(
+                f"No events in prediction band P{lower_pct:g}-P{upper_pct:g}")
+        total = np.zeros((2, len(positions)), dtype=np.float64)
+        for start in range(0, len(selected), chunk_size):
+            ids = selected[start:start + chunk_size]
+            batch = np.asarray(waves[ids], dtype=np.float64)[:, :, positions]
+            restored_mv = batch * (maximum - minimum)[None, :, :] + minimum[None, :, :]
+            if not np.all(np.isfinite(restored_mv)):
+                raise ValueError("Nonfinite physical waveform samples in selected group")
+            total += restored_mv.sum(axis=0)
+        mean = total / len(selected)
+        group_means.append(np.stack([mean[0], mean[1], mean[1] - mean[0]]))
+        group_info.append({
+            "percentile_lower": float(lower_pct),
+            "percentile_upper": float(upper_pct),
+            "prediction_lower_ps": float(lower),
+            "prediction_upper_ps": float(upper),
+            "mean_prediction_ps": float(np.mean(predictions[selected])),
+            "n_events": int(len(selected)),
+        })
+    return np.stack(group_means), group_info
+
+
 def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
                         derivative_mean, derivative_scale, *,
                         bins=80, z_limit=3., chunk_size=128, signal_only=False):
@@ -426,26 +479,82 @@ def run(args):
     # correct even when their spacing is not uniform.
     time_ns = time_ps[positions] / 1000.0
     time_edges_ns = sample_centers_to_edges(time_ns)
+
+    # Recover physical mV at the prepared ML time samples. The fixed input
+    # transform contains per-detector amplitude bounds; it is NOT the z-score
+    # fitted above. Read only the existing cached transform and waveforms.
+    transform_file = Path(provenance["dataset"]) / f"{family}_transform.npz"
+    if not transform_file.is_file():
+        raise FileNotFoundError(f"Prepared physical transform not found: {transform_file}")
+    with np.load(transform_file, allow_pickle=False) as transform:
+        physical_min = np.asarray(transform["minimum"], dtype=np.float64)
+        physical_max = np.asarray(transform["maximum"], dtype=np.float64)
+    grouped_mv, prediction_groups = grouped_physical_waveforms(
+        waves, predictions, training, positions, physical_min, physical_max,
+        chunk_size=args.chunk_size)
+    for group in prediction_groups:
+        log.info("WAVEFORM GROUP | P%g-P%g | n=%d | mean prediction=%.3f ps",
+                 group["percentile_lower"], group["percentile_upper"],
+                 group["n_events"], group["mean_prediction_ps"])
+    np.savez_compressed(
+        root / "grouped_physical_waveforms.npz",
+        time_ns=time_ns, positions=positions,
+        group_mean_waveform_mv=grouped_mv,
+        channel_names=np.array(CHANNEL_NAMES),
+        percentile_bands=np.array(PERCENTILE_BANDS, dtype=np.float64),
+        group_mean_prediction_ps=np.array(
+            [g["mean_prediction_ps"] for g in prediction_groups]),
+        group_counts=np.array([g["n_events"] for g in prediction_groups]),
+        group_prediction_bounds_ps=np.array(
+            [[g["prediction_lower_ps"], g["prediction_upper_ps"]]
+             for g in prediction_groups]),
+        physical_transform_minimum_mv=physical_min,
+        physical_transform_maximum_mv=physical_max)
     result_files = []
     for representation, result in results.items():
         representation_root = root / representation
         representation_root.mkdir(parents=True, exist_ok=True)
         for kind, feature_name in enumerate(result["feature_names"]):
             for channel, channel_name in enumerate(CHANNEL_NAMES):
-                fig, ax = plt.subplots(
-                    figsize=(13, 5.0), constrained_layout=True)
-                # Single-panel plot. Empirical-support counts are still saved
-                # in the numerical NPZ; min_count still masks sparse cells.
+                # Vertically aligned panels: original physical waveform
+                # for the SAME detector (or D2-D1 in mV), and its heatmap.
+                # A dedicated colorbar column keeps both temporal axes
+                # physically aligned, rather than shrinking only the heatmap.
+                fig = plt.figure(figsize=(13, 7.3), constrained_layout=True)
+                gs = fig.add_gridspec(
+                    2, 2, width_ratios=[1, 0.035], height_ratios=[1, 1.7])
+                ax_signal = fig.add_subplot(gs[0, 0])
+                ax = fig.add_subplot(gs[1, 0], sharex=ax_signal)
+                cax = fig.add_subplot(gs[1, 1])
+                for group_idx, info in enumerate(prediction_groups):
+                    color = plt.get_cmap("coolwarm")(
+                        target_norm(info["mean_prediction_ps"]))
+                    label = (
+                        f'P{info["percentile_lower"]:g}–'
+                        f'{info["percentile_upper"]:g} | '
+                        f'{info["mean_prediction_ps"]:+.1f} ps | '
+                        f'n={info["n_events"]}')
+                    ax_signal.plot(
+                        time_ns, grouped_mv[group_idx, channel],
+                        linewidth=1.7, color=color, label=label)
+                ax_signal.set_ylabel(
+                    "Detector 2 - detector 1 (mV)"
+                    if channel == 2 else f"Detector {channel + 1} (mV)")
+                ax_signal.set_title(
+                    f"{representation} | {feature_name} | {channel_name} | "
+                    "original physical waveforms by saved prediction")
+                ax_signal.grid(True, which="major", alpha=0.18, linewidth=0.6)
+                ax_signal.legend(loc="best", fontsize="small")
+                ax_signal.tick_params(labelbottom=False)
+                # Support threshold still masks sparse heatmap cells;
+                # all counts remain available in each representation NPZ.
                 im = ax.pcolormesh(
                     time_edges_ns, result["edges"],
                     np.ma.masked_invalid(result["mean_target"][kind, channel]),
                     shading="flat", cmap="coolwarm", norm=target_norm)
-                fig.colorbar(im, ax=ax, label=(
+                fig.colorbar(im, cax=cax, label=(
                     "Mean prediction difference (reference - comparison, ps)"
                     if comparison_provenance else "Mean saved teacher prediction (ps)"))
-                ax.set_title(
-                    f"{representation} | {feature_name} | {channel_name} | "
-                    f"mean prediction (min count {args.min_count})")
                 if kind == 1:
                     ylabel = ("Difference of standardized first differences"
                               if channel == 2 else "Standardized first difference (z)")
@@ -460,6 +569,7 @@ def run(args):
                 ax.grid(True, which="major", color="black",
                         alpha=0.25, linewidth=0.65)
                 ax.set_axisbelow(False)
+                ax.set_xlim(time_edges_ns[0], time_edges_ns[-1])
                 if kind == 1 and args.derivative_end_sample is not None:
                     endpoint = min(args.derivative_end_sample, waves.shape[-1] - 1)
                     ax.set_xlim(time_edges_ns[0], time_ps[endpoint] / 1000.0)
@@ -505,7 +615,7 @@ def run(args):
                               "new timewise z-score. Peak-normalized view is dimensionless."),
             "min_count": args.min_count,
             "plot_x_axis": "Time relative to LED (ns), prepared grid",
-            "plot_layout": "single-panel heatmap with major gridlines",
+            "plot_layout": "original physical mean waveform (mV) above heatmap; shared ns axis",
             "support_counts": "retained in NPZ, not plotted",
         }, indent=2), encoding="utf-8")
 
@@ -531,7 +641,10 @@ def run(args):
         "z_bins": args.z_bins, "time_stride": args.time_stride,
         "min_count": args.min_count, "figures": result_files,
         "plot_x_axis": "Time relative to LED (ns), prepared grid",
-        "plot_layout": "single-panel heatmaps, major gridlines",
+        "plot_layout": "original physical mean waveforms above each heatmap, shared ns axis",
+        "waveform_groups": prediction_groups,
+        "waveform_group_means_file": "grouped_physical_waveforms.npz",
+        "waveform_units": "mV (inverse of clipped prepared input transform)",
         "support_counts": "saved in each NPZ, not plotted",
         "target_mean_ps": baseline, "shared_symmetric_color_radius_ps": radius,
         "note": "Descriptive 1D conditional mean per time coordinate, not model attribution.",
