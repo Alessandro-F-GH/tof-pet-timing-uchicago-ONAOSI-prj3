@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 import shutil
 import tempfile
+from time import perf_counter
 
 import numpy as np
 
@@ -147,8 +148,17 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
     recon_mae = np.zeros_like(recon_mse)
     recon_rmse_mv = np.zeros_like(recon_mse)
     recon_mae_mv = np.zeros_like(recon_mse)
+    evaluation_start = perf_counter()
+    logger.info("KNN EXPLAIN START | events=%d | windows=%d | coalitions_per_event=%d | reference=%d",
+                n, nwin, engine.n_masks, len(engine.reference))
     for event, waveform in enumerate(waveforms):
+        event_start = perf_counter()
+        logger.info("KNN EVENT START | event=%d/%d | id=%s | coalitions=%d",
+                    event+1, n, event_ids[event], engine.n_masks)
         neighbor_ids, distances = engine.search(waveform)
+        search_seconds = perf_counter()-event_start
+        logger.info("KNN EVENT SEARCH COMPLETE | event=%d/%d | elapsed_s=%.2f",
+                    event+1, n, search_seconds)
         synthetic = np.empty((engine.n_masks, *waveform.shape), dtype=np.float32)
         knn_predictions = np.empty(engine.n_masks, dtype=np.float64)
         for mask in range(engine.n_masks):
@@ -164,8 +174,14 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
             recon_mae[event, side, window] = np.mean(np.abs(residual))
             recon_rmse_mv[event, side, window] = np.sqrt(np.mean(physical**2))
             recon_mae_mv[event, side, window] = np.mean(np.abs(physical))
+        reconstruction_seconds = perf_counter()-event_start-search_seconds
+        logger.info("KNN COALITION INFERENCE START | event=%d/%d | waveforms=%d | elapsed_search_s=%.2f | elapsed_reconstruction_s=%.2f",
+                    event+1, n, len(synthetic), search_seconds, reconstruction_seconds)
+        prediction_start = perf_counter()
         estimates = predict(synthetic)
         full = float(predict(waveform[None])[0])
+        logger.info("KNN COALITION INFERENCE COMPLETE | event=%d/%d | waveforms=%d | elapsed_s=%.2f",
+                    event+1, n, len(synthetic)+1, perf_counter()-prediction_start)
         original_prediction[event] = full
         imputed_prediction[event, 0] = estimates[:nwin]
         imputed_prediction[event, 1] = estimates[nwin:]
@@ -187,6 +203,8 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
                 float(np.sqrt(np.mean((estimates[:nwin]-knn_predictions[:nwin])**2))),
                 float(np.sqrt(np.mean((estimates[nwin:]-knn_predictions[nwin:])**2)))
             )
+        logger.info("KNN EVENT COMPLETE | event=%d/%d | elapsed_s=%.2f | total_elapsed_s=%.2f",
+                    event+1, n, perf_counter()-event_start, perf_counter()-evaluation_start)
     return {
         "maps": maps, "scores": scores, "f_original": original_prediction,
         "f_reference_mean": mean_prediction, "f_imputed": imputed_prediction,
@@ -328,6 +346,7 @@ def explain_conditional_knn(
                                 logger.info("KNN TSHAP | cache hit | %s", destination)
                                 completed.append(destination)
                                 continue
+                    logger.info("KNN BLIND SELECTION START | local=%s", local)
                     if local:
                         saved, targets = base._load_materialized_local_predictions(
                             run_store, blind, manifest, config["mode"]
@@ -341,8 +360,13 @@ def explain_conditional_knn(
                         ids = base._choose_indices(blind.n_events, max_events, base._selection_seed(seed))
                         groups = None
                     waves = waveform_view(blind, config["mode"], ids).materialize()
+                    logger.info("KNN BLIND REPLAY START | events=%d | mode=%s | model=%s",
+                                len(ids), config["mode"], spec.name)
+                    replay_start = perf_counter()
                     predict = lambda v: base._predict_bounded(spec, fitted, v, predict_batch_size)
                     replay = predict(waves)
+                    logger.info("KNN BLIND REPLAY COMPLETE | events=%d | elapsed_s=%.2f",
+                                len(ids), perf_counter()-replay_start)
                     if local:
                         if not np.allclose(replay, saved[ids],
                                            atol=base.LOCAL_PREDICTION_REPLAY_ATOL_PS,
@@ -354,10 +378,23 @@ def explain_conditional_knn(
                         if not np.allclose(replay, original, atol=1e-4, rtol=1e-6):
                             raise ValueError("Conditional KNN TSHAP replay mismatch with saved model inference")
                     event_ids = np.asarray(blind.event_index[ids], dtype=np.int64)
-                    reference_predictions = predict_indices(
-                        spec, fitted, development, config["mode"], reference_idx,
-                        chunk_size=predict_batch_size
-                    )
+                    reference_start = perf_counter()
+                    reference_predictions = np.empty(len(reference_idx), dtype=np.float64)
+                    reference_progress_batch = max(1, min(512, int(predict_batch_size) * 8))
+                    logger.info("KNN REFERENCE PREDICTIONS START | model=%s | events=%d | progress_batch=%d | predict_batch_size=%d",
+                                spec.name, len(reference_idx), reference_progress_batch, predict_batch_size)
+                    for first in range(0, len(reference_idx), reference_progress_batch):
+                        stop = min(first+reference_progress_batch, len(reference_idx))
+                        reference_predictions[first:stop] = predict_indices(
+                            spec, fitted, development, config["mode"], reference_idx[first:stop],
+                            chunk_size=predict_batch_size
+                        )
+                        elapsed = perf_counter()-reference_start
+                        logger.info("KNN REFERENCE PREDICTIONS PROGRESS | events=%d/%d | elapsed_s=%.2f | average_s_per_event=%.4f",
+                                    stop, len(reference_idx), elapsed, elapsed/stop)
+                    logger.info("KNN REFERENCE PREDICTIONS COMPLETE | events=%d | elapsed_s=%.2f | mean_ps=%.6f | std_ps=%.6f",
+                                len(reference_idx), perf_counter()-reference_start,
+                                float(np.mean(reference_predictions)), float(np.std(reference_predictions)))
                     if not np.isfinite(reference_predictions).all():
                         raise ValueError("Non-finite reference model predictions")
                     values = _evaluate_events(engine, tuned, waves, predict, reference_predictions,
