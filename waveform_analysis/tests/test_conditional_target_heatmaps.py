@@ -155,3 +155,48 @@ def test_heatmap_physical_time_edges():
         np.array([-.05, .05, .25, .55]))
     with pytest.raises(ValueError, match="strictly increasing"):
         sample_centers_to_edges(np.array([0., 0., .1]))
+
+
+def test_grouped_physical_waveforms_use_original_mv_and_exact_percentiles():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        grouped_physical_waveforms,
+    )
+    n = 100
+    # Each detector has its own fixed physical scale and offset.
+    wave = np.zeros((n, 2, 4), np.float32)
+    wave[:, 0] = np.arange(n, dtype=np.float32)[:, None] / 100.
+    wave[:, 1] = (100 - np.arange(n, dtype=np.float32)[:, None]) / 100.
+    predictions = np.arange(n, dtype=np.float64) - 50
+    minimum = np.array([[-50.], [-20.]])
+    maximum = np.array([[350.], [140.]])
+    grouped, meta = grouped_physical_waveforms(
+        wave, predictions, np.arange(n), np.arange(4),
+        minimum, maximum, chunk_size=7)
+    assert grouped.shape == (3, 3, 4)
+    assert [m["n_events"] for m in meta] == [10, 10, 10]
+    low_rows = np.arange(2, 12)
+    expected_1 = ((low_rows / 100) * 400 - 50).mean()
+    expected_2 = (((100 - low_rows) / 100) * 160 - 20).mean()
+    np.testing.assert_allclose(grouped[0, 0], expected_1, atol=1e-5)
+    np.testing.assert_allclose(grouped[0, 1], expected_2, atol=1e-5)
+    np.testing.assert_allclose(grouped[:, 2], grouped[:, 1] - grouped[:, 0])
+    assert np.isclose(meta[0]["mean_prediction_ps"], predictions[low_rows].mean())
+
+
+def test_grouped_waveforms_unchanged_by_heatmap_representation():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        grouped_physical_waveforms, WaveformRepresentation,
+    )
+    rng = np.random.default_rng(2)
+    data = rng.uniform(.15, .9, (100, 2, 6)).astype(np.float32)
+    data[:, :, :2] = .15
+    predictions = np.arange(100, dtype=float)
+    args = (data, predictions, np.arange(100), np.arange(6),
+            np.array([[-50.], [-20.]]), np.array([[350.], [140.]]))
+    originals, info = grouped_physical_waveforms(*args)
+    # The overlay must always use *data*, not transformed views.
+    transformed = WaveformRepresentation(data, "amplitude_normalized", [0, 1])
+    assert not np.allclose(transformed[np.arange(3)], data[:3])
+    again, again_info = grouped_physical_waveforms(*args)
+    np.testing.assert_array_equal(originals, again)
+    assert info == again_info
