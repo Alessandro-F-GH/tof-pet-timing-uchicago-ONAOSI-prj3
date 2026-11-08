@@ -106,12 +106,81 @@ class WaveformRepresentation:
 
 
 
+class EventSubsetView:
+    """Lazy reference waveform subset indexed in matched-event order.
+
+    The original prepared waveform array is never copied as a whole; only
+    requested rows/chunks are materialized for normalization/heatmaps.
+    """
+
+    def __init__(self, waves, reference_rows):
+        self.waves = waves
+        self.reference_rows = np.asarray(reference_rows, dtype=np.int64)
+        self.shape = (len(self.reference_rows),) + waves.shape[1:]
+
+    def __getitem__(self, indices):
+        return self.waves[self.reference_rows[indices]]
+
+
+def match_event_populations(reference_ids, comparison_ids, reference_targets,
+                            comparison_targets, *, target_tolerance_ps=1e-3):
+    """Return reference-order intersection rows, aligned comparison rows and IDs.
+
+    Match event IDs, never array positions. Reject ambiguous IDs and target
+    mismatches rather than silently mixing incompatible event calibrations.
+    """
+    a = np.asarray(reference_ids, dtype=np.int64)
+    b = np.asarray(comparison_ids, dtype=np.int64)
+    if (a.ndim != 1 or b.ndim != 1 or
+            np.unique(a).size != a.size or np.unique(b).size != b.size):
+        raise ValueError("Ambiguous or duplicate development event IDs")
+    if a.size < 2 or b.size < 2:
+        raise ValueError("Both development populations must contain >=2 events")
+    common, a_rows, b_rows = np.intersect1d(
+        a, b, assume_unique=True, return_indices=True)
+    if common.size < 2:
+        raise ValueError("Fewer than two common development events")
+    order = np.argsort(a_rows, kind="stable")
+    reference_rows = a_rows[order]
+    comparison_rows = b_rows[order]
+    event_ids = a[reference_rows]
+
+    targets_a = np.asarray(reference_targets, dtype=np.float64)
+    targets_b = np.asarray(comparison_targets, dtype=np.float64)
+    if targets_a.shape != a.shape or targets_b.shape != b.shape:
+        raise ValueError("Prepared target array does not match event IDs")
+    left = targets_a[reference_rows]
+    right = targets_b[comparison_rows]
+    if not (np.all(np.isfinite(left)) and np.all(np.isfinite(right))):
+        raise ValueError("Nonfinite calibrated targets in common events")
+    delta = np.abs(left - right)
+    if np.max(delta) > target_tolerance_ps:
+        raise ValueError(
+            "Calibrated targets disagree on matched event IDs: "
+            f"max absolute difference={np.max(delta):.6g} ps "
+            f"(tolerance={target_tolerance_ps:g} ps)")
+    info = {
+        "reference_events": int(a.size),
+        "comparison_events": int(b.size),
+        "common_events": int(common.size),
+        "reference_only_events": int(a.size - common.size),
+        "comparison_only_events": int(b.size - common.size),
+        "reference_overlap_fraction": float(common.size / a.size),
+        "comparison_overlap_fraction": float(common.size / b.size),
+        "max_target_difference_ps": float(np.max(delta)),
+        "event_order": "reference prepared development order",
+    }
+    return reference_rows, comparison_rows, event_ids, info
+
+
 def load_prediction_difference(args, reference_predictions, reference_provenance,
                                reference_waves, log):
-    """Match two independently loaded models by prepared event ID, not row index.
+    """Compare saved corrections on common events; visualize reference window.
 
-    The output heatmap always uses reference-model waveform coordinates.
-    Refuse a comparison if matched waveform inputs disagree.
+    Same-window runs retain waveform/grid identity validation. Different-window
+    runs can have different sample lengths and slightly different populations;
+    their comparison is allowed only when mode, control calibration and paired
+    targets agree. Never crop/resize wide waveforms to the comparison window.
     """
     from argparse import Namespace
     from waveform_analysis.data.results import read_run, resolve_run_config
@@ -125,8 +194,9 @@ def load_prediction_difference(args, reference_predictions, reference_provenance
         raise ValueError("Different modes: cannot compare prediction outputs")
 
     def dataset_for(model_dir):
-        run = read_run(model_dir.expanduser().resolve())
-        config = resolve_run_config(model_dir.expanduser().resolve())
+        path = model_dir.expanduser().resolve()
+        run = read_run(path)
+        config = resolve_run_config(path)
         if args.cache_root is not None:
             root = args.cache_root.expanduser().resolve()
             config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
@@ -136,38 +206,72 @@ def load_prediction_difference(args, reference_predictions, reference_provenance
             config["preprocessing"]["artifact_root"] = str(
                 args.artifact_root.expanduser().resolve())
             config["preprocessing"].pop("named_cache_root", None)
-        return PreparedCacheLookup().find("development", config, run["manifest"])
+        return (PreparedCacheLookup().find("development", config, run["manifest"]),
+                config)
 
-    ref_dataset = dataset_for(args.model_dir)
-    other_dataset = dataset_for(args.comparison_model_dir)
+    ref_dataset, ref_config = dataset_for(args.model_dir)
+    other_dataset, other_config = dataset_for(args.comparison_model_dir)
+    if ref_config["mode"] != other_config["mode"]:
+        raise ValueError("Different modes: cannot compare prediction outputs")
+    if ref_config["development"].get("channels") != other_config["development"].get("channels"):
+        raise ValueError("Different detector channel definitions")
+    ref_manifest, cmp_manifest = ref_dataset.manifest, other_dataset.manifest
+    for key in ("mode", "control_mode_fingerprint", "target_definition"):
+        if ref_manifest.get(key) != cmp_manifest.get(key):
+            raise ValueError(f"Incompatible prepared metadata: {key}")
+    for key in ("true_tof_ps", "fixed_led_threshold_mV", "led_control_mean_ps"):
+        a = ref_manifest.get(key)
+        b = cmp_manifest.get(key)
+        if a is None or b is None or not np.isclose(
+                float(a), float(b), rtol=0, atol=1e-3):
+            raise ValueError(f"Incompatible calibration metadata: {key}")
+
+    family = mode_family(ref_config["mode"])
+    ref_targets = getattr(ref_dataset, f"{family}_target_ps")
+    other_targets = getattr(other_dataset, f"{family}_target_ps")
+    if ref_targets is None or other_targets is None:
+        raise ValueError("Prepared calibrated targets are required for comparison")
     ref_ids = np.asarray(ref_dataset.event_index, dtype=np.int64)
     other_ids = np.asarray(other_dataset.event_index, dtype=np.int64)
-    if (len(ref_ids) != len(reference_predictions) or
-            len(other_ids) != len(other_predictions) or
-            np.unique(ref_ids).size != len(ref_ids) or
-            np.unique(other_ids).size != len(other_ids)):
-        raise ValueError("Ambiguous or inconsistent development event IDs")
-    if not np.array_equal(np.sort(ref_ids), np.sort(other_ids)):
-        raise ValueError("Development event populations differ")
-    order = np.argsort(other_ids, kind="stable")
-    aligned_rows = order[np.searchsorted(other_ids[order], ref_ids)]
-    if reference_waves.shape != other_waves.shape:
-        raise ValueError("Prepared waveform shapes differ")
-    # Check waveform identity using paired channels and selected positions,
-    # not only event IDs, because model runs may have different preprocessing.
-    sample_rows = np.unique(np.linspace(0, len(ref_ids) - 1, 64, dtype=np.int64))
-    sample_times = np.unique(np.linspace(
-        0, reference_waves.shape[-1] - 1, 128, dtype=np.int64))
-    for row in sample_rows:
-        left = np.asarray(reference_waves[int(row)], dtype=np.float32)
-        right = np.asarray(other_waves[int(aligned_rows[row])], dtype=np.float32)
-        if not np.allclose(left[:, sample_times], right[:, sample_times],
-                           rtol=1e-5, atol=1e-6):
-            raise ValueError("Prepared waveforms differ between runs after event-ID alignment")
-    log.info("DIFFERENCE | reference %s minus %s | aligned events=%d | "
-             "waveform checks passed",
-             reference_provenance["model"], second["model"], len(ref_ids))
-    return reference_predictions - other_predictions[aligned_rows], second, other_predictions[aligned_rows]
+    if len(ref_ids) != len(reference_predictions) or len(other_ids) != len(other_predictions):
+        raise ValueError("Saved predictions and prepared event populations disagree")
+    ref_rows, other_rows, common_ids, info = match_event_populations(
+        ref_ids, other_ids, ref_targets, other_targets)
+    same_window = (ref_config["window_name"] == other_config["window_name"] and
+                   ref_config["window_ns"] == other_config["window_ns"])
+    if same_window:
+        if reference_waves.shape[1:] != other_waves.shape[1:]:
+            raise ValueError("Same-window prepared waveform shapes differ")
+        # Preserve strict waveform identity checks when comparing runs with the
+        # same window. For different windows the cropped input is expected to
+        # differ, so this check is not meaningful.
+        ref_time = getattr(ref_dataset, f"{family}_time_ps")
+        other_time = getattr(other_dataset, f"{family}_time_ps")
+        if not np.array_equal(np.asarray(ref_time), np.asarray(other_time)):
+            raise ValueError("Same-window waveform time grids differ")
+        sample_rows = np.unique(np.linspace(0, len(ref_rows) - 1, 64, dtype=np.int64))
+        sample_times = np.unique(np.linspace(
+            0, reference_waves.shape[-1] - 1, 128, dtype=np.int64))
+        for row in sample_rows:
+            left = np.asarray(reference_waves[int(ref_rows[row])], dtype=np.float32)
+            right = np.asarray(other_waves[int(other_rows[row])], dtype=np.float32)
+            if not np.allclose(left[:, sample_times], right[:, sample_times],
+                               rtol=1e-5, atol=1e-6):
+                raise ValueError("Prepared waveforms differ for matched same-window events")
+    info["reference_window"] = ref_config["window_name"]
+    info["comparison_window"] = other_config["window_name"]
+    info["same_window"] = bool(same_window)
+    info["waveform_display"] = "reference window only"
+    info["comparison_sign"] = "reference saved prediction minus comparison saved prediction"
+    log.info(
+        "DIFFERENCE | %s/%s minus %s/%s | common=%d | reference-only=%d | "
+        "comparison-only=%d | target max delta=%.6g ps | reference waveform retained",
+        ref_config["window_name"], reference_provenance["model"],
+        other_config["window_name"], second["model"],
+        info["common_events"], info["reference_only_events"],
+        info["comparison_only_events"], info["max_target_difference_ps"])
+    return (reference_predictions[ref_rows] - other_predictions[other_rows],
+            second, other_predictions[other_rows], ref_rows, common_ids, info)
 
 
 def prediction_comparison_metrics(reference, comparison, *, reference_name="reference",
@@ -404,9 +508,16 @@ def run(args):
     comparison_provenance = None
     reference_predictions = predictions
     comparison_predictions = None
+    matching = None
     if args.comparison_model_dir is not None:
-        predictions, comparison_provenance, comparison_predictions = load_prediction_difference(
-            args, predictions, provenance, waves, log)
+        (predictions, comparison_provenance, comparison_predictions,
+         reference_rows, common_event_ids, matching) = load_prediction_difference(
+            args, reference_predictions, provenance, waves, log)
+        # All subsequent statistics and plots use exactly the matched events,
+        # but only reference (typically wide) waveform time coordinates.
+        reference_predictions = reference_predictions[reference_rows]
+        waves = EventSubsetView(waves, reference_rows)
+        np.save(root / "matched_event_ids.npy", common_event_ids)
     n = len(predictions)
     if args.tuning_queries < 1 or args.holdout_queries < 1:
         raise ValueError("Tuning/holdout must be nonempty")
@@ -424,7 +535,7 @@ def run(args):
     comparison_metrics = None
     if comparison_predictions is not None:
         comparison_metrics = {}
-        subsets = {"all_development": np.arange(n),
+        subsets = {"common_development": np.arange(n),
                    "training": training,
                    "tuning": excluded[:args.tuning_queries],
                    "holdout": excluded[args.tuning_queries:]}
@@ -694,6 +805,8 @@ def run(args):
     (root / "summary.json").write_text(json.dumps({
         "provenance": provenance,
         "comparison_provenance": comparison_provenance,
+        "matched_population": matching,
+        "matched_event_ids_file": ("matched_event_ids.npy" if matching else None),
         "comparison_metrics_file": ("prediction_comparison_metrics.json"
                                      if comparison_metrics is not None else None),
         "prediction_sign": "reference minus comparison" if comparison_provenance else None,
