@@ -248,6 +248,7 @@ def test_cross_window_intersection_preserves_reference_order_and_targets():
     waves = np.arange(5 * 2 * 6).reshape(5, 2, 6).astype(np.float32)
     view = EventSubsetView(waves, ref_rows)
     assert view.shape == (3, 2, 6)
+    assert view.ndim == 3
     np.testing.assert_array_equal(view[np.array([2, 0])],
                                   waves[[4, 1]])
     np.testing.assert_array_equal(view[1], waves[3])
@@ -319,3 +320,26 @@ def test_onishi_window_bounds_use_sibling_context_and_respect_override(tmp_path)
         onishi_window_bounds(model_dir, start_ns=2., end_ns=-2.)
     (base / "onishi" / "context.json").unlink()
     assert onishi_window_bounds(model_dir) is None
+
+
+def test_grouped_physical_waveforms_accepts_matched_event_view():
+    from waveform_analysis.scripts.plot_conditional_target_heatmaps import (
+        EventSubsetView, grouped_physical_waveforms,
+    )
+    base = np.linspace(.1, .9, 100, dtype=np.float32)
+    original = np.empty((100, 2, 6), dtype=np.float32)
+    original[:, 0, :] = base[:, None]
+    original[:, 1, :] = (.8 * base)[:, None]
+    matched_rows = np.array([2, 3, 5, 8, 13, 21, 34, 55, 89, 91] * 5)
+    view = EventSubsetView(original, matched_rows)
+    target = np.linspace(-50, 50, len(matched_rows))
+    training = np.arange(len(matched_rows))
+    positions = np.arange(6)
+    low = np.array([[-50.], [-20.]])
+    high = np.array([[350.], [140.]])
+    wrapped_means, wrapped_info = grouped_physical_waveforms(
+        view, target, training, positions, low, high)
+    ordinary_means, ordinary_info = grouped_physical_waveforms(
+        original[matched_rows], target, training, positions, low, high)
+    np.testing.assert_allclose(wrapped_means, ordinary_means)
+    assert wrapped_info == ordinary_info
