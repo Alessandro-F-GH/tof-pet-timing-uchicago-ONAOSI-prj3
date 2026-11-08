@@ -134,7 +134,7 @@ def _load_tuning(store, recipe, engine, validation, logger):
     return tuned, artifact
 
 
-def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, logger, event_ids):
+def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, logger, event_ids, stride):
     n = len(waveforms)
     nwin = engine.n_windows
     maps = np.zeros((n, 2, engine.reference.shape[-1]), dtype=np.float64)
@@ -174,7 +174,7 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
         scores[event] = .5 * (full - estimates[nwin:] + estimates[:nwin] - mean_prediction)
         maps[event] = _pair_map(
             scores[event], engine.starts, engine.ends[0]-engine.starts[0],
-            int(engine.starts[1]-engine.starts[0]) if nwin > 1 else engine.ends[0]-engine.starts[0],
+            int(stride),
             engine.retained, waveform.shape[-1]
         )
         if logger and (event == 0 or (event+1)%10 == 0 or event+1 == n):
@@ -207,8 +207,10 @@ def explain_conditional_knn(
 ):
     """Compute global or local conditional-imputation TSHAP using saved models."""
     logger = logger or logging.getLogger(__name__)
-    if model_dir is None and results is None or model_dir is not None and results is not None:
+    if (model_dir is None) == (results is None):
         raise ValueError("Supply exactly one of results and model_dir")
+    if not knn_k or any(int(k) < 1 for k in knn_k):
+        raise ValueError("KNN candidate k values must be positive")
     if int(knn_tuning_events) < 1 or int(window_samples) < 1 or int(stride_samples) < 1:
         raise ValueError("KNN tuning size, window and stride must be positive")
     if local and not 0 < extreme_margin < .25:
@@ -330,7 +332,7 @@ def explain_conditional_knn(
                             raise ValueError("Conditional KNN TSHAP replay mismatch with saved model inference")
                     event_ids = np.asarray(blind.event_index[ids], dtype=np.int64)
                     values = _evaluate_events(engine, tuned, waves, predict, reference_predictions,
-                                              logger, event_ids)
+                                              logger, event_ids, stride_samples)
                 finally:
                     del fitted
                     release_training_memory()
