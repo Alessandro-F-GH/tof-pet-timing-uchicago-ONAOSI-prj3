@@ -205,7 +205,7 @@ class PairedWindowKNN:
         tuning = KNNSelection(self.ks.copy(),best_k,best_weight,mse,mae,mse_mv2,mae_mv)
         if logger:
             for item in tuning.summary(self):
-                logger.info("KNN SELECT | observed=%s | window=%d | start=%d | end=%d | k=%d | "
+                logger.debug("KNN SELECT | observed=%s | window=%d | start=%d | end=%d | k=%d | "
                             "weight=%s | MSE=%.8g | RMSE=%.6g | MAE=%.6g | "
                             "MSE_mV2=%.8g | RMSE_mV=%.6g | MAE_mV=%.6g",
                             item["observed"],item["window_index"],item["start_sample"],
