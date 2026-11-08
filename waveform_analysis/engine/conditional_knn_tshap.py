@@ -318,7 +318,13 @@ def explain_conditional_knn(
                         summary_path = destination / "summary.json"
                         if summary_path.is_file():
                             cached = json.loads(summary_path.read_text(encoding="utf-8"))
-                            if cached.get("identity_sha256") == fingerprint:
+                            if (cached.get("identity_sha256") == fingerprint
+                                    and (destination / ("local_attributions.npz" if local else "attributions.npz")).is_file()
+                                    and (destination / "knn_diagnostics_per_window.csv").is_file()
+                                    and (destination / "knn_tuning_selected.csv").is_file()
+                                    and (not local or all((destination / name).is_file()
+                                                          for name in cached.get("plots", [])))
+                                    and (local or (destination / "global_importance.png").is_file())):
                                 logger.info("KNN TSHAP | cache hit | %s", destination)
                                 completed.append(destination)
                                 continue
