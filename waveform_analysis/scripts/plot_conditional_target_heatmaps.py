@@ -44,6 +44,25 @@ def baseline_indices(time_ps, start_ns=-2., end_ns=-1.):
     return indices
 
 
+def sample_centers_to_edges(centers):
+    """Construct plotting-cell edges from monotonic physical time coordinates.
+
+    Midpoints preserve real time gaps when --retained-only selects a
+    non-uniform subset. A single sample uses a symmetric nominal half-width
+    solely for rendering.
+    """
+    centers = np.asarray(centers, dtype=np.float64)
+    if (centers.ndim != 1 or centers.size < 2 or
+            not np.all(np.isfinite(centers)) or
+            not np.all(np.diff(centers) > 0)):
+        raise ValueError("Need at least two strictly increasing finite time centers")
+    edges = np.empty(centers.size + 1, dtype=np.float64)
+    edges[1:-1] = (centers[:-1] + centers[1:]) / 2.
+    edges[0] = centers[0] - (centers[1] - centers[0]) / 2.
+    edges[-1] = centers[-1] + (centers[-1] - centers[-2]) / 2.
+    return edges
+
+
 class WaveformRepresentation:
     """Lazy transformed waveform view; no full-data copy or ML preprocessing.
 
@@ -289,7 +308,8 @@ def run(args):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LogNorm, TwoSlopeNorm
+    from matplotlib.colors import TwoSlopeNorm
+    from matplotlib.ticker import MaxNLocator
 
     root = args.output_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -401,40 +421,31 @@ def run(args):
     radius = max(radius, 1.)
     target_norm = TwoSlopeNorm(vmin=baseline - radius, vcenter=baseline,
                                vmax=baseline + radius)
+    # Time coordinates are LED-relative from the prepared waveform grid.
+    # Use actual cell edges so retained-only positions remain geometrically
+    # correct even when their spacing is not uniform.
+    time_ns = time_ps[positions] / 1000.0
+    time_edges_ns = sample_centers_to_edges(time_ns)
     result_files = []
     for representation, result in results.items():
         representation_root = root / representation
         representation_root.mkdir(parents=True, exist_ok=True)
         for kind, feature_name in enumerate(result["feature_names"]):
             for channel, channel_name in enumerate(CHANNEL_NAMES):
-                fig, (ax_mean, ax_count) = plt.subplots(
-                    2, 1, figsize=(13, 8), sharex=True, sharey=True,
-                    constrained_layout=True)
-                extent = [float(positions[0]),
-                          float(positions[-1] + args.time_stride),
-                          float(result["edges"][0]), float(result["edges"][-1])]
-                im = ax_mean.imshow(
+                fig, ax = plt.subplots(
+                    figsize=(13, 5.0), constrained_layout=True)
+                # Single-panel plot. Empirical-support counts are still saved
+                # in the numerical NPZ; min_count still masks sparse cells.
+                im = ax.pcolormesh(
+                    time_edges_ns, result["edges"],
                     np.ma.masked_invalid(result["mean_target"][kind, channel]),
-                    origin="lower", aspect="auto", interpolation="nearest",
-                    extent=extent, cmap="coolwarm", norm=target_norm)
-                fig.colorbar(im, ax=ax_mean, label=(
+                    shading="flat", cmap="coolwarm", norm=target_norm)
+                fig.colorbar(im, ax=ax, label=(
                     "Mean prediction difference (reference - comparison, ps)"
                     if comparison_provenance else "Mean saved teacher prediction (ps)"))
-                count_array = result["counts"][kind, channel]
-                supported = np.ma.masked_where(count_array == 0, count_array)
-                positive = count_array[count_array > 0]
-                color_norm = LogNorm(
-                    vmin=1, vmax=max(int(positive.max()) if positive.size else 1, 2))
-                im_support = ax_count.imshow(
-                    supported, origin="lower", aspect="auto",
-                    interpolation="nearest", extent=extent,
-                    cmap="viridis", norm=color_norm)
-                fig.colorbar(im_support, ax=ax_count,
-                             label="Events per cell (log scale)")
-                ax_mean.set_title(
+                ax.set_title(
                     f"{representation} | {feature_name} | {channel_name} | "
                     f"mean prediction (min count {args.min_count})")
-                ax_count.set_title("Empirical support (counts)")
                 if kind == 1:
                     ylabel = ("Difference of standardized first differences"
                               if channel == 2 else "Standardized first difference (z)")
@@ -442,12 +453,16 @@ def run(args):
                     ylabel = ("Difference of detector z-scores (z2 - z1)"
                               if channel == 2 else
                               f"{representation.replace('_', ' ')} waveform (z)")
-                ax_mean.set_ylabel(ylabel)
-                ax_count.set_ylabel(ylabel)
-                ax_count.set_xlabel("Waveform sample position")
+                ax.set_ylabel(ylabel)
+                ax.set_xlabel("Time relative to LED (ns)")
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=7))
+                ax.grid(True, which="major", color="black",
+                        alpha=0.25, linewidth=0.65)
+                ax.set_axisbelow(False)
                 if kind == 1 and args.derivative_end_sample is not None:
-                    ax_count.set_xlim(0, min(args.derivative_end_sample,
-                                             waves.shape[-1] - 1))
+                    endpoint = min(args.derivative_end_sample, waves.shape[-1] - 1)
+                    ax.set_xlim(time_edges_ns[0], time_ps[endpoint] / 1000.0)
                 filename = f"{feature_name}_{channel_name}_target_heatmap.png"
                 figure = representation_root / filename
                 fig.savefig(figure, dpi=180)
@@ -459,6 +474,7 @@ def run(args):
         np.savez_compressed(
             representation_root / "conditional_target_heatmaps.npz",
             positions=positions, time_ps=time_ps[positions],
+            time_ns=time_ns, time_edges_ns=time_edges_ns,
             z_edges=result["edges"], target_mean_ps=result["mean_target"],
             support_counts=result["counts"], target_sums_ps=result["sums"],
             training_prediction_mean_ps=baseline,
@@ -488,6 +504,9 @@ def run(args):
                               "clipped to [0,1]; baseline subtraction precedes the "
                               "new timewise z-score. Peak-normalized view is dimensionless."),
             "min_count": args.min_count,
+            "plot_x_axis": "Time relative to LED (ns), prepared grid",
+            "plot_layout": "single-panel heatmap with major gridlines",
+            "support_counts": "retained in NPZ, not plotted",
         }, indent=2), encoding="utf-8")
 
     (root / "summary.json").write_text(json.dumps({
@@ -511,6 +530,9 @@ def run(args):
         "z_range": [-args.z_limit, args.z_limit],
         "z_bins": args.z_bins, "time_stride": args.time_stride,
         "min_count": args.min_count, "figures": result_files,
+        "plot_x_axis": "Time relative to LED (ns), prepared grid",
+        "plot_layout": "single-panel heatmaps, major gridlines",
+        "support_counts": "saved in each NPZ, not plotted",
         "target_mean_ps": baseline, "shared_symmetric_color_radius_ps": radius,
         "note": "Descriptive 1D conditional mean per time coordinate, not model attribution.",
     }, indent=2), encoding="utf-8")
