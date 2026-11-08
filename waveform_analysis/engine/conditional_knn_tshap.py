@@ -247,10 +247,10 @@ def explain_conditional_knn(
             scale = getattr(development, f"{family}_transform")
             if scale is None:
                 raise ValueError("Missing frozen physical waveform transform")
-            frozen_scale = np.broadcast_to(
-                np.asarray(scale.maximum-scale.minimum, dtype=np.float64),
-                (2, len(time_ps))
-            )
+            scale_values = np.asarray(scale.maximum-scale.minimum, dtype=np.float64)
+            if scale_values.shape == (2,):
+                scale_values = scale_values[:, None]
+            frozen_scale = np.broadcast_to(scale_values, (2, len(time_ps)))
             with diagnostic_random_state():
                 fitted = load_fitted_model(spec, model_path, run["best"]["parameters"], config)
                 try:
@@ -491,6 +491,14 @@ def explain_conditional_knn(
                             float(np.sqrt(np.mean(values["recon_rmse_mv"][:,side,i]**2))),
                             float(np.mean(values["recon_mae_mv"][:,side,i])),
                         ))
+                for row in per_window:
+                    logger.info(
+                        "KNN DIAGNOSTIC | window=%d | start=%d | observed=%s | k=%d | weighting=%s | "
+                        "gap_mean=%.6f ps | gap_std=%.6f ps | gap_RMSE=%.6f ps | "
+                        "gap_MAE=%.6f ps | reconstruction_MSE=%.8g | reconstruction_MAE=%.6g | "
+                        "reconstruction_RMSE_mV=%.6g | reconstruction_MAE_mV=%.6g",
+                        *row
+                    )
                 _save_csv(
                     temporary/"knn_diagnostics_per_window.csv",
                     ("window_index","start_sample","observed_region","k","weighting",
