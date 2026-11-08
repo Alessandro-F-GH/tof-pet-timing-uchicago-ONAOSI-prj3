@@ -167,6 +167,9 @@ class EventSubsetView:
         self.waves = waves
         self.reference_rows = np.asarray(reference_rows, dtype=np.int64)
         self.shape = (len(self.reference_rows),) + waves.shape[1:]
+        # The grouped physical-waveform path validates waves.ndim, as it
+        # does for a normal NumPy array. Keep the lazy view array-compatible.
+        self.ndim = len(self.shape)
 
     def __getitem__(self, indices):
         return self.waves[self.reference_rows[indices]]
