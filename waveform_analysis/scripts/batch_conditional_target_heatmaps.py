@@ -90,7 +90,7 @@ def _configuration(args):
 
 def _job_identity(job, args):
     return {
-        "format_version": 1,
+        "format_version": 2,
         "mode": job["mode"], "kind": job["kind"],
         "reference": job["reference"], "comparison": job["comparison"],
         "model_dir": str(job["model_dir"]),
