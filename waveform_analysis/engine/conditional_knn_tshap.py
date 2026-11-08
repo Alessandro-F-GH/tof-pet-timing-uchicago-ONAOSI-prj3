@@ -299,12 +299,6 @@ def explain_conditional_knn(
                     tuned, tuned_artifact = _load_tuning(
                         store, recipe, engine, validation_waves, logger
                     )
-                    reference_predictions = predict_indices(
-                        spec, fitted, development, config["mode"], reference_idx,
-                        chunk_size=predict_batch_size
-                    )
-                    if not np.isfinite(reference_predictions).all():
-                        raise ValueError("Non-finite reference model predictions")
                     if local:
                         saved, targets = base._load_materialized_local_predictions(
                             run_store, blind, manifest, config["mode"]
@@ -331,6 +325,12 @@ def explain_conditional_knn(
                         if not np.allclose(replay, original, atol=1e-4, rtol=1e-6):
                             raise ValueError("Conditional KNN TSHAP replay mismatch with saved model inference")
                     event_ids = np.asarray(blind.event_index[ids], dtype=np.int64)
+                    reference_predictions = predict_indices(
+                        spec, fitted, development, config["mode"], reference_idx,
+                        chunk_size=predict_batch_size
+                    )
+                    if not np.isfinite(reference_predictions).all():
+                        raise ValueError("Non-finite reference model predictions")
                     values = _evaluate_events(engine, tuned, waves, predict, reference_predictions,
                                               logger, event_ids, stride_samples)
                 finally:
