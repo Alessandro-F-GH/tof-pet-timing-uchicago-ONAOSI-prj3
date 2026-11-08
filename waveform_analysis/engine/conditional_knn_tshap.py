@@ -126,7 +126,7 @@ def _load_tuning(store, recipe, engine, validation, logger):
     if logger:
         logger.info("KNN TUNING ARTIFACT | id=%s | path=%s", artifact.product_id, artifact.path)
         for item in tuned.summary(engine):
-            logger.info(
+            logger.debug(
                 "KNN TUNED | observed=%s | window=%d | k=%d | weight=%s | "
                 "MSE=%.8g RMSE=%.6g MAE=%.6g | RMSE_mV=%.6g MAE_mV=%.6g",
                 item["observed"], item["window_index"], item["k"], item["weighting"],
@@ -153,11 +153,11 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
                 n, nwin, engine.n_masks, len(engine.reference))
     for event, waveform in enumerate(waveforms):
         event_start = perf_counter()
-        logger.info("KNN EVENT START | event=%d/%d | id=%s | coalitions=%d",
+        logger.debug("KNN EVENT START | event=%d/%d | id=%s | coalitions=%d",
                     event+1, n, event_ids[event], engine.n_masks)
         neighbor_ids, distances = engine.search(waveform)
         search_seconds = perf_counter()-event_start
-        logger.info("KNN EVENT SEARCH COMPLETE | event=%d/%d | elapsed_s=%.2f",
+        logger.debug("KNN EVENT SEARCH COMPLETE | event=%d/%d | elapsed_s=%.2f",
                     event+1, n, search_seconds)
         synthetic = np.empty((engine.n_masks, *waveform.shape), dtype=np.float32)
         knn_predictions = np.empty(engine.n_masks, dtype=np.float64)
@@ -175,12 +175,12 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
             recon_rmse_mv[event, side, window] = np.sqrt(np.mean(physical**2))
             recon_mae_mv[event, side, window] = np.mean(np.abs(physical))
         reconstruction_seconds = perf_counter()-event_start-search_seconds
-        logger.info("KNN COALITION INFERENCE START | event=%d/%d | waveforms=%d | elapsed_search_s=%.2f | elapsed_reconstruction_s=%.2f",
+        logger.debug("KNN COALITION INFERENCE START | event=%d/%d | waveforms=%d | elapsed_search_s=%.2f | elapsed_reconstruction_s=%.2f",
                     event+1, n, len(synthetic), search_seconds, reconstruction_seconds)
         prediction_start = perf_counter()
         estimates = predict(synthetic)
         full = float(predict(waveform[None])[0])
-        logger.info("KNN COALITION INFERENCE COMPLETE | event=%d/%d | waveforms=%d | elapsed_s=%.2f",
+        logger.debug("KNN COALITION INFERENCE COMPLETE | event=%d/%d | waveforms=%d | elapsed_s=%.2f",
                     event+1, n, len(synthetic)+1, perf_counter()-prediction_start)
         original_prediction[event] = full
         imputed_prediction[event, 0] = estimates[:nwin]
@@ -203,7 +203,7 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
                 float(np.sqrt(np.mean((estimates[:nwin]-knn_predictions[:nwin])**2))),
                 float(np.sqrt(np.mean((estimates[nwin:]-knn_predictions[nwin:])**2)))
             )
-        logger.info("KNN EVENT COMPLETE | event=%d/%d | elapsed_s=%.2f | total_elapsed_s=%.2f",
+        logger.debug("KNN EVENT COMPLETE | event=%d/%d | elapsed_s=%.2f | total_elapsed_s=%.2f",
                     event+1, n, perf_counter()-event_start, perf_counter()-evaluation_start)
     return {
         "maps": maps, "scores": scores, "f_original": original_prediction,
@@ -390,8 +390,9 @@ def explain_conditional_knn(
                             chunk_size=predict_batch_size
                         )
                         elapsed = perf_counter()-reference_start
-                        logger.info("KNN REFERENCE PREDICTIONS PROGRESS | events=%d/%d | elapsed_s=%.2f | average_s_per_event=%.4f",
-                                    stop, len(reference_idx), elapsed, elapsed/stop)
+                        if stop == len(reference_idx) or first == 0 or (first // reference_progress_batch) % max(1, (len(reference_idx) // reference_progress_batch) // 10) == 0:
+                            logger.info("KNN REFERENCE PREDICTIONS PROGRESS | events=%d/%d | elapsed_s=%.2f",
+                                        stop, len(reference_idx), elapsed)
                     logger.info("KNN REFERENCE PREDICTIONS COMPLETE | events=%d | elapsed_s=%.2f | mean_ps=%.6f | std_ps=%.6f",
                                 len(reference_idx), perf_counter()-reference_start,
                                 float(np.mean(reference_predictions)), float(np.std(reference_predictions)))
@@ -435,11 +436,14 @@ def explain_conditional_knn(
                         },
                     },
                 }
-                logger.info("KNN TSHAP METRICS | run=%s | prediction_gap_W=%s | prediction_gap_complement=%s",
-                            directory, metadata["prediction_gap_metrics"]["window"],
-                            metadata["prediction_gap_metrics"]["complement"])
-                logger.info("KNN TSHAP IMPUTATION | run=%s | metrics=%s",
-                            directory, metadata["blind_hidden_reconstruction"])
+                logger.info(
+                    "KNN SUMMARY | gap_RMSE_W=%.2f ps | gap_RMSE_complement=%.2f ps | "
+                    "reconstruction_RMSE_W=%.2f mV | reconstruction_RMSE_complement=%.2f mV",
+                    metadata["prediction_gap_metrics"]["window"]["rmse_ps"],
+                    metadata["prediction_gap_metrics"]["complement"]["rmse_ps"],
+                    metadata["blind_hidden_reconstruction"]["window_observed"]["rmse_mv"],
+                    metadata["blind_hidden_reconstruction"]["complement_observed"]["rmse_mv"],
+                )
                 if local:
                     metadata["groups"] = groups
                 arrays = {
@@ -542,7 +546,7 @@ def explain_conditional_knn(
                             float(np.mean(values["recon_mae_mv"][:,side,i])),
                         ))
                 for row in per_window:
-                    logger.info(
+                    logger.debug(
                         "KNN DIAGNOSTIC | window=%d | start=%d | observed=%s | k=%d | weighting=%s | "
                         "gap_mean=%.6f ps | gap_std=%.6f ps | gap_RMSE=%.6f ps | "
                         "gap_MAE=%.6f ps | reconstruction_MSE=%.8g | reconstruction_MAE=%.6g | "
