@@ -291,8 +291,9 @@ def test_cropped_timing_spans_on_full_physical_grid():
     # 0.1 ns steps; consecutive masked samples become contiguous intervals.
     centers_ps = np.arange(6) * 100.
     kept = np.array([True, False, False, True, False, True])
-    assert mask_excluded_spans(kept, centers_ps) == [
-        (0.05, 0.25), (0.35, 0.45)]
+    np.testing.assert_allclose(
+        mask_excluded_spans(kept, centers_ps),
+        [(0.05, 0.25), (0.35, 0.45)])
     assert mask_excluded_spans(np.ones(6, dtype=bool), centers_ps) == []
 
 
