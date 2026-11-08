@@ -295,6 +295,39 @@ def grouped_physical_waveforms(waves, predictions, training, positions, minimum,
     return np.stack(group_means), group_info
 
 
+def grouped_amplitude_normalized_waveforms(waves, predictions, training, positions,
+                                           baseline_positions, group_info, *,
+                                           chunk_size=128, peak_floor=1e-8):
+    """Group mean (x - event baseline) / event peak, separately per detector.
+
+    Use the EXACT view supplying the amplitude-normalized heatmap, before
+    train-only timewise z-scoring. Output is dimensionless, not physical mV.
+    Each group has D1, D2 and their difference D2-D1.
+    """
+    training = np.asarray(training, dtype=np.int64)
+    predictions = np.asarray(predictions, dtype=np.float64)
+    positions = np.asarray(positions, dtype=np.int64)
+    view = WaveformRepresentation(waves, "amplitude_normalized",
+                                  baseline_positions, peak_floor=peak_floor)
+    group_means = []
+    for info in group_info:
+        lo, hi = info["prediction_lower_ps"], info["prediction_upper_ps"]
+        selected = training[(predictions[training] >= lo) &
+                            (predictions[training] < hi)]
+        if selected.size != info["n_events"]:
+            raise ValueError("Inconsistent saved-prediction group selection")
+        total = np.zeros((2, len(positions)), dtype=np.float64)
+        for start in range(0, len(selected), chunk_size):
+            batch = np.asarray(view[selected[start:start + chunk_size]],
+                               dtype=np.float64)[:, :, positions]
+            if not np.all(np.isfinite(batch)):
+                raise ValueError("Nonfinite amplitude-normalized waveform")
+            total += batch.sum(axis=0)
+        avg = total / selected.size
+        group_means.append(np.stack([avg[0], avg[1], avg[1] - avg[0]]))
+    return np.stack(group_means)
+
+
 def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
                         derivative_mean, derivative_scale, *,
                         bins=80, z_limit=3., chunk_size=128, signal_only=False):
@@ -510,16 +543,35 @@ def run(args):
              for g in prediction_groups]),
         physical_transform_minimum_mv=physical_min,
         physical_transform_maximum_mv=physical_max)
+    grouped_normalized = None
+    if "amplitude_normalized" in choices:
+        grouped_normalized = grouped_amplitude_normalized_waveforms(
+            waves, predictions, training, positions,
+            baseline_positions, prediction_groups,
+            chunk_size=args.chunk_size, peak_floor=args.peak_floor)
+        np.savez_compressed(
+            root / "grouped_amplitude_normalized_waveforms.npz",
+            time_ns=time_ns, positions=positions,
+            group_mean_waveform=grouped_normalized,
+            channel_names=np.array(CHANNEL_NAMES),
+            percentile_bands=np.array(PERCENTILE_BANDS, dtype=np.float64),
+            group_mean_prediction_ps=np.array(
+                [g["mean_prediction_ps"] for g in prediction_groups]),
+            group_counts=np.array([g["n_events"] for g in prediction_groups]),
+            definition=np.array(
+                "(prepared waveform - per-event detector baseline) / "
+                "per-event detector peak; no timewise z-scoring"))
     result_files = []
     for representation, result in results.items():
         representation_root = root / representation
         representation_root.mkdir(parents=True, exist_ok=True)
         for kind, feature_name in enumerate(result["feature_names"]):
             for channel, channel_name in enumerate(CHANNEL_NAMES):
-                # Vertically aligned panels: original physical waveform
-                # for the SAME detector (or D2-D1 in mV), and its heatmap.
-                # A dedicated colorbar column keeps both temporal axes
-                # physically aligned, rather than shrinking only the heatmap.
+                # Vertically aligned panels: the corresponding detector
+                # (or D2-D1) is shown above its heatmap. The amplitude-
+                # normalized view uses normalized signals (dimensionless);
+                # the other views retain the original physical mV curves.
+                # A dedicated colorbar column preserves the shared time axis.
                 fig = plt.figure(figsize=(13, 7.3), constrained_layout=True)
                 gs = fig.add_gridspec(
                     2, 2, width_ratios=[1, 0.035], height_ratios=[1, 1.7])
@@ -527,22 +579,31 @@ def run(args):
                 ax = fig.add_subplot(gs[1, 0], sharex=ax_signal)
                 cax = fig.add_subplot(gs[1, 1])
                 for group_idx, info in enumerate(prediction_groups):
-                    color = plt.get_cmap("coolwarm")(
-                        target_norm(info["mean_prediction_ps"]))
+                    color = ("#454545" if group_idx == 1 else
+                             plt.get_cmap("coolwarm")(
+                                 target_norm(info["mean_prediction_ps"])))
                     label = (
                         f'P{info["percentile_lower"]:g}–'
                         f'{info["percentile_upper"]:g} | '
                         f'{info["mean_prediction_ps"]:+.1f} ps | '
                         f'n={info["n_events"]}')
+                    signal_means = (grouped_normalized if
+                                    representation == "amplitude_normalized"
+                                    else grouped_mv)
                     ax_signal.plot(
-                        time_ns, grouped_mv[group_idx, channel],
+                        time_ns, signal_means[group_idx, channel],
                         linewidth=1.7, color=color, label=label)
+                signal_units = ("relative amplitude" if
+                                representation == "amplitude_normalized" else "mV")
                 ax_signal.set_ylabel(
-                    "Detector 2 - detector 1 (mV)"
-                    if channel == 2 else f"Detector {channel + 1} (mV)")
+                    (f"Detector 2 - detector 1 ({signal_units})"
+                     if channel == 2 else
+                     f"Detector {channel + 1} ({signal_units})"))
                 ax_signal.set_title(
                     f"{representation} | {feature_name} | {channel_name} | "
-                    "original physical waveforms by saved prediction")
+                    ("peak-normalized waveforms by saved prediction" if
+                     representation == "amplitude_normalized" else
+                     "original physical waveforms by saved prediction"))
                 ax_signal.grid(True, which="major", alpha=0.18, linewidth=0.6)
                 ax_signal.legend(loc="best", fontsize="small")
                 ax_signal.tick_params(labelbottom=False)
@@ -615,7 +676,18 @@ def run(args):
                               "new timewise z-score. Peak-normalized view is dimensionless."),
             "min_count": args.min_count,
             "plot_x_axis": "Time relative to LED (ns), prepared grid",
-            "plot_layout": "original physical mean waveform (mV) above heatmap; shared ns axis",
+            "plot_layout": "matching detector mean waveform above heatmap; shared ns axis",
+            "upper_panel_units": ("relative amplitude" if
+                                  representation == "amplitude_normalized" else "mV"),
+            "upper_panel_definition": (
+                "per-event baseline-subtracted and peak-normalized waveform; "
+                "group average before timewise z-scoring"
+                if representation == "amplitude_normalized" else
+                "original physical waveform, inverse prepared transform"),
+            "waveform_groups_file": (
+                "grouped_amplitude_normalized_waveforms.npz" if
+                representation == "amplitude_normalized" else
+                "grouped_physical_waveforms.npz"),
             "support_counts": "retained in NPZ, not plotted",
         }, indent=2), encoding="utf-8")
 
@@ -641,7 +713,10 @@ def run(args):
         "z_bins": args.z_bins, "time_stride": args.time_stride,
         "min_count": args.min_count, "figures": result_files,
         "plot_x_axis": "Time relative to LED (ns), prepared grid",
-        "plot_layout": "original physical mean waveforms above each heatmap, shared ns axis",
+        "plot_layout": "grouped mean waveforms above each heatmap, shared ns axis",
+        "overlay_definition": (
+            "amplitude_normalized: per-event baseline-subtracted/peak-normalized "
+            "dimensionless signals; original and baseline_subtracted: original mV"),
         "waveform_groups": prediction_groups,
         "waveform_group_means_file": "grouped_physical_waveforms.npz",
         "waveform_units": "mV (inverse of clipped prepared input transform)",
