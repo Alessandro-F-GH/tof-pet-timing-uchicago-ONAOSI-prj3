@@ -1,10 +1,10 @@
-"""Heatmaps of saved teacher prediction conditional on waveform amplitude or first difference.
+"""Conditional heatmaps of SAVED model predictions versus paired waveform representations.
 
-Six views: per-detector standardized waveform, paired z-score difference,
-per-detector standardized first difference, and paired derivative z difference.
-Each heatmap is accompanied by empirical support counts. All normalization
-and plotted events are train-only under the full-signal seed-42 split.
-Teacher inference and transformations are never performed.
+Compare original, per-event baseline-subtracted, and per-detector peak-normalized
+waveforms on the same development-training events. Each representation has its
+OWN train-only per-sample mean and scale; paired difference is z2-z1 (not
+standardized again). Optional legacy first-difference views are supported for
+the original input. No model inference, transformations, or refitting.
 """
 from __future__ import annotations
 
@@ -19,6 +19,70 @@ from waveform_analysis.engine.sample_normalization import (
 from waveform_analysis.scripts.evaluate_conditional_knn import _load_inputs, _logger
 
 CHANNEL_NAMES = ("detector_1", "detector_2", "detector_2_minus_1")
+REPRESENTATIONS = ("original", "baseline_subtracted", "amplitude_normalized")
+
+
+def baseline_indices(time_ps, start_ns=-2., end_ns=-1.):
+    """Indices in the prepared LED-relative grid, covering [start,end] ns."""
+    time_ps = np.asarray(time_ps, dtype=np.float64)
+    start_ps, end_ps = 1000. * float(start_ns), 1000. * float(end_ns)
+    if (time_ps.ndim != 1 or time_ps.size < 2 or
+            not np.all(np.isfinite(time_ps)) or
+            not np.all(np.diff(time_ps) > 0) or
+            not np.isfinite(start_ps) or not np.isfinite(end_ps) or
+            start_ps >= end_ps):
+        raise ValueError("Invalid time grid or baseline interval")
+    if time_ps[0] > start_ps + 1e-6 or time_ps[-1] < end_ps - 1e-6:
+        raise ValueError(
+            f"Prepared LED-relative window [{time_ps[0]/1000:.3f},"
+            f"{time_ps[-1]/1000:.3f}] ns does not cover baseline interval "
+            f"[{start_ns:g}, {end_ns:g}] ns")
+    indices = np.flatnonzero((time_ps >= start_ps - 1e-6) &
+                            (time_ps <= end_ps + 1e-6))
+    if len(indices) < 2:
+        raise ValueError("Baseline interval contains fewer than two prepared samples")
+    return indices
+
+
+class WaveformRepresentation:
+    """Lazy transformed waveform view; no full-data copy or ML preprocessing.
+
+    Prepared ML samples are affinely mapped to [0,1] per detector (and clipped).
+    Baseline subtraction before z-scoring is equivalent in physical mV up to
+    that pre-existing clipping. Peak normalization is invariant to this affine
+    scaling because the event baseline is subtracted first.
+    """
+
+    def __init__(self, waves, representation, baseline_positions, *, peak_floor=1e-8):
+        if representation not in REPRESENTATIONS or representation == "original":
+            raise ValueError("WaveformRepresentation requires a transformed representation")
+        self.waves = waves
+        self.shape = waves.shape
+        self.representation = representation
+        self.baseline_positions = np.asarray(baseline_positions, dtype=np.int64)
+        self.peak_floor = float(peak_floor)
+        if (self.baseline_positions.size < 2 or not np.isfinite(self.peak_floor)
+                or self.peak_floor <= 0):
+            raise ValueError("Invalid baseline indices or peak floor")
+
+    def __getitem__(self, indices):
+        x = np.asarray(self.waves[indices], dtype=np.float64)
+        one_event = x.ndim == 2
+        if one_event:
+            x = x[None]
+        baseline = np.mean(x[:, :, self.baseline_positions], axis=2, keepdims=True)
+        values = x - baseline
+        if self.representation == "amplitude_normalized":
+            peak = np.max(values, axis=2, keepdims=True)
+            invalid = (~np.isfinite(peak)) | (peak <= self.peak_floor)
+            if np.any(invalid):
+                raise ValueError(
+                    f"Cannot peak-normalize {int(np.count_nonzero(invalid))} "
+                    "event-detector waveforms with nonpositive/near-zero peak. "
+                    "Event selection is not changed silently.")
+            values = values / peak
+        values = values.astype(np.float32)
+        return values[0] if one_event else values
 
 
 
@@ -161,11 +225,12 @@ def log_prediction_comparison(log, label, result):
 
 def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
                         derivative_mean, derivative_scale, *,
-                        bins=80, z_limit=3., chunk_size=128):
-    """Return weighted target sums and counts, shape [2 signal types,3 channels,bins,time].
+                        bins=80, z_limit=3., chunk_size=128, signal_only=False):
+    """Return target sums/counts [kind, channel, z-bin, time].
 
-    Values outside [-z_limit,z_limit] are omitted (never clipped to edges).
-    Difference is z(detector2)-z(detector1), not z-scored again.
+    Signal-only mode uses just one kind; the existing two-kind derivative
+    behavior remains available for legacy plots and tests.
+    Values outside the z range are omitted, not clipped. Difference is z2-z1.
     """
     if bins < 2 or z_limit <= 0 or chunk_size < 1:
         raise ValueError("Invalid binning")
@@ -174,26 +239,31 @@ def accumulate_heatmaps(waves, labels, rows, positions, mean, scale,
         raise ValueError("At least one time position required")
     ntime = len(positions)
     flat_size = bins * ntime
-    sums = np.zeros((2, 3, bins, ntime), dtype=np.float64)
-    counts = np.zeros((2, 3, bins, ntime), dtype=np.int64)
+    kinds = 1 if signal_only else 2
+    sums = np.zeros((kinds, 3, bins, ntime), dtype=np.float64)
+    counts = np.zeros((kinds, 3, bins, ntime), dtype=np.int64)
     t_offsets = np.arange(ntime, dtype=np.int64)[None, :]
     edges = np.linspace(-z_limit, z_limit, bins + 1)
     m = np.asarray(mean[:, positions], dtype=np.float64)
     s = np.asarray(scale[:, positions], dtype=np.float64)
-    dm = np.asarray(derivative_mean[:, positions], dtype=np.float64)
-    ds = np.asarray(derivative_scale[:, positions], dtype=np.float64)
+    if not signal_only:
+        dm = np.asarray(derivative_mean[:, positions], dtype=np.float64)
+        ds = np.asarray(derivative_scale[:, positions], dtype=np.float64)
     for left in range(0, len(rows), chunk_size):
         ids = rows[left:left + chunk_size]
         x = np.asarray(waves[ids], dtype=np.float64)
         signal = (x[:, :, positions] - m[None]) / s[None]
-        # Compute first differences on raw amplitudes before z-normalization.
-        difference = np.zeros((len(ids), 2, ntime), dtype=np.float64)
-        valid_derivative = positions > 0
-        if valid_derivative.any():
-            p = positions[valid_derivative]
-            difference[:, :, valid_derivative] = x[:, :, p] - x[:, :, p - 1]
-        derivative = (difference - dm[None]) / ds[None]
-        for kind, source in enumerate((signal, derivative)):
+        sources = (signal,)
+        if not signal_only:
+            # First differences in raw prepared input units before z-scoring.
+            difference = np.zeros((len(ids), 2, ntime), dtype=np.float64)
+            valid_derivative = positions > 0
+            if valid_derivative.any():
+                p = positions[valid_derivative]
+                difference[:, :, valid_derivative] = x[:, :, p] - x[:, :, p - 1]
+            derivative = (difference - dm[None]) / ds[None]
+            sources = (signal, derivative)
+        for kind, source in enumerate(sources):
             for channel in range(3):
                 values = (source[:, channel, :] if channel < 2 else
                           source[:, 1, :] - source[:, 0, :])
@@ -263,80 +333,163 @@ def run(args):
             json.dumps(comparison_metrics, indent=2), encoding="utf-8")
     log.info("TRAIN ONLY | n=%d | tuning=%d holdout=%d seed=%d",
              len(training), args.tuning_queries, args.holdout_queries, args.seed)
-    means, scales, signal_meta = fit_time_sample_stats(
-        waves, training, chunk_size=args.chunk_size,
-        scale_floor_ratio=args.normalization_scale_floor_ratio)
-    dmeans, dscales, derivative_meta = fit_first_difference_stats(
-        waves, training, chunk_size=args.chunk_size,
-        scale_floor_ratio=args.normalization_scale_floor_ratio)
+    # Prepared ML samples are already clipped and affinely scaled by detector,
+    # but they are NOT baseline-subtracted event by event.
+    family = "energy" if provenance["mode"] == "energy_to_energy" else "timing"
+    time_file = Path(provenance["dataset"]) / f"{family}_time_ps.npy"
+    time_ps = np.asarray(np.load(time_file, mmap_mode="r"), dtype=np.float64)
+    if time_ps.shape != (waves.shape[-1],):
+        raise ValueError("Prepared time grid does not match waveform samples")
+    choices = tuple(dict.fromkeys(args.representations))
+    baseline_positions = None
+    if any(name != "original" for name in choices):
+        baseline_positions = baseline_indices(
+            time_ps, args.baseline_start_ns, args.baseline_end_ns)
+        log.info("BASELINE | prepared LED-relative [%g,%g] ns | %d samples "
+                 "(indices %d..%d), before per-time z-score",
+                 args.baseline_start_ns, args.baseline_end_ns,
+                 len(baseline_positions), baseline_positions[0],
+                 baseline_positions[-1])
+
     positions = np.arange(0, waves.shape[-1], args.time_stride, dtype=np.int64)
     if args.retained_only:
         positions = positions[retained[positions]]
-    edges, sums, counts = accumulate_heatmaps(
-        waves, predictions, training, positions, means, scales, dmeans, dscales,
-        bins=args.z_bins, z_limit=args.z_limit, chunk_size=args.chunk_size)
-    mean_target = np.full_like(sums, np.nan)
-    populated = counts >= args.min_count
-    np.divide(sums, counts, out=mean_target, where=populated)
-    # Center colors on the train-only mean prediction: color represents
-    # an absolute mean in ps, but palette symmetry is around that mean.
+    if not len(positions):
+        raise ValueError("No plotted sample positions remain")
+
+    # Identical events, coordinates, binning, and original saved labels for
+    # all representations; fit independent train-only means/stds per view.
+    results = {}
+    for representation in choices:
+        view = (waves if representation == "original" else WaveformRepresentation(
+            waves, representation, baseline_positions, peak_floor=args.peak_floor))
+        log.info("REPRESENTATION | %s | fitting train-only per-sample statistics",
+                 representation)
+        means, scales, signal_meta = fit_time_sample_stats(
+            view, training, chunk_size=args.chunk_size,
+            scale_floor_ratio=args.normalization_scale_floor_ratio)
+        derivative = (representation == "original" and args.include_original_derivative)
+        if derivative:
+            dmeans, dscales, derivative_meta = fit_first_difference_stats(
+                view, training, chunk_size=args.chunk_size,
+                scale_floor_ratio=args.normalization_scale_floor_ratio)
+        else:
+            dmeans, dscales, derivative_meta = None, None, None
+        edges, sums, counts = accumulate_heatmaps(
+            view, predictions, training, positions, means, scales, dmeans, dscales,
+            bins=args.z_bins, z_limit=args.z_limit,
+            chunk_size=args.chunk_size, signal_only=not derivative)
+        mean_target = np.full_like(sums, np.nan)
+        np.divide(sums, counts, out=mean_target, where=counts >= args.min_count)
+        results[representation] = {
+            "edges": edges, "sums": sums, "counts": counts,
+            "mean_target": mean_target, "means": means, "scales": scales,
+            "normalization": signal_meta, "derivative_normalization": derivative_meta,
+            "feature_names": (["waveform", "first_difference"] if derivative
+                              else ["waveform"]),
+        }
+        log.info("REPRESENTATION | %s | heatmaps accumulated", representation)
+
+    # Share one ps color scale across all views; z axes remain representation-
+    # specific because every transformed population gets its OWN z-score.
     baseline = float(np.mean(predictions[training]))
-    deviation = np.abs(mean_target[np.isfinite(mean_target)] - baseline)
-    radius = float(np.percentile(deviation, 98)) if len(deviation) else 1.
+    deviations = [np.abs(result["mean_target"][np.isfinite(result["mean_target"])]
+                         - baseline) for result in results.values()]
+    all_deviations = np.concatenate([a for a in deviations if a.size]) if any(
+        a.size for a in deviations) else np.array([], dtype=float)
+    radius = float(np.percentile(all_deviations, 98)) if all_deviations.size else 1.
     radius = max(radius, 1.)
     target_norm = TwoSlopeNorm(vmin=baseline - radius, vcenter=baseline,
                                vmax=baseline + radius)
     result_files = []
-    for kind, title in enumerate(("waveform", "first_difference")):
-        for channel, channel_name in enumerate(CHANNEL_NAMES):
-            fig, (ax_mean, ax_count) = plt.subplots(
-                2, 1, figsize=(13, 8), sharex=True, sharey=True,
-                constrained_layout=True)
-            extent = [float(positions[0]), float(positions[-1] + args.time_stride),
-                      float(edges[0]), float(edges[-1])]
-            im = ax_mean.imshow(
-                np.ma.masked_invalid(mean_target[kind, channel]),
-                origin="lower", aspect="auto", interpolation="nearest",
-                extent=extent, cmap="coolwarm", norm=target_norm)
-            fig.colorbar(im, ax=ax_mean, label=(
-                "Mean prediction difference (reference - comparison, ps)"
-                if comparison_provenance else "Mean saved teacher prediction (ps)"))
-            count_array = counts[kind, channel]
-            supported = np.ma.masked_where(count_array == 0, count_array)
-            positive = count_array[count_array > 0]
-            color_norm = LogNorm(vmin=1, vmax=max(int(positive.max()) if positive.size else 1, 2))
-            im_support = ax_count.imshow(
-                supported, origin="lower", aspect="auto", interpolation="nearest",
-                extent=extent, cmap="viridis", norm=color_norm)
-            fig.colorbar(im_support, ax=ax_count, label="Events per cell (log scale)")
-            ax_mean.set_title(f"{title} | {channel_name} | mean prediction (min count {args.min_count})")
-            ax_count.set_title("Empirical support (counts)")
-            ylabel = ("Standardized derivative difference" if kind and channel == 2
-                      else "Standardized waveform difference" if not kind and channel == 2
-                      else "Standardized first difference (z)" if kind
-                      else "Standardized waveform (z)")
-            ax_mean.set_ylabel(ylabel)
-            ax_count.set_ylabel(ylabel)
-            ax_count.set_xlabel("Waveform sample position")
-            if kind == 1 and args.derivative_end_sample is not None:
-                # Zoom just the derivative plots: keep full-resolution analysis
-                # and all data in the NPZ unchanged.
-                ax_count.set_xlim(0, min(args.derivative_end_sample,
-                                         waves.shape[-1] - 1))
-            filename = f"{title}_{channel_name}_target_heatmap.png"
-            fig.savefig(root / filename, dpi=180)
-            plt.close(fig)
-            result_files.append(filename)
-            log.info("FIGURE | %s", filename)
-    np.savez_compressed(
-        root / "conditional_target_heatmaps.npz",
-        positions=positions, z_edges=edges, target_mean_ps=mean_target,
-        support_counts=counts, target_sums_ps=sums,
-        training_prediction_mean_ps=baseline,
-        prediction_type=np.array("reference_minus_comparison" if comparison_provenance
-                                 else "saved_teacher"),
-        channel_names=np.array(CHANNEL_NAMES),
-        feature_names=np.array(["waveform", "first_difference"]))
+    for representation, result in results.items():
+        representation_root = root / representation
+        representation_root.mkdir(parents=True, exist_ok=True)
+        for kind, feature_name in enumerate(result["feature_names"]):
+            for channel, channel_name in enumerate(CHANNEL_NAMES):
+                fig, (ax_mean, ax_count) = plt.subplots(
+                    2, 1, figsize=(13, 8), sharex=True, sharey=True,
+                    constrained_layout=True)
+                extent = [float(positions[0]),
+                          float(positions[-1] + args.time_stride),
+                          float(result["edges"][0]), float(result["edges"][-1])]
+                im = ax_mean.imshow(
+                    np.ma.masked_invalid(result["mean_target"][kind, channel]),
+                    origin="lower", aspect="auto", interpolation="nearest",
+                    extent=extent, cmap="coolwarm", norm=target_norm)
+                fig.colorbar(im, ax=ax_mean, label=(
+                    "Mean prediction difference (reference - comparison, ps)"
+                    if comparison_provenance else "Mean saved teacher prediction (ps)"))
+                count_array = result["counts"][kind, channel]
+                supported = np.ma.masked_where(count_array == 0, count_array)
+                positive = count_array[count_array > 0]
+                color_norm = LogNorm(
+                    vmin=1, vmax=max(int(positive.max()) if positive.size else 1, 2))
+                im_support = ax_count.imshow(
+                    supported, origin="lower", aspect="auto",
+                    interpolation="nearest", extent=extent,
+                    cmap="viridis", norm=color_norm)
+                fig.colorbar(im_support, ax=ax_count,
+                             label="Events per cell (log scale)")
+                ax_mean.set_title(
+                    f"{representation} | {feature_name} | {channel_name} | "
+                    f"mean prediction (min count {args.min_count})")
+                ax_count.set_title("Empirical support (counts)")
+                if kind == 1:
+                    ylabel = ("Difference of standardized first differences"
+                              if channel == 2 else "Standardized first difference (z)")
+                else:
+                    ylabel = ("Difference of detector z-scores (z2 - z1)"
+                              if channel == 2 else
+                              f"{representation.replace('_', ' ')} waveform (z)")
+                ax_mean.set_ylabel(ylabel)
+                ax_count.set_ylabel(ylabel)
+                ax_count.set_xlabel("Waveform sample position")
+                if kind == 1 and args.derivative_end_sample is not None:
+                    ax_count.set_xlim(0, min(args.derivative_end_sample,
+                                             waves.shape[-1] - 1))
+                filename = f"{feature_name}_{channel_name}_target_heatmap.png"
+                figure = representation_root / filename
+                fig.savefig(figure, dpi=180)
+                plt.close(fig)
+                result_files.append(str(figure.relative_to(root)))
+                log.info("FIGURE | %s", figure)
+
+        # Keep every representation independently reproducible and debuggable.
+        np.savez_compressed(
+            representation_root / "conditional_target_heatmaps.npz",
+            positions=positions, time_ps=time_ps[positions],
+            z_edges=result["edges"], target_mean_ps=result["mean_target"],
+            support_counts=result["counts"], target_sums_ps=result["sums"],
+            training_prediction_mean_ps=baseline,
+            normalization_mean=result["means"],
+            normalization_scale=result["scales"],
+            prediction_type=np.array("reference_minus_comparison" if comparison_provenance
+                                     else "saved_teacher"),
+            channel_names=np.array(CHANNEL_NAMES),
+            feature_names=np.array(result["feature_names"]),
+            representation=np.array(representation))
+        (representation_root / "summary.json").write_text(json.dumps({
+            "representation": representation,
+            "events": int(len(training)),
+            "normalization": result["normalization"],
+            "derivative_normalization": result["derivative_normalization"],
+            "baseline_window_ns": ([args.baseline_start_ns, args.baseline_end_ns]
+                                   if representation != "original" else None),
+            "peak_definition": ("max of per-event per-detector baseline-subtracted "
+                                "prepared waveform" if representation == "amplitude_normalized"
+                                else None),
+            "peak_floor_prepared_units": (args.peak_floor
+                                          if representation == "amplitude_normalized" else None),
+            "z_definition": "(transformed waveform - train timewise mean) / "
+                            "train timewise safe std, fitted separately for this view",
+            "differential_definition": "z(detector2)-z(detector1); not separately standardized",
+            "physical_note": ("Prepared ML inputs are already affinely scaled and "
+                              "clipped to [0,1]; baseline subtraction precedes the "
+                              "new timewise z-score. Peak-normalized view is dimensionless."),
+            "min_count": args.min_count,
+        }, indent=2), encoding="utf-8")
+
     (root / "summary.json").write_text(json.dumps({
         "provenance": provenance,
         "comparison_provenance": comparison_provenance,
@@ -346,17 +499,23 @@ def run(args):
         "events": int(len(training)), "seed": args.seed,
         "target": ("SAVED reference minus comparison prediction, not calibrated ground truth"
                    if comparison_provenance else "SAVED full teacher prediction, not calibrated ground truth"),
-        "signal_normalization": signal_meta,
-        "first_difference_normalization": derivative_meta,
+        "representations": list(choices),
+        "baseline_window_ns": [args.baseline_start_ns, args.baseline_end_ns],
+        "baseline_sample_count": (int(len(baseline_positions))
+                                  if baseline_positions is not None else None),
+        "baseline_sample_indices": ([int(baseline_positions[0]),
+                                     int(baseline_positions[-1])]
+                                    if baseline_positions is not None else None),
+        "normalization": "independent train-only time-sample z-scoring per representation",
         "differential_definition": "z(detector2)-z(detector1); not separately standardized",
         "z_range": [-args.z_limit, args.z_limit],
         "z_bins": args.z_bins, "time_stride": args.time_stride,
         "min_count": args.min_count, "figures": result_files,
-        "derivative_end_sample": args.derivative_end_sample,
-        "target_mean_ps": baseline, "symmetric_color_radius_ps": radius,
+        "target_mean_ps": baseline, "shared_symmetric_color_radius_ps": radius,
         "note": "Descriptive 1D conditional mean per time coordinate, not model attribution.",
     }, indent=2), encoding="utf-8")
-    log.info("COMPLETE | %d figures | %s", len(result_files), root)
+    log.info("COMPLETE | %d figures across %d representations | %s",
+             len(result_files), len(choices), root)
 
 
 def parser():
@@ -376,6 +535,15 @@ def parser():
     p.add_argument("--z-bins", type=int, default=80)
     p.add_argument("--z-limit", type=float, default=3.)
     p.add_argument("--min-count", type=int, default=25)
+    p.add_argument("--representations", nargs="+", choices=REPRESENTATIONS,
+                   default=list(REPRESENTATIONS),
+                   help="Views to compare; default: original, baseline-subtracted, peak-normalized")
+    p.add_argument("--baseline-start-ns", type=float, default=-2.)
+    p.add_argument("--baseline-end-ns", type=float, default=-1.)
+    p.add_argument("--peak-floor", type=float, default=1e-8,
+                   help="Fail if baseline-subtracted peak in prepared [0,1] units is smaller")
+    p.add_argument("--include-original-derivative", action="store_true",
+                   help="Also emit legacy first-difference plots for original view")
     p.add_argument("--derivative-end-sample", type=int, default=1200,
                    help="Rightmost sample shown in derivative plots; 0-1200 by default. "
                         "The saved numerical heatmap remains full-length.")
