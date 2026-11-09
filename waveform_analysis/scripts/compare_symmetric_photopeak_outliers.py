@@ -18,61 +18,63 @@ import numpy as np
 from scipy.stats import spearmanr
 
 from waveform_analysis.data.results import resolve_run_config
-from waveform_analysis.data.named_cache import dataset_name
+from waveform_analysis.data.named_cache import control_alias, resolve_alias, alias_exists
 from waveform_analysis.scripts.scan_photopeak_ctr import (
     _load_pair, _original_outlier_groups,
 )
 
 
-def _extract_photopeak_fit(value):
-    """Read only explicit, previously fitted photopeak parameters."""
-    if not isinstance(value,dict):
-        return None
-    if "photopeak_fits" in value and isinstance(value["photopeak_fits"],list):
-        fits=value["photopeak_fits"]
-    elif isinstance(value.get("rules"),dict):
-        return _extract_photopeak_fit(value["rules"])
-    else:
-        return None
-    if len(fits)!=2:
-        raise ValueError("Frozen photopeak fit must include exactly two energy channels")
-    mu=np.asarray([f.get("mean_mV",f.get("mean")) for f in fits],dtype=float)
-    sigma=np.asarray([f.get("sigma_mV",f.get("sigma")) for f in fits],dtype=float)
-    if not np.isfinite(mu).all() or not np.isfinite(sigma).all() or np.any(sigma<=0):
-        raise ValueError("Invalid stored frozen photopeak fit parameters")
-    return mu,sigma
+def _load_frozen_fit(cache_root, control_dataset):
+    """Use authoritative named control artifact, not recursive JSON searches.
 
+    The frozen photopeak fits are in manifest.json under selection_rules.
+    The cache alias may be a Windows .cache_link.json pointer or a symlink.
+    """
+    from waveform_analysis.data.named_cache import dataset_name
+    root=Path(cache_root).expanduser().resolve()
+    control_parent=root/"control"/dataset_name(control_dataset)
+    # Control artifact can cover energy alone or energy+timing.
+    preferred=[
+        control_alias(root,control_dataset,("energy_to_energy","timing_to_timing")),
+        control_alias(root,control_dataset,("energy_to_energy",)),
+    ]
+    aliases=[p for p in preferred if alias_exists(p)]
+    if not aliases:
+        raise FileNotFoundError(
+            f"Named frozen control artifact absent under {control_parent}. "
+            "Provide --mu-mv D1 D2 and --sigma-mv D1 D2 from the frozen control fit.")
+    found=[]
+    for alias in aliases:
+        target=resolve_alias(alias)
+        manifest_path=target/"manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Control manifest missing: {manifest_path}")
+        manifest=json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        selection=manifest.get("selection_rules") or {}
+        fits=selection.get("photopeak_fits")
+        if not isinstance(fits,list) or len(fits)!=2:
+            raise ValueError(
+                f"Control selection_rules.photopeak_fits missing/invalid: {manifest_path}")
+        mu=np.asarray([f["mean_mV"] for f in fits],dtype=float)
+        sigma=np.asarray([f["sigma_mV"] for f in fits],dtype=float)
+        if not np.isfinite(mu).all() or not np.isfinite(sigma).all() or np.any(sigma<=0):
+            raise ValueError(f"Invalid frozen photopeak values: {manifest_path}")
+        # Check we used the control acquisition intended for this run.
+        expected=Path(str(control_dataset["root_file"]).replace("\\\\","/")).name
+        actual=Path(str(manifest.get("control_source","")).replace("\\\\","/")).name
+        if expected!=actual:
+            raise ValueError(
+                f"Control source mismatch: expected {expected}, got {actual}")
+        found.append((mu,sigma,str(manifest_path)))
+    reference=found[0]
+    for another in found[1:]:
+        if not (np.allclose(reference[0],another[0],rtol=0,atol=1e-8)
+                and np.allclose(reference[1],another[1],rtol=0,atol=1e-8)):
+            raise ValueError(
+                "Conflicting frozen control fits for energy and energy+timing; "
+                "choose --mu-mv and --sigma-mv explicitly.")
+    return reference
 
-def _load_frozen_fit(cache_root,control_dataset):
-    # Search the named CONTROL-cache products only. No blind-data refit.
-    root=Path(cache_root)/"control"/dataset_name(control_dataset)
-    if not root.is_dir():
-        raise FileNotFoundError(
-            f"Frozen CONTROL calibration cache missing: {root}; "
-            "supply --mu-mv and --sigma-mv from the frozen control fit.")
-    candidates=[]
-    for file in root.rglob("*.json"):
-        try:
-            result=_extract_photopeak_fit(json.loads(file.read_text(encoding="utf-8-sig")))
-        except (OSError,UnicodeError,ValueError,json.JSONDecodeError,TypeError):
-            continue
-        if result is not None:
-            candidates.append((result,file))
-    if not candidates:
-        raise FileNotFoundError(
-            f"No control photopeak_fits found under {root}. "
-            "Pass --mu-mv D1 D2 --sigma-mv D1 D2 from the frozen control fit.")
-    unique={}
-    for (mu,sigma),file in candidates:
-        key=tuple(np.round(np.r_[mu,sigma],8))
-        unique.setdefault(key,[]).append(file)
-    if len(unique)!=1:
-        raise ValueError(
-            f"Ambiguous control photopeak fits under {root}: "
-            + "; ".join(str(files[0]) for files in unique.values())
-            + ". Supply --mu-mv and --sigma-mv explicitly.")
-    (mu,sigma),path=candidates[0]
-    return mu,sigma,str(path)
 
 
 def _stats(x,y):
