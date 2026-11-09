@@ -13,6 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.scripts.residual_exploratory_diagnostics import exploratory_diagnostics
 
 BANDS = (0, 50, 80, 90, 95, 97, 99, 99.5, 99.8, 100)
 CENTRAL = (50, 60, 70, 80, 90, 95, 97, 98, 99, 99.5, 99.8, 100)
@@ -141,8 +142,10 @@ def main():
         raise ValueError(f"Too few paired blind events: {len(ids)}")
     rng = np.random.default_rng(args.seed)
     rows = []
+    paired = {}
     for label, column in (("led", 1), ("ml", 2)):
         points = np.column_stack((energy[column][ai], timing[column][bi]))
+        paired[label] = points
         rows.extend(_rows(points, label, args.bootstrap, rng))
     out = args.output_dir.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -152,6 +155,8 @@ def main():
         writer.writerows(rows)
     _plot(rows, "band", out / "correlation_disjoint_bands.png")
     _plot(rows, "central", out / "correlation_cumulative_central.png")
+    exploratory_diagnostics(paired["led"], paired["ml"], out,
+                            draws=args.bootstrap, seed=args.seed)
     (out / "summary.json").write_text(json.dumps({
         "n_common_blind_events": len(ids),
         "energy_predictions": energy[3], "timing_predictions": timing[3],
@@ -162,6 +167,8 @@ def main():
         "caution": "conditioning on residual magnitude may itself affect correlation; not a causal or CTR-floor estimate",
     }, indent=2), encoding="utf-8")
     print(f"Paired events: {len(ids)} | outputs: {out}")
+    print("Additional outputs: exploratory_diagnostics.json, exploratory_components.csv, "
+          "covariance_and_difference_variance.png, paired_residual_hexbin_central99.png")
 
 
 if __name__ == "__main__":
