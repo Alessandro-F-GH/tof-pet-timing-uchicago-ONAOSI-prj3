@@ -164,6 +164,92 @@ def _bootstrap_paired(led: np.ndarray, ml: np.ndarray, draws: int, rng):
     }
 
 
+
+def _bootstrap_ctr_floor_comparison(
+    uc_core: np.ndarray, fbk_core: np.ndarray, draws: int, rng
+) -> dict:
+    """Independent board-wise event bootstrap for Gaussian-equivalent floors."""
+    factor = 2.354820045
+    samples = {}
+    for board, points in (("UC", uc_core), ("FBK", fbk_core)):
+        n = len(points)
+        cov = np.empty(draws, dtype=float)
+        for b in range(draws):
+            idx = rng.integers(0, n, size=n)
+            sample = points[idx]
+            cov[b] = np.cov(sample[:, 0], sample[:, 1], ddof=1)[0, 1]
+        floor = factor * np.sqrt(np.maximum(cov, 0.0))
+        cov_ci = np.quantile(cov, [0.025, 0.975])
+        floor_ci = factor * np.sqrt(np.maximum(cov_ci, 0.0))
+        point_cov = float(np.cov(points[:, 0], points[:, 1], ddof=1)[0, 1])
+        point_floor = factor * np.sqrt(point_cov) if point_cov > 0 else 0.0
+        samples[board] = {
+            "cov": cov, "floor": floor, "point_cov": point_cov,
+            "point_floor": float(point_floor), "cov_ci": cov_ci,
+            "floor_ci": floor_ci,
+            "nonpositive_fraction": float(np.mean(cov <= 0)),
+        }
+
+    delta = samples["UC"]["floor"] - samples["FBK"]["floor"]
+    delta_ci = np.quantile(delta, [0.025, 0.975])
+    delta_point = samples["UC"]["point_floor"] - samples["FBK"]["point_floor"]
+    p_delta_positive = float(np.mean(delta > 0))
+    p_delta_negative = float(np.mean(delta < 0))
+    sign_balance = float(min(1.0, 2.0 * min(p_delta_positive, p_delta_negative)))
+
+    return {
+        "bootstrap_draws": draws,
+        "resampling": "independent event-level bootstrap within each board; fixed ML-defined core memberships",
+        "conversion": "2.354820045 * sqrt(max(covariance, 0)); Gaussian-equivalent FWHM proxy",
+        "UC_covariance_point_ps2": samples["UC"]["point_cov"],
+        "UC_covariance_ci95_ps2": [float(v) for v in samples["UC"]["cov_ci"]],
+        "UC_ctr_floor_point_ps": samples["UC"]["point_floor"],
+        "UC_ctr_floor_ci95_ps": [float(v) for v in samples["UC"]["floor_ci"]],
+        "UC_nonpositive_covariance_bootstrap_fraction": samples["UC"]["nonpositive_fraction"],
+        "FBK_covariance_point_ps2": samples["FBK"]["point_cov"],
+        "FBK_covariance_ci95_ps2": [float(v) for v in samples["FBK"]["cov_ci"]],
+        "FBK_ctr_floor_point_ps": samples["FBK"]["point_floor"],
+        "FBK_ctr_floor_ci95_ps": [float(v) for v in samples["FBK"]["floor_ci"]],
+        "FBK_nonpositive_covariance_bootstrap_fraction": samples["FBK"]["nonpositive_fraction"],
+        "UC_minus_FBK_ctr_floor_point_ps": float(delta_point),
+        "UC_minus_FBK_ctr_floor_ci95_ps": [float(v) for v in delta_ci],
+        "bootstrap_probability_UC_floor_greater_than_FBK": p_delta_positive,
+        "bootstrap_probability_FBK_floor_greater_than_UC": p_delta_negative,
+        "bootstrap_two_sided_sign_balance_diagnostic": sign_balance,
+        "difference_ci_contains_zero": bool(delta_ci[0] <= 0 <= delta_ci[1]),
+        "interpretation_warning": (
+            "A difference CI containing zero means the data do not resolve a board "
+            "difference at this interval; it does not establish statistical equivalence. "
+            "The floor remains conditional on the unit-loading common-additive model "
+            "and Gaussianity assumption, not a proven intrinsic detector or pair-CTR bound."
+        ),
+    }
+
+
+def _plot_ctr_floor_comparison(comparison: dict, output: Path):
+    labels = ["UC", "FBK"]
+    points = [
+        comparison["UC_ctr_floor_point_ps"],
+        comparison["FBK_ctr_floor_point_ps"],
+    ]
+    intervals = [
+        comparison["UC_ctr_floor_ci95_ps"],
+        comparison["FBK_ctr_floor_ci95_ps"],
+    ]
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), constrained_layout=True)
+    y = np.arange(2)
+    lower = [points[i] - intervals[i][0] for i in range(2)]
+    upper = [intervals[i][1] - points[i] for i in range(2)]
+    ax.errorbar(points, y, xerr=[lower, upper], fmt="o", capsize=4)
+    ax.set_yticks(y, labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Gaussian-equivalent common-mode floor [ps]")
+    ax.set_title("Bootstrap 95% intervals: UC vs FBK")
+    ax.grid(axis="x", alpha=.2)
+    fig.savefig(output / "core_ctr_floor_uc_fbk_bootstrap.png", dpi=180)
+    plt.close(fig)
+
+
 def _plot_scatter(board_data: dict, output: Path, seed: int):
     rng = np.random.default_rng(seed)
     fig, axes = plt.subplots(2, 2, figsize=(12, 10), constrained_layout=True)
@@ -306,8 +392,37 @@ def analyze(args):
 
     _write_csv(out / "core_covariance_summary.csv", summary_rows)
     _write_csv(out / "core_covariance_bootstrap.csv", bootstrap_rows)
+
+    primary_uc_core = boards["UC"]["ml"][boards["UC"]["groups"]["core"]]
+    primary_fbk_core = boards["FBK"]["ml"][boards["FBK"]["groups"]["core"]]
+    comparison = _bootstrap_ctr_floor_comparison(
+        primary_uc_core, primary_fbk_core, args.bootstrap, rng
+    )
+    comparison["tail_fraction_per_channel"] = args.bootstrap_tail_fraction
+    comparison["UC_core_events"] = int(len(primary_uc_core))
+    comparison["FBK_core_events"] = int(len(primary_fbk_core))
+    _write_csv(out / "core_ctr_floor_uc_fbk_bootstrap.csv", [comparison])
+    (out / "core_ctr_floor_uc_fbk_bootstrap.json").write_text(
+        json.dumps(_jsonable(comparison), indent=2) + "\\n", encoding="utf-8"
+    )
+    _plot_ctr_floor_comparison(comparison, out)
     _plot_scatter(boards, out, args.seed)
     _plot_sensitivity(summary_rows, out)
+
+    print("\\nBOOTSTRAP CTR-FLOOR COMPARISON (Gaussian-equivalent proxy):", flush=True)
+    print(
+        f"UC: {comparison['UC_ctr_floor_point_ps']:.3f} ps "
+        f"95% CI={comparison['UC_ctr_floor_ci95_ps']}; "
+        f"FBK: {comparison['FBK_ctr_floor_point_ps']:.3f} ps "
+        f"95% CI={comparison['FBK_ctr_floor_ci95_ps']}",
+        flush=True,
+    )
+    print(
+        f"UC-FBK: {comparison['UC_minus_FBK_ctr_floor_point_ps']:.3f} ps "
+        f"95% CI={comparison['UC_minus_FBK_ctr_floor_ci95_ps']}; "
+        f"CI contains zero={comparison['difference_ci_contains_zero']}",
+        flush=True,
+    )
 
     payload = {
         "outlier_definition": (
@@ -333,7 +448,8 @@ def analyze(args):
                 "The common component enters both residual channels with unit loading.",
                 "Channel-specific components are mutually independent and independent of c.",
                 "The covariance is not dominated by shared reference, acquisition, or model artifacts.",
-                "A Gaussian-equivalent FWHM is meaningful only if c is approximately Gaussian."
+                "A Gaussian-equivalent FWHM is meaningful only if c is approximately Gaussian.",
+            "A difference CI containing zero does not establish statistical equivalence."
             ],
             "warning": (
                 "sqrt(covariance) and 2.35482*sqrt(covariance) are conditional "
@@ -353,6 +469,9 @@ def analyze(args):
         "outputs": [
             "core_covariance_summary.csv",
             "core_covariance_bootstrap.csv",
+            "core_ctr_floor_uc_fbk_bootstrap.csv",
+            "core_ctr_floor_uc_fbk_bootstrap.json",
+            "core_ctr_floor_uc_fbk_bootstrap.png",
             "core_and_outlier_populations.png",
             "core_covariance_tail_sensitivity.png",
         ],
