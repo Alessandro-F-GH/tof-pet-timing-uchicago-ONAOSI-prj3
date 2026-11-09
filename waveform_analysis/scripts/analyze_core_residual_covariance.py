@@ -403,13 +403,13 @@ def analyze(args):
     comparison["FBK_core_events"] = int(len(primary_fbk_core))
     _write_csv(out / "core_ctr_floor_uc_fbk_bootstrap.csv", [comparison])
     (out / "core_ctr_floor_uc_fbk_bootstrap.json").write_text(
-        json.dumps(_jsonable(comparison), indent=2) + "\\n", encoding="utf-8"
+        json.dumps(_jsonable(comparison), indent=2) + "\n", encoding="utf-8"
     )
     _plot_ctr_floor_comparison(comparison, out)
     _plot_scatter(boards, out, args.seed)
     _plot_sensitivity(summary_rows, out)
 
-    print("\\nBOOTSTRAP CTR-FLOOR COMPARISON (Gaussian-equivalent proxy):", flush=True)
+    print("\nBOOTSTRAP CTR-FLOOR COMPARISON (Gaussian-equivalent proxy):", flush=True)
     print(
         f"UC: {comparison['UC_ctr_floor_point_ps']:.3f} ps "
         f"95% CI={comparison['UC_ctr_floor_ci95_ps']}; "
