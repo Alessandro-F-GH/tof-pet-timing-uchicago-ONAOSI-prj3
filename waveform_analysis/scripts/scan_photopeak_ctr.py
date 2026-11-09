@@ -21,6 +21,7 @@ from waveform_analysis.scripts.plot_residual_correlation_percentiles import _rea
 from waveform_analysis.signal.metrics import fit_ctr_ps, rmse_ps
 
 FRACTIONS = (1.0, .9, .8, .7, .6, .5, .4, .3, .2, .1)
+OUTLIER_KINDS = ("timing", "energy", "either", "both")
 
 
 def _native_energy(run, cache_root):
@@ -85,9 +86,107 @@ def _score(residuals, bin_ps, bootstrap, seed):
             "mean_ps":float(np.mean(residuals))}
 
 
-def analyze(energy_run,timing_run,cache_root,output,*, fractions,centers,bin_ps,bootstrap,seed,min_events):
+def _original_outlier_groups(pred, tail_fraction):
+    """Freeze the original ML extreme-event IDs once, before energy cuts.
+
+    energy/timing: largest absolute residuals in that channel.
+    either: union of individual-channel tails.
+    both: intersection of individual-channel tails.
+    """
+    if not 0 < tail_fraction < 1:
+        raise ValueError("tail_fraction must be between zero and one")
+    n=len(pred["timing"]["ML"])
+    count=max(1,int(np.ceil(n*tail_fraction)))
+    tail={}
+    for mode in ("energy","timing"):
+        value=np.abs(pred[mode]["ML"])
+        chosen=np.argsort(value,kind="stable")[-count:]
+        mask=np.zeros(n,dtype=bool)
+        mask[chosen]=True
+        tail[mode]=mask
+    tail["either"]=tail["energy"]|tail["timing"]
+    tail["both"]=tail["energy"]&tail["timing"]
+    return tail
+
+
+def _extreme_report(groups, keep, pred, fraction, n_original):
+    """All contributions are measured on a fixed baseline-defined group."""
+    records=[]
+    n_selected=int(keep.sum())
+    for kind,original in groups.items():
+        original_count=int(original.sum())
+        surviving=original&keep
+        survivor_count=int(surviving.sum())
+        record={
+            "fraction_of_observed_halfspan":float(fraction),
+            "outlier_group":kind,
+            "outliers_original":original_count,
+            "outliers_surviving":survivor_count,
+            "outlier_survival_fraction":(
+                survivor_count/original_count if original_count else None),
+            "outliers_removed":original_count-survivor_count,
+            "n_events_retained":n_selected,
+            "acceptance_vs_original":n_selected/n_original,
+            "outlier_prevalence_among_retained":(
+                survivor_count/n_selected if n_selected else None),
+            "retention_enrichment_vs_all":(
+                (survivor_count/original_count)/(n_selected/n_original)
+                if original_count and n_selected else None),
+        }
+        for mode in ("timing","energy"):
+            for state in ("LED","ML"):
+                residual=np.asarray(pred[mode][state],dtype=float)
+                key=f"{mode}_{state.lower()}"
+                tail_mse_sum=float(np.sum(np.square(residual[surviving])))
+                all_mse_sum=float(np.sum(np.square(residual[keep])))
+                initial_mse_sum=float(np.sum(np.square(residual[original])))
+                record[key+"_outlier_rmse_ps"]=(
+                    float(np.sqrt(tail_mse_sum/survivor_count))
+                    if survivor_count else None)
+                record[key+"_outlier_rmse_initial_ps"]=(
+                    float(np.sqrt(initial_mse_sum/original_count))
+                    if original_count else None)
+                record[key+"_outlier_mse_contribution_to_retained_mse_ps2"]=(
+                    tail_mse_sum/n_selected if n_selected else None)
+                record[key+"_outlier_fraction_of_retained_sse"]=(
+                    tail_mse_sum/all_mse_sum if all_mse_sum>0 else None)
+                record[key+"_outlier_fraction_of_original_tail_sse_surviving"]=(
+                    tail_mse_sum/initial_mse_sum if initial_mse_sum>0 else None)
+        records.append(record)
+    return records
+
+
+def _plot_extremes(records,output):
+    fig,axes=plt.subplots(1,3,figsize=(16,4.5),constrained_layout=True)
+    for kind in OUTLIER_KINDS:
+        rr=sorted((r for r in records if r["outlier_group"]==kind),
+                  key=lambda r:r["acceptance_vs_original"])
+        x=np.array([r["acceptance_vs_original"]*100 for r in rr])
+        axes[0].plot(x,[100*r["outlier_survival_fraction"] for r in rr],
+                     marker="o",label=kind)
+        axes[1].plot(x,[r["timing_ml_outlier_rmse_ps"] for r in rr],
+                     marker="o",label=kind)
+        axes[2].plot(x,[100*r["timing_ml_outlier_fraction_of_retained_sse"]
+                         for r in rr],marker="o",label=kind)
+    axes[0].plot([0,100],[0,100],linestyle=":",color="gray",label="Random retention")
+    for ax,title,ylabel in zip(axes,
+            ("Survival of original ML outliers","RMSE of surviving original ML outliers",
+             "Original outliers' share of timing ML squared error"),
+            ("Outlier survival [%]","Outlier RMSE [ps]","Fraction of retained SSE [%]")):
+        ax.set_xlabel("Overall retained blind events [%]")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=8)
+    fig.savefig(output/"photopeak_outlier_persistence.png",dpi=180)
+    plt.close(fig)
+
+
+def analyze(energy_run,timing_run,cache_root,output,*,
+            fractions,centers,bin_ps,bootstrap,seed,min_events,tail_fraction,amplitude_bin_mv):
     ids,amps,pred,sources=_load_pair(energy_run,timing_run,cache_root)
     n=len(ids)
+    groups=_original_outlier_groups(pred,tail_fraction)
     if centers is None:
         centers=np.median(amps,axis=0)
         center_origin="median of already selected blind-event peak amplitudes (exploratory proxy)"
@@ -104,6 +203,7 @@ def analyze(energy_run,timing_run,cache_root,output,*, fractions,centers,bin_ps,
     out=Path(output).expanduser().resolve()
     out.mkdir(parents=True,exist_ok=True)
     rows=[]
+    extreme_rows=[]
     all_masks={}
     for fraction in sorted(set(fractions),reverse=True):
         if not 0<fraction<=1:
@@ -112,6 +212,7 @@ def analyze(energy_run,timing_run,cache_root,output,*, fractions,centers,bin_ps,
         mask=np.all(np.abs(amps-centers[None,:])<=radius[None,:]+1e-9,axis=1)
         all_masks[fraction]=mask
         count=int(mask.sum())
+        extreme_rows.extend(_extreme_report(groups,mask,pred,fraction,n))
         for mode in ("timing","energy"):
             for state in ("LED","ML"):
                 row={"fraction_of_observed_halfspan":fraction,
@@ -134,6 +235,12 @@ def analyze(energy_run,timing_run,cache_root,output,*, fractions,centers,bin_ps,
         writer=csv.DictWriter(f,fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
+    with (out/"photopeak_outlier_persistence.csv").open(
+            "w",newline="",encoding="utf-8") as f:
+        writer=csv.DictWriter(f,fieldnames=list(extreme_rows[0]))
+        writer.writeheader()
+        writer.writerows(extreme_rows)
+    _plot_extremes(extreme_rows,out)
     (out/"photopeak_ctr_scan.json").write_text(json.dumps({
         "n_paired_events":n,"sources":sources,
         "center_mV":centers.tolist(),"center_origin":center_origin,
@@ -144,6 +251,11 @@ def analyze(energy_run,timing_run,cache_root,output,*, fractions,centers,bin_ps,
         "ctr":"Repository utils_fit.fit_ctr_ps direct F1 interpolated half-max histogram FWHM",
         "histogram_bin_width_ps":bin_ps,"bootstrap_draws":bootstrap,
         "fractions":list(fractions),"seed":seed,
+        "outlier_definition":"Original ML absolute-error top fraction per energy/timing channel; either=union, both=intersection. Original IDs never redefined after cuts.",
+        "outlier_tail_fraction_per_channel":tail_fraction,
+        "outlier_initial_counts":{k:int(v.sum()) for k,v in groups.items()},
+        "outlier_sse":"Sum of squared residuals; fraction_of_retained_sse uses total retained population in denominator",
+        "amplitude_histogram_bin_width_mV":amplitude_bin_mv,
     },indent=2),encoding="utf-8")
     for mode in ("timing","energy"):
         fig,axes=plt.subplots(1,2,figsize=(12,4.5),constrained_layout=True)
@@ -161,8 +273,14 @@ def analyze(energy_run,timing_run,cache_root,output,*, fractions,centers,bin_ps,
         fig.savefig(out/f"photopeak_{mode}_ctr_vs_acceptance.png",dpi=180)
         plt.close(fig)
     fig,ax=plt.subplots(figsize=(9,5),constrained_layout=True)
+    min_amp=float(np.min(amps))
+    max_amp=float(np.max(amps))
+    bins=np.arange(
+        np.floor(min_amp/amplitude_bin_mv)*amplitude_bin_mv,
+        np.ceil(max_amp/amplitude_bin_mv)*amplitude_bin_mv+1.01*amplitude_bin_mv,
+        amplitude_bin_mv)
     for det in range(2):
-        ax.hist(amps[:,det],bins=100,histtype="step",label=f"Energy peak D{det+1}")
+        ax.hist(amps[:,det],bins=bins,histtype="step",label=f"Energy peak D{det+1}")
         ax.axvline(centers[det],linestyle="--",alpha=.6)
     ax.set_xlabel("Native energy waveform maximum [mV]")
     ax.set_ylabel("Events")
@@ -186,8 +304,14 @@ def main():
     p.add_argument("--histogram-bin-ps",type=float,default=5.)
     p.add_argument("--bootstrap",type=int,default=100)
     p.add_argument("--min-events",type=int,default=500)
+    p.add_argument("--tail-fraction",type=float,default=.002,
+                   help="Original top absolute-error fraction per channel (default 0.002)")
+    p.add_argument("--amplitude-bin-mv",type=float,default=1.0,
+                   help="Energy amplitude histogram bin width, in mV (minimum 1)")
     p.add_argument("--seed",type=int,default=42)
     args=p.parse_args()
+    if args.amplitude_bin_mv<1 or not 0<args.tail_fraction<1:
+        p.error("Amplitude bins must be >=1 mV and 0 < tail-fraction < 1")
     if args.bootstrap<0 or args.min_events<5 or args.histogram_bin_ps<=0:
         p.error("Bootstrap >=0, min-events >=5, histogram-bin-ps >0 required")
     analyze(args.energy_run.expanduser().resolve(),
@@ -195,7 +319,8 @@ def main():
             args.cache_root.expanduser().resolve(),
             args.output_dir, fractions=args.fractions,
             centers=args.centers_mv,bin_ps=args.histogram_bin_ps,
-            bootstrap=args.bootstrap,seed=args.seed,min_events=args.min_events)
+            bootstrap=args.bootstrap,seed=args.seed,min_events=args.min_events,
+            tail_fraction=args.tail_fraction,amplitude_bin_mv=args.amplitude_bin_mv)
 
 
 if __name__=="__main__":
