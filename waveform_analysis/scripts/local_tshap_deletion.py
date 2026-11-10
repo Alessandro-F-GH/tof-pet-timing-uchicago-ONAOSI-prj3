@@ -107,10 +107,10 @@ def _cohort_cache(path, reference, identity, args, retained):
     return bank, cache
 
 
-PLOT_VERSION = 3
-PLOT_FILES = ("event_waveforms.png", "tshap_profiles.png",
-              "deletion_positive.png", "deletion_negative.png")
-LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png")
+PLOT_VERSION = 4
+PLOT_FILES = ("event_waveforms.png", "tshap_profiles.png", "deletion.png")
+LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png",
+                     "deletion_positive.png", "deletion_negative.png")
 METHOD_LABELS = {"knn": "KNN", "ppca": "PPCA", "mean": "Development mean"}
 
 
@@ -173,48 +173,47 @@ def _plot_tshap_profiles(path, event_id, time_ps, starts, width, scores):
     plt.close(fig)
 
 
-def _plot_deletion_sign(path, event_id, deletion, direction, *, original):
-    """Only three method curves per panel; two separate signed deletion figures."""
-    if direction not in DIRECTIONS:
-        raise ValueError(f"Unknown deletion direction: {direction}")
+def _plot_deletion(path, event_id, deletion, *, original):
+    """One panel per deletion sign, showing only signed model-output changes."""
+    from matplotlib.ticker import MaxNLocator
+
     fig, axes = plt.subplots(2, 1, figsize=(10.5, 7), sharex=True,
                              constrained_layout=True)
-    from matplotlib.ticker import MaxNLocator
     curve_colors = {"knn": "tab:blue", "ppca": "tab:orange",
                     "mean": "tab:green"}
     max_step = 0
-    for method in METHODS:
-        curve = deletion[method][direction]
-        step = np.asarray(curve["step"], dtype=np.int64)
-        change = np.asarray(curve["signed_prediction_change_ps"], dtype=float)
-        error = np.asarray(curve["absolute_prediction_deviation_ps"], dtype=float)
-        order = np.asarray(curve["removed_window_indices"], dtype=int)
-        if (step.ndim != 1 or len(step) != len(order) + 1 or
-                not np.array_equal(step, np.arange(len(step))) or
-                change.shape != step.shape or error.shape != step.shape or
-                not np.isfinite(change).all() or not np.isfinite(error).all()):
-            raise ValueError(f"Malformed {method} {direction} deletion curve")
-        label = f"{METHOD_LABELS[method]} (n={len(order)})"
-        max_step = max(max_step, len(order))
-        for ax, y in zip(axes, (change, error)):
-            ax.plot(step, y, marker="o", markersize=2.6,
-                    linewidth=1.5, color=curve_colors[method], label=label)
-    for ax in axes:
+    for ax, direction in zip(axes, DIRECTIONS):
+        has_windows = False
+        for method in METHODS:
+            curve = deletion[method][direction]
+            step = np.asarray(curve["step"], dtype=np.int64)
+            change = np.asarray(curve["signed_prediction_change_ps"], dtype=float)
+            order = np.asarray(curve["removed_window_indices"], dtype=int)
+            if (step.ndim != 1 or len(step) != len(order) + 1 or
+                    not np.array_equal(step, np.arange(len(step))) or
+                    change.shape != step.shape or not np.isfinite(change).all()):
+                raise ValueError(f"Malformed {method} {direction} deletion curve")
+            has_windows |= bool(len(order))
+            max_step = max(max_step, len(order))
+            ax.plot(step, change, marker="o", markersize=2.8,
+                    linewidth=1.5, color=curve_colors[method],
+                    label=f"{METHOD_LABELS[method]} (n={len(order)})")
         ax.axhline(0, color="0.35", lw=.85)
         ax.grid(alpha=.23)
         ax.set_axisbelow(True)
+        ax.set_ylabel("Δ model prediction (ps)")
+        ax.set_title(f"{direction.capitalize()} attribution deletion", loc="left")
+        if not has_windows:
+            ax.text(.5, .5, f"No {direction} windows",
+                    transform=ax.transAxes, ha="center", va="center")
+    for ax in axes:
         ax.set_xlim(0, max(1, max_step))
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
-    axes[0].set_ylabel("Signed prediction change (ps)")
-    axes[1].set_ylabel("|Perturbed - original prediction| (ps)")
-    axes[1].set_xlabel(f"Number of {direction} windows deleted (rank order)")
     axes[0].legend(loc="best", fontsize=9)
-    if max_step == 0:
-        axes[0].text(.5, .5, f"No {direction} windows",
-                     transform=axes[0].transAxes, ha="center", va="center")
+    axes[-1].set_xlabel("Number of deleted windows (ranked within sign)")
     fig.suptitle(
-        f"Event {int(event_id)} | {direction.capitalize()} deletion\n"
-        f"Original prediction {float(original):+.2f} ps")
+        f"Event {int(event_id)} | progressive deletion\n"
+        f"Reference: original model prediction {float(original):+.2f} ps")
     fig.savefig(path, dpi=170)
     plt.close(fig)
 
@@ -268,9 +267,8 @@ def _write_event_plots(folder, event_id, time_ps, starts, width, scores,
                               time_ps, waveform_mv)
     _plot_tshap_profiles(folder / "tshap_profiles.png", event_id,
                          time_ps, starts, width, scores)
-    for direction in DIRECTIONS:
-        _plot_deletion_sign(folder / f"deletion_{direction}.png", event_id,
-                            deletion, direction, original=original)
+    _plot_deletion(folder / "deletion.png", event_id, deletion,
+                   original=original)
     # Discard only superseded plotting artifacts, not raw numerical results.
     for name in LEGACY_PLOT_FILES:
         (folder / name).unlink(missing_ok=True)
@@ -340,7 +338,73 @@ def replot_saved(output_root):
     return root
 
 
+def hydrate_saved_waveforms(model_dir, output_root, *, cache_root=None,
+                            artifact_root=None):
+    """Recover original waveform inputs for old runs without recalculating XAI.
+
+    Existing event IDs are authoritative; we never rerun model-dependent
+    case selection. The original frozen waveform transform restores mV.
+    """
+    if cache_root is not None and artifact_root is not None:
+        raise ValueError("Specify --cache-root OR --artifact-root")
+    root = Path(output_root).expanduser().resolve()
+    info_file = root / "reference_details.npz"
+    summary_file = root / "summary.json"
+    if not info_file.is_file() or not summary_file.is_file():
+        raise FileNotFoundError("No saved numerical XAI results at --output-root")
+    source = base._resolve_model_run_directory(model_dir)
+    run_data = read_run(source)
+    config = resolve_run_config(source)
+    base._apply_tshap_cache(config, cache_root=cache_root,
+                            artifact_root=artifact_root)
+    summary = json.loads(summary_file.read_text(encoding="utf-8"))
+    if str(summary.get("final_fit")) != str(
+            run_data["manifest"]["stage_fingerprints"]["final_fit"]):
+        raise ValueError("Saved XAI model fingerprint differs from selected model run")
+    lookup = PreparedCacheLookup()
+    blind = lookup.find("blind", config, run_data["manifest"])
+    family = mode_family(config["mode"])
+    time_ps = np.asarray(getattr(blind, f"{family}_time_ps"), dtype=np.float64)
+    transform = getattr(blind, f"{family}_transform")
+    if transform is None:
+        raise ValueError("Frozen physical waveform transform is unavailable")
+    with np.load(info_file, allow_pickle=False) as info:
+        saved_time = np.asarray(info["time_ps"], dtype=np.float64)
+    if not np.array_equal(saved_time, time_ps):
+        raise ValueError("Saved attribution time grid differs from prepared Blind grid")
+    indices = {int(event_id): i for i, event_id in
+               enumerate(np.asarray(blind.event_index, dtype=np.int64))}
+    folders = sorted(folder for folder in root.glob("event_*")
+                     if folder.is_dir() and (folder / "results.json").is_file())
+    if not folders:
+        raise FileNotFoundError("No saved event_*/results.json files found")
+    for folder in folders:
+        payload_path = folder / "results.json"
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        event_id = int(payload["event_id"])
+        if event_id not in indices:
+            raise ValueError(f"Saved event {event_id} is missing from Blind data")
+        waveform = waveform_view(blind, config["mode"], [indices[event_id]]).materialize()
+        physical = np.asarray(transform.inverse(waveform)[0], dtype=np.float64)
+        if physical.shape != (2, len(time_ps)) or not np.isfinite(physical).all():
+            raise ValueError(f"Invalid recovered physical waveform for {event_id}")
+        payload["waveform_mv"] = physical.tolist()
+        payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _plot_event_waveforms(folder / "event_waveforms.png", event_id,
+                              time_ps, physical)
+        print(f"WAVEFORMS | event={event_id} | {folder / 'event_waveforms.png'}",
+              flush=True)
+    print(f"WAVEFORMS COMPLETE | events={len(folders)} | output={root}", flush=True)
+    return root
+
+
 def run(args):
+    if getattr(args, "waveforms_only", False):
+        if args.model_dir is None:
+            raise ValueError("--waveforms-only requires --model-dir")
+        return hydrate_saved_waveforms(args.model_dir, args.output_root,
+                                       cache_root=args.cache_root,
+                                       artifact_root=args.artifact_root)
     if getattr(args, "replot_only", False):
         return replot_saved(args.output_root)
     if args.model_dir is None:
@@ -522,6 +586,8 @@ def parser():
                    help="Saved model directory (not needed with --replot-only)")
     p.add_argument("--replot-only", action="store_true",
                    help="Regenerate figures from existing numerical results; no ML inference or imputer fit")
+    p.add_argument("--waveforms-only", action="store_true",
+                   help="Recover original event waveforms from prepared Blind cache, plot and save; no model inference or imputer fit")
     p.add_argument("--cache-root", type=Path)
     p.add_argument("--artifact-root", type=Path)
     p.add_argument("--output-root", required=True, type=Path)
