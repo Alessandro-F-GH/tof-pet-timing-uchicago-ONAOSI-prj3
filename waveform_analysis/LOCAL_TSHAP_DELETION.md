@@ -61,7 +61,7 @@ Two independent deletion curves are calculated **for each method and event**:
 - Positive windows: descending strictly positive scores
 - Negative windows: ascending strictly negative scores (most negative first)
 
-At step `k`, the union of the first `k` deleted windows is re-imputed from the **original waveform and all remaining observed samples**, never from previously imputed samples. All original model-retained samples outside that union are available. No retraining/refitting occurs during deletion. Curves show signed output change, absolute error change against the calibrated timing target, and optionally squared error change.
+At step `k`, the union of the first `k` deleted windows is re-imputed from the **original waveform and all remaining observed samples**, never from previously imputed samples. All original model-retained samples outside that union are available. No retraining/refitting occurs during deletion. Curves show signed output change and its absolute deviation from the untouched model prediction. The noisy calibrated timing target is not used for deletion scoring.
 
 There is no forced deletion of windows with the opposite sign. As a consequence, positive and negative curves can end at different percentages of all windows.
 
@@ -84,6 +84,7 @@ output/
   summary.json
   event_<ID>/
     results.json
+    event_waveforms.png
     tshap_profiles.png
     deletion_positive.png
     deletion_negative.png
@@ -97,7 +98,7 @@ python -m waveform_analysis.scripts.local_tshap_deletion `
   --output-root "$out"
 ```
 
-This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Positive and negative deletion curves are split into separate figures, each showing signed output change and change in absolute residual error for the three imputers. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid.
+This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing numerical deletion predictions are used to reconstruct the new model-reference metric without inference. **Older runs lack persisted per-event waveforms**: `--replot-only` can regenerate the TSHAP and deletion figures, but `event_waveforms.png` requires one new run with saved waveform data. Positive and negative deletion curves are split into separate figures, each showing signed output change and absolute deviation from the original model output for the three imputers. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV.
 
 Run unit tests:
 
