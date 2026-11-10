@@ -6,7 +6,8 @@ import pytest
 
 from waveform_analysis.engine.local_tshap_deletion import (
     FrozenImputationBank, validate_windows, paired_shapley,
-    deletion_curve, signed_window_order,
+    deletion_curve, signed_window_order, signed_full_order,
+    deletion_sequence_curve,
 )
 
 
@@ -114,3 +115,60 @@ def test_cache_ppca_reuse_exactly_preserves_reconstruction():
     np.testing.assert_allclose(
         bank.impute("ppca", query, mask),
         restored.impute("ppca", query, mask), atol=1e-7)
+
+
+@pytest.mark.parametrize("method", ["knn", "ppca", "mean"])
+@pytest.mark.parametrize("sequence", ["positive_negative", "negative_positive"])
+def test_full_deletion_two_signs_and_shared_mean_endpoint(method, sequence):
+    bank, query, starts = bank_and_query()
+    context = bank.knn_context(query, starts, 4)
+    scores = np.array([3., -2., 1., -1.])
+    original = float(predict(query[None])[0])
+    expected_mean = query.copy()
+    expected_mean[:, bank.retained] = bank.mean[:, bank.retained]
+    endpoint = float(predict(expected_mean[None])[0])
+    curve = deletion_sequence_curve(
+        bank, query, starts, 4, scores, predict, original,
+        method=method, sequence=sequence, knn_context=context,
+        expected_endpoint=endpoint)
+    np.testing.assert_allclose(curve["prediction_ps"][-1], endpoint)
+    assert curve["fraction_deleted"][0] == 0.
+    assert curve["fraction_deleted"][-1] == 1.
+    assert int(curve["removed_samples"][-1]) == int(bank.retained.sum())
+    assert len(curve["removed_window_indices"]) == len(starts)
+    assert len(np.unique(curve["removed_window_indices"])) == len(starts)
+    assert curve["first_phase_count"] == 2
+    assert curve["second_phase_count"] == 2
+    assert curve["terminal_cleanup"]
+    np.testing.assert_array_equal(
+        curve["removed_window_indices"],
+        [0, 2, 1, 3] if sequence == "positive_negative" else [1, 3, 0, 2])
+
+
+def test_full_deletion_without_boundary_cleanup_still_uses_mean():
+    bank, query, _ = bank_and_query()
+    # All 24 retained samples are now covered by ranked windows.
+    starts = np.arange(0, 24, 4)
+    context = bank.knn_context(query, starts, 4)
+    original = float(predict(query[None])[0])
+    expected_mean = query.copy()
+    expected_mean[:, bank.retained] = bank.mean[:, bank.retained]
+    mean_pred = float(predict(expected_mean[None])[0])
+    for method in ("knn", "ppca", "mean"):
+        curve = deletion_sequence_curve(
+            bank, query, starts, 4,
+            np.array([2., 0., -1., 3., -2., 1.]),
+            predict, original, method=method,
+            sequence="negative_positive",
+            knn_context=context, expected_endpoint=mean_pred)
+        assert not curve["terminal_cleanup"]
+        assert curve["stage"][-1] == "mean_endpoint"
+        assert curve["fraction_deleted"][-1] == 1.
+        np.testing.assert_allclose(curve["prediction_ps"][-1], mean_pred)
+
+
+def test_full_deletion_orders_zero_attribution_last():
+    order, first, second = signed_full_order(
+        [2., 0., -4., 0., 5., -1.], "positive_negative")
+    assert (first, second) == (2, 2)
+    np.testing.assert_array_equal(order, [4, 0, 2, 5, 1, 3])
