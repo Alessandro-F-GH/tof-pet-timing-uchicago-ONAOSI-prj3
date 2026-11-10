@@ -98,7 +98,7 @@ class FrozenImputationBank:
             prefixes = np.pad(np.cumsum(contributions, axis=1), ((0, 0), (1, 0)))
             full[first:last] = prefixes[:, -1]
             window[first:last] = (
-                prefixes[:, starts + width] - prefixes[:, starts]).T
+                prefixes[:, starts + width] - prefixes[:, starts])
         return KNNQuery(full_cost=full, window_cost=window)
 
     def _knn_impute(self, x, observed, costs):
