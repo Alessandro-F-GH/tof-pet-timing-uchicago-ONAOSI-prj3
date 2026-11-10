@@ -691,6 +691,12 @@ def run(args):
                 raise ValueError(
                     "Saved-vs-replayed model prediction discrepancy: "
                     f"maximum={np.max(np.abs(replay - predictions[rows])):.5f} ps")
+            # One canonical Development-mean endpoint for the entire run:
+            # all events, imputers and deletion orders terminate at this same
+            # waveform and therefore share exactly one model prediction.
+            shared_mean = np.asarray(bank.mean, dtype=np.float32)
+            shared_endpoint = float(predict(shared_mean[None])[0])
+            print(f"SHARED MEAN ENDPOINT | {shared_endpoint:+.5f} ps", flush=True)
             for index, (event_id, group, x, full, target) in enumerate(zip(
                     event_ids, groups, selected, replay, targets[rows])):
                 print(f"EVENT | {index + 1}/{len(rows)} | ID={event_id} | "
@@ -698,9 +704,6 @@ def run(args):
                 context = bank.knn_context(x, starts, args.window_samples)
                 scores = {}
                 curves = {}
-                shared_mean = x.copy()
-                shared_mean[:, retained] = bank.mean[:, retained]
-                shared_endpoint = float(predict(shared_mean[None])[0])
                 for method in METHODS:
                     shap = paired_shapley(
                         bank, x, starts, args.window_samples, predict, full,
