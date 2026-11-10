@@ -107,53 +107,172 @@ def _cohort_cache(path, reference, identity, args, retained):
     return bank, cache
 
 
-def _plot_event(path, event_id, time_ps, starts, width, scores, deletion,
-                *, original, target):
-    fig, axes = plt.subplots(2, 1, figsize=(11, 7), constrained_layout=True)
-    center = (time_ps[starts] + time_ps[np.minimum(starts + width - 1,
-                                                    len(time_ps) - 1)]) / 2000.
-    for method in METHODS:
-        axes[0].plot(center, scores[method], marker=".", markersize=4,
-                     label=method)
-    axes[0].axhline(0, color="0.4", linewidth=.8)
-    axes[0].set_ylabel("Paired-window signed Shapley (ps)")
-    axes[0].set_xlabel("Time relative to LED (ns)")
-    axes[0].legend()
-    # The second panel includes BOTH signs for each imputer.
-    for method in METHODS:
-        for direction in DIRECTIONS:
-            result = deletion[method][direction]
-            ax = axes[1]
-            ax.plot(result["step"], result["signed_prediction_change_ps"],
-                    marker=".", linewidth=1.2,
-                    label=f"{method} / {direction}")
-    axes[1].axhline(0, color="0.4", linewidth=.8)
-    axes[1].set_xlabel("Deleted windows (within each sign)")
-    axes[1].set_ylabel("Signed change of model output (ps)")
-    axes[1].set_title(f"Original prediction={original:+.2f} ps; target={target:+.2f} ps")
-    axes[1].legend(ncol=2, fontsize=8)
-    fig.suptitle(f"Event {int(event_id)} | local TSHAP and progressive deletion")
-    fig.savefig(path, dpi=160)
+PLOT_VERSION = 2
+PLOT_FILES = ("tshap_profiles.png", "deletion_positive.png", "deletion_negative.png")
+LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png")
+METHOD_LABELS = {"knn": "KNN", "ppca": "PPCA", "mean": "Development mean"}
+
+
+def _window_plot_geometry(time_ps, starts, width):
+    """Time intervals in ns from the actual prepared waveform grid."""
+    times = np.asarray(time_ps, dtype=np.float64)
+    starts = np.asarray(starts, dtype=np.int64)
+    if (times.ndim != 1 or len(times) < 2 or
+            not np.all(np.isfinite(times)) or
+            np.any(np.diff(times) <= 0) or
+            starts.ndim != 1 or not len(starts) or
+            width < 1 or np.any(starts < 0) or
+            np.any(starts + width > len(times))):
+        raise ValueError("Invalid time grid or TSHAP windows for plotting")
+    left = times[starts] / 1000.
+    last = starts + width - 1
+    # Use the following sample boundary when possible; extrapolate only for
+    # a window ending on the final available sample.
+    next_time = np.where(
+        last + 1 < len(times),
+        times[np.minimum(last + 1, len(times) - 1)],
+        times[last] + (times[last] - times[last - 1]))
+    right = next_time / 1000.
+    return (left + right) / 2., right - left
+
+
+def _plot_tshap_profiles(path, event_id, time_ps, starts, width, scores):
+    """One signed bar profile per imputer; comparable symmetric y scales."""
+    center_ns, width_ns = _window_plot_geometry(time_ps, starts, width)
+    arrays = {method: np.asarray(scores[method], dtype=np.float64)
+              for method in METHODS}
+    if any(v.shape != center_ns.shape or not np.isfinite(v).all()
+           for v in arrays.values()):
+        raise ValueError("Invalid saved local TSHAP profiles")
+    maximum = max(float(np.max(np.abs(v))) for v in arrays.values())
+    limit = max(1., maximum * 1.08)
+
+    fig, axes = plt.subplots(len(METHODS), 1, figsize=(11, 8.5),
+                             sharex=True, sharey=True, constrained_layout=True)
+    for ax, method in zip(np.atleast_1d(axes), METHODS):
+        values = arrays[method]
+        positive = np.where(values > 0, values, 0.)
+        negative = np.where(values < 0, values, 0.)
+        ax.bar(center_ns, positive, width=width_ns * .94,
+               color="tab:blue", alpha=.85, label="Positive")
+        ax.bar(center_ns, negative, width=width_ns * .94,
+               color="tab:red", alpha=.80, label="Negative")
+        ax.axhline(0, color="0.35", lw=.85)
+        ax.set_ylim(-limit, limit)
+        ax.set_ylabel(f"{METHOD_LABELS[method]}\nShapley (ps)")
+        ax.grid(axis="y", alpha=.22)
+        ax.set_axisbelow(True)
+        ax.set_title(f"{METHOD_LABELS[method]} | +{np.count_nonzero(values > 0)} / "
+                     f"-{np.count_nonzero(values < 0)} windows",
+                     fontsize=10, loc="left")
+    axes[0].legend(loc="upper right", ncol=2, fontsize=9)
+    axes[-1].set_xlabel("Time relative to LED (ns)")
+    fig.suptitle(f"Event {int(event_id)} | signed local TSHAP profiles")
+    fig.savefig(path, dpi=170)
     plt.close(fig)
 
 
-def _plot_error(path, event_id, deletion):
-    fig, ax = plt.subplots(figsize=(10, 4.5), constrained_layout=True)
+def _plot_deletion_sign(path, event_id, deletion, direction, *, original, target):
+    """Only three method curves per panel; two separate signed deletion figures."""
+    if direction not in DIRECTIONS:
+        raise ValueError(f"Unknown deletion direction: {direction}")
+    fig, axes = plt.subplots(2, 1, figsize=(10.5, 7), sharex=True,
+                             constrained_layout=True)
+    from matplotlib.ticker import MaxNLocator
+    curve_colors = {"knn": "tab:blue", "ppca": "tab:orange",
+                    "mean": "tab:green"}
+    max_step = 0
     for method in METHODS:
-        for direction in DIRECTIONS:
-            result = deletion[method][direction]
-            ax.plot(result["step"], result["absolute_error_change_ps"],
-                    marker=".", linewidth=1.2, label=f"{method} / {direction}")
-    ax.axhline(0, color="0.4", linewidth=.8)
-    ax.set(xlabel="Deleted windows (within each sign)",
-           ylabel="Change in absolute residual error (ps)",
-           title=f"Event {event_id} | deviation from calibrated target")
-    ax.legend(ncol=2, fontsize=8)
-    fig.savefig(path, dpi=160)
+        curve = deletion[method][direction]
+        step = np.asarray(curve["step"], dtype=np.int64)
+        change = np.asarray(curve["signed_prediction_change_ps"], dtype=float)
+        error = np.asarray(curve["absolute_error_change_ps"], dtype=float)
+        order = np.asarray(curve["removed_window_indices"], dtype=int)
+        if (step.ndim != 1 or len(step) != len(order) + 1 or
+                not np.array_equal(step, np.arange(len(step))) or
+                change.shape != step.shape or error.shape != step.shape or
+                not np.isfinite(change).all() or not np.isfinite(error).all()):
+            raise ValueError(f"Malformed {method} {direction} deletion curve")
+        label = f"{METHOD_LABELS[method]} (n={len(order)})"
+        max_step = max(max_step, len(order))
+        for ax, y in zip(axes, (change, error)):
+            ax.plot(step, y, marker="o", markersize=2.6,
+                    linewidth=1.5, color=curve_colors[method], label=label)
+    for ax in axes:
+        ax.axhline(0, color="0.35", lw=.85)
+        ax.grid(alpha=.23)
+        ax.set_axisbelow(True)
+        ax.set_xlim(0, max(1, max_step))
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
+    axes[0].set_ylabel("Signed prediction change (ps)")
+    axes[1].set_ylabel("Change in absolute error (ps)")
+    axes[1].set_xlabel(f"Number of {direction} windows deleted (rank order)")
+    axes[0].legend(loc="best", fontsize=9)
+    if max_step == 0:
+        axes[0].text(.5, .5, f"No {direction} windows",
+                     transform=axes[0].transAxes, ha="center", va="center")
+    fig.suptitle(
+        f"Event {int(event_id)} | {direction.capitalize()} deletion\n"
+        f"Original prediction {float(original):+.2f} ps; "
+        f"target {float(target):+.2f} ps")
+    fig.savefig(path, dpi=170)
     plt.close(fig)
+
+
+def _write_event_plots(folder, event_id, time_ps, starts, width, scores,
+                       deletion, *, original, target):
+    """Render from saved numerical arrays; never calls the ML model."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    _plot_tshap_profiles(folder / "tshap_profiles.png", event_id,
+                         time_ps, starts, width, scores)
+    for direction in DIRECTIONS:
+        _plot_deletion_sign(folder / f"deletion_{direction}.png", event_id,
+                            deletion, direction, original=original, target=target)
+    # Discard only superseded plotting artifacts, not raw numerical results.
+    for name in LEGACY_PLOT_FILES:
+        (folder / name).unlink(missing_ok=True)
+
+
+def replot_saved(output_root):
+    """Regenerate the three figures using existing JSON/NPZ without model inference."""
+    root = Path(output_root).expanduser().resolve()
+    info_file = root / "reference_details.npz"
+    summary_file = root / "summary.json"
+    if not info_file.is_file() or not summary_file.is_file():
+        raise FileNotFoundError(
+            "Replot needs existing reference_details.npz and summary.json")
+    with np.load(info_file, allow_pickle=False) as info:
+        starts = np.asarray(info["starts"], dtype=np.int64)
+        time_ps = np.asarray(info["time_ps"], dtype=np.float64)
+    summary = json.loads(summary_file.read_text(encoding="utf-8"))
+    width = int(summary["window_samples"])
+    validate_windows(np.ones(len(time_ps), dtype=bool), starts, width)
+    folders = sorted(folder for folder in root.glob("event_*")
+                     if folder.is_dir() and (folder / "results.json").is_file())
+    if not folders:
+        raise FileNotFoundError("No event_*/results.json files to replot")
+    for folder in folders:
+        payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
+        scores = payload["signed_attributions_ps"]
+        deletion = payload["deletion"]
+        _write_event_plots(
+            folder, int(payload["event_id"]), time_ps, starts, width,
+            scores, deletion, original=float(payload["original_prediction_ps"]),
+            target=float(payload["target_ps"]))
+        print(f"REPLOT | event={payload['event_id']} | {folder}", flush=True)
+    summary["plot_version"] = PLOT_VERSION
+    summary["event_plot_files"] = list(PLOT_FILES)
+    summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"REPLOT COMPLETE | events={len(folders)} | output={root}", flush=True)
+    return root
 
 
 def run(args):
+    if getattr(args, "replot_only", False):
+        return replot_saved(args.output_root)
+    if args.model_dir is None:
+        raise ValueError("--model-dir is required unless --replot-only is selected")
     if args.cache_root and args.artifact_root:
         raise ValueError("Use --cache-root OR --artifact-root")
     if args.window_samples < 1 or args.stride_samples < args.window_samples:
@@ -273,6 +392,14 @@ def run(args):
                     "original_prediction_ps": float(full),
                     "target_ps": float(target),
                     "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
+                    "positive_order": {
+                        method: curves[method]["positive"]["removed_window_indices"].tolist()
+                        for method in METHODS
+                    },
+                    "negative_order": {
+                        method: curves[method]["negative"]["removed_window_indices"].tolist()
+                        for method in METHODS
+                    },
                     "deletion": {
                         method: {
                             direction: {
@@ -284,10 +411,9 @@ def run(args):
                 }
                 (event_root / "results.json").write_text(
                     json.dumps(payload, indent=2), encoding="utf-8")
-                _plot_event(event_root / "tshap_deletion.png",
-                            event_id, time_ps, starts, args.window_samples,
-                            scores, curves, original=full, target=target)
-                _plot_error(event_root / "deletion_error.png", event_id, curves)
+                _write_event_plots(
+                    event_root, event_id, time_ps, starts, args.window_samples,
+                    scores, curves, original=full, target=target)
         finally:
             del fitted
             release_training_memory()
@@ -305,6 +431,8 @@ def run(args):
         "imputation_definition": "point-conditional means; independent refit forbidden during deletion",
         "deletion_semantics": "cumulative missing union, fresh conditioning on original remaining samples",
         "target_metric": "absolute calibrated residual error and signed model output change",
+        "plot_version": PLOT_VERSION,
+        "event_plot_files": list(PLOT_FILES),
         "interpretation_warning": "Perturbation-dependent local rankings, not physical causality",
     }, indent=2), encoding="utf-8")
     print(f"COMPLETE | events={len(event_ids)} | output={output}", flush=True)
@@ -313,7 +441,10 @@ def run(args):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model-dir", required=True, type=Path)
+    p.add_argument("--model-dir", type=Path,
+                   help="Saved model directory (not needed with --replot-only)")
+    p.add_argument("--replot-only", action="store_true",
+                   help="Regenerate figures from existing numerical results; no ML inference or imputer fit")
     p.add_argument("--cache-root", type=Path)
     p.add_argument("--artifact-root", type=Path)
     p.add_argument("--output-root", required=True, type=Path)
