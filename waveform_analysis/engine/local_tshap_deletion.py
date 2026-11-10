@@ -331,8 +331,10 @@ def deletion_sequence_curve(bank, query, starts, width, scores, predict,
     has_unranked_tail = bool(remaining.any())
     # Enforce the same mean-imputed endpoint for ALL methods even if PPCA's
     # unconditional mean differs from the arithmetic Development mean.
-    terminal = np.asarray(query, dtype=np.float32).copy()
-    terminal[:, keep] = bank.mean[:, keep]
+    # Canonical terminal input: the frozen Development mean over the full
+    # waveform. Coordinates outside the model-retained mask are ignored by
+    # the fitted model's sample mask, so this representation is event-invariant.
+    terminal = np.asarray(bank.mean, dtype=np.float32).copy()
     if has_unranked_tail:
         remaining[:] = False
         modified.append(terminal)
