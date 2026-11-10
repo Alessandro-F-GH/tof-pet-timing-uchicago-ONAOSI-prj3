@@ -305,6 +305,13 @@ def replot_saved(output_root):
                 "Saved curves use the old sign-only protocol. "
                 "Run a new full-sequence experiment; --replot-only cannot "
                 "calculate missing model predictions.")
+        for method in METHODS:
+            for sequence in DELETION_SEQUENCES:
+                curve = deletion[method][sequence]
+                for obsolete in ("absolute_error_ps", "absolute_error_change_ps",
+                                 "squared_error_change_ps2",
+                                 "absolute_prediction_deviation_ps"):
+                    curve.pop(obsolete, None)
         waveform_mv = payload.get("waveform_mv")
         _write_event_plots(
             folder, int(payload["event_id"]), time_ps, starts, width,
@@ -329,8 +336,8 @@ def replot_saved(output_root):
                 original = float(event_data["original_prediction_ps"])
                 deviation = float(record["prediction_ps"]) - original
                 record["signed_prediction_change_ps"] = deviation
-                record["absolute_prediction_deviation_ps"] = abs(deviation)
-                for obsolete in ("absolute_error_ps", "absolute_error_change_ps",
+                for obsolete in ("absolute_prediction_deviation_ps",
+                                 "absolute_error_ps", "absolute_error_change_ps",
                                  "squared_error_change_ps2"):
                     record.pop(obsolete, None)
             columns = [column for column in records[0]]
