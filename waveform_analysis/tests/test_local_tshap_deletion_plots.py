@@ -8,6 +8,7 @@ import pytest
 
 from waveform_analysis.scripts.local_tshap_deletion import (
     METHODS, PLOT_FILES, _window_plot_geometry, _write_event_plots,
+    _reference_pointwise_stats, _event_pointwise_zscores,
     parser, replot_saved, run,
 )
 
@@ -59,7 +60,10 @@ def test_split_plots_saved_and_old_plots_removed(tmp_path):
         (tmp_path / obsolete).write_text("obsolete")
     _write_event_plots(tmp_path, 172, times, starts, 4,
                        scores, deletion, original=5.5,
-                       waveform_mv=np.stack((np.arange(len(times)), -np.arange(len(times)))))
+                       waveform_mv=np.stack((np.arange(len(times)), -np.arange(len(times)))),
+                       waveform_zscore=np.stack((np.linspace(-2, 2, len(times)),
+                                                  np.linspace(2, -2, len(times)))),
+                       reference_count=80)
     assert all((tmp_path / name).is_file() for name in PLOT_FILES)
     assert all((tmp_path / name).stat().st_size > 1000 for name in PLOT_FILES)
     assert not (tmp_path / "tshap_deletion.png").exists()
@@ -80,6 +84,9 @@ def test_replot_from_saved_artifacts_does_not_require_model(tmp_path):
     (folder / "results.json").write_text(json.dumps({
         "event_id": 172, "original_prediction_ps": 5.5, "target_ps": 6.,
         "waveform_mv": np.stack((np.arange(len(times)), -np.arange(len(times)))).tolist(),
+        "waveform_zscore": np.stack((np.linspace(-2, 2, len(times)),
+                                     np.linspace(2, -2, len(times)))).tolist(),
+        "zscore_reference_count": 80,
         "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
         "deletion": {
             method: {
@@ -135,3 +142,31 @@ def test_waveforms_only_requires_saved_model_run(tmp_path):
         "--waveforms-only", "--output-root", str(tmp_path)])
     with pytest.raises(ValueError, match="model-dir"):
         run(args)
+
+
+def test_pointwise_reference_zscores_per_detector_and_time():
+    # Different means across time/detectors and finite across-event variance.
+    values = np.array([
+        [[0., 10., 20.], [100., 200., 300.]],
+        [[2., 12., 22.], [102., 202., 302.]],
+        [[4., 14., 24.], [104., 204., 304.]],
+    ], dtype=np.float64)
+    mean, std, floor = _reference_pointwise_stats(values)
+    np.testing.assert_allclose(mean, [[2., 12., 22.], [102., 202., 302.]])
+    np.testing.assert_allclose(std, 2.)
+    assert floor.shape == (2,)
+    example = np.array([[4., 12., 20.], [102., 204., 304.]])
+    z = _event_pointwise_zscores(example, mean, std)
+    np.testing.assert_allclose(z, [[1., 0., -1.], [0., 1., 1.]])
+
+
+def test_pointwise_reference_std_floor_avoids_division_by_zero():
+    values = np.array([
+        [[1., 2., 3.], [3., 2., 1.]],
+        [[1., 4., 3.], [3., 2., 3.]],
+        [[1., 6., 3.], [3., 2., 5.]],
+    ], dtype=float)
+    mean, std, floor = _reference_pointwise_stats(values)
+    assert np.all(std > 0)
+    assert np.all(floor > 0)
+    assert np.isfinite(_event_pointwise_zscores(values[0], mean, std)).all()
