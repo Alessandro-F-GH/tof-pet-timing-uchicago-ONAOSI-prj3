@@ -57,13 +57,18 @@ phi(W) = 0.5 * [ f(impute(observed W)) - f(impute(observed none))
 
 The imputer approximates a **conditional waveform mean**; evaluating a nonlinear ML model on that mean is not generally the same as the conditional mean of model outputs. These scores are **Shapley-style scores for the defined point-imputation value function**, not guaranteed conditional-expectation Shapley values.
 
-Two independent deletion curves are calculated **for each method and event**:
-- Positive windows: descending strictly positive scores
-- Negative windows: ascending strictly negative scores (most negative first)
+Two **complete progressive deletion sequences** are calculated for every method and event:
 
-At step `k`, the union of the first `k` deleted windows is re-imputed from the **original waveform and all remaining observed samples**, never from previously imputed samples. All original model-retained samples outside that union are available. No retraining/refitting occurs during deletion. Curves show signed output change and its absolute deviation from the untouched model prediction. The noisy calibrated timing target is not used for deletion scoring.
+- **Positive → negative:** remove positive-attribution windows in descending score order, then negative-attribution windows from most negative toward zero
+- **Negative → positive:** remove negative windows first (most negative to zero), then positive windows in descending score order
 
-There is no forced deletion of windows with the opposite sign. As a consequence, positive and negative curves can end at different percentages of all windows.
+Zero-score windows are removed last. At every intermediate step, the union of the deleted windows is re-imputed using **only the original still-observed samples**, never earlier imputations. PPCA and KNN use the same frozen Development state/reference population, without refitting.
+
+**Both complete curves end with all model-retained samples removed.** Existing TSHAP excludes boundary windows, so the final cleanup step also removes unranked retained samples. The terminal waveform uses the **same frozen timewise Development mean for all three methods**, even if PPCA's unconditional mean differs from that arithmetic mean. As a result, all curves have exactly the same endpoint model prediction. The final cleanup may cause an additional jump and is reported separately in the saved curve stage.
+
+The figure `deletion.png` has two panels (positive→negative and negative→positive) with three method curves each; y-axis is the **signed change in the model prediction** from its untouched value (ps), and the x-axis is the fraction of model-retained input coordinates deleted. This is not the normalized dAUC/iAUC measure from the referenced article; it is a corresponding local signed output-deletion visualization.
+
+**Important:** old results only contain partial sign-only deletion sequences. A new run with the model is necessary to compute the missing intermediate model outputs. `--replot-only` intentionally refuses old sign-only results; it cannot extrapolate the full curves.
 
 ## Reuse and computational cost
 
@@ -97,7 +102,7 @@ python -m waveform_analysis.scripts.local_tshap_deletion `
   --output-root "$out"
 ```
 
-This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing numerical deletion predictions are used to reconstruct the new model-reference metric without inference. **Older runs lack persisted per-event waveforms.** Recover them without rerunning TSHAP or model inference using `--waveforms-only` and the original model run/cache: Positive and negative deletion curves appear in the upper and lower panels of one `deletion.png` figure; only the signed change from the original model output is plotted, for three imputers. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV.
+This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing *full-sequence* numerical deletion predictions can be replotted without inference. Sign-only results from previous versions need a new run. **Older runs lack persisted per-event waveforms.** Recover them without rerunning TSHAP or model inference using `--waveforms-only` and the original model run/cache: The two complete signed sequences appear in the upper and lower panels of one `deletion.png` figure, for three imputers; the common final point is the mean-imputed waveform prediction. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV.
 
 ```powershell
 python -m waveform_analysis.scripts.local_tshap_deletion `
