@@ -253,7 +253,7 @@ def _plot_event_waveforms(path, event_id, time_ps, waveform_mv,
                           *, waveform_zscore=None, reference_count=None):
     """Plot both original signals (mV); z-score controls line-segment color."""
     from matplotlib.collections import LineCollection
-    from matplotlib.colors import Normalize
+    from matplotlib.colors import Normalize, LinearSegmentedColormap
     from matplotlib.cm import ScalarMappable
 
     times = np.asarray(time_ps, dtype=np.float64) / 1000.
@@ -271,7 +271,11 @@ def _plot_event_waveforms(path, event_id, time_ps, waveform_mv,
     fig, axes = plt.subplots(2, 1, figsize=(11, 6.8), sharex=True,
                              constrained_layout=True)
     norm = Normalize(vmin=-3, vmax=3, clip=True)
-    cmap = plt.get_cmap("RdBu_r")
+    cmap = LinearSegmentedColormap.from_list(
+        "zscore_blue_black_red",
+        [(0.0, "#2166ac"), (0.5, "#000000"), (1.0, "#b2182b")],
+        N=257,
+    )
     for detector, ax in enumerate(axes):
         signal = waves[detector]
         if z is None:
