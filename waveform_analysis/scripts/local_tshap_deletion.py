@@ -311,8 +311,30 @@ def replot_saved(output_root):
                   "(old result); only TSHAP/deletion figures regenerated", flush=True)
         else:
             print(f"REPLOT | event={payload['event_id']} | {folder}", flush=True)
+    csv_file = root / "deletion_curves.csv"
+    if csv_file.is_file():
+        import csv
+        with csv_file.open("r", newline="", encoding="utf-8") as stream:
+            records = list(csv.DictReader(stream))
+        if records:
+            for record in records:
+                root_event = root / f"event_{int(record['event_id'])}"
+                event_data = json.loads((root_event / "results.json").read_text(encoding="utf-8"))
+                original = float(event_data["original_prediction_ps"])
+                deviation = float(record["prediction_ps"]) - original
+                record["signed_prediction_change_ps"] = deviation
+                record["absolute_prediction_deviation_ps"] = abs(deviation)
+                for obsolete in ("absolute_error_ps", "absolute_error_change_ps",
+                                 "squared_error_change_ps2"):
+                    record.pop(obsolete, None)
+            columns = [column for column in records[0]]
+            with csv_file.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(records)
     summary["plot_version"] = PLOT_VERSION
     summary["event_plot_files"] = list(PLOT_FILES)
+    summary["deletion_metrics"] = "signed and absolute deviation from untouched model output"
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"REPLOT COMPLETE | events={len(folders)} | output={root}", flush=True)
     return root
