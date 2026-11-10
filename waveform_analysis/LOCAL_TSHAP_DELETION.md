@@ -102,7 +102,7 @@ python -m waveform_analysis.scripts.local_tshap_deletion `
   --output-root "$out"
 ```
 
-This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing *full-sequence* numerical deletion predictions can be replotted without inference. Sign-only results from previous versions need a new run. **Older runs lack persisted per-event waveforms.** Recover them without rerunning TSHAP or model inference using `--waveforms-only` and the original model run/cache: The two complete signed sequences appear in the upper and lower panels of one `deletion.png` figure, for three imputers; the common final point is the mean-imputed waveform prediction. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV.
+This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing *full-sequence* numerical deletion predictions can be replotted without inference. Sign-only results from previous versions need a new run. **Older runs lack persisted per-event waveforms.** Recover them without rerunning TSHAP or model inference using `--waveforms-only` and the original model run/cache: The two complete signed sequences appear in the upper and lower panels of one `deletion.png` figure, for three imputers; the common final point is the mean-imputed waveform prediction. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV. Each line segment is colored by the pointwise z-score relative to the same seeded Development reference cohort (separately for each detector and sample time): blue means below the Development mean, red above it, and white near the mean. The color map clips at ±3, with a detector-specific standard-deviation floor to avoid enormous z-scores on nearly constant samples. Actual amplitudes remain on the y-axis in mV. The z-score values and reference counts are persisted in each event JSON; reference mean/std arrays are stored in reference_details.npz.
 
 ```powershell
 python -m waveform_analysis.scripts.local_tshap_deletion `
@@ -112,7 +112,7 @@ python -m waveform_analysis.scripts.local_tshap_deletion `
   --output-root "$out"
 ```
 
-This resolves saved event IDs in the frozen Blind prepared dataset, checks the saved model fingerprint and time grid, converts original model input waveforms back to physical mV, writes `waveform_mv` to each event JSON, and creates `event_waveforms.png`. No model, PPCA, or KNN inference is needed. Then `--replot-only` can redraw all figures.
+This resolves saved event IDs in the frozen Blind prepared dataset, checks the saved model fingerprint and time grid, recovers the same Development reference cohort from saved reference event IDs, computes per-sample detector-wise z-score statistics, converts original model input waveforms back to physical mV, writes `waveform_mv` and `waveform_zscore` to each event JSON, and creates `event_waveforms.png`. No model, PPCA, or KNN inference is needed. Then `--replot-only` can redraw all figures.
 
 Run unit tests:
 
