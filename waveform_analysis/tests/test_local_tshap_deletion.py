@@ -57,7 +57,7 @@ def test_two_player_shapley_and_signed_deletion(method):
     np.testing.assert_allclose(result["scores"], expected)
     for direction in ("positive", "negative"):
         curve = deletion_curve(
-            bank, query, starts, 4, result["scores"], predict, full, 1.,
+            bank, query, starts, 4, result["scores"], predict, full,
             method=method, direction=direction, knn_context=context)
         assert len(curve["prediction_ps"]) == len(
             curve["removed_window_indices"]) + 1
@@ -65,8 +65,10 @@ def test_two_player_shapley_and_signed_deletion(method):
         np.testing.assert_allclose(curve["signed_prediction_change_ps"],
                                    curve["prediction_ps"] - full)
         np.testing.assert_allclose(
-            curve["absolute_error_change_ps"],
-            np.abs(1. - curve["prediction_ps"]) - abs(1. - full))
+            curve["absolute_prediction_deviation_ps"],
+            np.abs(curve["prediction_ps"] - full))
+        assert curve["absolute_prediction_deviation_ps"][0] == 0
+        assert "absolute_error_change_ps" not in curve
 
 
 def test_deletion_uses_original_query_and_union_not_previous_imputations():
@@ -76,7 +78,7 @@ def test_deletion_uses_original_query_and_union_not_previous_imputations():
     full = float(predict(query[None])[0])
     for method in ("knn", "ppca", "mean"):
         curve = deletion_curve(bank, query, starts, 4, score, predict, full,
-                               1., method=method, direction="positive",
+                               method=method, direction="positive",
                                knn_context=context)
         remaining = bank.retained.copy()
         remaining[starts[0]:starts[0]+4] = False
