@@ -543,7 +543,6 @@ def run(args):
                                 "n_second_sign_windows": int(curve["second_phase_count"]),
                                 "prediction_ps": float(output_ps),
                                 "signed_prediction_change_ps": float(curve["signed_prediction_change_ps"][step]),
-                                "absolute_prediction_deviation_ps": float(curve["absolute_prediction_deviation_ps"][step]),
                             })
                     print(f"  METHOD | {method} | signed windows: "
                           f"+{(shap['scores'] > 0).sum()} / "
