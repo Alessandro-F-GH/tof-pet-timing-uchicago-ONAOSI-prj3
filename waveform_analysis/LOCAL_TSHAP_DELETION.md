@@ -84,14 +84,25 @@ output/
   summary.json
   event_<ID>/
     results.json
-    tshap_deletion.png
-    deletion_error.png
+    tshap_profiles.png
+    deletion_positive.png
+    deletion_negative.png
 ```
+
+**Replot existing numerical results without running inference, PPCA or KNN:**
+
+```powershell
+python -m waveform_analysis.scripts.local_tshap_deletion `
+  --replot-only `
+  --output-root "$out"
+```
+
+This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Positive and negative deletion curves are split into separate figures, each showing signed output change and change in absolute residual error for the three imputers. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid.
 
 Run unit tests:
 
 ```powershell
-python -m pytest waveform_analysis/tests/test_local_tshap_deletion.py -q
+python -m pytest waveform_analysis/tests/test_local_tshap_deletion.py waveform_analysis/tests/test_local_tshap_deletion_plots.py -q
 ```
 
 ## Interpretation and limitations
