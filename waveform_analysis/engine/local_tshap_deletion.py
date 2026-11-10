@@ -227,7 +227,7 @@ def signed_window_order(scores, direction):
 
 
 def deletion_curve(bank, query, starts, width, scores, predict, original_prediction,
-                   target, *, method, direction, knn_context=None):
+                   *, method, direction, knn_context=None):
     """Reconstruct the entire missing union from the ORIGINAL observed samples.
 
     Never reuse previous imputed values as observations. PPCA posterior and KNN
@@ -257,16 +257,14 @@ def deletion_curve(bank, query, starts, width, scores, predict, original_predict
     else:
         predictions = np.array([float(original_prediction)], dtype=np.float64)
     n = np.arange(len(predictions))
-    original_error = abs(float(target) - float(original_prediction))
-    original_squared = (float(target) - float(original_prediction)) ** 2
+    # A local explanation evaluates model-output fidelity, not noisy event labels.
+    # Step zero is the untouched model prediction, so its deviation is zero.
+    deviation = predictions - float(original_prediction)
     return {
         "removed_window_indices": order,
         "step": n,
         "fraction_all_windows": n / len(starts),
         "prediction_ps": predictions,
-        "signed_prediction_change_ps": predictions - float(original_prediction),
-        "absolute_error_ps": np.abs(float(target) - predictions),
-        "absolute_error_change_ps": np.abs(float(target) - predictions) - original_error,
-        "squared_error_change_ps2": (float(target) - predictions) ** 2 -
-                                    original_squared,
+        "signed_prediction_change_ps": deviation,
+        "absolute_prediction_deviation_ps": np.abs(deviation),
     }
