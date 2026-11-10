@@ -119,8 +119,6 @@ def _plot_event(path, event_id, time_ps, starts, width, scores, deletion,
     axes[0].set_ylabel("Paired-window signed Shapley (ps)")
     axes[0].set_xlabel("Time relative to LED (ns)")
     axes[0].legend()
-    for direction, ax in zip(DIRECTIONS, (axes[1],)):
-        pass
     # The second panel includes BOTH signs for each imputer.
     for method in METHODS:
         for direction in DIRECTIONS:
