@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import matplotlib
@@ -107,7 +108,7 @@ def _cohort_cache(path, reference, identity, args, retained):
     return bank, cache
 
 
-PLOT_VERSION = 6
+PLOT_VERSION = 7
 PLOT_FILES = ("event_waveforms.png", "tshap_profiles.png", "deletion.png")
 LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png",
                      "deletion_positive.png", "deletion_negative.png")
@@ -272,8 +273,8 @@ def _plot_event_waveforms(path, event_id, time_ps, waveform_mv,
                              constrained_layout=True)
     norm = Normalize(vmin=-3, vmax=3, clip=True)
     cmap = LinearSegmentedColormap.from_list(
-        "zscore_blue_black_red",
-        [(0.0, "#2166ac"), (0.5, "#000000"), (1.0, "#b2182b")],
+        "zscore_blue_gray_red",
+        [(0.0, "#2166ac"), (0.5, "#777777"), (1.0, "#b2182b")],
         N=257,
     )
     for detector, ax in enumerate(axes):
@@ -347,6 +348,40 @@ def _write_event_plots(folder, event_id, time_ps, starts, width, scores,
         (folder / name).unlink(missing_ok=True)
 
 
+def _safe_group_name(group):
+    """Return a filesystem-safe group directory while preserving readable labels."""
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(group)).strip("._")
+    return value or "ungrouped"
+
+
+def _organize_event_folders(root):
+    """Place each event under root/<group>/event_<ID>, migrating flat legacy runs."""
+    root = Path(root)
+    folders = sorted(
+        folder for folder in root.rglob("event_*")
+        if folder.is_dir() and (folder / "results.json").is_file()
+    )
+    organized = []
+    seen = set()
+    for folder in folders:
+        payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
+        event_id = int(payload["event_id"])
+        group = _safe_group_name(payload.get("group", "ungrouped"))
+        target = root / group / folder.name
+        if folder.resolve() != target.resolve():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                raise FileExistsError(
+                    f"Cannot organize event {event_id}: destination already exists: {target}"
+                )
+            folder.replace(target)
+        if event_id in seen:
+            raise ValueError(f"Duplicate event ID {event_id} in output event folders")
+        seen.add(event_id)
+        organized.append(target)
+    return organized
+
+
 def replot_saved(output_root):
     """Regenerate the three figures using existing JSON/NPZ without model inference."""
     root = Path(output_root).expanduser().resolve()
@@ -361,12 +396,13 @@ def replot_saved(output_root):
     summary = json.loads(summary_file.read_text(encoding="utf-8"))
     width = int(summary["window_samples"])
     validate_windows(np.ones(len(time_ps), dtype=bool), starts, width)
-    folders = sorted(folder for folder in root.glob("event_*")
-                     if folder.is_dir() and (folder / "results.json").is_file())
+    folders = _organize_event_folders(root)
     if not folders:
-        raise FileNotFoundError("No event_*/results.json files to replot")
+        raise FileNotFoundError("No <group>/event_*/results.json files to replot")
+    event_paths = {}
     for folder in folders:
         payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
+        event_paths[int(payload["event_id"])] = folder
         scores = payload["signed_attributions_ps"]
         original = float(payload["original_prediction_ps"])
         deletion = payload["deletion"]
@@ -405,8 +441,11 @@ def replot_saved(output_root):
             records = list(csv.DictReader(stream))
         if records:
             for record in records:
-                root_event = root / f"event_{int(record['event_id'])}"
-                event_data = json.loads((root_event / "results.json").read_text(encoding="utf-8"))
+                event_id = int(record["event_id"])
+                if event_id not in event_paths:
+                    raise ValueError(f"Deletion CSV refers to missing event {event_id}")
+                event_data = json.loads(
+                    (event_paths[event_id] / "results.json").read_text(encoding="utf-8"))
                 original = float(event_data["original_prediction_ps"])
                 deviation = float(record["prediction_ps"]) - original
                 record["signed_prediction_change_ps"] = deviation
@@ -481,10 +520,9 @@ def hydrate_saved_waveforms(model_dir, output_root, *, cache_root=None,
         transform.inverse(ref_waves))
     indices = {int(event_id): i for i, event_id in
                enumerate(np.asarray(blind.event_index, dtype=np.int64))}
-    folders = sorted(folder for folder in root.glob("event_*")
-                     if folder.is_dir() and (folder / "results.json").is_file())
+    folders = _organize_event_folders(root)
     if not folders:
-        raise FileNotFoundError("No saved event_*/results.json files found")
+        raise FileNotFoundError("No saved <group>/event_*/results.json files found")
     for folder in folders:
         payload_path = folder / "results.json"
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
@@ -648,7 +686,9 @@ def run(args):
                     print(f"  METHOD | {method} | signed windows: "
                           f"+{(shap['scores'] > 0).sum()} / "
                           f"-{(shap['scores'] < 0).sum()}", flush=True)
-                event_root = output / f"event_{int(event_id)}"
+                event_root = (
+                    output / _safe_group_name(group) / f"event_{int(event_id)}"
+                )
                 event_root.mkdir(parents=True, exist_ok=True)
                 payload = {
                     "event_id": int(event_id), "group": str(group),
@@ -703,6 +743,7 @@ def run(args):
         "endpoint": "shared Development mean after removing all model-retained coordinates",
         "plot_version": PLOT_VERSION,
         "event_plot_files": list(PLOT_FILES),
+        "event_directory_layout": "<group>/event_<ID>",
         "interpretation_warning": "Perturbation-dependent local rankings, not physical causality",
     }, indent=2), encoding="utf-8")
     print(f"COMPLETE | events={len(event_ids)} | output={output}", flush=True)
