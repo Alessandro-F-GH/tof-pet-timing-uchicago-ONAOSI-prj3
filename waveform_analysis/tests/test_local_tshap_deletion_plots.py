@@ -23,16 +23,24 @@ def _example():
     deletion = {}
     for method in METHODS:
         deletion[method] = {}
-        for direction in ("positive", "negative"):
-            order = np.flatnonzero(scores[method] > 0 if direction == "positive"
-                                   else scores[method] < 0)
-            steps = np.arange(len(order) + 1)
-            deletion[method][direction] = {
+        for sequence in ("positive_negative", "negative_positive"):
+            values = scores[method]
+            positive = np.flatnonzero(values > 0)
+            positive = positive[np.argsort(-values[positive])]
+            negative = np.flatnonzero(values < 0)
+            negative = negative[np.argsort(values[negative])]
+            order = np.r_[positive, negative] if sequence == "positive_negative" else np.r_[negative, positive]
+            steps = np.arange(len(order) + 2)
+            changes = .5 * steps.astype(float)
+            changes[-1] = 2.0
+            deletion[method][sequence] = {
                 "step": steps,
                 "removed_window_indices": order,
-                "signed_prediction_change_ps": .5 * steps,
-                "absolute_prediction_deviation_ps": .5 * steps,
-                "prediction_ps": 5.5 + .5 * steps,
+                "first_phase_count": len(positive) if sequence == "positive_negative" else len(negative),
+                "second_phase_count": len(negative) if sequence == "positive_negative" else len(positive),
+                "signed_prediction_change_ps": changes,
+                "fraction_deleted": np.r_[0., .125, .25, .375, .5, 1.],
+                "prediction_ps": 5.5 + changes,
             }
     return time_ps, starts, scores, deletion
 
@@ -101,8 +109,7 @@ def test_replot_migrates_legacy_target_error_metrics_without_inference(tmp_path)
     folder = tmp_path / "event_173"
     folder.mkdir()
     for method in METHODS:
-        for direction in ("positive", "negative"):
-            deletion[method][direction].pop("absolute_prediction_deviation_ps")
+        for direction in ("positive_negative", "negative_positive"):
             deletion[method][direction]["absolute_error_change_ps"] = [99] * (
                 len(deletion[method][direction]["step"]))
     (folder / "results.json").write_text(json.dumps({
@@ -117,10 +124,10 @@ def test_replot_migrates_legacy_target_error_metrics_without_inference(tmp_path)
     replot_saved(tmp_path)
     payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
     for method in METHODS:
-        for direction in ("positive", "negative"):
+        for direction in ("positive_negative", "negative_positive"):
             curve = payload["deletion"][method][direction]
-            assert curve["absolute_prediction_deviation_ps"][0] == 0
             assert "absolute_error_change_ps" not in curve
+            assert curve["signed_prediction_change_ps"][0] == 0
     assert not (folder / "event_waveforms.png").exists()
 
 def test_waveforms_only_requires_saved_model_run(tmp_path):
