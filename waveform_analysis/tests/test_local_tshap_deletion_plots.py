@@ -31,7 +31,8 @@ def _example():
                 "step": steps,
                 "removed_window_indices": order,
                 "signed_prediction_change_ps": .5 * steps,
-                "absolute_error_change_ps": -.25 * steps,
+                "absolute_prediction_deviation_ps": .5 * steps,
+                "prediction_ps": 5.5 + .5 * steps,
             }
     return time_ps, starts, scores, deletion
 
@@ -48,7 +49,8 @@ def test_split_plots_saved_and_old_plots_removed(tmp_path):
     for obsolete in ("tshap_deletion.png", "deletion_error.png"):
         (tmp_path / obsolete).write_text("obsolete")
     _write_event_plots(tmp_path, 172, times, starts, 4,
-                       scores, deletion, original=5.5, target=6.)
+                       scores, deletion, original=5.5,
+                       waveform_mv=np.stack((np.arange(len(times)), -np.arange(len(times)))))
     assert all((tmp_path / name).is_file() for name in PLOT_FILES)
     assert all((tmp_path / name).stat().st_size > 1000 for name in PLOT_FILES)
     assert not (tmp_path / "tshap_deletion.png").exists()
@@ -65,6 +67,7 @@ def test_replot_from_saved_artifacts_does_not_require_model(tmp_path):
     folder.mkdir()
     (folder / "results.json").write_text(json.dumps({
         "event_id": 172, "original_prediction_ps": 5.5, "target_ps": 6.,
+        "waveform_mv": np.stack((np.arange(len(times)), -np.arange(len(times)))).tolist(),
         "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
         "deletion": {
             method: {
@@ -85,3 +88,33 @@ def test_replot_from_saved_artifacts_does_not_require_model(tmp_path):
 def test_replot_reports_missing_numeric_data(tmp_path):
     with pytest.raises(FileNotFoundError, match="reference_details"):
         replot_saved(tmp_path)
+
+def test_replot_migrates_legacy_target_error_metrics_without_inference(tmp_path):
+    times, starts, scores, deletion = _example()
+    np.savez_compressed(tmp_path / "reference_details.npz", starts=starts, time_ps=times)
+    (tmp_path / "summary.json").write_text(
+        json.dumps({"window_samples": 4}), encoding="utf-8")
+    folder = tmp_path / "event_173"
+    folder.mkdir()
+    for method in METHODS:
+        for direction in ("positive", "negative"):
+            deletion[method][direction].pop("absolute_prediction_deviation_ps")
+            deletion[method][direction]["absolute_error_change_ps"] = [99] * (
+                len(deletion[method][direction]["step"]))
+    (folder / "results.json").write_text(json.dumps({
+        "event_id": 173, "original_prediction_ps": 5.5, "target_ps": 7.,
+        "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
+        "deletion": {
+            method: {direction: {k: v.tolist() if isinstance(v, np.ndarray) else v
+                                  for k, v in result.items()}
+                     for direction, result in deletion[method].items()}
+            for method in METHODS},
+    }), encoding="utf-8")
+    replot_saved(tmp_path)
+    payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
+    for method in METHODS:
+        for direction in ("positive", "negative"):
+            curve = payload["deletion"][method][direction]
+            assert curve["absolute_prediction_deviation_ps"][0] == 0
+            assert "absolute_error_change_ps" not in curve
+    assert not (folder / "event_waveforms.png").exists()
