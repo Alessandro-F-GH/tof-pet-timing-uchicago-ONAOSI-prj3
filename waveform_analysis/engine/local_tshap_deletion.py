@@ -268,3 +268,100 @@ def deletion_curve(bank, query, starts, width, scores, predict, original_predict
         "signed_prediction_change_ps": deviation,
         "absolute_prediction_deviation_ps": np.abs(deviation),
     }
+
+
+DELETION_SEQUENCES = ("positive_negative", "negative_positive")
+
+
+def signed_full_order(scores, sequence):
+    """Rank every explained window once, with a documented sign transition.
+
+    Positive: highest to lowest; negative: most negative to least negative.
+    Exactly zero values follow all nonzero windows (no signed attribution).
+    """
+    values = np.asarray(scores, dtype=np.float64)
+    if values.ndim != 1 or not np.isfinite(values).all():
+        raise ValueError("Attribution scores must be a finite 1-D array")
+    if sequence not in DELETION_SEQUENCES:
+        raise ValueError("Unknown deletion sequence")
+    positive = signed_window_order(values, "positive")
+    negative = signed_window_order(values, "negative")
+    zero = np.flatnonzero(values == 0.)
+    first, second = ((positive, negative) if sequence == "positive_negative"
+                     else (negative, positive))
+    return np.concatenate((first, second, zero)), len(first), len(second)
+
+
+def deletion_sequence_curve(bank, query, starts, width, scores, predict,
+                            original_prediction, *, method, sequence,
+                            knn_context=None, expected_endpoint=None):
+    """Full-window deletion, with an explicit final unranked-sample cleanup.
+
+    All imputations condition on original, still-observed values. The terminal
+    waveform is always the frozen Development mean for ALL model-retained
+    coordinates, including excluded boundary windows or sample-mask gaps.
+    """
+    keep, starts = validate_windows(bank.retained, starts, width)
+    order, first_count, second_count = signed_full_order(scores, sequence)
+    if len(order) != len(starts):
+        raise AssertionError("Deletion order does not cover each ranked window once")
+    remaining = keep.copy()
+    modified = []
+    removed_window_count = []
+    removed_sample_count = []
+    stage = []
+    for step, j in enumerate(order, start=1):
+        start = int(starts[j])
+        remaining[start:start + width] = False
+        if method == "knn":
+            if knn_context is None:
+                raise ValueError("Missing precomputed KNN query context")
+            removed = order[:step]
+            distance = np.maximum(
+                knn_context.full_cost -
+                np.sum(knn_context.window_cost[:, removed], axis=1),
+                0.)
+        else:
+            distance = None
+        modified.append(bank.impute(method, query, remaining, knn_cost=distance))
+        removed_window_count.append(step)
+        removed_sample_count.append(int(keep.sum() - remaining.sum()))
+        stage.append("ranked")
+
+    has_unranked_tail = bool(remaining.any())
+    if has_unranked_tail:
+        remaining[:] = False
+        # All methods must converge to EXACTLY the same frozen mean.
+        terminal = np.asarray(query, dtype=np.float32).copy()
+        terminal[:, keep] = bank.mean[:, keep]
+        modified.append(terminal)
+        removed_window_count.append(len(order))
+        removed_sample_count.append(int(keep.sum()))
+        stage.append("unranked_cleanup")
+    if not modified:
+        raise ValueError("No deletion steps available")
+    values = np.asarray(predict(np.stack(modified)), dtype=np.float64)
+    if values.shape != (len(modified),) or not np.isfinite(values).all():
+        raise ValueError("Invalid full-sequence model predictions")
+    if expected_endpoint is not None and not np.isclose(
+            values[-1], expected_endpoint, atol=1e-5, rtol=1e-6):
+        raise AssertionError("Full deletion does not converge to shared mean prediction")
+    predictions = np.r_[float(original_prediction), values]
+    removed_samples = np.r_[0, removed_sample_count]
+    steps = np.arange(len(predictions))
+    if removed_samples[-1] != int(keep.sum()):
+        raise AssertionError("Deletion must remove every model-retained sample")
+    return {
+        "removed_window_indices": order,
+        "first_phase_count": int(first_count),
+        "second_phase_count": int(second_count),
+        "zero_attribution_count": int(len(order) - first_count - second_count),
+        "terminal_cleanup": has_unranked_tail,
+        "step": steps,
+        "removed_ranked_windows": np.r_[0, removed_window_count],
+        "removed_samples": removed_samples,
+        "fraction_deleted": removed_samples / int(keep.sum()),
+        "stage": np.asarray(["original", *stage], dtype="U"),
+        "prediction_ps": predictions,
+        "signed_prediction_change_ps": predictions - float(original_prediction),
+    }
