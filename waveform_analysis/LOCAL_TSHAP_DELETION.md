@@ -86,8 +86,7 @@ output/
     results.json
     event_waveforms.png
     tshap_profiles.png
-    deletion_positive.png
-    deletion_negative.png
+    deletion.png
 ```
 
 **Replot existing numerical results without running inference, PPCA or KNN:**
@@ -98,7 +97,17 @@ python -m waveform_analysis.scripts.local_tshap_deletion `
   --output-root "$out"
 ```
 
-This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing numerical deletion predictions are used to reconstruct the new model-reference metric without inference. **Older runs lack persisted per-event waveforms**: `--replot-only` can regenerate the TSHAP and deletion figures, but `event_waveforms.png` requires one new run with saved waveform data. Positive and negative deletion curves are split into separate figures, each showing signed output change and absolute deviation from the original model output for the three imputers. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV.
+This also removes obsolete `tshap_deletion.png` and `deletion_error.png` from each event folder. Existing numerical deletion predictions are used to reconstruct the new model-reference metric without inference. **Older runs lack persisted per-event waveforms.** Recover them without rerunning TSHAP or model inference using `--waveforms-only` and the original model run/cache: Positive and negative deletion curves appear in the upper and lower panels of one `deletion.png` figure; only the signed change from the original model output is plotted, for three imputers. The TSHAP figure shows three signed bar profiles with a common y scale and time in ns from the frozen waveform grid. The event waveform figure shows the two untouched ML inputs converted from frozen min-max units to physical mV.
+
+```powershell
+python -m waveform_analysis.scripts.local_tshap_deletion `
+  --waveforms-only `
+  --model-dir "$run" `
+  --cache-root "$cache" `
+  --output-root "$out"
+```
+
+This resolves saved event IDs in the frozen Blind prepared dataset, checks the saved model fingerprint and time grid, converts original model input waveforms back to physical mV, writes `waveform_mv` to each event JSON, and creates `event_waveforms.png`. No model, PPCA, or KNN inference is needed. Then `--replot-only` can redraw all figures.
 
 Run unit tests:
 
