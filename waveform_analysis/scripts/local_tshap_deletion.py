@@ -107,8 +107,9 @@ def _cohort_cache(path, reference, identity, args, retained):
     return bank, cache
 
 
-PLOT_VERSION = 2
-PLOT_FILES = ("tshap_profiles.png", "deletion_positive.png", "deletion_negative.png")
+PLOT_VERSION = 3
+PLOT_FILES = ("event_waveforms.png", "tshap_profiles.png",
+              "deletion_positive.png", "deletion_negative.png")
 LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png")
 METHOD_LABELS = {"knn": "KNN", "ppca": "PPCA", "mean": "Development mean"}
 
@@ -172,7 +173,7 @@ def _plot_tshap_profiles(path, event_id, time_ps, starts, width, scores):
     plt.close(fig)
 
 
-def _plot_deletion_sign(path, event_id, deletion, direction, *, original, target):
+def _plot_deletion_sign(path, event_id, deletion, direction, *, original):
     """Only three method curves per panel; two separate signed deletion figures."""
     if direction not in DIRECTIONS:
         raise ValueError(f"Unknown deletion direction: {direction}")
@@ -186,7 +187,7 @@ def _plot_deletion_sign(path, event_id, deletion, direction, *, original, target
         curve = deletion[method][direction]
         step = np.asarray(curve["step"], dtype=np.int64)
         change = np.asarray(curve["signed_prediction_change_ps"], dtype=float)
-        error = np.asarray(curve["absolute_error_change_ps"], dtype=float)
+        error = np.asarray(curve["absolute_prediction_deviation_ps"], dtype=float)
         order = np.asarray(curve["removed_window_indices"], dtype=int)
         if (step.ndim != 1 or len(step) != len(order) + 1 or
                 not np.array_equal(step, np.arange(len(step))) or
@@ -205,7 +206,7 @@ def _plot_deletion_sign(path, event_id, deletion, direction, *, original, target
         ax.set_xlim(0, max(1, max_step))
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
     axes[0].set_ylabel("Signed prediction change (ps)")
-    axes[1].set_ylabel("Change in absolute error (ps)")
+    axes[1].set_ylabel("|Perturbed - original prediction| (ps)")
     axes[1].set_xlabel(f"Number of {direction} windows deleted (rank order)")
     axes[0].legend(loc="best", fontsize=9)
     if max_step == 0:
@@ -213,22 +214,63 @@ def _plot_deletion_sign(path, event_id, deletion, direction, *, original, target
                      transform=axes[0].transAxes, ha="center", va="center")
     fig.suptitle(
         f"Event {int(event_id)} | {direction.capitalize()} deletion\n"
-        f"Original prediction {float(original):+.2f} ps; "
-        f"target {float(target):+.2f} ps")
+        f"Original prediction {float(original):+.2f} ps")
     fig.savefig(path, dpi=170)
     plt.close(fig)
 
 
+def _plot_event_waveforms(path, event_id, time_ps, waveform_mv):
+    """Plot both ORIGINAL detector inputs in physical mV (no imputation)."""
+    times = np.asarray(time_ps, dtype=np.float64) / 1000.
+    waves = np.asarray(waveform_mv, dtype=np.float64)
+    if (times.ndim != 1 or waves.shape != (2, len(times)) or
+            not np.all(np.isfinite(waves))):
+        raise ValueError("Invalid physical event waveform data")
+    fig, axes = plt.subplots(2, 1, figsize=(11, 6), sharex=True,
+                             constrained_layout=True)
+    for detector, ax in enumerate(axes, start=1):
+        ax.plot(times, waves[detector - 1], lw=1.4,
+                color=("tab:blue" if detector == 1 else "tab:orange"))
+        ax.set_ylabel(f"Detector {detector} (mV)")
+        ax.grid(alpha=.24)
+    axes[-1].set_xlabel("Time relative to LED (ns)")
+    fig.suptitle(f"Event {int(event_id)} | original model input waveforms")
+    fig.savefig(path, dpi=170)
+    plt.close(fig)
+
+
+def _normalize_saved_deletion(deletion, original):
+    """Migrate old target-error metrics to model-reference metrics for plots.
+
+    The original and every deletion prediction are already persisted, so
+    this conversion does not require model inference or access to the target.
+    """
+    for method in METHODS:
+        for direction in DIRECTIONS:
+            curve = deletion[method][direction]
+            prediction = np.asarray(curve["prediction_ps"], dtype=np.float64)
+            signed = prediction - float(original)
+            curve["signed_prediction_change_ps"] = signed.tolist()
+            curve["absolute_prediction_deviation_ps"] = np.abs(signed).tolist()
+            for obsolete in ("absolute_error_ps", "absolute_error_change_ps",
+                             "squared_error_change_ps2"):
+                curve.pop(obsolete, None)
+    return deletion
+
+
 def _write_event_plots(folder, event_id, time_ps, starts, width, scores,
-                       deletion, *, original, target):
+                       deletion, *, original, waveform_mv=None):
     """Render from saved numerical arrays; never calls the ML model."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    if waveform_mv is not None:
+        _plot_event_waveforms(folder / "event_waveforms.png", event_id,
+                              time_ps, waveform_mv)
     _plot_tshap_profiles(folder / "tshap_profiles.png", event_id,
                          time_ps, starts, width, scores)
     for direction in DIRECTIONS:
         _plot_deletion_sign(folder / f"deletion_{direction}.png", event_id,
-                            deletion, direction, original=original, target=target)
+                            deletion, direction, original=original)
     # Discard only superseded plotting artifacts, not raw numerical results.
     for name in LEGACY_PLOT_FILES:
         (folder / name).unlink(missing_ok=True)
@@ -255,12 +297,20 @@ def replot_saved(output_root):
     for folder in folders:
         payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
         scores = payload["signed_attributions_ps"]
-        deletion = payload["deletion"]
+        original = float(payload["original_prediction_ps"])
+        deletion = _normalize_saved_deletion(payload["deletion"], original)
+        waveform_mv = payload.get("waveform_mv")
         _write_event_plots(
             folder, int(payload["event_id"]), time_ps, starts, width,
-            scores, deletion, original=float(payload["original_prediction_ps"]),
-            target=float(payload["target_ps"]))
-        print(f"REPLOT | event={payload['event_id']} | {folder}", flush=True)
+            scores, deletion, original=original, waveform_mv=waveform_mv)
+        payload["deletion"] = deletion
+        (folder / "results.json").write_text(
+            json.dumps(payload, indent=2), encoding="utf-8")
+        if waveform_mv is None:
+            print(f"REPLOT | event={payload['event_id']} | waveforms not saved "
+                  "(old result); only TSHAP/deletion figures regenerated", flush=True)
+        else:
+            print(f"REPLOT | event={payload['event_id']} | {folder}", flush=True)
     summary["plot_version"] = PLOT_VERSION
     summary["event_plot_files"] = list(PLOT_FILES)
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -307,6 +357,10 @@ def run(args):
         store, blind, manifest, config["mode"])
     rows, groups, event_ids = _event_rows(blind, predictions, targets, args, output)
     selected = waveform_view(blind, config["mode"], rows).materialize()
+    physical_transform = getattr(blind, f"{family}_transform")
+    if physical_transform is None:
+        raise ValueError("Missing frozen waveform scaling for physical input plots")
+    selected_mv = np.asarray(physical_transform.inverse(selected), dtype=np.float64)
     if not np.isfinite(selected).all():
         raise ValueError("Selected blind waveforms are nonfinite")
     ref_rows = _development_cohort(development, args.reference_events, args.seed)
@@ -369,7 +423,7 @@ def run(args):
                     for direction in DIRECTIONS:
                         curve = deletion_curve(
                             bank, x, starts, args.window_samples, shap["scores"],
-                            predict, full, target, method=method,
+                            predict, full, method=method,
                             direction=direction, knn_context=context)
                         curves[method][direction] = curve
                         for step, output_ps in enumerate(curve["prediction_ps"]):
@@ -380,7 +434,7 @@ def run(args):
                                 "n_deleted_for_sign": len(curve["removed_window_indices"]),
                                 "prediction_ps": float(output_ps),
                                 "signed_prediction_change_ps": float(curve["signed_prediction_change_ps"][step]),
-                                "absolute_error_change_ps": float(curve["absolute_error_change_ps"][step]),
+                                "absolute_prediction_deviation_ps": float(curve["absolute_prediction_deviation_ps"][step]),
                             })
                     print(f"  METHOD | {method} | signed windows: "
                           f"+{(shap['scores'] > 0).sum()} / "
@@ -391,6 +445,7 @@ def run(args):
                     "event_id": int(event_id), "group": str(group),
                     "original_prediction_ps": float(full),
                     "target_ps": float(target),
+                    "waveform_mv": selected_mv[index].tolist(),
                     "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
                     "positive_order": {
                         method: curves[method]["positive"]["removed_window_indices"].tolist()
@@ -413,7 +468,7 @@ def run(args):
                     json.dumps(payload, indent=2), encoding="utf-8")
                 _write_event_plots(
                     event_root, event_id, time_ps, starts, args.window_samples,
-                    scores, curves, original=full, target=target)
+                    scores, curves, original=full, waveform_mv=selected_mv[index])
         finally:
             del fitted
             release_training_memory()
@@ -430,7 +485,7 @@ def run(args):
         "deletion_directions": list(DIRECTIONS),
         "imputation_definition": "point-conditional means; independent refit forbidden during deletion",
         "deletion_semantics": "cumulative missing union, fresh conditioning on original remaining samples",
-        "target_metric": "absolute calibrated residual error and signed model output change",
+        "deletion_metrics": "signed and absolute deviation from untouched model output",
         "plot_version": PLOT_VERSION,
         "event_plot_files": list(PLOT_FILES),
         "interpretation_warning": "Perturbation-dependent local rankings, not physical causality",
