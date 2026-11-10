@@ -46,7 +46,8 @@ def test_plot_geometry_uses_prepared_time_grid_not_fixed_sample_duration():
 
 def test_split_plots_saved_and_old_plots_removed(tmp_path):
     times, starts, scores, deletion = _example()
-    for obsolete in ("tshap_deletion.png", "deletion_error.png"):
+    for obsolete in ("tshap_deletion.png", "deletion_error.png",
+                     "deletion_positive.png", "deletion_negative.png"):
         (tmp_path / obsolete).write_text("obsolete")
     _write_event_plots(tmp_path, 172, times, starts, 4,
                        scores, deletion, original=5.5,
@@ -55,6 +56,9 @@ def test_split_plots_saved_and_old_plots_removed(tmp_path):
     assert all((tmp_path / name).stat().st_size > 1000 for name in PLOT_FILES)
     assert not (tmp_path / "tshap_deletion.png").exists()
     assert not (tmp_path / "deletion_error.png").exists()
+    assert not (tmp_path / "deletion_positive.png").exists()
+    assert not (tmp_path / "deletion_negative.png").exists()
+    assert (tmp_path / "deletion.png").exists()
 
 
 def test_replot_from_saved_artifacts_does_not_require_model(tmp_path):
@@ -118,3 +122,9 @@ def test_replot_migrates_legacy_target_error_metrics_without_inference(tmp_path)
             assert curve["absolute_prediction_deviation_ps"][0] == 0
             assert "absolute_error_change_ps" not in curve
     assert not (folder / "event_waveforms.png").exists()
+
+def test_waveforms_only_requires_saved_model_run(tmp_path):
+    args = parser().parse_args([
+        "--waveforms-only", "--output-root", str(tmp_path)])
+    with pytest.raises(ValueError, match="model-dir"):
+        run(args)
