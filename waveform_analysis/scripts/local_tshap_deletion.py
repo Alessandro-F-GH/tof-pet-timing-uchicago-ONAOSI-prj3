@@ -107,7 +107,7 @@ def _cohort_cache(path, reference, identity, args, retained):
     return bank, cache
 
 
-PLOT_VERSION = 5
+PLOT_VERSION = 6
 PLOT_FILES = ("event_waveforms.png", "tshap_profiles.png", "deletion.png")
 LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png",
                      "deletion_positive.png", "deletion_negative.png")
@@ -220,22 +220,86 @@ def _plot_deletion(path, event_id, deletion, *, original):
     plt.close(fig)
 
 
-def _plot_event_waveforms(path, event_id, time_ps, waveform_mv):
-    """Plot both ORIGINAL detector inputs in physical mV (no imputation)."""
+def _reference_pointwise_stats(reference_mv):
+    """Development mean and standard deviation, per detector and time sample.
+
+    Statistics are computed ACROSS events, never across the samples of one event.
+    A detector-specific variance floor prevents spurious huge z in quiet regions.
+    """
+    data = np.asarray(reference_mv, dtype=np.float64)
+    if (data.ndim != 3 or data.shape[0] < 2 or data.shape[1] != 2
+            or not np.isfinite(data).all()):
+        raise ValueError("Expected finite Development waveforms [events,2,samples]")
+    mean = np.mean(data, axis=0)
+    std = np.std(data, axis=0, ddof=1)
+    floor = np.maximum(0.05 * np.median(std, axis=1), 1e-6)
+    return mean, np.maximum(std, floor[:, None]), floor
+
+
+def _event_pointwise_zscores(waveform_mv, reference_mean_mv, reference_std_mv):
+    """Signed deviation at each sample relative to the Development cohort."""
+    x = np.asarray(waveform_mv, dtype=np.float64)
+    mean = np.asarray(reference_mean_mv, dtype=np.float64)
+    std = np.asarray(reference_std_mv, dtype=np.float64)
+    if (x.ndim != 2 or x.shape[0] != 2 or mean.shape != x.shape or
+            std.shape != x.shape or not np.isfinite(x).all() or
+            not np.isfinite(mean).all() or not np.isfinite(std).all() or
+            not (std > 0).all()):
+        raise ValueError("Incompatible or invalid pointwise z-score statistics")
+    return (x - mean) / std
+
+
+def _plot_event_waveforms(path, event_id, time_ps, waveform_mv,
+                          *, waveform_zscore=None, reference_count=None):
+    """Plot both original signals (mV); z-score controls line-segment color."""
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import Normalize
+    from matplotlib.cm import ScalarMappable
+
     times = np.asarray(time_ps, dtype=np.float64) / 1000.
     waves = np.asarray(waveform_mv, dtype=np.float64)
-    if (times.ndim != 1 or waves.shape != (2, len(times)) or
-            not np.all(np.isfinite(waves))):
-        raise ValueError("Invalid physical event waveform data")
-    fig, axes = plt.subplots(2, 1, figsize=(11, 6), sharex=True,
+    if (times.ndim != 1 or times.size < 2 or
+            waves.shape != (2, times.size) or
+            not np.isfinite(waves).all() or
+            not np.isfinite(times).all() or
+            np.any(np.diff(times) <= 0)):
+        raise ValueError("Invalid physical event waveforms")
+    z = None if waveform_zscore is None else np.asarray(waveform_zscore, dtype=np.float64)
+    if z is not None and (z.shape != waves.shape or not np.isfinite(z).all()):
+        raise ValueError("Invalid event z-scores")
+
+    fig, axes = plt.subplots(2, 1, figsize=(11, 6.8), sharex=True,
                              constrained_layout=True)
-    for detector, ax in enumerate(axes, start=1):
-        ax.plot(times, waves[detector - 1], lw=1.4,
-                color=("tab:blue" if detector == 1 else "tab:orange"))
-        ax.set_ylabel(f"Detector {detector} (mV)")
-        ax.grid(alpha=.24)
+    norm = Normalize(vmin=-3, vmax=3, clip=True)
+    cmap = plt.get_cmap("RdBu_r")
+    for detector, ax in enumerate(axes):
+        signal = waves[detector]
+        if z is None:
+            ax.plot(times, signal, lw=1.4, color="0.35")
+        else:
+            points = np.column_stack((times, signal))
+            segments = np.stack((points[:-1], points[1:]), axis=1)
+            segment_z = (z[detector, :-1] + z[detector, 1:]) / 2.
+            line = LineCollection(segments, cmap=cmap, norm=norm,
+                                  linewidth=2., capstyle="round")
+            line.set_array(segment_z)
+            ax.add_collection(line)
+            ax.autoscale_view()
+        ax.set_xlim(times[0], times[-1])
+        ax.set_ylabel(f"Detector {detector + 1} (mV)")
+        ax.grid(alpha=.22)
+        ax.set_axisbelow(True)
     axes[-1].set_xlabel("Time relative to LED (ns)")
-    fig.suptitle(f"Event {int(event_id)} | original model input waveforms")
+    if z is not None:
+        bar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=axes,
+                           shrink=.85, pad=.015, aspect=28)
+        bar.set_label("Z-score at same sample vs Development")
+        bar.set_ticks([-3, -2, -1, 0, 1, 2, 3])
+        subtitle = (f" | {reference_count} Development reference events"
+                    if reference_count is not None else "")
+        fig.suptitle(f"Event {int(event_id)} | original input waveform{subtitle}")
+    else:
+        fig.suptitle(f"Event {int(event_id)} | original input waveform (z unavailable)")
     fig.savefig(path, dpi=170)
     plt.close(fig)
 
@@ -260,13 +324,16 @@ def _normalize_saved_deletion(deletion, original):
 
 
 def _write_event_plots(folder, event_id, time_ps, starts, width, scores,
-                       deletion, *, original, waveform_mv=None):
+                       deletion, *, original, waveform_mv=None,
+                       waveform_zscore=None, reference_count=None):
     """Render from saved numerical arrays; never calls the ML model."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     if waveform_mv is not None:
         _plot_event_waveforms(folder / "event_waveforms.png", event_id,
-                              time_ps, waveform_mv)
+                              time_ps, waveform_mv,
+                              waveform_zscore=waveform_zscore,
+                              reference_count=reference_count)
     _plot_tshap_profiles(folder / "tshap_profiles.png", event_id,
                          time_ps, starts, width, scores)
     _plot_deletion(folder / "deletion.png", event_id, deletion,
@@ -313,9 +380,12 @@ def replot_saved(output_root):
                                  "absolute_prediction_deviation_ps"):
                     curve.pop(obsolete, None)
         waveform_mv = payload.get("waveform_mv")
+        waveform_zscore = payload.get("waveform_zscore")
         _write_event_plots(
             folder, int(payload["event_id"]), time_ps, starts, width,
-            scores, deletion, original=original, waveform_mv=waveform_mv)
+            scores, deletion, original=original, waveform_mv=waveform_mv,
+            waveform_zscore=waveform_zscore,
+            reference_count=payload.get("zscore_reference_count"))
         payload["deletion"] = deletion
         (folder / "results.json").write_text(
             json.dumps(payload, indent=2), encoding="utf-8")
@@ -388,6 +458,23 @@ def hydrate_saved_waveforms(model_dir, output_root, *, cache_root=None,
         saved_time = np.asarray(info["time_ps"], dtype=np.float64)
     if not np.array_equal(saved_time, time_ps):
         raise ValueError("Saved attribution time grid differs from prepared Blind grid")
+    development = lookup.find("development", config, run_data["manifest"])
+    with np.load(info_file, allow_pickle=False) as info:
+        if "reference_event_ids" not in info.files:
+            raise ValueError("Missing saved Development reference event IDs")
+        ref_event_ids = np.asarray(info["reference_event_ids"], dtype=np.int64)
+    development_lookup = {
+        int(event_id): i for i, event_id in
+        enumerate(np.asarray(development.event_index, dtype=np.int64))}
+    if (len(development_lookup) != development.n_events or
+            any(int(event_id) not in development_lookup for event_id in ref_event_ids)):
+        raise ValueError("Development reference cohort cannot be reconstructed")
+    ref_rows = np.asarray(
+        [development_lookup[int(event_id)] for event_id in ref_event_ids],
+        dtype=np.int64)
+    ref_waves = waveform_view(development, config["mode"], ref_rows).materialize()
+    ref_mean_mv, ref_std_mv, _ = _reference_pointwise_stats(
+        transform.inverse(ref_waves))
     indices = {int(event_id): i for i, event_id in
                enumerate(np.asarray(blind.event_index, dtype=np.int64))}
     folders = sorted(folder for folder in root.glob("event_*")
@@ -405,9 +492,13 @@ def hydrate_saved_waveforms(model_dir, output_root, *, cache_root=None,
         if physical.shape != (2, len(time_ps)) or not np.isfinite(physical).all():
             raise ValueError(f"Invalid recovered physical waveform for {event_id}")
         payload["waveform_mv"] = physical.tolist()
+        z = _event_pointwise_zscores(physical, ref_mean_mv, ref_std_mv)
+        payload["waveform_zscore"] = z.tolist()
+        payload["zscore_reference_count"] = len(ref_rows)
         payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         _plot_event_waveforms(folder / "event_waveforms.png", event_id,
-                              time_ps, physical)
+                              time_ps, physical, waveform_zscore=z,
+                              reference_count=len(ref_rows))
         print(f"WAVEFORMS | event={event_id} | {folder / 'event_waveforms.png'}",
               flush=True)
     print(f"WAVEFORMS COMPLETE | events={len(folders)} | output={root}", flush=True)
@@ -467,6 +558,8 @@ def run(args):
         raise ValueError("Selected blind waveforms are nonfinite")
     ref_rows = _development_cohort(development, args.reference_events, args.seed)
     reference = waveform_view(development, config["mode"], ref_rows).materialize()
+    z_mean_mv, z_std_mv, z_floor_mv = _reference_pointwise_stats(
+        physical_transform.inverse(reference))
     cache_dir = args.imputer_cache_root
     if cache_dir is None:
         cache_dir = output / "frozen_imputers"
@@ -489,10 +582,14 @@ def run(args):
         "seed": args.seed,
         "event_ids": event_ids.tolist(),
         "ppca_cache": str(ppca_cache),
+        "zscore_reference": "Development cohort: detector/sample mean and std",
+        "zscore_reference_events": int(len(ref_rows)),
+        "zscore_std_floor_mv_by_detector": z_floor_mv.tolist(),
     }
     np.savez_compressed(output / "reference_details.npz",
                         reference_event_ids=development.event_index[ref_rows],
-                        starts=starts, retained_mask=retained, time_ps=time_ps)
+                        starts=starts, retained_mask=retained, time_ps=time_ps,
+                        zscore_mean_mv=z_mean_mv, zscore_std_mv=z_std_mv)
     all_rows = []
     with diagnostic_random_state():
         fitted = load_fitted_model(spec, model_dir, run_data["best"]["parameters"], config)
@@ -554,6 +651,9 @@ def run(args):
                     "original_prediction_ps": float(full),
                     "target_ps": float(target),
                     "waveform_mv": selected_mv[index].tolist(),
+                    "waveform_zscore": _event_pointwise_zscores(
+                        selected_mv[index], z_mean_mv, z_std_mv).tolist(),
+                    "zscore_reference_count": int(len(ref_rows)),
                     "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
                     "deletion_orders": {
                         method: {
@@ -575,7 +675,10 @@ def run(args):
                     json.dumps(payload, indent=2), encoding="utf-8")
                 _write_event_plots(
                     event_root, event_id, time_ps, starts, args.window_samples,
-                    scores, curves, original=full, waveform_mv=selected_mv[index])
+                    scores, curves, original=full,
+                    waveform_mv=selected_mv[index],
+                    waveform_zscore=payload["waveform_zscore"],
+                    reference_count=len(ref_rows))
         finally:
             del fitted
             release_training_memory()
