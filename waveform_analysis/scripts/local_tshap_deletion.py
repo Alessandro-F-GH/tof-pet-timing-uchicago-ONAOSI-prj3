@@ -174,9 +174,32 @@ def _plot_tshap_profiles(path, event_id, time_ps, starts, width, scores):
     plt.close(fig)
 
 
+def _deletion_sign_marker_indices(curve, sequence):
+    """Return curve-point indices belonging to positive/negative ranked deletions.
+
+    Point zero is the untouched prediction and receives no marker. A final
+    unranked-sample cleanup also receives no sign marker.
+    """
+    if sequence not in DELETION_SEQUENCES:
+        raise ValueError(f"Unknown deletion sequence: {sequence}")
+    removed_ranked = np.asarray(curve["removed_ranked_windows"], dtype=np.int64)
+    if removed_ranked.ndim != 1 or len(removed_ranked) < 1:
+        raise ValueError("Invalid ranked-window deletion progression")
+    steps = np.arange(len(removed_ranked))
+    ranked_step = (steps > 0) & (np.diff(removed_ranked, prepend=0) == 1)
+    first_count = int(curve["first_phase_count"])
+    first_phase = ranked_step & (removed_ranked <= first_count)
+    second_phase = ranked_step & (removed_ranked > first_count)
+    if sequence == "positive_negative":
+        return steps[first_phase], steps[second_phase]
+    return steps[second_phase], steps[first_phase]
+
+
 def _plot_deletion(path, event_id, deletion, *, original):
-    """Positive→negative vs negative→positive across the full deletion range."""
+    """Full deletion curves; marker shape identifies attribution sign."""
     from matplotlib.ticker import PercentFormatter
+    from matplotlib.lines import Line2D
+
     fig, axes = plt.subplots(2, 1, figsize=(10.5, 7.5), sharex=True,
                              constrained_layout=True)
     colors = {"knn": "tab:blue", "ppca": "tab:orange",
@@ -185,7 +208,15 @@ def _plot_deletion(path, event_id, deletion, *, original):
         "positive_negative": "Positive → negative attribution deletion",
         "negative_positive": "Negative → positive attribution deletion",
     }
+    sign_handles = [
+        Line2D([], [], color="0.25", marker="o", linestyle="None",
+               markersize=5, label="Positive windows"),
+        Line2D([], [], color="0.25", marker="s", linestyle="None",
+               markersize=5, label="Negative windows"),
+    ]
+
     for ax, sequence in zip(axes, DELETION_SEQUENCES):
+        method_handles = []
         for method in METHODS:
             curve = deletion[method][sequence]
             fraction = np.asarray(curve["fraction_deleted"], dtype=float)
@@ -197,21 +228,33 @@ def _plot_deletion(path, event_id, deletion, *, original):
                     abs(fraction[-1] - 1.) > 1e-12 or
                     np.any(np.diff(fraction) < -1e-12)):
                 raise ValueError(f"Invalid complete deletion curve: {method}/{sequence}")
-            ax.plot(fraction, change, lw=1.65, marker=".", markersize=4,
-                    color=colors[method], label=METHOD_LABELS[method])
-            first = int(curve["first_phase_count"])
-            # Transition is between ranked positive and negative windows.
-            if first > 0:
-                transition = fraction[first]
-                ax.axvline(transition, color=colors[method], lw=.9,
-                           ls="--", alpha=.35)
+
+            color = colors[method]
+            # One uninterrupted curve per imputer; no vertical transition lines.
+            ax.plot(fraction, change, lw=1.45, color=color, alpha=.85)
+            method_handles.append(Line2D(
+                [], [], color=color, lw=1.8, label=METHOD_LABELS[method]))
+
+            positive_indices, negative_indices = _deletion_sign_marker_indices(
+                curve, sequence)
+            if len(positive_indices):
+                ax.plot(fraction[positive_indices], change[positive_indices],
+                        linestyle="None", marker="o", color=color,
+                        markersize=4.2, markeredgewidth=.35)
+            if len(negative_indices):
+                ax.plot(fraction[negative_indices], change[negative_indices],
+                        linestyle="None", marker="s", color=color,
+                        markersize=4.2, markeredgewidth=.35)
+
         ax.axhline(0, color="0.4", lw=.85)
         ax.set_ylabel("Δ model prediction (ps)")
         ax.set_title(titles[sequence], loc="left")
         ax.grid(alpha=.23)
         ax.set_axisbelow(True)
         ax.set_xlim(0, 1)
-        ax.legend(loc="best", fontsize=9)
+        ax.legend(handles=method_handles + sign_handles,
+                  loc="best", fontsize=8, ncol=2)
+
     axes[-1].xaxis.set_major_formatter(PercentFormatter(xmax=1))
     axes[-1].set_xlabel("Fraction of model-retained input samples deleted")
     fig.suptitle(
