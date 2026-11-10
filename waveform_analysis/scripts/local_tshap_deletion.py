@@ -25,7 +25,7 @@ from waveform_analysis.data.view import mode_family, model_sample_mask, waveform
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.engine.local_tshap_deletion import (
     METHODS, DIRECTIONS, FrozenImputationBank, paired_shapley,
-    deletion_curve, validate_windows,
+    deletion_curve, deletion_sequence_curve, DELETION_SEQUENCES, validate_windows,
 )
 from waveform_analysis.engine.train import load_fitted_model, release_training_memory
 from waveform_analysis.engine import tshap_explainer as base
@@ -107,7 +107,7 @@ def _cohort_cache(path, reference, identity, args, retained):
     return bank, cache
 
 
-PLOT_VERSION = 4
+PLOT_VERSION = 5
 PLOT_FILES = ("event_waveforms.png", "tshap_profiles.png", "deletion.png")
 LEGACY_PLOT_FILES = ("tshap_deletion.png", "deletion_error.png",
                      "deletion_positive.png", "deletion_negative.png")
@@ -174,45 +174,47 @@ def _plot_tshap_profiles(path, event_id, time_ps, starts, width, scores):
 
 
 def _plot_deletion(path, event_id, deletion, *, original):
-    """One panel per deletion sign, showing only signed model-output changes."""
-    from matplotlib.ticker import MaxNLocator
-
-    fig, axes = plt.subplots(2, 1, figsize=(10.5, 7), sharex=True,
+    """Positive→negative vs negative→positive across the full deletion range."""
+    from matplotlib.ticker import PercentFormatter
+    fig, axes = plt.subplots(2, 1, figsize=(10.5, 7.5), sharex=True,
                              constrained_layout=True)
-    curve_colors = {"knn": "tab:blue", "ppca": "tab:orange",
-                    "mean": "tab:green"}
-    max_step = 0
-    for ax, direction in zip(axes, DIRECTIONS):
-        has_windows = False
+    colors = {"knn": "tab:blue", "ppca": "tab:orange",
+              "mean": "tab:green"}
+    titles = {
+        "positive_negative": "Positive → negative attribution deletion",
+        "negative_positive": "Negative → positive attribution deletion",
+    }
+    for ax, sequence in zip(axes, DELETION_SEQUENCES):
         for method in METHODS:
-            curve = deletion[method][direction]
-            step = np.asarray(curve["step"], dtype=np.int64)
+            curve = deletion[method][sequence]
+            fraction = np.asarray(curve["fraction_deleted"], dtype=float)
             change = np.asarray(curve["signed_prediction_change_ps"], dtype=float)
-            order = np.asarray(curve["removed_window_indices"], dtype=int)
-            if (step.ndim != 1 or len(step) != len(order) + 1 or
-                    not np.array_equal(step, np.arange(len(step))) or
-                    change.shape != step.shape or not np.isfinite(change).all()):
-                raise ValueError(f"Malformed {method} {direction} deletion curve")
-            has_windows |= bool(len(order))
-            max_step = max(max_step, len(order))
-            ax.plot(step, change, marker="o", markersize=2.8,
-                    linewidth=1.5, color=curve_colors[method],
-                    label=f"{METHOD_LABELS[method]} (n={len(order)})")
-        ax.axhline(0, color="0.35", lw=.85)
+            if (fraction.ndim != 1 or fraction.shape != change.shape or
+                    not np.isfinite(fraction).all() or
+                    not np.isfinite(change).all() or
+                    abs(fraction[0]) > 1e-12 or
+                    abs(fraction[-1] - 1.) > 1e-12 or
+                    np.any(np.diff(fraction) < -1e-12)):
+                raise ValueError(f"Invalid complete deletion curve: {method}/{sequence}")
+            ax.plot(fraction, change, lw=1.65, marker=".", markersize=4,
+                    color=colors[method], label=METHOD_LABELS[method])
+            first = int(curve["first_phase_count"])
+            # Transition is between ranked positive and negative windows.
+            if first > 0:
+                transition = fraction[first]
+                ax.axvline(transition, color=colors[method], lw=.9,
+                           ls="--", alpha=.35)
+        ax.axhline(0, color="0.4", lw=.85)
+        ax.set_ylabel("Δ model prediction (ps)")
+        ax.set_title(titles[sequence], loc="left")
         ax.grid(alpha=.23)
         ax.set_axisbelow(True)
-        ax.set_ylabel("Δ model prediction (ps)")
-        ax.set_title(f"{direction.capitalize()} attribution deletion", loc="left")
-        if not has_windows:
-            ax.text(.5, .5, f"No {direction} windows",
-                    transform=ax.transAxes, ha="center", va="center")
-    for ax in axes:
-        ax.set_xlim(0, max(1, max_step))
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
-    axes[0].legend(loc="best", fontsize=9)
-    axes[-1].set_xlabel("Number of deleted windows (ranked within sign)")
+        ax.set_xlim(0, 1)
+        ax.legend(loc="best", fontsize=9)
+    axes[-1].xaxis.set_major_formatter(PercentFormatter(xmax=1))
+    axes[-1].set_xlabel("Fraction of model-retained input samples deleted")
     fig.suptitle(
-        f"Event {int(event_id)} | progressive deletion\n"
+        f"Event {int(event_id)} | complete progressive deletion\n"
         f"Reference: original model prediction {float(original):+.2f} ps")
     fig.savefig(path, dpi=170)
     plt.close(fig)
@@ -245,7 +247,7 @@ def _normalize_saved_deletion(deletion, original):
     this conversion does not require model inference or access to the target.
     """
     for method in METHODS:
-        for direction in DIRECTIONS:
+        for direction in DELETION_SEQUENCES:
             curve = deletion[method][direction]
             prediction = np.asarray(curve["prediction_ps"], dtype=np.float64)
             signed = prediction - float(original)
@@ -296,7 +298,13 @@ def replot_saved(output_root):
         payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
         scores = payload["signed_attributions_ps"]
         original = float(payload["original_prediction_ps"])
-        deletion = _normalize_saved_deletion(payload["deletion"], original)
+        deletion = payload["deletion"]
+        if any(sequence not in deletion.get(method, {})
+               for method in METHODS for sequence in DELETION_SEQUENCES):
+            raise ValueError(
+                "Saved curves use the old sign-only protocol. "
+                "Run a new full-sequence experiment; --replot-only cannot "
+                "calculate missing model predictions.")
         waveform_mv = payload.get("waveform_mv")
         _write_event_plots(
             folder, int(payload["event_id"]), time_ps, starts, width,
@@ -332,7 +340,8 @@ def replot_saved(output_root):
                 writer.writerows(records)
     summary["plot_version"] = PLOT_VERSION
     summary["event_plot_files"] = list(PLOT_FILES)
-    summary["deletion_metrics"] = "signed and absolute deviation from untouched model output"
+    summary["deletion_metrics"] = "signed deviation from untouched model output"
+    summary["deletion_sequences"] = list(DELETION_SEQUENCES)
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"REPLOT COMPLETE | events={len(folders)} | output={root}", flush=True)
     return root
@@ -500,24 +509,31 @@ def run(args):
                 context = bank.knn_context(x, starts, args.window_samples)
                 scores = {}
                 curves = {}
+                shared_mean = x.copy()
+                shared_mean[:, retained] = bank.mean[:, retained]
+                shared_endpoint = float(predict(shared_mean[None])[0])
                 for method in METHODS:
                     shap = paired_shapley(
                         bank, x, starts, args.window_samples, predict, full,
                         method=method, knn_context=context)
                     scores[method] = shap["scores"]
                     curves[method] = {}
-                    for direction in DIRECTIONS:
-                        curve = deletion_curve(
+                    for direction in DELETION_SEQUENCES:
+                        curve = deletion_sequence_curve(
                             bank, x, starts, args.window_samples, shap["scores"],
                             predict, full, method=method,
-                            direction=direction, knn_context=context)
+                            sequence=direction, knn_context=context,
+                            expected_endpoint=shared_endpoint)
                         curves[method][direction] = curve
                         for step, output_ps in enumerate(curve["prediction_ps"]):
                             all_rows.append({
                                 "event_id": int(event_id), "group": str(group),
                                 "method": method, "direction": direction,
                                 "step": step, "n_windows_total": len(starts),
-                                "n_deleted_for_sign": len(curve["removed_window_indices"]),
+                                "fraction_deleted": float(curve["fraction_deleted"][step]),
+                                "phase": str(curve["stage"][step]),
+                                "n_first_sign_windows": int(curve["first_phase_count"]),
+                                "n_second_sign_windows": int(curve["second_phase_count"]),
                                 "prediction_ps": float(output_ps),
                                 "signed_prediction_change_ps": float(curve["signed_prediction_change_ps"][step]),
                                 "absolute_prediction_deviation_ps": float(curve["absolute_prediction_deviation_ps"][step]),
@@ -533,14 +549,13 @@ def run(args):
                     "target_ps": float(target),
                     "waveform_mv": selected_mv[index].tolist(),
                     "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
-                    "positive_order": {
-                        method: curves[method]["positive"]["removed_window_indices"].tolist()
-                        for method in METHODS
+                    "deletion_orders": {
+                        method: {
+                            sequence: curves[method][sequence]["removed_window_indices"].tolist()
+                            for sequence in DELETION_SEQUENCES
+                        } for method in METHODS
                     },
-                    "negative_order": {
-                        method: curves[method]["negative"]["removed_window_indices"].tolist()
-                        for method in METHODS
-                    },
+                    "mean_endpoint_prediction_ps": shared_endpoint,
                     "deletion": {
                         method: {
                             direction: {
@@ -568,10 +583,11 @@ def run(args):
     (output / "summary.json").write_text(json.dumps({
         **settings, "events_explained": len(event_ids),
         "methods": list(METHODS),
-        "deletion_directions": list(DIRECTIONS),
+        "deletion_sequences": list(DELETION_SEQUENCES),
         "imputation_definition": "point-conditional means; independent refit forbidden during deletion",
         "deletion_semantics": "cumulative missing union, fresh conditioning on original remaining samples",
-        "deletion_metrics": "signed and absolute deviation from untouched model output",
+        "deletion_metrics": "signed deviation from untouched model output",
+        "endpoint": "shared Development mean after removing all model-retained coordinates",
         "plot_version": PLOT_VERSION,
         "event_plot_files": list(PLOT_FILES),
         "interpretation_warning": "Perturbation-dependent local rankings, not physical causality",
