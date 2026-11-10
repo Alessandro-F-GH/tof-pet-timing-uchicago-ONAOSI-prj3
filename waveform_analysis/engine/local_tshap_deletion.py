@@ -329,15 +329,19 @@ def deletion_sequence_curve(bank, query, starts, width, scores, predict,
         stage.append("ranked")
 
     has_unranked_tail = bool(remaining.any())
+    # Enforce the same mean-imputed endpoint for ALL methods even if PPCA's
+    # unconditional mean differs from the arithmetic Development mean.
+    terminal = np.asarray(query, dtype=np.float32).copy()
+    terminal[:, keep] = bank.mean[:, keep]
     if has_unranked_tail:
         remaining[:] = False
-        # All methods must converge to EXACTLY the same frozen mean.
-        terminal = np.asarray(query, dtype=np.float32).copy()
-        terminal[:, keep] = bank.mean[:, keep]
         modified.append(terminal)
         removed_window_count.append(len(order))
         removed_sample_count.append(int(keep.sum()))
         stage.append("unranked_cleanup")
+    else:
+        modified[-1] = terminal
+        stage[-1] = "mean_endpoint"
     if not modified:
         raise ValueError("No deletion steps available")
     values = np.asarray(predict(np.stack(modified)), dtype=np.float64)
