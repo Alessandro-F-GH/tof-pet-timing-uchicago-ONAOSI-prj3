@@ -68,14 +68,15 @@ def group_grid(frequency, phase, prediction, *, frequency_bins=8,
                frequency_binning="quantile", phase_binning="uniform"):
     """Balanced rank-frequency bins, with optional balanced phase bins.
 
-    Identical FFT peak frequencies can cross rank-bin boundaries; boundaries
-    therefore describe observed ranges and can overlap at tied frequencies.
+    Identical FFT peak frequencies remain in the same bin to prevent
+    arbitrary event-order effects; bin populations are approximately balanced.
     """
     f = np.asarray(frequency, np.float64)
     phi = np.asarray(phase, np.float64)
     y = np.asarray(prediction, np.float64)
     if (f.ndim != 1 or f.shape != phi.shape or f.shape != y.shape
-            or len(f) < frequency_bins or len(phi) < phase_bins
+            or len(f) < frequency_bins
+            or (phase_binning == "quantile" and len(phi) < phase_bins)
             or not all(np.isfinite(v).all() for v in (f, phi, y))):
         raise ValueError("Frequency, phase and prediction must align")
     if frequency_binning not in ("quantile", "uniform"):
@@ -83,10 +84,27 @@ def group_grid(frequency, phase, prediction, *, frequency_bins=8,
     if phase_binning not in ("quantile", "uniform"):
         raise ValueError("Invalid phase binning")
     if frequency_binning == "quantile":
-        f_bin = np.empty(len(f), dtype=int)
-        for j, members in enumerate(np.array_split(np.argsort(f, kind="stable"),
-                                                    frequency_bins)):
-            f_bin[members] = j
+        # Keep identical FFT peak frequencies together: splitting ties by
+        # event order can create spurious phase/prediction differences.
+        unique, inverse, counts = np.unique(
+            f, return_inverse=True, return_counts=True)
+        if len(unique) < frequency_bins:
+            raise ValueError(
+                f"Only {len(unique)} distinct peak frequencies; cannot form "
+                f"{frequency_bins} nonempty tie-preserving frequency bins")
+        cumulative = np.cumsum(counts)
+        cuts = []
+        previous = 0
+        for j in range(1, frequency_bins):
+            target = j * len(f) / frequency_bins
+            # Candidate boundary after unique[k], while retaining enough
+            # distinct frequencies for all remaining nonempty bins.
+            eligible = np.arange(previous+1, len(unique)-(frequency_bins-j)+1)
+            # eligible represents number of distinct frequencies consumed
+            best = int(eligible[np.argmin(np.abs(cumulative[eligible-1]-target))])
+            cuts.append(best)
+            previous = best
+        f_bin = np.searchsorted(cuts, inverse, side="right")
         f_ranges = [(float(f[f_bin == j].min()), float(f[f_bin == j].max()))
                     for j in range(frequency_bins)]
     else:
