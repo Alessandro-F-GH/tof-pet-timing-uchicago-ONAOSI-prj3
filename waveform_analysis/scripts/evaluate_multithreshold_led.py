@@ -152,7 +152,8 @@ def _load_ml_saved(run_dir, role, *, cache_root, artifact_root):
 
 
 def _compare_saved(mt_dataset, mt_raw, mt_offset, mode, model_dirs,
-                   role, *, cache_root, artifact_root, fit, seed):
+                   role, *, cache_root, artifact_root, fit, seed,
+                   reference_channels):
     """Paired comparisons; identifiers and target calibration are checked."""
     mt_ids = np.asarray(mt_dataset.event_index, np.int64)
     mt_pred = np.asarray(mt_raw, np.float64) + float(mt_offset)
@@ -166,8 +167,7 @@ def _compare_saved(mt_dataset, mt_raw, mt_offset, mode, model_dirs,
             directory, role, cache_root=cache_root, artifact_root=artifact_root)
         if config["mode"] != mode:
             raise ValueError(f"Comparison mode mismatch: {directory}")
-        if config["development"].get("channels") != (
-                resolve_run_config(model_dirs[0])["development"].get("channels")):
+        if config[role].get("channels") != reference_channels:
             # Distinct detector channels must not be treated as the same event.
             raise ValueError("ML comparison channel definitions disagree")
         for name in ("control_mode_fingerprint", "target_definition"):
@@ -190,7 +190,8 @@ def _compare_saved(mt_dataset, mt_raw, mt_offset, mode, model_dirs,
         right_y = np.asarray(model_target(other, mode), np.float64)[right_rows]
         if left_y.size and np.max(np.abs(left_y - right_y)) > 1e-3:
             raise ValueError("Matched prepared targets disagree between runs")
-        good = np.isfinite(mt_pred[left_rows]) & np.isfinite(pred[right_rows])
+        good = (np.isfinite(mt_pred[left_rows]) & np.isfinite(pred[right_rows])
+                & np.isfinite(left_y) & np.isfinite(right_y))
         a, b = mt_pred[left_rows[good]], pred[right_rows[good]]
         y = left_y[good]
         if a.size < 5:
@@ -282,7 +283,8 @@ def run(args):
     compare_development = _compare_saved(
         development, raw, offset, mode, args.compare_model_dir,
         "development", cache_root=args.cache_root, artifact_root=args.artifact_root,
-        fit=fit, seed=args.seed) if args.compare_model_dir else []
+        fit=fit, seed=args.seed,
+        reference_channels=config["development"].get("channels")) if args.compare_model_dir else []
     print(f"SELECTED | thresholds={chosen} mV | development CTR="
           f"{metric_dev['ctr_ps']:.3f} ps | RMSE={metric_dev['rmse_ps']:.3f} ps "
           f"| coverage={valid_dev.mean():.2%}", flush=True)
@@ -320,7 +322,8 @@ def run(args):
     compare_blind = _compare_saved(
         blind, blind_corr[:, 0], offset, mode, args.compare_model_dir,
         "blind", cache_root=args.cache_root, artifact_root=args.artifact_root,
-        fit=fit, seed=args.seed) if args.compare_model_dir else []
+        fit=fit, seed=args.seed,
+        reference_channels=config["blind"].get("channels")) if args.compare_model_dir else []
     with (out / "threshold_scan.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
