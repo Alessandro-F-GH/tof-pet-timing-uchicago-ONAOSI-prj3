@@ -55,3 +55,29 @@ def test_random_phase_oscillation_vanishes_in_aggregate():
     k = int(np.argmin(np.abs(out["frequency_GHz"] - 4.)))
     assert out["mean_individual_power"][k] > 0
     assert out["phase_consistency"][k] < .05
+
+
+def test_mean_subtracted_power_removes_common_component():
+    time = np.arange(-2000, 4000, 12.5)
+    rng = np.random.default_rng(123)
+    phases = rng.uniform(-np.pi, np.pi, 250)
+    common = 3.0*np.cos(2*np.pi*1.5*time/1000.)
+    random_component = (.4*np.cos(2*np.pi*2.5*time[None,:]/1000.
+                                + phases[:, None]))
+    waves = np.zeros((len(phases), 2, len(time)), np.float32)
+    waves[:,0,:] = common[None,:] + random_component
+    result = spectral_accumulators(
+        waves, time, selected_rows=np.arange(len(phases)), detector=0,
+        window=(-1.5, 3.5), max_individual=3, chunk_size=37,
+        physical_min=0., physical_span=1.)
+    freq = result["frequency_GHz"]
+    common_bin = np.argmin(abs(freq-1.5))
+    variable_bin = np.argmin(abs(freq-2.5))
+    assert result["variable_power"][common_bin] < result["coherent_power"][common_bin]*.01
+    assert result["variable_power"][variable_bin] > result["coherent_power"][variable_bin]*10
+    np.testing.assert_allclose(
+        result["variable_power"],
+        result["mean_individual_power"]-result["coherent_power"],
+        atol=1e-5, rtol=1e-7)
+    centered = result["individual_centered_waveforms_mV"]
+    assert centered.shape == (3, sum((time >= -1500) & (time <= 3500)))
