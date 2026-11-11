@@ -44,7 +44,7 @@ def remove_linear_trend(x):
 
 def spectral_accumulators(waves, t_ps, *, selected_rows, detector,
                           window, max_individual, chunk_size,
-                          physical_min, physical_span):
+                          physical_min, physical_span, highpass_sos=None):
     """Welch-like single-segment averaged periodograms and coherent mean FFT.
 
     Coherent power = abs(mean(complex FFT))^2; incoherent power =
@@ -73,7 +73,13 @@ def spectral_accumulators(waves, t_ps, *, selected_rows, detector,
         ids = selected_rows[start:start + chunk_size]
         # Always select EXACTLY ONE detector; no cross-channel aggregation.
         data = np.asarray(waves[ids, detector, :], dtype=np.float64)
-        data = data[:, all_idx] * physical_span + physical_min
+        # Filter each full prepared trace BEFORE isolating the FFT interval,
+        # avoiding an artificial filter boundary at t=0 or at tail start.
+        data = data * physical_span + physical_min
+        if highpass_sos is not None:
+            from scipy.signal import sosfiltfilt
+            data = sosfiltfilt(highpass_sos, data, axis=-1)
+        data = data[:, all_idx]
         if not np.isfinite(data).all():
             raise ValueError("Nonfinite waveform samples")
         # Save the physical mean trace before detrending, for visual inspection.
@@ -181,6 +187,16 @@ def run(args):
     rng = np.random.default_rng(args.seed)
     rows = np.sort(rng.choice(total, min(total, args.max_events), replace=False))
     event_ids = np.asarray(dataset.event_index, np.int64)[rows]
+    if args.highpass_GHz is not None:
+        from scipy.signal import butter
+        nyquist = 500. / dt_ps  # GHz, dt in ps
+        if (args.highpass_GHz <= 0 or args.highpass_GHz >= nyquist
+                or args.highpass_order < 1):
+            raise ValueError("High-pass cutoff must be between 0 and Nyquist; order >=1")
+        hp_sos = butter(args.highpass_order, args.highpass_GHz,
+                        btype="highpass", fs=1000. / dt_ps, output="sos")
+    else:
+        hp_sos = None
     intervals = {"pre_LED": args.pre_window_ns,
                  "tail": args.tail_window_ns}
     if args.include_full:
@@ -194,6 +210,12 @@ def run(args):
         "detector": args.detector, "detector_mixing": False,
         "event_count": int(len(rows)), "sampling_interval_ps": dt_ps,
         "sample_rate_GHz": 1000. / dt_ps,
+        "highpass": (None if hp_sos is None else {
+            "cutoff_GHz": args.highpass_GHz, "order": args.highpass_order,
+            "design": "Butterworth SOS, zero-phase scipy.signal.sosfiltfilt",
+            "domain": "complete prepared waveform, before FFT interval extraction",
+            "caveat": "Noncausal filtering may generate pre-LED ringing and edge artifacts."
+        }),
         "note": ("Frequencies use LED-aligned prepared signals. Phase "
                  "consistency after LED alignment does not by itself establish "
                  "an anticipatory physical response. Full-window FFT may be "
@@ -204,34 +226,44 @@ def run(args):
     print(f"FFT | detector={args.detector} | role={args.role} "
           f"| events={len(rows)} | dt={dt_ps:.3f} ps", flush=True)
     for name, interval in intervals.items():
-        result = spectral_accumulators(
-            waves, t_ps, selected_rows=rows, detector=detector,
-            window=interval, max_individual=args.max_individual,
-            chunk_size=args.chunk_size, physical_min=minval,
-            physical_span=span)
-        np.savez_compressed(out / f"{name}_fft.npz", **{
-            key: val for key, val in result.items()
-            if key not in ("normalization", "window_ns")})
-        write_plots(out, name, result, max_frequency_GHz=args.max_frequency_GHz)
-        m = result["frequency_GHz"]
-        incoherent = result["mean_individual_power"]
-        if not np.any((m > 0) & (m <= args.max_frequency_GHz)):
-            raise ValueError("No positive frequencies in requested graph range")
-        pick = np.flatnonzero((m > 0) & (m <= args.max_frequency_GHz))
-        peak = pick[int(np.argmax(incoherent[pick]))]
-        overview["windows"][name] = {
-            "bounds_ns": [float(v) for v in interval],
-            "samples": len(result["time_ns"]),
-            "frequency_resolution_GHz": result["df_GHz"],
-            "nyquist_GHz": result["nyquist_GHz"],
-            "largest_individual_power_peak_GHz": float(m[peak]),
-            "phase_consistency_at_peak": float(result["phase_consistency"][peak]),
-            "warning": ("A spectral peak is descriptive; harmonic content, "
-                        "filtering, and window leakage need independent verification."),
-        }
-        print(f"WINDOW | {name} | df={result['df_GHz']:.4f} GHz "
-              f"| peak={m[peak]:.4f} GHz "
-              f"| coherence={result['phase_consistency'][peak]:.4f}", flush=True)
+        # Retain the existing unfiltered result as a direct control; save the
+        # filtered counterpart separately with an explicit suffix.
+        for kind, sos in (("raw", None), ("highpass", hp_sos)):
+            if kind == "highpass" and hp_sos is None:
+                continue
+            label = name if kind == "raw" else f"{name}_highpass"
+            result = spectral_accumulators(
+                waves, t_ps, selected_rows=rows, detector=detector,
+                window=interval, max_individual=args.max_individual,
+                chunk_size=args.chunk_size, physical_min=minval,
+                physical_span=span, highpass_sos=sos)
+            np.savez_compressed(out / f"{label}_fft.npz", **{
+                key: val for key, val in result.items()
+                if key not in ("normalization", "window_ns")})
+            write_plots(out, label, result,
+                        max_frequency_GHz=args.max_frequency_GHz)
+            m = result["frequency_GHz"]
+            incoherent = result["mean_individual_power"]
+            peak_mask = ((m >= (max(args.highpass_GHz, 0.) if sos is not None else 0.))
+                         & (m > 0) & (m <= args.max_frequency_GHz))
+            if not np.any(peak_mask):
+                raise ValueError("No positive frequencies in requested graph range")
+            pick = np.flatnonzero(peak_mask)
+            peak = pick[int(np.argmax(incoherent[pick]))]
+            overview["windows"][label] = {
+                "bounds_ns": [float(v) for v in interval],
+                "samples": len(result["time_ns"]),
+                "frequency_resolution_GHz": result["df_GHz"],
+                "nyquist_GHz": result["nyquist_GHz"],
+                "largest_individual_power_peak_GHz": float(m[peak]),
+                "phase_consistency_at_peak": float(result["phase_consistency"][peak]),
+                "warning": ("A filtered spectral peak is descriptive; filtfilt "
+                            "is noncausal, and leakage/window effects remain."),
+            }
+            print(f"WINDOW | {label} | df={result['df_GHz']:.4f} GHz "
+                  f"| peak={m[peak]:.4f} GHz "
+                  f"| coherence={result['phase_consistency'][peak]:.4f}",
+                  flush=True)
     (out / "summary.json").write_text(
         json.dumps(overview, indent=2, allow_nan=False), encoding="utf-8")
     return overview
@@ -255,6 +287,10 @@ def parser():
     p.add_argument("--include-full", action="store_true",
                    help="Also analyze whole waveform; can be dominated by pulse envelope")
     p.add_argument("--max-frequency-GHz", type=float, default=8.)
+    p.add_argument("--highpass-GHz", type=float, default=None,
+                   help="Optional Butterworth high-pass cutoff in GHz (e.g. 1.0)")
+    p.add_argument("--highpass-order", type=int, default=4,
+                   help="Butterworth order, default 4; applied via SOS zero-phase filtfilt")
     p.add_argument("--chunk-size", type=int, default=128)
     p.add_argument("--seed", type=int, default=42)
     return p
