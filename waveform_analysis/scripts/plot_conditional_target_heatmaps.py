@@ -327,6 +327,97 @@ def load_prediction_difference(args, reference_predictions, reference_provenance
             second, other_predictions[other_rows], ref_rows, common_ids, info)
 
 
+def load_external_cfd_difference(args, reference_predictions, reference_provenance,
+                                 log):
+    """Compare CFD development NPZ against the exact reference prepared population.
+
+    The CFD benchmark can have missing crossings; use only finite paired events
+    and preserve the ordered subset of the reference waveforms. No fake model run.
+    """
+    from waveform_analysis.data.results import read_run, resolve_run_config
+    from waveform_analysis.data.prepared_cache import PreparedCacheLookup
+
+    run = read_run(args.model_dir.expanduser().resolve())
+    config = resolve_run_config(args.model_dir.expanduser().resolve())
+    if args.cache_root is not None:
+        root = args.cache_root.expanduser().resolve()
+        config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
+        config["preprocessing"]["artifact_root"] = str(root / "artifact_store")
+        config["preprocessing"]["named_cache_root"] = str(root)
+    elif args.artifact_root is not None:
+        config["preprocessing"]["artifact_root"] = str(
+            args.artifact_root.expanduser().resolve())
+        config["preprocessing"].pop("named_cache_root", None)
+    dataset = PreparedCacheLookup().find("development", config, run["manifest"])
+    path = args.comparison_predictions_npz.expanduser().resolve()
+    with np.load(path, allow_pickle=False) as saved:
+        required = {
+            "event_id", "prediction_ps", "valid", "dataset_role", "method",
+            "analysis_protocol_identity", "control_mode_fingerprint",
+            "fixed_led_threshold_mV", "led_control_mean_ps",
+            "target_definition", "true_tof_ps",
+        }
+        if missing := required - set(saved.files):
+            raise ValueError(f"External CFD prediction NPZ missing: {sorted(missing)}")
+        if (str(saved["dataset_role"].item()) != "development" or
+                str(saved["method"].item()) !=
+                "prepared_digital_cfd_led_correction"):
+            raise ValueError("Expected development predictions from prepared CFD")
+        for key in ("analysis_protocol_identity", "control_mode_fingerprint",
+                    "target_definition"):
+            if str(saved[key].item()) != str(dataset.manifest[key]):
+                raise ValueError(f"CFD population/calibration mismatch: {key}")
+        for key in ("fixed_led_threshold_mV", "led_control_mean_ps", "true_tof_ps"):
+            if not np.isclose(float(saved[key]), float(dataset.manifest[key]),
+                              atol=1e-8, rtol=0):
+                raise ValueError(f"CFD calibration mismatch: {key}")
+        ids = np.asarray(saved["event_id"], np.int64)
+        predictions = np.asarray(saved["prediction_ps"], np.float64)
+        validity = np.asarray(saved["valid"], dtype=bool)
+    reference_ids = np.asarray(dataset.event_index, np.int64)
+    if (ids.ndim != 1 or predictions.shape != ids.shape
+            or validity.shape != ids.shape
+            or len(reference_predictions) != len(reference_ids)
+            or len(np.unique(ids)) != len(ids)
+            or len(np.unique(reference_ids)) != len(reference_ids)):
+        raise ValueError("Invalid CFD/reference event IDs or prediction dimensions")
+    ordered = np.argsort(ids, kind="stable")
+    sorted_ids = ids[ordered]
+    positions = np.searchsorted(sorted_ids, reference_ids)
+    present = positions < len(sorted_ids)
+    present[present] &= sorted_ids[positions[present]] == reference_ids[present]
+    reference_rows = np.flatnonzero(present)
+    comparison_rows = ordered[positions[present]]
+    keep = validity[comparison_rows] & np.isfinite(predictions[comparison_rows])
+    reference_rows, comparison_rows = reference_rows[keep], comparison_rows[keep]
+    if len(reference_rows) < args.tuning_queries + args.holdout_queries + 5:
+        raise ValueError("Too few valid common CFD/ML events for heatmap analysis")
+    comparison = predictions[comparison_rows]
+    reference = reference_predictions[reference_rows]
+    common_ids = reference_ids[reference_rows]
+    info = {
+        "common_events": int(len(common_ids)),
+        "reference_only_events": int(len(reference_ids) - len(common_ids)),
+        "comparison_only_events": int(len(ids) - len(common_ids)),
+        "excluded_invalid_cfd": int((~validity).sum()),
+        "max_target_difference_ps": 0.,
+        "reference_window": config["window_name"],
+        "comparison_window": config["window_name"],
+        "same_window": True,
+        "waveform_display": "reference window only",
+        "comparison_sign": "reference saved ML correction minus CFD correction",
+    }
+    provenance = {
+        "model": "prepared_digital_cfd",
+        "mode": config["mode"],
+        "dataset": str(dataset.directory),
+        "source_predictions": str(path),
+    }
+    log.info("CFD DIFFERENCE | ML minus CFD | valid common=%d | missing=%d",
+             len(common_ids), len(reference_ids) - len(common_ids))
+    return reference - comparison, provenance, comparison, reference_rows, common_ids, info
+
+
 def prediction_comparison_metrics(reference, comparison, *, reference_name="reference",
                                   comparison_name="comparison"):
     """Paired saved-output agreement; never claim these are errors to physical truth."""
@@ -554,6 +645,9 @@ def run(args):
     from matplotlib.colors import TwoSlopeNorm
     from matplotlib.ticker import MaxNLocator
 
+    if (args.comparison_model_dir is not None and
+            args.comparison_predictions_npz is not None):
+        raise ValueError("Choose one comparison source: model-dir or CFD NPZ")
     root = args.output_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     log = _logger(root)
@@ -562,10 +656,15 @@ def run(args):
     reference_predictions = predictions
     comparison_predictions = None
     matching = None
-    if args.comparison_model_dir is not None:
-        (predictions, comparison_provenance, comparison_predictions,
-         reference_rows, common_event_ids, matching) = load_prediction_difference(
-            args, reference_predictions, provenance, waves, log)
+    if args.comparison_model_dir is not None or args.comparison_predictions_npz is not None:
+        if args.comparison_predictions_npz is not None:
+            (predictions, comparison_provenance, comparison_predictions,
+             reference_rows, common_event_ids, matching) = load_external_cfd_difference(
+                args, reference_predictions, provenance, log)
+        else:
+            (predictions, comparison_provenance, comparison_predictions,
+             reference_rows, common_event_ids, matching) = load_prediction_difference(
+                args, reference_predictions, provenance, waves, log)
         # All subsequent statistics and plots use exactly the matched events,
         # but only reference (typically wide) waveform time coordinates.
         reference_predictions = reference_predictions[reference_rows]
@@ -963,6 +1062,9 @@ def parser():
     p.add_argument("--model-dir", type=Path, required=True)
     p.add_argument("--comparison-model-dir", type=Path,
                    help="Second saved model run; map reference minus comparison predictions")
+    p.add_argument("--comparison-predictions-npz", type=Path,
+                   help="CFD development_predictions.npz from evaluate_cfd_led_correction; "
+                        "map ML minus CFD predictions on finite paired events")
     p.add_argument("--comparison-target", choices=("difference", "reference", "comparison"),
                    default="difference",
                    help="With --comparison-model-dir, select difference (default), "
