@@ -177,6 +177,7 @@ def run(args):
     )
     feature_arrays = {}
     common_maps = {}
+    representation_baselines = {}
     for representation, kind in feature_specs:
         key = ("first_difference" if kind == "first_difference"
                else representation)
@@ -185,8 +186,18 @@ def run(args):
             feature_name=kind)
         rep_meta = json.loads(
             (args.heatmap_root / representation / "summary.json").read_text(encoding="utf-8"))
-        expected_baseline = [args.baseline_start_ns, args.baseline_end_ns]
         actual_baseline = rep_meta.get("baseline_window_ns")
+        if representation != "original":
+            if (not isinstance(actual_baseline, list)
+                    or len(actual_baseline) != 2
+                    or not all(isinstance(v, (int, float)) and np.isfinite(v)
+                               for v in actual_baseline)
+                    or actual_baseline[0] >= actual_baseline[1]):
+                raise ValueError(
+                    f"Invalid stored baseline window for {representation}: "
+                    f"{actual_baseline!r}")
+            representation_baselines[representation] = baseline_indices(
+                dev_time, float(actual_baseline[0]), float(actual_baseline[1]))
         expected_prediction_mean = float(dev_pred[reference].mean())
         checks = {
             "representation": (heatmap.representation == representation,
@@ -197,9 +208,6 @@ def run(args):
                                       int(rep_meta["events"]), len(reference)),
             "min_count": (int(rep_meta["min_count"]) == args.min_count,
                           int(rep_meta["min_count"]), args.min_count),
-            "baseline window": (representation == "original" or
-                                actual_baseline == expected_baseline,
-                                actual_baseline, expected_baseline),
             "teacher prediction mean": (np.isclose(
                 heatmap.baseline_ps, expected_prediction_mean, atol=1e-5, rtol=0),
                 heatmap.baseline_ps, expected_prediction_mean),
@@ -212,8 +220,7 @@ def run(args):
             raise ValueError(
                 f"Heatmap {representation}/{kind} metadata mismatch:\n" +
                 "\n".join(mismatches))
-        base = (None if representation == "original" else baseline_indices(
-            dev_time, args.baseline_start_ns, args.baseline_end_ns))
+        base = representation_baselines.get(representation)
         common = dict(full_time_ps=dev_time, baseline_positions=base,
                       retained=retain, min_count=args.min_count,
                       chunk_size=args.chunk_size)
@@ -265,9 +272,7 @@ def run(args):
             parts, masks = [], []
             for feature in feature_names:
                 hm = common_maps[feature]
-                baseline = (None if hm.representation == "original"
-                            else baseline_indices(dev_time, args.baseline_start_ns,
-                                                  args.baseline_end_ns))
+                baseline = representation_baselines.get(hm.representation)
                 a_part, v_part = heatmap_pointwise_features(
                     blind_waves, indices, hm,
                     full_time_ps=dev_time, baseline_positions=baseline,
@@ -329,9 +334,7 @@ def run(args):
         local_valid = []
         for feature in feature_names:
             hm = common_maps[feature]
-            baseline = (None if hm.representation == "original"
-                        else baseline_indices(dev_time, args.baseline_start_ns,
-                                              args.baseline_end_ns))
+            baseline = representation_baselines.get(hm.representation)
             a_part, v_part = heatmap_pointwise_features(
                 blind_waves, rows, hm, full_time_ps=dev_time,
                 baseline_positions=baseline, retained=retain,
