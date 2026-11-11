@@ -63,6 +63,55 @@ def event_peak_frequency_phase(x, t_ns, *, low_GHz=1.5,
     return peak_frequency, phase, amplitude, peak_fraction
 
 
+
+def event_joint_peak_frequency_phases(pairs, t_ns, *, low_GHz=1.5,
+                                      high_GHz=3.5, fft_padding=4,
+                                      joint_mode="product"):
+    """Find one peak frequency per paired event, then both LED-relative phases.
+
+    Product/geometric_mean selects the same maximum and favors a frequency
+    energetic in both channels. Sum is provided as a diagnostic alternative.
+    No waveform modifications, and no model inference.
+    """
+    x = np.asarray(pairs, np.float64)
+    t = np.asarray(t_ns, np.float64)
+    if x.ndim != 3 or x.shape[1:] != (2, len(t)) or len(t) < 16:
+        raise ValueError("Expected [events,2,time] and matching time axis")
+    dt = float(np.median(np.diff(t)))
+    if (fft_padding < 1 or not 0 < low_GHz < high_GHz < .5/dt
+            or not np.allclose(np.diff(t), dt, rtol=1e-4, atol=1e-6)):
+        raise ValueError("Invalid frequency band or grid")
+    if joint_mode not in ("product", "geometric_mean", "sum"):
+        raise ValueError("Invalid joint scoring mode")
+    taper = np.hanning(len(t))
+    residual = remove_linear_trend(x)
+    n_fft = len(t)*int(fft_padding)
+    f_grid = np.fft.rfftfreq(n_fft, d=dt)
+    band = np.flatnonzero((f_grid >= low_GHz) & (f_grid <= high_GHz))
+    if len(band) < 2:
+        raise ValueError("Peak-search band too narrow")
+    spectra = np.fft.rfft(residual*taper[None,None,:],
+                          n=n_fft, axis=-1)
+    powers = np.abs(spectra[:,:,band])**2
+    # Normalize powers before multiplication to avoid overflow and arbitrary
+    # detector gain favoring the higher-gain channel.
+    if joint_mode == "sum":
+        score = powers[:,0] + powers[:,1]
+    else:
+        norm = np.maximum(np.max(powers, axis=2, keepdims=True), 1e-30)
+        scaled = powers / norm
+        score = scaled[:,0]*scaled[:,1]
+    peak_bin = np.argmax(score, axis=1)
+    frequency = f_grid[band[peak_bin]]
+    kernel = np.exp(-2j*np.pi*frequency[:,None]*t[None,:])
+    coeff = 2.0/taper.sum()*np.sum(
+        residual*taper[None,None,:]*kernel[:,None,:], axis=-1)
+    phase = np.angle(coeff)
+    amplitude = np.abs(coeff)
+    delta_phase = np.angle(coeff[:,1]*np.conjugate(coeff[:,0]))
+    return frequency, phase, amplitude, delta_phase
+
+
 def group_grid(frequency, phase, prediction, *, frequency_bins=8,
                phase_bins=12, low=1.5, high=3.5,
                frequency_binning="quantile", phase_binning="uniform"):
@@ -240,6 +289,10 @@ def run(args):
         "phase_binning": args.phase_binning,
         "amplitude_percentile": args.min_amplitude_percentile,
         "fft_padding": args.fft_padding,
+        "joint_frequency_estimation": True,
+        "joint_mode": args.joint_mode,
+        "shared_frequency_bins": True,
+        "phase_outputs": ["detector1", "detector2", "delta_phase"],
         "time_reference": "t=0 at prepared LED crossing",
         "note": ("Zero padding is interpolation, not extra spectral resolution. "
                  "Phase at variable frequency is relative to the same LED time zero. "
@@ -257,63 +310,96 @@ def run(args):
         if len(indices) < 16:
             raise ValueError(f"Not enough samples for {name}")
         true_df_GHz = 1./(len(indices)*dt_ps/1000.)
-        for d in (0, 1):
-            freq = np.empty(len(rows))
-            phase = np.empty(len(rows))
-            amplitude = np.empty(len(rows))
-            prominence = np.empty(len(rows))
-            for start in range(0, len(rows), args.chunk_size):
-                end = min(start+args.chunk_size, len(rows))
-                signal = np.asarray(waveforms[rows[start:end], d, :], np.float64)
-                signal = signal[:, indices]*span[d,0]+minimum[d,0]
-                f, p, a, concentration = event_peak_frequency_phase(
-                    signal, time_ns[indices], low_GHz=args.band_GHz[0],
-                    high_GHz=args.band_GHz[1], fft_padding=args.fft_padding)
-                freq[start:end], phase[start:end] = f, p
-                amplitude[start:end], prominence[start:end] = a, concentration
-            floor = float(np.percentile(amplitude, args.min_amplitude_percentile))
-            selected = np.isfinite(freq)&np.isfinite(phase)&(amplitude>=floor)
-            records, f_bin, p_bin = group_grid(
-                freq[selected], phase[selected], predictions[rows][selected],
+        frequency = np.empty(len(rows), np.float64)
+        phases = np.empty((len(rows), 2), np.float64)
+        amps = np.empty((len(rows), 2), np.float64)
+        differences = np.empty(len(rows), np.float64)
+        for start in range(0, len(rows), args.chunk_size):
+            stop = min(start+args.chunk_size, len(rows))
+            pair = np.asarray(waveforms[rows[start:stop], :, :], np.float64)
+            pair = pair[:, :, indices] * span[:,0][None,:,None] + minimum[:,0][None,:,None]
+            f, p, a, delta = event_joint_peak_frequency_phases(
+                pair, time_ns[indices], low_GHz=args.band_GHz[0],
+                high_GHz=args.band_GHz[1], fft_padding=args.fft_padding,
+                joint_mode=args.joint_mode)
+            frequency[start:stop] = f
+            phases[start:stop] = p
+            amps[start:stop] = a
+            differences[start:stop] = delta
+
+        joint_amp = np.sqrt(amps[:,0]*amps[:,1])
+        floor = float(np.percentile(joint_amp, args.min_amplitude_percentile))
+        selected = (np.isfinite(frequency) & np.isfinite(differences)
+                    & np.isfinite(phases).all(axis=1) & np.isfinite(joint_amp)
+                    & (joint_amp >= floor))
+        if selected.sum() < args.frequency_bins:
+            raise ValueError("Too few common paired events after amplitude filter")
+
+        # CRUCIAL: exactly the same selected events and frequency vector
+        # enter all three groupings, guaranteeing common percentile bands.
+        series = (("detector1", phases[:,0]),
+                  ("detector2", phases[:,1]),
+                  ("delta_phase", differences))
+        shared_fbin = None
+        shared_ranges = None
+        for suffix, phase_values in series:
+            records, fbin, pbin = group_grid(
+                frequency[selected], phase_values[selected],
+                predictions[rows][selected],
                 frequency_bins=args.frequency_bins,
                 phase_bins=args.phase_bins, low=args.band_GHz[0],
                 high=args.band_GHz[1],
                 frequency_binning=args.frequency_binning,
                 phase_binning=args.phase_binning)
-            tag = f"{name}_detector{d+1}"
-            make_plots(out, tag, records, freq[selected], phase[selected],
-                       args.frequency_bins, args.phase_bins, args.min_cell_events,
+            ranges = [(records[k*args.phase_bins]["frequency_min_GHz"],
+                       records[k*args.phase_bins]["frequency_max_GHz"])
+                      for k in range(args.frequency_bins)]
+            if shared_fbin is None:
+                shared_fbin, shared_ranges = fbin.copy(), ranges
+            elif not np.array_equal(fbin, shared_fbin) or ranges != shared_ranges:
+                raise AssertionError("Frequency bins unexpectedly differ between phase views")
+            tag = f"{name}_{suffix}"
+            make_plots(out, tag, records, frequency[selected],
+                       phase_values[selected], args.frequency_bins,
+                       args.phase_bins, args.min_cell_events,
                        phase_binning=args.phase_binning)
             for rec in records:
-                all_records.append({"window":name, "detector":d+1, **rec})
-            np.savez_compressed(
-                out/f"{tag}_events.npz", event_id=event_ids[rows],
-                saved_prediction_ps=predictions[rows], frequency_GHz=freq,
-                phase_rad=phase, amplitude_mV=amplitude,
-                spectral_peak_fraction=prominence, selected=selected)
+                all_records.append({"window":name, "detector":suffix, **rec})
             occupied = sum(r["n"]>=args.min_cell_events for r in records)
             summary["results"][tag] = {
                 "frequency_resolution_GHz": true_df_GHz,
-                "n_selected": int(selected.sum()), "amplitude_floor_mV": floor,
-                "peak_frequency_mean_GHz": float(np.mean(freq[selected])),
-                "peak_frequency_std_GHz": float(np.std(freq[selected])),
+                "n_selected": int(selected.sum()),
+                "joint_amplitude_floor_mV": floor,
+                "peak_frequency_mean_GHz": float(np.mean(frequency[selected])),
+                "peak_frequency_std_GHz": float(np.std(frequency[selected])),
                 "occupied_cells_above_threshold": occupied,
                 "total_cells": len(records),
                 "frequency_bin_counts": [
-                    int(np.sum(f_bin == j)) for j in range(args.frequency_bins)],
-                "frequency_bin_ranges_GHz": [
-                    [records[j*args.phase_bins]["frequency_min_GHz"],
-                     records[j*args.phase_bins]["frequency_max_GHz"]]
-                    for j in range(args.frequency_bins)],
+                    int(np.sum(fbin == k)) for k in range(args.frequency_bins)],
+                "frequency_bin_ranges_GHz": [list(r) for r in ranges],
             }
-            print(f"PEAK GROUP | {tag} | used={selected.sum()} "
-                  f"| frequency={np.mean(freq[selected]):.3f}±"
-                  f"{np.std(freq[selected]):.3f} GHz "
+            print(f"JOINT PEAK GROUP | {tag} | used={selected.sum()} "
+                  f"| frequency={np.mean(frequency[selected]):.3f}±"
+                  f"{np.std(frequency[selected]):.3f} GHz "
                   f"| df={true_df_GHz:.3f} GHz "
-                  f"| populated_cells={occupied}/{len(records)} "
-                  f"| frequency_bin_counts="
-                  f"{[int(np.sum(f_bin == j)) for j in range(args.frequency_bins)]}",
+                  f"| populated_cells={occupied}/{len(records)}",
                   flush=True)
+        np.savez_compressed(
+            out/f"{name}_joint_events.npz",
+            event_id=event_ids[rows],
+            saved_prediction_ps=predictions[rows],
+            joint_peak_frequency_GHz=frequency,
+            detector1_phase_rad=phases[:,0],
+            detector2_phase_rad=phases[:,1],
+            delta_phase_rad=differences,
+            detector1_amplitude_mV=amps[:,0],
+            detector2_amplitude_mV=amps[:,1],
+            joint_amplitude_mV=joint_amp,
+            selected=selected,
+            frequency_bin=np.where(selected, np.searchsorted(
+                np.asarray([r[1] for r in shared_ranges[:-1]]),
+                frequency, side="right"), -1),
+        )
     with (out/"frequency_phase_bins.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=list(all_records[0]))
         writer.writeheader()
@@ -333,6 +419,8 @@ def parser():
                    help="Use 0 for all events")
     p.add_argument("--band-GHz", nargs=2, type=float, default=[1.5,3.5])
     p.add_argument("--fft-padding", type=int, default=4)
+    p.add_argument("--joint-mode", choices=("product", "geometric_mean", "sum"),
+                   default="product")
     p.add_argument("--frequency-bins", type=int, default=8)
     p.add_argument("--phase-bins", type=int, default=12)
     p.add_argument("--frequency-binning", choices=("quantile", "uniform"),
