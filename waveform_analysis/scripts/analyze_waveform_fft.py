@@ -96,23 +96,35 @@ def spectral_accumulators(waves, t_ps, *, selected_rows, detector,
     mean_complex = sum_fft / count
     mean_individual_power = sum_power / count
     coherent_power = np.abs(mean_complex) ** 2
+    # Variance identity for LINEAR preprocessing: demean the original
+    # waveforms (in the time domain), then apply identical detrend/Hann/FFT.
+    # The residual power is E|F_i - E F|^2 = E|F_i|^2 - |E F|^2.
+    # Both quantities are in identical per-window arbitrary units.
+    variable_power = np.maximum(mean_individual_power - coherent_power, 0.)
     coherence = np.clip(coherent_power / np.maximum(mean_individual_power, 1e-30),
                         0, 1)
     return {
         "frequency_GHz": freqs,
         "mean_individual_power": mean_individual_power,
         "coherent_power": coherent_power,
+        "variable_power": variable_power,
         "phase_consistency": coherence,
         "mean_waveform_mV": sum_trace / count,
         "time_ns": t_ps[all_idx] / 1000.,
         "individual_waveforms_mV": np.asarray(snapshots),
+        "individual_centered_waveforms_mV": (
+            np.asarray(snapshots) - sum_trace[None, :] / count),
         "n_events": count,
         "window_ns": (start_ns, end_ns),
         "df_GHz": float(freqs[1] - freqs[0]),
         "nyquist_GHz": float(freqs[-1]),
         "normalization": ("Hann taper, eventwise linear detrend, FFT squared "
-                          "magnitudes in common arbitrary scale; compare "
-                          "coherent/incoherent spectra within the same window."),
+                          "magnitudes in common arbitrary scale; variable_power "
+                          "= mean_individual_power - coherent_power. The latter "
+                          "equals the FFT power of waveform-minus-population-mean "
+                          "residuals, averaged over events, because the transform "
+                          "before FFT is linear. Same physical mV and window "
+                          "scaling are required for direct amplitude comparison."),
     }
 
 
@@ -153,6 +165,64 @@ def write_plots(output, label, result, *, max_frequency_GHz=8.):
     fig.savefig(output / f"{label}_fft.png", dpi=175)
     fig.savefig(output / f"{label}_fft.pdf")
     plt.close(fig)
+
+
+
+def write_variability_plots(output, label, result, *, max_frequency_GHz=8.,
+                            peak_band_GHz=(1.5, 3.5)):
+    """Show spectral variance after subtracting the LED-aligned mean waveform.
+
+    Separate image so existing FFT plots remain compatible with old reports.
+    The means are computed from the SAME selected events and detector.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    f = result["frequency_GHz"]
+    valid = (f > 0) & (f <= max_frequency_GHz)
+    if not np.any(valid):
+        raise ValueError("Empty frequency plot range")
+    t = result["time_ns"]
+    residuals = result["individual_centered_waveforms_mV"]
+    variable = result["variable_power"]
+    total = result["mean_individual_power"]
+    coherent = result["coherent_power"]
+    fig, axs = plt.subplots(2, 1, figsize=(11, 7), constrained_layout=True)
+    for row in residuals[:min(10, len(residuals))]:
+        axs[0].plot(t, row, lw=.7, alpha=.3)
+    axs[0].axhline(0, lw=1, color="0.35", linestyle="--")
+    axs[0].set(title=f"{label} | original waveform minus LED-aligned mean",
+               ylabel="Residual amplitude (mV)", xlabel="Time (ns)")
+    axs[0].grid(alpha=.2)
+    # Never take log of negative cancellation round-off or zero power.
+    positive = np.finfo(float).tiny
+    axs[1].plot(f[valid], np.maximum(total[valid], positive),
+                label="Mean individual power", alpha=.6)
+    axs[1].plot(f[valid], np.maximum(coherent[valid], positive),
+                label="Power of aligned mean", alpha=.6)
+    axs[1].plot(f[valid], np.maximum(variable[valid], positive),
+                label="Variable power (mean subtracted)", lw=2)
+    axs[1].axvspan(peak_band_GHz[0], peak_band_GHz[1],
+                   alpha=.07, color="0.5", label="Peak search band")
+    axs[1].set(yscale="log", xlabel="Frequency (GHz)",
+               ylabel="FFT power (a.u.)")
+    axs[1].legend()
+    axs[1].grid(alpha=.2)
+    fig.savefig(output / f"{label}_mean_subtracted.png", dpi=175)
+    fig.savefig(output / f"{label}_mean_subtracted.pdf")
+    plt.close(fig)
+
+
+def variable_band_peak(result, band):
+    frequencies = result["frequency_GHz"]
+    lo, hi = map(float, band)
+    select = np.flatnonzero((frequencies >= lo) & (frequencies <= hi))
+    if not len(select):
+        raise ValueError(f"No FFT bins in requested variable-power band {band}")
+    j = select[np.argmax(result["variable_power"][select])]
+    return (float(frequencies[j]), float(result["variable_power"][j]),
+            float(result["coherent_power"][j]),
+            float(result["phase_consistency"][j]))
 
 
 def run(args):
@@ -210,6 +280,9 @@ def run(args):
         "detector": args.detector, "detector_mixing": False,
         "event_count": int(len(rows)), "sampling_interval_ps": dt_ps,
         "sample_rate_GHz": 1000. / dt_ps,
+        "mean_subtraction": True,
+        "mean_reference": "exact same selected events, detector and waveform window",
+        "variable_peak_band_GHz": list(map(float, args.peak_band_GHz)),
         "highpass": (None if hp_sos is None else {
             "cutoff_GHz": args.highpass_GHz, "order": args.highpass_order,
             "design": "Butterworth SOS, zero-phase scipy.signal.sosfiltfilt",
@@ -242,6 +315,11 @@ def run(args):
                 if key not in ("normalization", "window_ns")})
             write_plots(out, label, result,
                         max_frequency_GHz=args.max_frequency_GHz)
+            write_variability_plots(
+                out, label, result, max_frequency_GHz=args.max_frequency_GHz,
+                peak_band_GHz=args.peak_band_GHz)
+            variable_peak_f, variable_peak_p, coherent_p, consistency = (
+                variable_band_peak(result, args.peak_band_GHz))
             m = result["frequency_GHz"]
             incoherent = result["mean_individual_power"]
             peak_mask = ((m >= (max(args.highpass_GHz, 0.) if sos is not None else 0.))
@@ -257,12 +335,17 @@ def run(args):
                 "nyquist_GHz": result["nyquist_GHz"],
                 "largest_individual_power_peak_GHz": float(m[peak]),
                 "phase_consistency_at_peak": float(result["phase_consistency"][peak]),
+                "variable_band_peak_GHz": variable_peak_f,
+                "variable_band_peak_power": variable_peak_p,
+                "coherent_power_at_variable_peak": coherent_p,
+                "phase_consistency_at_variable_peak": consistency,
                 "warning": ("A filtered spectral peak is descriptive; filtfilt "
                             "is noncausal, and leakage/window effects remain."),
             }
             print(f"WINDOW | {label} | df={result['df_GHz']:.4f} GHz "
                   f"| peak={m[peak]:.4f} GHz "
-                  f"| coherence={result['phase_consistency'][peak]:.4f}",
+                  f"| coherence={result['phase_consistency'][peak]:.4f} "
+                  f"| variable_peak_1p5_3p5_GHz={variable_peak_f:.4f}",
                   flush=True)
     (out / "summary.json").write_text(
         json.dumps(overview, indent=2, allow_nan=False), encoding="utf-8")
@@ -287,6 +370,8 @@ def parser():
     p.add_argument("--include-full", action="store_true",
                    help="Also analyze whole waveform; can be dominated by pulse envelope")
     p.add_argument("--max-frequency-GHz", type=float, default=8.)
+    p.add_argument("--peak-band-GHz", nargs=2, type=float, default=(1.5, 3.5),
+                   help="Band for mean-subtracted (variable) FFT peak search")
     p.add_argument("--highpass-GHz", type=float, default=None,
                    help="Optional Butterworth high-pass cutoff in GHz (e.g. 1.0)")
     p.add_argument("--highpass-order", type=int, default=4,
