@@ -123,24 +123,40 @@ def _load_ml_saved(run_dir, role, *, cache_root, artifact_root):
     dataset, config, manifest = _load_cache(
         run_dir, role, cache_root=cache_root, artifact_root=artifact_root)
     store = RunStore(run_dir, artifact_root=config["preprocessing"].get("artifact_root"))
-    path = store.development_predictions_path if role == "development" else store.predictions_path
-    if not path.is_file() and role == "development":
-        fallback = run_dir / "artifacts" / "development_pred.npz"
-        if fallback.is_file():
-            path = fallback
-    if not path.is_file():
-        raise FileNotFoundError(f"Saved ML {role} predictions missing: {path}")
-    with np.load(path, allow_pickle=False) as archive:
-        required = ("event_id", "prediction_ps", "final_fit_fingerprint",
-                    "analysis_protocol_identity")
-        if any(name not in archive for name in required):
-            raise ValueError(f"ML prediction artifact lacks provenance: {path}")
-        expected_fp = manifest.get("stage_fingerprints", {}).get("final_fit")
-        if (not expected_fp or
-                str(archive["final_fit_fingerprint"].item()) != str(expected_fp)):
-            raise ValueError("Saved ML predictions are from a different final fit")
-        ids = np.asarray(archive["event_id"], np.int64)
-        pred = np.asarray(archive["prediction_ps"], np.float64)
+    if role == "blind":
+        # The existing validated loader handles both new artifact-store outputs
+        # and old batch runs with artifacts/pred.npz (no embedded fingerprints).
+        # For legacy data it checks the completed run stages, exact event IDs,
+        # and the full saved LED residual vector against the prepared dataset.
+        prediction, _ = tshap._load_materialized_local_predictions(
+            store, dataset, manifest, config["mode"])
+        ids = np.asarray(dataset.event_index, np.int64)
+        path = store.predictions_path
+        if not path.is_file():
+            legacy = run_dir / "artifacts" / "pred.npz"
+            if not legacy.is_file():
+                raise FileNotFoundError("Validated Blind predictions have no source file")
+            path = legacy
+        pred = np.asarray(prediction, np.float64)
+    else:
+        path = store.development_predictions_path
+        if not path.is_file():
+            legacy = run_dir / "artifacts" / "development_pred.npz"
+            if legacy.is_file():
+                path = legacy
+        if not path.is_file():
+            raise FileNotFoundError(f"Saved ML {role} predictions missing: {path}")
+        with np.load(path, allow_pickle=False) as archive:
+            required = ("event_id", "prediction_ps", "final_fit_fingerprint",
+                        "analysis_protocol_identity")
+            if any(name not in archive for name in required):
+                raise ValueError(f"ML development prediction artifact lacks provenance: {path}")
+            expected_fp = manifest.get("stage_fingerprints", {}).get("final_fit")
+            if (not expected_fp or
+                    str(archive["final_fit_fingerprint"].item()) != str(expected_fp)):
+                raise ValueError("Saved ML predictions are from a different final fit")
+            ids = np.asarray(archive["event_id"], np.int64)
+            pred = np.asarray(archive["prediction_ps"], np.float64)
     prepared_ids = np.asarray(dataset.event_index, np.int64)
     if (ids.ndim != 1 or ids.shape != pred.shape
             or len(np.unique(ids)) != len(ids)
