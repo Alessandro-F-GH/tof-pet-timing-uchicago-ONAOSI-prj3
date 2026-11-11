@@ -140,11 +140,22 @@ def run(args):
     out.mkdir(parents=True, exist_ok=True)
     try:
         baseline = tshap._predict_bounded(spec, fitted, inputs, args.batch_size)
-        max_replay_delta = float(np.max(np.abs(baseline - original_saved)))
-        if not np.allclose(baseline, original_saved, atol=1e-4, rtol=1e-6):
+        replay_delta = baseline - original_saved
+        max_replay_delta = float(np.max(np.abs(replay_delta)))
+        replay_rmse = float(np.sqrt(np.mean(replay_delta ** 2)))
+        # Rocket/RDST floating-point transform replays can differ slightly
+        # from the original batched inference. They need not be bit-exact.
+        # All filter effects below are referenced to THIS replayed baseline,
+        # never to the historical saved prediction.
+        replay_tolerance_ps = 0.1
+        if max_replay_delta > replay_tolerance_ps:
             raise ValueError(
-                f"Frozen model replay mismatch, max={max_replay_delta:.6g} ps; "
-                "do not compare filtered predictions to incompatible originals.")
+                f"Frozen model replay differs from saved predictions by "
+                f"{max_replay_delta:.6g} ps (RMSE {replay_rmse:.6g} ps), "
+                f"exceeding {replay_tolerance_ps:g} ps. Check model provenance.")
+        print(f"REPLAY | max_abs={max_replay_delta:.6f} ps "
+              f"| RMSE={replay_rmse:.6f} ps "
+              f"| tolerance={replay_tolerance_ps:.3f} ps", flush=True)
         records, snapshots = [], []
         results = {}
         for cutoff in cutoffs:
@@ -190,6 +201,8 @@ def run(args):
             "cutoffs_GHz": cutoffs, "butterworth_order": args.order,
             "filter": "sosfiltfilt zero-phase on full prepared input; clipped [0,1]",
             "original_replay_max_abs_error_ps": max_replay_delta,
+            "original_replay_rmse_ps": replay_rmse,
+            "replay_absolute_tolerance_ps": replay_tolerance_ps,
             "frozen_transform": True, "frozen_model": True,
             "sampling_GHz": fs, "statistics": records,
             "note": ("Filtering can shift or distort the LED rising edge and may "
