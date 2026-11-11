@@ -1,0 +1,100 @@
+{
+  "cache_dir": "processed_data/ml_protocol_v3_lowpass_2GHz",
+  "materialized_window_ns": {
+    "before": 5,
+    "after": 52
+  },
+  "energy": {
+    "trigger_threshold_mV": [
+      10,
+      10
+    ],
+    "vertical_scale_limit_mV": [
+      [
+        -50,
+        600
+      ],
+      [
+        -50,
+        600
+      ]
+    ]
+  },
+  "timing": {
+    "trigger_threshold_mV": [
+      120,
+      120
+    ],
+    "vertical_scale_limit_mV": [
+      [
+        -20,
+        140
+      ],
+      [
+        -20,
+        140
+      ]
+    ],
+    "rising_edge_before_trigger_ns": 1
+  },
+  "selection": {
+    "baseline_window_ns": [
+      -2,
+      -1
+    ],
+    "baseline_noise": {
+      "lambda_mad": 5
+    },
+    "baseline_clipping": {
+      "margin_mV": 1
+    }
+  },
+  "photopeak": {
+    "histogram_bin_mV": 1,
+    "search_quantile_min": 0.2,
+    "smoothing_sigma_bins": 2,
+    "initial_half_width_mV": 15,
+    "iteration_sigma": 2.5,
+    "max_iterations": 6,
+    "convergence_tolerance_mV": 0.01,
+    "selection_sigma_low": -2,
+    "selection_sigma_high": 4
+  },
+  "tot_peak": {
+    "histogram_bin_ns": 0.005,
+    "search_quantile_min": 0.5,
+    "smoothing_sigma_bins": 2,
+    "initial_half_width_ns": 0.2,
+    "iteration_sigma": 2.5,
+    "max_iterations": 6,
+    "convergence_tolerance_ns": 0.001,
+    "selection_sigma_low": -3,
+    "selection_sigma_high": 3
+  },
+  "led_selection": {
+    "thresholds_mV": [
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45,
+      50
+    ],
+    "minimum_crossing_efficiency": 0.95,
+    "coincidence_window_ns": 2
+  },
+  "io": {
+    "step_size": "128 MB",
+    "max_events": 0
+  },
+  "artifact_root": "artifact_store_lowpass_2GHz",
+  "lowpass": {
+    "enabled": true,
+    "cutoff_GHz": 2,
+    "order": 4
+  }
+}
