@@ -2,7 +2,7 @@
 import numpy as np
 
 from waveform_analysis.scripts.group_saved_predictions_by_peak_frequency_phase import (
-    event_peak_frequency_phase, group_grid)
+    event_peak_frequency_phase, event_joint_peak_frequency_phases, group_grid)
 
 
 def test_different_event_frequencies_and_phases():
@@ -60,3 +60,25 @@ def test_optional_quantile_phase_bins():
         frequency_binning="quantile", phase_binning="quantile")
     assert np.bincount(fbin, minlength=6).tolist() == [40]*6
     assert np.bincount(pbin, minlength=8).tolist() == [30]*8
+
+
+def test_joint_peak_frequency_and_relative_phase():
+    t = np.arange(12., 45., .0125)
+    frequencies = np.array([2.28, 2.52, 2.64])
+    phases1 = np.array([.4, -1.2, .8])
+    phases2 = np.array([1.1, -.6, -2.])
+    x = np.zeros((3, 2, len(t)), dtype=np.float64)
+    x[:, 0] = 1. + .07*np.cos(
+        2*np.pi*frequencies[:, None]*t[None, :] + phases1[:, None])
+    x[:, 1] = 1. + .06*np.cos(
+        2*np.pi*frequencies[:, None]*t[None, :] + phases2[:, None])
+    f, phases, amps, delta = event_joint_peak_frequency_phases(
+        x, t, low_GHz=1.5, high_GHz=3.5, fft_padding=8)
+    np.testing.assert_allclose(f, frequencies, atol=.008)
+    np.testing.assert_allclose(
+        np.angle(np.exp(1j*(phases[:,0]-phases1))), 0, atol=.25)
+    np.testing.assert_allclose(
+        np.angle(np.exp(1j*(phases[:,1]-phases2))), 0, atol=.25)
+    np.testing.assert_allclose(
+        np.angle(np.exp(1j*(delta-(phases2-phases1)))), 0, atol=.25)
+    assert np.all(amps > 0)
