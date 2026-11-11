@@ -128,3 +128,44 @@ The individual `--compare-model-dir` argument still accepts one or many
 explicit run paths. For a fresh MT experiment, `--compare-model-root` may be
 used without `--compare-only-root`; for existing results the compare-only
 mode is preferable.
+
+## Wide heatmaps with Onishi prediction outputs
+
+For the descriptive comparison, the *waveforms displayed* must always be
+loaded from a Wide model run. The prediction source may instead be Onishi.
+Match populations using shared development event IDs and verify the calibrated
+LED target vector on the intersection. Window-specific protocol identities
+must **not** be required to match.
+
+```powershell
+$wide = "waveform_analysis/results/UC/FINAL/energy/wide/direct_multirocket_rdst"
+$onishi = "waveform_analysis/results/UC/FINAL/energy/onishi/direct_multirocket"
+$mt = "$HOME/xai/UC/energy/wide/multithreshold_all_models/development_predictions.npz"
+
+# MT alone, displayed on the Wide waveform grid.
+python -m waveform_analysis.scripts.plot_conditional_target_heatmaps `
+  --model-dir $wide `
+  --comparison-predictions-npz $mt `
+  --comparison-target comparison `
+  --cache-root "$HOME/UC_cache" `
+  --output-root "$HOME/xai/UC/heatmaps/mt_wide" `
+  --representations original amplitude_normalized
+
+# Onishi ML minus MT, also displayed on the Wide waveform grid.
+python -m waveform_analysis.scripts.plot_conditional_target_heatmaps `
+  --model-dir $wide `
+  --prediction-model-dir $onishi `
+  --comparison-predictions-npz $mt `
+  --comparison-target difference `
+  --cache-root "$HOME/UC_cache" `
+  --output-root "$HOME/xai/UC/heatmaps/onishi_minus_mt_wide" `
+  --representations original amplitude_normalized
+```
+
+Change `$onishi` to an **existing** Onishi saved-model run; it is an
+illustrative path. The two plots use the same Wide waveform time coordinates,
+but their event populations may differ: the comparison intersects MT,
+Onishi and Wide event IDs and discards invalid MT crossings. For directly
+comparable heatmaps of MT and Onishi−MT, use the same three-way event subset
+(e.g., save an explicit shared event-ID list in a future single-run plotting
+mode) rather than assuming the separate commands are perfectly paired.
