@@ -65,3 +65,24 @@ def test_bad_fractions_rejected():
             waves, np.arange(8), fractions=[0., .3],
             baseline_indices=[0, 1],
             led_threshold_mV=10, physical_scale_mV=[100, 100])
+
+
+def test_nonzero_led_to_cfd_pair_correction_sign():
+    # Both LED crossings anchored near t=0, but unequal pulse slopes produce
+    # different delays from fixed-threshold LED to half-maximum CFD.
+    t = np.arange(-5, 11, dtype=float) * 100.
+    waves = np.zeros((1, 2, len(t)), dtype=float)
+    # slope 1: rise starts at -100ps, saturates at 300ps
+    # slope 2: rise starts at -50ps, saturates at 750ps
+    waves[0, 0] = np.clip((t + 100.) / 400., 0., 1.)
+    waves[0, 1] = np.clip((t + 50.) / 800., 0., 1.)
+    # LED crossings: d1=0ps, d2=150ps (too far: choose native 0 anchor)
+    # Use LED level 0.125: d1=-50ps; d2=50ps, both within one step.
+    correction, led, _ = prepared_cfd_corrections(
+        waves, t, fractions=[.5], baseline_indices=[0, 1],
+        led_threshold_mV=50., physical_scale_mV=[400., 400.])
+    assert np.isfinite(correction[0, 0])
+    assert correction[0, 0] == pytest.approx(
+        (led[0, 0] - 100.) - (led[0, 1] - 350.), abs=1e-8)
+    # CFD times d1=100ps and d2=350ps, after LED d1=-50ps and d2=50ps.
+    assert correction[0, 0] == pytest.approx(150., abs=1e-8)
