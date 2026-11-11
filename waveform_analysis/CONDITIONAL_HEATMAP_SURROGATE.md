@@ -49,3 +49,46 @@ Fidelity metrics are RMSE, MAE, bias, R2 and Pearson correlation against saved *
 Per representation: metrics.json, surrogate.npz, blind_fidelity.png, validation_fidelity.png; per selected TSHAP event: heatmap_colored_waveforms.png, ridge_colored_waveforms.png, local_profiles.npz.
 
 Test: python -m pytest waveform_analysis/tests/test_conditional_heatmap_surrogate.py -q
+
+## Multiview experiment (energy)
+
+Regenerate single-model maps with `original` and `amplitude_normalized`
+and enable first differences on the `original` map. This also persists
+the train-only derivative normalization arrays that older heatmap files lack.
+
+```powershell
+python -m waveform_analysis.scripts.plot_conditional_target_heatmaps `
+  --model-dir "waveform_analysis/results/UC/FINAL/energy/wide/direct_multirocket_rdst" `
+  --cache-root "$HOME/UC_cache" `
+  --output-root "$HOME/xai/UC/energy/wide/heatmaps_multiview" `
+  --representations original amplitude_normalized `
+  --include-original-derivative `
+  --seed 42 --tuning-queries 500 --holdout-queries 500 --min-count 25
+```
+
+Evaluate on the same model and split:
+
+```powershell
+python -m waveform_analysis.scripts.evaluate_conditional_heatmap_surrogate `
+  --model-dir "waveform_analysis/results/UC/FINAL/energy/wide/direct_multirocket_rdst" `
+  --heatmap-root "$HOME/xai/UC/energy/wide/heatmaps_multiview" `
+  --cache-root "$HOME/UC_cache" `
+  --output-root "$HOME/xai/UC/energy/wide/heatmap_surrogate_multiview"
+```
+
+The evaluator compares four frozen-feature configurations:
+
+- original
+- original_first_difference
+- original_amplitude_normalized
+- all_three
+
+All configurations use the same calibration/validation/Blind split and
+separately tuned Ridge regularization. Per-case diagnostics include one
+original-mV waveform plot colored by each input heatmap, plus one plot
+colored by summed calibrated per-timepoint contributions.
+
+The full Blind population is evaluated in chunks, keeping memory bounded.
+
+These configurations are specific to the energy mode because the current
+heatmap generator disables amplitude normalization for saturated timing pulses.
