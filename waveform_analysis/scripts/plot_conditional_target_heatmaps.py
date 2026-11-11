@@ -425,6 +425,10 @@ def load_prediction_source(args, waveform_predictions, waveform_provenance, log)
     source["waveform_window"] = wide_config["window_name"]
     source["waveform_run"] = str(args.model_dir)
     source["waveform_dataset"] = str(wide.directory)
+    # Downstream time grid, transform and physical-waveform plots are all
+    # read from provenance["dataset"]; this MUST remain the Wide cache.
+    source["prediction_dataset"] = source["dataset"]
+    source["dataset"] = str(wide.directory)
     source["prediction_window"] = selected_config["window_name"]
     log.info("PREDICTION SOURCE | waveform=%s, predictions=%s | common=%d",
              wide_config["window_name"], selected_config["window_name"], len(ids))
@@ -711,8 +715,8 @@ def run(args):
             (predictions, comparison_provenance, comparison_predictions,
              reference_rows, common_event_ids, matching) = load_prediction_difference(
                 args, reference_predictions, provenance, waves, log)
-        # All subsequent statistics and plots use exactly the matched events,
-        # but only reference (typically wide) waveform time coordinates.
+        # Subsequent plots always use the Wide waveform data carried by
+        # --model-dir, and the intersection of saved prediction event IDs.
         reference_predictions = reference_predictions[reference_rows]
         waves = EventSubsetView(waves, reference_rows)
         np.save(root / "matched_event_ids.npy", common_event_ids)
