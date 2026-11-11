@@ -6,6 +6,7 @@ from waveform_analysis.signal.pulses import (
     pulse_hits,
     photopeak_mask as _photo_mask,
 )
+from waveform_analysis.signal.filtering import filter_native_waveform
 from waveform_analysis.signal.baseline import (
     baseline_quality_metrics as _baseline_quality_metrics,
 )
@@ -134,6 +135,7 @@ def _scan_amplitudes(root, dataset, preprocessing, n):
                     chunk.vertical_offset_v[local, d],
                     int(pol[d]),
                 )
+                s = filter_native_waveform(s, chunk.horizontal_interval_s[local, d], preprocessing)
                 if np.any(np.isfinite(s)):
                     amps[row, d] = float(np.nanmax(s))
             row += 1
@@ -166,6 +168,7 @@ def _scan_hits(root, dataset, preprocessing, photo_mask, n, families):
                         s = decode_oriented(
                             raw[d][local], gain[local, d], off[local, d], int(pol[d])
                         )
+                        s = filter_native_waveform(s, interval[local, d], preprocessing)
                         hits[f][row][d] = pulse_hits(
                             s, thresholds[f][d], interval[local, d]
                         )
@@ -300,6 +303,7 @@ def _scan_baseline(root, dataset, preprocessing, candidate, triggers, n, family)
                     s = decode_oriented(
                         raw[d][local], gain[local, d], off[local, d], int(pol[d])
                     )
+                    s = filter_native_waveform(s, interval[local, d], preprocessing)
                     rms[row, d], clipped[row, d], clearance[row, d] = (
                         _baseline_quality_metrics(
                             s,
