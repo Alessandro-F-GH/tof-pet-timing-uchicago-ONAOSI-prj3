@@ -384,6 +384,8 @@ def run(args):
                   f"| df={true_df_GHz:.3f} GHz "
                   f"| populated_cells={occupied}/{len(records)}",
                   flush=True)
+        full_frequency_bins = np.full(len(rows), -1, dtype=np.int64)
+        full_frequency_bins[selected] = shared_fbin
         np.savez_compressed(
             out/f"{name}_joint_events.npz",
             event_id=event_ids[rows],
@@ -396,9 +398,7 @@ def run(args):
             detector2_amplitude_mV=amps[:,1],
             joint_amplitude_mV=joint_amp,
             selected=selected,
-            frequency_bin=np.where(selected, np.searchsorted(
-                np.asarray([r[1] for r in shared_ranges[:-1]]),
-                frequency, side="right"), -1),
+            frequency_bin=full_frequency_bins,
         )
     with (out/"frequency_phase_bins.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=list(all_records[0]))
