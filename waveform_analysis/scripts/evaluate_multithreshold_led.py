@@ -389,6 +389,8 @@ def run(args):
     if args.chunk_size < 1 or args.bootstrap < 1:
         raise ValueError("chunk-size/bootstrap must be positive")
     run_dir = tshap._resolve_model_run_directory(args.model_dir)
+    if args.output_root is None:
+        raise ValueError("--output-root is required unless --compare-only-root is set")
     out = args.output_root.expanduser().resolve()
     if out == run_dir or run_dir in out.parents:
         raise ValueError("Output must be outside reference ML run")
@@ -536,7 +538,8 @@ def parser():
                         "must point to an existing MT output directory")
     p.add_argument("--cache-root", type=Path)
     p.add_argument("--artifact-root", type=Path)
-    p.add_argument("--output-root", type=Path, required=True)
+    p.add_argument("--output-root", type=Path,
+                   help="New MT output directory (not needed in --compare-only-root mode)")
     p.add_argument("--threshold-sets", nargs="+",
                    default=[",".join(str(v) for v in g) for g in DEFAULT_SETS],
                    help="Comma-separated mV thresholds per candidate; <=50, >=3 levels")
