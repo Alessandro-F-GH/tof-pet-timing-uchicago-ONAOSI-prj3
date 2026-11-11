@@ -96,3 +96,35 @@ not guaranteed to remove all amplitude walk or to isolate pure time walk.
 The prepared input may be physically clipped or cropped. The initial
 implementation supports `energy_to_energy`; timing channels may saturate.
 The selected threshold set must be frozen before inspecting Blind metrics.
+
+## Compare ALL saved models without rerunning the experiment
+
+If the multi-threshold experiment was already completed, reuse its existing
+`development_predictions.npz` and `blind_predictions.npz` and produce
+correlations for all saved model runs discovered recursively under a result
+folder. This **does not repeat threshold search, timing extraction, Blind
+bootstrap, or model inference**.
+
+```powershell
+python -m waveform_analysis.scripts.evaluate_multithreshold_led `
+  --model-dir "waveform_analysis/results/UC/FINAL/energy/wide/direct_multirocket_rdst" `
+  --compare-model-root "waveform_analysis/results/UC/FINAL/energy/wide" `
+  --cache-root "$HOME/UC_cache" `
+  --compare-only-root "$HOME/xai/UC/energy/wide/multithreshold_v2"
+```
+
+The run folder given in `--compare-only-root` must be the **actual existing
+completed output**. The original reference run and prepared data are verified.
+Every matching saved model is checked separately for mode, channels, fixed
+control calibration, event ID alignment and equal calibrated targets.
+
+Outputs are updated `summary.json` with `comparison_development` and
+`comparison_blind`, and a new `model_correlations.csv` for the Blind
+population. Incompatible or unavailable discovered runs appear in
+`comparison_skipped_*` with reasons. An explicitly passed
+`--compare-model-dir` fails loudly instead of being silently skipped.
+
+The individual `--compare-model-dir` argument still accepts one or many
+explicit run paths. For a fresh MT experiment, `--compare-model-root` may be
+used without `--compare-only-root`; for existing results the compare-only
+mode is preferable.
