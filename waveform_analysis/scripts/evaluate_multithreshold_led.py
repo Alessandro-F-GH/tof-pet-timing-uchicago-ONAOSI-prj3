@@ -242,11 +242,150 @@ def _compare_saved(mt_dataset, mt_raw, mt_offset, mode, model_dirs,
     return results
 
 
+def _comparison_runs(explicit, roots):
+    """Find saved run directories under one or more result roots, recursively."""
+    direct = [tshap._resolve_model_run_directory(p) for p in explicit]
+    discovered = []
+    for root in roots:
+        root = Path(root).expanduser().resolve()
+        if not root.is_dir():
+            raise FileNotFoundError(f"Comparison model root not found: {root}")
+        manifest = root / "metadata" / "manifest.json"
+        if manifest.is_file():
+            discovered.append(root)
+        else:
+            discovered.extend(
+                p.parent.parent for p in root.rglob("metadata/manifest.json"))
+    # Preserve explicit order and stable discovered order. No duplicate models.
+    unique = {}
+    for path in direct + sorted(discovered):
+        unique[str(path.resolve())] = path.resolve()
+    if roots and not discovered:
+        raise ValueError("No saved ML runs found under --compare-model-root")
+    return list(unique.values()), {str(p.resolve()) for p in direct}
+
+
+def _compare_all(dataset, raw, offset, mode, paths, explicit_paths, role,
+                 *, cache_root, artifact_root, fit, seed, reference_channels):
+    results, skipped = [], []
+    for path in paths:
+        try:
+            result = _compare_saved(
+                dataset, raw, offset, mode, [path], role,
+                cache_root=cache_root, artifact_root=artifact_root,
+                fit=fit, seed=seed, reference_channels=reference_channels)
+            results.extend(result)
+        except (ValueError, FileNotFoundError, KeyError, RuntimeError) as exc:
+            if str(path.resolve()) in explicit_paths:
+                raise
+            skipped.append({"run_dir": str(path), "role": role,
+                            "reason": f"{type(exc).__name__}: {exc}"})
+    return results, skipped
+
+
+def _saved_mt(dataset, mode, path, role):
+    """Validate saved MT against current prepared cache without recomputing."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing precomputed multi-threshold predictions: {path}")
+    with np.load(path, allow_pickle=False) as stored:
+        required = ("event_id", "prediction_ps", "led_residual_ps", "valid",
+                    "dataset_role", "method", "analysis_protocol_identity",
+                    "control_mode_fingerprint", "target_definition",
+                    "fixed_led_threshold_mV", "led_control_mean_ps",
+                    "true_tof_ps", "development_offset_ps")
+        if missing := set(required) - set(stored.files):
+            raise ValueError(f"MT prediction file missing {sorted(missing)}")
+        if str(stored["method"].item()) != "prepared_multithreshold_led":
+            raise ValueError("Not a multi-threshold prediction file")
+        if str(stored["dataset_role"].item()) != role:
+            raise ValueError("MT prediction dataset role mismatch")
+        for key in ("analysis_protocol_identity", "control_mode_fingerprint",
+                    "target_definition"):
+            if str(stored[key].item()) != str(dataset.manifest[key]):
+                raise ValueError(f"MT saved metadata differs from cache: {key}")
+        for key in ("fixed_led_threshold_mV", "led_control_mean_ps",
+                    "true_tof_ps"):
+            if not np.isclose(float(stored[key]), float(dataset.manifest[key]),
+                              rtol=0, atol=1e-6):
+                raise ValueError(f"MT saved calibration differs: {key}")
+        ids = np.asarray(stored["event_id"], np.int64)
+        preds = np.asarray(stored["prediction_ps"], np.float64)
+        led = np.asarray(stored["led_residual_ps"], np.float64)
+        valid = np.asarray(stored["valid"], bool)
+        offset = float(stored["development_offset_ps"])
+    reference = np.asarray(dataset.event_index, np.int64)
+    target = np.asarray(model_target(dataset, mode), np.float64)
+    if (not np.array_equal(ids, reference) or
+            preds.shape != target.shape or led.shape != target.shape or
+            valid.shape != target.shape):
+        raise ValueError("MT saved events mismatch prepared population")
+    if not np.allclose(led, target, rtol=0, atol=1e-6):
+        raise ValueError("MT LED targets mismatch prepared population")
+    if not np.array_equal(valid, np.isfinite(preds)):
+        raise ValueError("MT valid mask mismatches prediction finiteness")
+    return preds - offset, offset
+
+
+def _write_comparison_csv(output, results):
+    if not results:
+        return
+    fields = list(results[0])
+    with (output / "model_correlations.csv").open("w", newline="",
+                                                   encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(results)
+
 def run(args):
     if args.cache_root is not None and args.artifact_root is not None:
         raise ValueError("Choose --cache-root OR --artifact-root")
     groups = validate_threshold_sets(
         [tuple(map(float, group.split(","))) for group in args.threshold_sets])
+    compare_paths, explicit_paths = _comparison_runs(
+        args.compare_model_dir, args.compare_model_root)
+    if args.compare_only_root is not None:
+        out = args.compare_only_root.expanduser().resolve()
+        summary_file = out / "summary.json"
+        if not summary_file.is_file():
+            raise FileNotFoundError(f"Existing multi-threshold summary missing: {summary_file}")
+        summary = json.loads(summary_file.read_text(encoding="utf-8"))
+        if summary.get("method") != "prepared_multithreshold_led":
+            raise ValueError("Compare-only directory does not contain MT results")
+        origin = tshap._resolve_model_run_directory(args.model_dir)
+        if Path(summary["reference_model_dir"]).resolve() != origin:
+            raise ValueError("Original MT reference run differs from --model-dir")
+        results, failures = {}, {}
+        for role in ("development", "blind"):
+            dataset, config, _ = _load_cache(
+                origin, role, cache_root=args.cache_root,
+                artifact_root=args.artifact_root)
+            if config["mode"] != summary["mode"]:
+                raise ValueError("Saved MT comparison mode mismatch")
+            raw, offset = _saved_mt(
+                dataset, config["mode"], out / f"{role}_predictions.npz", role)
+            if not np.isclose(offset, float(summary["development_offset_ps"]),
+                              rtol=0, atol=1.e-7):
+                raise ValueError("Saved MT offset disagrees with summary")
+            results[role], failures[role] = _compare_all(
+                dataset, raw, offset, config["mode"], compare_paths,
+                explicit_paths, role, cache_root=args.cache_root,
+                artifact_root=args.artifact_root, fit=config["fit"],
+                seed=args.seed, reference_channels=config[role].get("channels"))
+        summary["comparison_development"] = results["development"]
+        summary["comparison_blind"] = results["blind"]
+        summary["comparison_skipped_development"] = failures["development"]
+        summary["comparison_skipped_blind"] = failures["blind"]
+        _write_json(summary_file, summary)
+        _write_comparison_csv(out, results["blind"])
+        for row in results["blind"]:
+            print(f"CORRELATION | {Path(row['run_dir']).name} | "
+                  f"Pearson r={row['prediction_pearson_r']} | "
+                  f"common={row['common_events']}", flush=True)
+        for row in failures["blind"]:
+            print(f"SKIPPED | {row['run_dir']} | {row['reason']}", flush=True)
+        print(f"COMPARED | {len(results['blind'])} models | "
+              f"skipped={len(failures['blind'])} | {out}", flush=True)
+        return summary
     if args.chunk_size < 1 or args.bootstrap < 1:
         raise ValueError("chunk-size/bootstrap must be positive")
     run_dir = tshap._resolve_model_run_directory(args.model_dir)
@@ -296,11 +435,11 @@ def run(args):
     valid_dev, residual_dev, led_dev = _save(
         out / "development_predictions.npz", development, mode,
         raw, offset, chosen, "development", fit_dev)
-    compare_development = _compare_saved(
-        development, raw, offset, mode, args.compare_model_dir,
+    compare_development, skipped_development = _compare_all(
+        development, raw, offset, mode, compare_paths, explicit_paths,
         "development", cache_root=args.cache_root, artifact_root=args.artifact_root,
         fit=fit, seed=args.seed,
-        reference_channels=config["development"].get("channels")) if args.compare_model_dir else []
+        reference_channels=config["development"].get("channels"))
     print(f"SELECTED | thresholds={chosen} mV | development CTR="
           f"{metric_dev['ctr_ps']:.3f} ps | RMSE={metric_dev['rmse_ps']:.3f} ps "
           f"| coverage={valid_dev.mean():.2%}", flush=True)
@@ -335,11 +474,11 @@ def run(args):
         n_resamples=args.bootstrap,
         seed=semantic_seed(args.seed, "mt", "blind"))
     np.savez_compressed(out / "blind_bootstrap.npz", **draws)
-    compare_blind = _compare_saved(
-        blind, blind_corr[:, 0], offset, mode, args.compare_model_dir,
+    compare_blind, skipped_blind = _compare_all(
+        blind, blind_corr[:, 0], offset, mode, compare_paths, explicit_paths,
         "blind", cache_root=args.cache_root, artifact_root=args.artifact_root,
         fit=fit, seed=args.seed,
-        reference_channels=config["blind"].get("channels")) if args.compare_model_dir else []
+        reference_channels=config["blind"].get("channels"))
     with (out / "threshold_scan.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -364,11 +503,14 @@ def run(args):
                   "metrics": bootstrap},
         "comparison_development": compare_development,
         "comparison_blind": compare_blind,
+        "comparison_skipped_development": skipped_development,
+        "comparison_skipped_blind": skipped_blind,
         "sign": "prediction=(LED1-t0_1)-(LED2-t0_2)+dev_offset; corrected=LED_target-prediction",
         "warning": ("Prepared waveforms may be clipped; OLS extrapolation is "
                     "linear only locally and does not isolate physical causes."),
     }
     _write_json(out / "summary.json", summary)
+    _write_comparison_csv(out, compare_blind)
     print(f"BLIND | CTR={bootstrap['ctr_ps']:.3f} ps | "
           f"RMSE={bootstrap['rmse_ps']:.3f} ps | "
           f"LED CTR={bootstrap['led_ctr_ps']:.3f} ps "
@@ -387,6 +529,11 @@ def parser():
                    help="Reference run identifying frozen prepared data and fit settings")
     p.add_argument("--compare-model-dir", type=Path, nargs="*", default=[],
                    help="Saved ML run(s) to compare on development and blind")
+    p.add_argument("--compare-model-root", type=Path, nargs="*", default=[],
+                   help="Search recursively for all saved model runs in these directories")
+    p.add_argument("--compare-only-root", type=Path,
+                   help="Reuse completed MT predictions and update correlations only; "
+                        "must point to an existing MT output directory")
     p.add_argument("--cache-root", type=Path)
     p.add_argument("--artifact-root", type=Path)
     p.add_argument("--output-root", type=Path, required=True)
