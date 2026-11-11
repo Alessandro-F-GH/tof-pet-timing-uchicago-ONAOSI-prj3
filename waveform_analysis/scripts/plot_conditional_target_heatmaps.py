@@ -327,11 +327,11 @@ def load_prediction_difference(args, reference_predictions, reference_provenance
             second, other_predictions[other_rows], ref_rows, common_ids, info)
 
 
-def load_external_cfd_difference(args, reference_predictions, reference_provenance,
+def load_external_correction_difference(args, reference_predictions, reference_provenance,
                                  log):
-    """Compare CFD development NPZ against the exact reference prepared population.
+    """Compare multi-threshold development NPZ against the exact reference prepared population.
 
-    The CFD benchmark can have missing crossings; use only finite paired events
+    The multi-threshold benchmark can have missing crossings; use only finite paired events
     and preserve the ordered subset of the reference waveforms. No fake model run.
     """
     from waveform_analysis.data.results import read_run, resolve_run_config
@@ -358,19 +358,19 @@ def load_external_cfd_difference(args, reference_predictions, reference_provenan
             "target_definition", "true_tof_ps",
         }
         if missing := required - set(saved.files):
-            raise ValueError(f"External CFD prediction NPZ missing: {sorted(missing)}")
+            raise ValueError(f"External multi-threshold prediction NPZ missing: {sorted(missing)}")
         if (str(saved["dataset_role"].item()) != "development" or
                 str(saved["method"].item()) !=
-                "prepared_digital_cfd_led_correction"):
-            raise ValueError("Expected development predictions from prepared CFD")
+                "prepared_multithreshold_led"):
+            raise ValueError("Expected development predictions from prepared multi-threshold")
         for key in ("analysis_protocol_identity", "control_mode_fingerprint",
                     "target_definition"):
             if str(saved[key].item()) != str(dataset.manifest[key]):
-                raise ValueError(f"CFD population/calibration mismatch: {key}")
+                raise ValueError(f"multi-threshold population/calibration mismatch: {key}")
         for key in ("fixed_led_threshold_mV", "led_control_mean_ps", "true_tof_ps"):
             if not np.isclose(float(saved[key]), float(dataset.manifest[key]),
                               atol=1e-8, rtol=0):
-                raise ValueError(f"CFD calibration mismatch: {key}")
+                raise ValueError(f"multi-threshold calibration mismatch: {key}")
         ids = np.asarray(saved["event_id"], np.int64)
         predictions = np.asarray(saved["prediction_ps"], np.float64)
         validity = np.asarray(saved["valid"], dtype=bool)
@@ -380,7 +380,7 @@ def load_external_cfd_difference(args, reference_predictions, reference_provenan
             or len(reference_predictions) != len(reference_ids)
             or len(np.unique(ids)) != len(ids)
             or len(np.unique(reference_ids)) != len(reference_ids)):
-        raise ValueError("Invalid CFD/reference event IDs or prediction dimensions")
+        raise ValueError("Invalid multi-threshold/reference event IDs or prediction dimensions")
     ordered = np.argsort(ids, kind="stable")
     sorted_ids = ids[ordered]
     positions = np.searchsorted(sorted_ids, reference_ids)
@@ -391,7 +391,7 @@ def load_external_cfd_difference(args, reference_predictions, reference_provenan
     keep = validity[comparison_rows] & np.isfinite(predictions[comparison_rows])
     reference_rows, comparison_rows = reference_rows[keep], comparison_rows[keep]
     if len(reference_rows) < args.tuning_queries + args.holdout_queries + 5:
-        raise ValueError("Too few valid common CFD/ML events for heatmap analysis")
+        raise ValueError("Too few valid common multi-threshold/ML events for heatmap analysis")
     comparison = predictions[comparison_rows]
     reference = reference_predictions[reference_rows]
     common_ids = reference_ids[reference_rows]
@@ -399,21 +399,21 @@ def load_external_cfd_difference(args, reference_predictions, reference_provenan
         "common_events": int(len(common_ids)),
         "reference_only_events": int(len(reference_ids) - len(common_ids)),
         "comparison_only_events": int(len(ids) - len(common_ids)),
-        "excluded_invalid_cfd": int((~validity).sum()),
+        "excluded_invalid_multithreshold": int((~validity).sum()),
         "max_target_difference_ps": 0.,
         "reference_window": config["window_name"],
         "comparison_window": config["window_name"],
         "same_window": True,
         "waveform_display": "reference window only",
-        "comparison_sign": "reference saved ML correction minus CFD correction",
+        "comparison_sign": "reference saved ML correction minus multi-threshold correction",
     }
     provenance = {
-        "model": "prepared_digital_cfd",
+        "model": "prepared_multithreshold",
         "mode": config["mode"],
         "dataset": str(dataset.directory),
         "source_predictions": str(path),
     }
-    log.info("CFD DIFFERENCE | ML minus CFD | valid common=%d | missing=%d",
+    log.info("multi-threshold DIFFERENCE | ML minus multi-threshold | valid common=%d | missing=%d",
              len(common_ids), len(reference_ids) - len(common_ids))
     return reference - comparison, provenance, comparison, reference_rows, common_ids, info
 
@@ -648,7 +648,7 @@ def run(args):
     external_cfd = getattr(args, "comparison_predictions_npz", None)
     if (args.comparison_model_dir is not None and
             external_cfd is not None):
-        raise ValueError("Choose one comparison source: model-dir or CFD NPZ")
+        raise ValueError("Choose one comparison source: model-dir or multi-threshold NPZ")
     root = args.output_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     log = _logger(root)
@@ -660,7 +660,7 @@ def run(args):
     if args.comparison_model_dir is not None or external_cfd is not None:
         if external_cfd is not None:
             (predictions, comparison_provenance, comparison_predictions,
-             reference_rows, common_event_ids, matching) = load_external_cfd_difference(
+             reference_rows, common_event_ids, matching) = load_external_correction_difference(
                 args, reference_predictions, provenance, log)
         else:
             (predictions, comparison_provenance, comparison_predictions,
