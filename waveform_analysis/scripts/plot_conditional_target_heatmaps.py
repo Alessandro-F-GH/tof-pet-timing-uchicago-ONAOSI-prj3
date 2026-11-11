@@ -327,95 +327,110 @@ def load_prediction_difference(args, reference_predictions, reference_provenance
             second, other_predictions[other_rows], ref_rows, common_ids, info)
 
 
-def load_external_correction_difference(args, reference_predictions, reference_provenance,
-                                 log):
-    """Compare multi-threshold development NPZ against the exact reference prepared population.
+def load_external_correction_difference(args, reference_predictions, reference_ids,
+                                        reference_targets, reference_provenance, log):
+    """Align externally saved MT corrections by event_id and LED target.
 
-    The multi-threshold benchmark can have missing crossings; use only finite paired events
-    and preserve the ordered subset of the reference waveforms. No fake model run.
+    Independent of the preprocessing/window identity of the MT-producing run:
+    MT is a per-event correction, not a waveform source. The reference waveforms
+    always come from --model-dir (Wide); ML outputs may come from Onishi.
     """
-    from waveform_analysis.data.results import read_run, resolve_run_config
-    from waveform_analysis.data.prepared_cache import PreparedCacheLookup
-
-    run = read_run(args.model_dir.expanduser().resolve())
-    config = resolve_run_config(args.model_dir.expanduser().resolve())
-    if args.cache_root is not None:
-        root = args.cache_root.expanduser().resolve()
-        config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
-        config["preprocessing"]["artifact_root"] = str(root / "artifact_store")
-        config["preprocessing"]["named_cache_root"] = str(root)
-    elif args.artifact_root is not None:
-        config["preprocessing"]["artifact_root"] = str(
-            args.artifact_root.expanduser().resolve())
-        config["preprocessing"].pop("named_cache_root", None)
-    dataset = PreparedCacheLookup().find("development", config, run["manifest"])
     path = args.comparison_predictions_npz.expanduser().resolve()
     with np.load(path, allow_pickle=False) as saved:
-        required = {
-            "event_id", "prediction_ps", "valid", "dataset_role", "method",
-            "analysis_protocol_identity", "control_mode_fingerprint",
-            "fixed_led_threshold_mV", "led_control_mean_ps",
-            "target_definition", "true_tof_ps",
-        }
-        if missing := required - set(saved.files):
-            raise ValueError(f"External multi-threshold prediction NPZ missing: {sorted(missing)}")
+        required = {"event_id", "prediction_ps", "led_residual_ps",
+                    "valid", "dataset_role", "method"}
+        missing = required - set(saved.files)
+        if missing:
+            raise ValueError(f"MT prediction NPZ missing: {sorted(missing)}")
         if (str(saved["dataset_role"].item()) != "development" or
-                str(saved["method"].item()) !=
-                "prepared_multithreshold_led"):
-            raise ValueError("Expected development predictions from prepared multi-threshold")
-        for key in ("analysis_protocol_identity", "control_mode_fingerprint",
-                    "target_definition"):
-            if str(saved[key].item()) != str(dataset.manifest[key]):
-                raise ValueError(f"multi-threshold population/calibration mismatch: {key}")
-        for key in ("fixed_led_threshold_mV", "led_control_mean_ps", "true_tof_ps"):
-            if not np.isclose(float(saved[key]), float(dataset.manifest[key]),
-                              atol=1e-8, rtol=0):
-                raise ValueError(f"multi-threshold calibration mismatch: {key}")
+                str(saved["method"].item()) != "prepared_multithreshold_led"):
+            raise ValueError("Expected saved development MT predictions")
         ids = np.asarray(saved["event_id"], np.int64)
-        predictions = np.asarray(saved["prediction_ps"], np.float64)
-        validity = np.asarray(saved["valid"], dtype=bool)
-    reference_ids = np.asarray(dataset.event_index, np.int64)
-    if (ids.ndim != 1 or predictions.shape != ids.shape
-            or validity.shape != ids.shape
-            or len(reference_predictions) != len(reference_ids)
-            or len(np.unique(ids)) != len(ids)
-            or len(np.unique(reference_ids)) != len(reference_ids)):
-        raise ValueError("Invalid multi-threshold/reference event IDs or prediction dimensions")
-    ordered = np.argsort(ids, kind="stable")
-    sorted_ids = ids[ordered]
-    positions = np.searchsorted(sorted_ids, reference_ids)
-    present = positions < len(sorted_ids)
-    present[present] &= sorted_ids[positions[present]] == reference_ids[present]
-    reference_rows = np.flatnonzero(present)
-    comparison_rows = ordered[positions[present]]
-    keep = validity[comparison_rows] & np.isfinite(predictions[comparison_rows])
-    reference_rows, comparison_rows = reference_rows[keep], comparison_rows[keep]
-    if len(reference_rows) < args.tuning_queries + args.holdout_queries + 5:
-        raise ValueError("Too few valid common multi-threshold/ML events for heatmap analysis")
-    comparison = predictions[comparison_rows]
-    reference = reference_predictions[reference_rows]
-    common_ids = reference_ids[reference_rows]
-    info = {
-        "common_events": int(len(common_ids)),
-        "reference_only_events": int(len(reference_ids) - len(common_ids)),
-        "comparison_only_events": int(len(ids) - len(common_ids)),
-        "excluded_invalid_multithreshold": int((~validity).sum()),
-        "max_target_difference_ps": 0.,
-        "reference_window": config["window_name"],
-        "comparison_window": config["window_name"],
-        "same_window": True,
-        "waveform_display": "reference window only",
-        "comparison_sign": "reference saved ML correction minus multi-threshold correction",
-    }
+        pred = np.asarray(saved["prediction_ps"], np.float64)
+        targets = np.asarray(saved["led_residual_ps"], np.float64)
+        valid = np.asarray(saved["valid"], bool)
+    if (ids.ndim != 1 or pred.shape != ids.shape
+            or targets.shape != ids.shape or valid.shape != ids.shape):
+        raise ValueError("Invalid MT event/prediction/target array dimensions")
+    left_rows, right_rows, _, info = match_event_populations(
+        reference_ids, ids, reference_targets, targets)
+    matched_valid = valid[right_rows] & np.isfinite(pred[right_rows])
+    left_rows, right_rows = left_rows[matched_valid], right_rows[matched_valid]
+    if left_rows.size < args.tuning_queries + args.holdout_queries + 5:
+        raise ValueError("Insufficient common valid MT and ML predictions")
+    ref = reference_predictions[left_rows]
+    comparison = pred[right_rows]
+    common_ids = np.asarray(reference_ids, np.int64)[left_rows]
+    info["common_events_before_validity"] = info["common_events"]
+    info["common_events"] = int(len(common_ids))
+    info["excluded_invalid_mt_in_intersection"] = int((~matched_valid).sum())
+    info["reference_only_events"] = int(len(reference_ids) - len(common_ids))
+    info["comparison_only_events"] = int(len(ids) - len(common_ids))
+    info["reference_window"] = reference_provenance["waveform_window"]
+    info["comparison_window"] = "MT saved correction (no waveform window)"
+    info["waveform_display"] = "Wide reference waveform"
+    info["comparison_sign"] = "ML prediction minus multi-threshold correction"
     provenance = {
         "model": "prepared_multithreshold",
-        "mode": config["mode"],
-        "dataset": str(dataset.directory),
+        "mode": reference_provenance["mode"],
         "source_predictions": str(path),
     }
-    log.info("multi-threshold DIFFERENCE | ML minus multi-threshold | valid common=%d | missing=%d",
-             len(common_ids), len(reference_ids) - len(common_ids))
-    return reference - comparison, provenance, comparison, reference_rows, common_ids, info
+    log.info(
+        "MT MATCH | ML-MT | common=%d | missing/invalid=%d | "
+        "LED target max delta=%.6g ps",
+        len(common_ids), len(reference_ids) - len(common_ids),
+        info["max_target_difference_ps"])
+    return ref - comparison, provenance, comparison, left_rows, common_ids, info
+
+
+def load_prediction_source(args, waveform_predictions, waveform_provenance, log):
+    """Use Wide waveforms but replace saved outputs with a different-window model.
+
+    Both ML prediction vectors are already validated by _load_inputs against
+    their own cache. Align on event IDs and verify identical calibrated targets.
+    """
+    from argparse import Namespace
+    from waveform_analysis.data.results import read_run, resolve_run_config
+    from waveform_analysis.data.prepared_cache import PreparedCacheLookup
+    from waveform_analysis.data.view import model_target
+
+    source_args = Namespace(**vars(args))
+    source_args.model_dir = args.prediction_model_dir
+    _, source_predictions, _, source = _load_inputs(source_args, log)
+
+    def dataset_for(path):
+        run = read_run(path)
+        config = resolve_run_config(path)
+        if args.cache_root is not None:
+            root = args.cache_root.expanduser().resolve()
+            config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
+            config["preprocessing"]["artifact_root"] = str(root / "artifact_store")
+            config["preprocessing"]["named_cache_root"] = str(root)
+        elif args.artifact_root is not None:
+            config["preprocessing"]["artifact_root"] = str(
+                args.artifact_root.expanduser().resolve())
+            config["preprocessing"].pop("named_cache_root", None)
+        return PreparedCacheLookup().find("development", config, run["manifest"]), config
+
+    wide, wide_config = dataset_for(args.model_dir)
+    selected, selected_config = dataset_for(args.prediction_model_dir)
+    if wide_config["mode"] != selected_config["mode"]:
+        raise ValueError("Prediction source and Wide waveforms have different modes")
+    ref_rows, selected_rows, ids, info = match_event_populations(
+        wide.event_index, selected.event_index,
+        model_target(wide, wide_config["mode"]),
+        model_target(selected, selected_config["mode"]))
+    if len(waveform_predictions) != wide.n_events or len(source_predictions) != selected.n_events:
+        raise ValueError("Saved ML predictions do not match prepared event counts")
+    source["waveform_window"] = wide_config["window_name"]
+    source["waveform_run"] = str(args.model_dir)
+    source["waveform_dataset"] = str(wide.directory)
+    source["prediction_window"] = selected_config["window_name"]
+    log.info("PREDICTION SOURCE | waveform=%s, predictions=%s | common=%d",
+             wide_config["window_name"], selected_config["window_name"], len(ids))
+    return (source_predictions[selected_rows], ref_rows, ids,
+            np.asarray(model_target(wide, wide_config["mode"]), np.float64)[ref_rows],
+            source, info)
 
 
 def prediction_comparison_metrics(reference, comparison, *, reference_name="reference",
@@ -653,15 +668,45 @@ def run(args):
     root.mkdir(parents=True, exist_ok=True)
     log = _logger(root)
     waves, predictions, retained, provenance = _load_inputs(args, log)
+    from waveform_analysis.data.results import read_run, resolve_run_config
+    from waveform_analysis.data.prepared_cache import PreparedCacheLookup
+    from waveform_analysis.data.view import model_target
+    ref_run = read_run(args.model_dir.expanduser().resolve())
+    ref_cfg = resolve_run_config(args.model_dir.expanduser().resolve())
+    if args.cache_root is not None:
+        cache = args.cache_root.expanduser().resolve()
+        ref_cfg["preprocessing"].update(
+            cache_dir=str(cache / "preprocessing"),
+            artifact_root=str(cache / "artifact_store"),
+            named_cache_root=str(cache))
+    elif args.artifact_root is not None:
+        ref_cfg["preprocessing"]["artifact_root"] = str(
+            args.artifact_root.expanduser().resolve())
+        ref_cfg["preprocessing"].pop("named_cache_root", None)
+    ref_dataset = PreparedCacheLookup().find("development", ref_cfg, ref_run["manifest"])
+    reference_ids = np.asarray(ref_dataset.event_index, np.int64)
+    reference_targets = np.asarray(model_target(ref_dataset, ref_cfg["mode"]), np.float64)
+    provenance["waveform_window"] = ref_cfg["window_name"]
+    provenance["waveform_run"] = str(args.model_dir)
     comparison_provenance = None
-    reference_predictions = predictions
     comparison_predictions = None
     matching = None
+    if args.prediction_model_dir is not None:
+        if args.comparison_model_dir is not None:
+            raise ValueError("Use either --prediction-model-dir or --comparison-model-dir")
+        (predictions, source_rows, reference_ids, reference_targets,
+         source_provenance, source_info) = load_prediction_source(
+            args, predictions, provenance, log)
+        waves = EventSubsetView(waves, source_rows)
+        provenance = source_provenance
+        matching = source_info
+    reference_predictions = predictions
     if args.comparison_model_dir is not None or external_cfd is not None:
         if external_cfd is not None:
             (predictions, comparison_provenance, comparison_predictions,
              reference_rows, common_event_ids, matching) = load_external_correction_difference(
-                args, reference_predictions, provenance, log)
+                args, reference_predictions, reference_ids,
+                reference_targets, provenance, log)
         else:
             (predictions, comparison_provenance, comparison_predictions,
              reference_rows, common_event_ids, matching) = load_prediction_difference(
@@ -675,7 +720,7 @@ def run(args):
     if target_kind not in ("difference", "reference", "comparison"):
         raise ValueError("Invalid comparison target")
     if target_kind != "difference" and comparison_predictions is None:
-        raise ValueError("--comparison-target reference/comparison requires --comparison-model-dir")
+        raise ValueError("--comparison-target reference/comparison requires an external comparison")
     if comparison_predictions is not None:
         if target_kind == "reference":
             predictions = reference_predictions
@@ -1061,6 +1106,9 @@ def run(args):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-dir", type=Path, required=True)
+    p.add_argument("--prediction-model-dir", type=Path,
+                   help="Saved predictions from a shorter-window run (e.g. Onishi); "
+                        "always display waveforms from --model-dir (e.g. Wide)")
     p.add_argument("--comparison-model-dir", type=Path,
                    help="Second saved model run; map reference minus comparison predictions")
     p.add_argument("--comparison-predictions-npz", type=Path,
