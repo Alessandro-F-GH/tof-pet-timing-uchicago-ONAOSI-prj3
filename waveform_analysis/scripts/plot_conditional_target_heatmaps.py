@@ -686,6 +686,8 @@ def run(args):
             "edges": edges, "sums": sums, "counts": counts,
             "mean_target": mean_target, "means": means, "scales": scales,
             "normalization": signal_meta, "derivative_normalization": derivative_meta,
+            "derivative_normalization_mean": dmeans,
+            "derivative_normalization_scale": dscales,
             "feature_names": (["waveform", "first_difference"] if derivative
                               else ["waveform"]),
         }
@@ -862,6 +864,10 @@ def run(args):
             training_prediction_mean_ps=baseline,
             normalization_mean=result["means"],
             normalization_scale=result["scales"],
+            derivative_normalization_mean=(result["derivative_normalization_mean"]
+                                           if derivative else np.empty((0,), dtype=np.float32)),
+            derivative_normalization_scale=(result["derivative_normalization_scale"]
+                                            if derivative else np.empty((0,), dtype=np.float32)),
             prediction_type=np.array("reference_minus_comparison" if is_difference
                                      else ("saved_comparison" if target_kind == "comparison"
                                            else "saved_reference")),
