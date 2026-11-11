@@ -168,25 +168,36 @@ def run(args):
     transform = getattr(blind, f"{family}_transform")
     if transform is None:
         raise ValueError("Missing saved physical waveform transform")
-    names = args.representations or root_meta["representations"]
-    results = {}
-    for name in names:
+    # Required views share the same reference event population and native grid.
+    # First-difference data lives in original/ (second feature kind).
+    feature_specs = (
+        ("original", "waveform"),
+        ("original", "first_difference"),
+        ("amplitude_normalized", "waveform"),
+    )
+    feature_arrays = {}
+    common_maps = {}
+    for representation, kind in feature_specs:
+        key = ("first_difference" if kind == "first_difference"
+               else representation)
         heatmap = load_conditional_map(
-            args.heatmap_root / name / "conditional_target_heatmaps.npz")
+            args.heatmap_root / representation / "conditional_target_heatmaps.npz",
+            feature_name=kind)
         rep_meta = json.loads(
-            (args.heatmap_root / name / "summary.json").read_text(encoding="utf-8"))
-        if (heatmap.representation != name or name not in root_meta["representations"]
+            (args.heatmap_root / representation / "summary.json").read_text(encoding="utf-8"))
+        if (heatmap.representation != representation
+                or representation not in root_meta["representations"]
                 or int(rep_meta["events"]) != len(reference)
                 or int(rep_meta["min_count"]) != args.min_count
-                or ((name != "original") and
+                or ((representation != "original") and
                     (rep_meta.get("baseline_window_ns") !=
                      [args.baseline_start_ns, args.baseline_end_ns]))
                 or not np.isclose(heatmap.baseline_ps,
                                   float(dev_pred[reference].mean()), atol=1e-5, rtol=0)):
             raise ValueError("Heatmap representation/split/normalization mismatch")
-        baseline = (None if name == "original" else baseline_indices(
+        base = (None if representation == "original" else baseline_indices(
             dev_time, args.baseline_start_ns, args.baseline_end_ns))
-        common = dict(full_time_ps=dev_time, baseline_positions=baseline,
+        common = dict(full_time_ps=dev_time, baseline_positions=base,
                       retained=retain, min_count=args.min_count,
                       chunk_size=args.chunk_size)
         a_cal, valid_cal = heatmap_pointwise_features(
@@ -195,6 +206,37 @@ def run(args):
             dev_waves, validation, heatmap, **common)
         a_blind, valid_blind = heatmap_pointwise_features(
             blind_waves, np.arange(len(blind_pred)), heatmap, **common)
+        feature_arrays[key] = {
+            "calibration": a_cal, "validation": a_val, "blind": a_blind,
+            "calibration_valid": valid_cal, "validation_valid": valid_val,
+            "blind_valid": valid_blind,
+        }
+        common_maps[key] = heatmap
+        print(f"FEATURE | {key} | calibration={a_cal.shape} | "
+              f"blind_coverage={valid_blind.mean():.1%}", flush=True)
+
+    configurations = {
+        "original": ("original",),
+        "original_first_difference": ("original", "first_difference"),
+        "original_amplitude_normalized": ("original", "amplitude_normalized"),
+        "all_three": ("original", "first_difference", "amplitude_normalized"),
+    }
+    reference_mean = common_maps["original"].baseline_ps
+    for name, heatmap in common_maps.items():
+        if (not np.array_equal(heatmap.positions, common_maps["original"].positions)
+                or not np.array_equal(heatmap.time_ps, common_maps["original"].time_ps)
+                or not np.isclose(heatmap.baseline_ps, reference_mean, rtol=0, atol=1e-8)):
+            raise ValueError(f"Heatmap coordinates/baseline mismatch: {name}")
+    results = {}
+    for config_name, feature_names in configurations.items():
+        # Shape [event, representation, detector, time]. All names share time.
+        def stacked(part):
+            return np.stack([feature_arrays[name][part] for name in feature_names], axis=1)
+        a_cal, a_val, a_blind = (
+            stacked("calibration"), stacked("validation"), stacked("blind"))
+        v_cal, v_val, v_blind = (
+            stacked("calibration_valid"), stacked("validation_valid"),
+            stacked("blind_valid"))
         ridge, cv = calibrate_ridge(
             a_cal.reshape(len(a_cal), -1), dev_pred[calibration],
             alphas=args.alphas, folds=args.cv_folds, seed=args.seed)
@@ -204,44 +246,49 @@ def run(args):
         if not np.allclose(
             y_blind, ridge.predict(a_blind.reshape(len(a_blind), -1)),
             atol=1e-7, rtol=1e-10):
-            raise AssertionError("Additive profile differs from fitted Ridge prediction")
+            raise AssertionError("Additive reconstruction differs from Ridge")
         metrics = {
+            "features": list(feature_names),
             "regularization": cv,
             "fidelity_to_saved_model": {
-                "calibration": fidelity_metrics(y_cal, dev_pred[calibration], heatmap.baseline_ps),
-                "validation": fidelity_metrics(y_val, dev_pred[validation], heatmap.baseline_ps),
-                "blind": fidelity_metrics(y_blind, blind_pred, heatmap.baseline_ps),
+                "calibration": fidelity_metrics(y_cal, dev_pred[calibration], reference_mean),
+                "validation": fidelity_metrics(y_val, dev_pred[validation], reference_mean),
+                "blind": fidelity_metrics(y_blind, blind_pred, reference_mean),
             },
             "coverage": {
-                "calibration": float(valid_cal.mean()),
-                "validation": float(valid_val.mean()),
-                "blind": float(valid_blind.mean()),
-                "blind_by_detector": valid_blind.mean(axis=(0, 2)).tolist(),
+                "calibration": float(v_cal.mean()),
+                "validation": float(v_val.mean()),
+                "blind": float(v_blind.mean()),
+                "blind_per_representation": {
+                    feature: float(v_blind[:, j].mean())
+                    for j, feature in enumerate(feature_names)},
             },
-            "missing_cell_policy": "zero deviation from training prediction mean; tracked as invalid",
-            "interpretation": "association-based additive surrogate, not teacher attribution",
+            "missing_cell_policy": "zero deviation from reference mean, mask retained",
+            "interpretation": "association-based additive surrogate, not causal attribution",
         }
-        destination = root / name
+        destination = root / config_name
         destination.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             destination / "surrogate.npz",
-            coefficients=ridge.coef_.reshape(2, -1),
+            feature_names=np.asarray(feature_names),
+            coefficients=ridge.coef_.reshape(len(feature_names), 2, -1),
             intercept_ps=np.array(ridge.intercept_),
-            time_ps=heatmap.time_ps, positions=heatmap.positions,
+            time_ps=common_maps["original"].time_ps,
+            positions=common_maps["original"].positions,
             blind_event_ids=np.asarray(blind.event_index, dtype=np.int64),
             blind_teacher_prediction_ps=blind_pred,
             blind_surrogate_prediction_ps=y_blind,
-            blind_valid=valid_blind,
-            blind_support_fraction=valid_blind.mean(axis=(1, 2)))
+            blind_valid=v_blind,
+            blind_support_fraction=v_blind.mean(axis=(1, 2, 3)))
         (destination / "metrics.json").write_text(
             json.dumps(metrics, indent=2), encoding="utf-8")
         _plot_fidelity(destination / "blind_fidelity.png",
-                       blind_pred, y_blind, f"Blind reconstruction | {name}")
+                       blind_pred, y_blind, f"Blind reconstruction | {config_name}")
         _plot_fidelity(destination / "validation_fidelity.png",
-                       dev_pred[validation], y_val, f"Development validation | {name}")
-        # Local diagnostic plots retain original mV geometry and heatmap colors.
-        radius = float(max(np.nanpercentile(
-            np.abs(heatmap.target_mean - heatmap.baseline_ps), 98), 1.))
+                       dev_pred[validation], y_val, f"Development validation | {config_name}")
+        # Diagnostic: raw heatmap color per representation, and calibrated
+        # additive contributions aggregated across representations.
+        shared_time = common_maps["original"].time_ps / 1000.
         for row, group in zip(rows, groups):
             event_id = int(blind.event_index[row])
             folder = destination / group / f"event_{event_id}"
@@ -250,26 +297,39 @@ def run(args):
                 np.asarray(blind_waves[row:row + 1], dtype=np.float32))[0]
             plot_args = dict(
                 time=dev_time / 1000., signal=physical,
-                selected_time=heatmap.time_ps / 1000.,
-                good=valid_blind[row], event_id=event_id, group=group,
+                selected_time=shared_time,
+                event_id=event_id, group=group,
                 teacher=float(blind_pred[row]), surrogate=float(y_blind[row]),
-                center=heatmap.baseline_ps)
-            _plot_waveforms(folder / "heatmap_colored_waveforms.png",
-                            values=a_blind[row], radius=radius,
-                            title="Conditional heatmap deviation", **plot_args)
-            # Calibrated weights can have opposite signs. Use a distinct colorbar.
-            calibrated_radius = float(max(np.max(np.abs(c_blind[rows])), 1.))
-            _plot_waveforms(folder / "ridge_colored_waveforms.png",
-                            values=c_blind[row], radius=calibrated_radius,
-                            title="Calibrated Ridge contribution", **plot_args)
+                center=reference_mean)
+            for j, feature in enumerate(feature_names):
+                hm = common_maps[feature]
+                radius = float(max(np.nanpercentile(
+                    np.abs(hm.target_mean - reference_mean), 98), 1.))
+                _plot_waveforms(
+                    folder / f"heatmap_{feature}_colored_waveforms.png",
+                    values=a_blind[row, j], good=v_blind[row, j],
+                    radius=radius, title=f"Heatmap {feature} deviation", **plot_args)
+            combined_contributions = c_blind[row].sum(axis=0)
+            combined_valid = np.any(v_blind[row], axis=0)
+            radius = float(max(np.nanpercentile(
+                np.abs(c_blind[rows].sum(axis=1)), 98), 1.))
+            _plot_waveforms(
+                folder / "ridge_combined_colored_waveforms.png",
+                values=combined_contributions, good=combined_valid,
+                radius=radius, title="Combined calibrated Ridge contributions",
+                **plot_args)
             np.savez_compressed(
                 folder / "local_profiles.npz",
-                time_ps=heatmap.time_ps, heatmap_deviation_ps=a_blind[row],
-                ridge_contribution_ps=c_blind[row], valid=valid_blind[row],
+                feature_names=np.asarray(feature_names),
+                time_ps=common_maps["original"].time_ps,
+                heatmap_deviation_ps=a_blind[row],
+                ridge_contribution_ps=c_blind[row],
+                combined_ridge_contribution_ps=combined_contributions,
+                valid=v_blind[row],
                 teacher_prediction_ps=blind_pred[row],
                 ridge_prediction_ps=y_blind[row])
-        results[name] = metrics
-        print(f"COMPLETE | {name} | blind RMSE "
+        results[config_name] = metrics
+        print(f"COMPLETE | {config_name} | blind RMSE "
               f"{metrics['fidelity_to_saved_model']['blind']['rmse_ps']:.3f} ps | "
               f"coverage {metrics['coverage']['blind']:.1%}", flush=True)
     report = {
@@ -303,8 +363,6 @@ def parser():
     p.add_argument("--cv-folds", type=int, default=5)
     p.add_argument("--alphas", nargs="+", type=float,
                    default=[.1, 1., 10., 100., 1000., 10000.])
-    p.add_argument("--representations", nargs="+",
-                   choices=["original", "baseline_subtracted", "amplitude_normalized"])
     p.add_argument("--events-per-group", type=int, default=2)
     p.add_argument("--event-ids-file", type=Path,
                    help="Reuse selected_events.json from recent local TSHAP")
