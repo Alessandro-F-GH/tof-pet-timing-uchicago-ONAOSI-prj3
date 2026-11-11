@@ -114,7 +114,8 @@ def save_plots(output, time_ns, original, examples, phases, prediction):
         axes[d].grid(alpha=.2)
         axes[d].legend(ncol=4, fontsize=8)
     axes[2].plot(phases, prediction[0, :], "o-")
-    axes[2].axhline(prediction[0, 0], ls="--", color="0.4")
+    zero_index = int(np.flatnonzero(phases == 0.)[0])
+    axes[2].axhline(prediction[0, zero_index], ls="--", color="0.4")
     axes[2].set(xlabel="Rotation applied (degrees)",
                 ylabel="Prediction (ps)", title="First selected event")
     axes[2].grid(alpha=.2)
@@ -124,7 +125,7 @@ def save_plots(output, time_ns, original, examples, phases, prediction):
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(9, 5), constrained_layout=True)
-    changes = prediction - prediction[:, :1]
+    changes = prediction - prediction[:, [int(np.flatnonzero(phases == 0.)[0])]]
     ax.plot(phases, changes.T, lw=.5, alpha=.15)
     ax.plot(phases, changes.mean(axis=0), "o-", lw=2, label="Mean change")
     ax.plot(phases, np.sqrt(np.mean(changes**2, axis=0)), "o-",
