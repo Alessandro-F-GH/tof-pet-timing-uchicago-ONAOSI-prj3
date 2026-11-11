@@ -50,14 +50,18 @@ def interpolate_upward_crossing(waveforms, levels, time_ps):
         raise ValueError("Time grid must be strictly increasing")
     out = np.full(x.shape[:2], np.nan, dtype=np.float64)
     positions = np.arange(t.size - 1, dtype=np.int32)[None, :]
+    # Do not permit a late oscillation or falling-edge recrossing. Each
+    # interpolated threshold must lie before the first local maximum.
+    peaks = np.argmax(np.where(np.isfinite(x), x, -np.inf), axis=2)
     for d in range(2):
         lower, upper = x[:, d, :-1], x[:, d, 1:]
         threshold = levels[:, d, None]
-        strict = (np.isfinite(lower) & np.isfinite(upper)
+        rising = positions < peaks[:, d, None]
+        strict = (rising & np.isfinite(lower) & np.isfinite(upper)
                   & (lower < threshold) & (upper >= threshold))
         present = strict.any(axis=1)
         if not present.all():
-            equal = (np.isfinite(lower) & np.isfinite(upper)
+            equal = (rising & np.isfinite(lower) & np.isfinite(upper)
                      & (lower == threshold) & (upper > threshold))
             strict[~present] = equal[~present]
         idx = np.where(strict, positions, -1).max(axis=1)
