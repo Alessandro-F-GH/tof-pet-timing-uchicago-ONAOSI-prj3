@@ -1064,8 +1064,8 @@ def parser():
     p.add_argument("--comparison-model-dir", type=Path,
                    help="Second saved model run; map reference minus comparison predictions")
     p.add_argument("--comparison-predictions-npz", type=Path,
-                   help="CFD development_predictions.npz from evaluate_cfd_led_correction; "
-                        "map ML minus CFD predictions on finite paired events")
+                   help="Multi-threshold development_predictions.npz from evaluate_multithreshold_led; "
+                        "map ML minus multi-threshold predictions on finite paired events")
     p.add_argument("--comparison-target", choices=("difference", "reference", "comparison"),
                    default="difference",
                    help="With --comparison-model-dir, select difference (default), "
