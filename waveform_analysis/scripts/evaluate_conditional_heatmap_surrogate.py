@@ -185,16 +185,33 @@ def run(args):
             feature_name=kind)
         rep_meta = json.loads(
             (args.heatmap_root / representation / "summary.json").read_text(encoding="utf-8"))
-        if (heatmap.representation != representation
-                or representation not in root_meta["representations"]
-                or int(rep_meta["events"]) != len(reference)
-                or int(rep_meta["min_count"]) != args.min_count
-                or ((representation != "original") and
-                    (rep_meta.get("baseline_window_ns") !=
-                     [args.baseline_start_ns, args.baseline_end_ns]))
-                or not np.isclose(heatmap.baseline_ps,
-                                  float(dev_pred[reference].mean()), atol=1e-5, rtol=0)):
-            raise ValueError("Heatmap representation/split/normalization mismatch")
+        expected_baseline = [args.baseline_start_ns, args.baseline_end_ns]
+        actual_baseline = rep_meta.get("baseline_window_ns")
+        expected_prediction_mean = float(dev_pred[reference].mean())
+        checks = {
+            "representation": (heatmap.representation == representation,
+                               heatmap.representation, representation),
+            "root membership": (representation in root_meta["representations"],
+                                root_meta["representations"], representation),
+            "reference event count": (int(rep_meta["events"]) == len(reference),
+                                      int(rep_meta["events"]), len(reference)),
+            "min_count": (int(rep_meta["min_count"]) == args.min_count,
+                          int(rep_meta["min_count"]), args.min_count),
+            "baseline window": (representation == "original" or
+                                actual_baseline == expected_baseline,
+                                actual_baseline, expected_baseline),
+            "teacher prediction mean": (np.isclose(
+                heatmap.baseline_ps, expected_prediction_mean, atol=1e-5, rtol=0),
+                heatmap.baseline_ps, expected_prediction_mean),
+        }
+        mismatches = [
+            f"{field}: stored={actual!r}, expected={expected!r}"
+            for field, (ok, actual, expected) in checks.items() if not ok
+        ]
+        if mismatches:
+            raise ValueError(
+                f"Heatmap {representation}/{kind} metadata mismatch:\n" +
+                "\n".join(mismatches))
         base = (None if representation == "original" else baseline_indices(
             dev_time, args.baseline_start_ns, args.baseline_end_ns))
         common = dict(full_time_ps=dev_time, baseline_positions=base,
