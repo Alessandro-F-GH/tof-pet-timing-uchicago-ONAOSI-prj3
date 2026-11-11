@@ -151,7 +151,8 @@ def run(args):
             provenance["mode"] != config["mode"] or
             provenance["model"] != manifest["model"] or
             int(root_meta["seed"]) != args.seed or
-            int(root_meta["events"]) != len(reference)):
+            int(root_meta["events"]) != len(reference) or
+            Path(provenance["dataset"]).resolve() != Path(development.directory).resolve()):
         raise ValueError("Heatmap model/split provenance mismatch")
     rows, groups = _select_events(blind, blind_pred, blind_targets, args)
     selected = {"event_ids": np.asarray(blind.event_index[rows], int).tolist(),
@@ -177,6 +178,9 @@ def run(args):
         if (heatmap.representation != name or name not in root_meta["representations"]
                 or int(rep_meta["events"]) != len(reference)
                 or int(rep_meta["min_count"]) != args.min_count
+                or ((name != "original") and
+                    (rep_meta.get("baseline_window_ns") !=
+                     [args.baseline_start_ns, args.baseline_end_ns]))
                 or not np.isclose(heatmap.baseline_ps,
                                   float(dev_pred[reference].mean()), atol=1e-5, rtol=0)):
             raise ValueError("Heatmap representation/split/normalization mismatch")
