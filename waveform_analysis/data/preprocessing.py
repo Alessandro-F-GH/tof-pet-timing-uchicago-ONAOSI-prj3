@@ -10,6 +10,7 @@ from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.named_cache import native_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.data.root_io import iterate_energy_chunks
+from waveform_analysis.signal.filtering import filter_native_waveform
 from waveform_analysis.engine.event_selection import (
     SelectionData as SelectionData,
     decode_oriented,
@@ -209,6 +210,7 @@ def preprocess_selected(
                         raw[d][local], gain[local, d], off[local, d], int(pol[d])
                     )
                     interval = float(dt[local, d])
+                    s = filter_native_waveform(s, interval, preprocessing)
                     dt_ns = interval * 1e9
                     trig = int(selection.main_trigger[row, d])
                     bounds = _window_bounds(trig, s.size, dt_ns, before, after)
