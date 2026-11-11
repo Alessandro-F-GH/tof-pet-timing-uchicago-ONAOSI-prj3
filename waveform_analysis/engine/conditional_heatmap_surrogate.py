@@ -24,10 +24,11 @@ class ConditionalMap:
     baseline_ps: float
     representation: str
     prediction_type: str
+    feature_name: str = "waveform"
 
 
-def load_conditional_map(path):
-    """Read a saved *single-model*, original-waveform feature heatmap."""
+def load_conditional_map(path, *, feature_name="waveform"):
+    """Read a saved single-model waveform or first-difference heatmap."""
     with np.load(Path(path), allow_pickle=False) as a:
         keys = ("positions", "time_ps", "z_edges", "target_mean_ps",
                 "support_counts", "normalization_mean", "normalization_scale",
@@ -37,8 +38,15 @@ def load_conditional_map(path):
         if missing:
             raise ValueError(f"Heatmap lacks fields: {sorted(missing)}")
         features = [str(v) for v in a["feature_names"]]
-        if not features or features[0] != "waveform":
-            raise ValueError("Expected a waveform conditional heatmap")
+        if feature_name not in features:
+            raise ValueError(f"Heatmap feature {feature_name!r} unavailable; regenerate with --include-original-derivative")
+        index = features.index(feature_name)
+        if feature_name == "first_difference" and not {"derivative_normalization_mean", "derivative_normalization_scale"} <= set(a.files):
+            raise ValueError("Old heatmap lacks derivative normalization; regenerate heatmap")
+        stat_mean = ("derivative_normalization_mean" if feature_name == "first_difference"
+                     else "normalization_mean")
+        stat_scale = ("derivative_normalization_scale" if feature_name == "first_difference"
+                      else "normalization_scale")
         prediction_type = str(a["prediction_type"].item())
         if prediction_type != "saved_reference":
             raise ValueError("Surrogate requires saved_reference, not a model-difference heatmap")
@@ -49,13 +57,14 @@ def load_conditional_map(path):
             positions=np.array(a["positions"], dtype=np.int64),
             time_ps=np.array(a["time_ps"], dtype=np.float64),
             edges=np.array(a["z_edges"], dtype=np.float64),
-            mean=np.array(a["normalization_mean"], dtype=np.float64),
-            scale=np.array(a["normalization_scale"], dtype=np.float64),
-            target_mean=np.array(a["target_mean_ps"][0, :2], dtype=np.float64),
-            counts=np.array(a["support_counts"][0, :2], dtype=np.int64),
+            mean=np.array(a[stat_mean], dtype=np.float64),
+            scale=np.array(a[stat_scale], dtype=np.float64),
+            target_mean=np.array(a["target_mean_ps"][index, :2], dtype=np.float64),
+            counts=np.array(a["support_counts"][index, :2], dtype=np.int64),
             baseline_ps=float(a["training_prediction_mean_ps"]),
             representation=representation,
             prediction_type=prediction_type,
+            feature_name=feature_name,
         )
     p = len(m.positions)
     bins = len(m.edges) - 1
@@ -119,6 +128,8 @@ def heatmap_pointwise_features(waves, rows, heatmap, *,
     retained = np.asarray(retained, dtype=bool)
     if retained.shape != t.shape:
         raise ValueError("Invalid timing sample mask")
+    if heatmap.feature_name == "first_difference" and heatmap.representation != "original":
+        raise ValueError("First difference only supported for original representation")
     if heatmap.representation == "original":
         view = waves
     else:
@@ -134,7 +145,17 @@ def heatmap_pointwise_features(waves, rows, heatmap, *,
     for left in range(0, n, chunk_size):
         indices = rows[left:left + chunk_size]
         wave = np.asarray(view[indices], dtype=np.float64)
-        z = (wave[:, :, heatmap.positions] - mu[None]) / scale[None]
+        if heatmap.feature_name == "first_difference":
+            # Match accumulate_heatmaps: derivative at p is x[p]-x[p-1],
+            # with the zeroth sample defined as zero.
+            samples = heatmap.positions
+            current = wave[:, :, samples]
+            previous = wave[:, :, np.maximum(samples - 1, 0)]
+            local = np.where(samples[None, None, :] > 0,
+                             current - previous, 0.)
+        else:
+            local = wave[:, :, heatmap.positions]
+        z = (local - mu[None]) / scale[None]
         for d in range(2):
             x = z[:, d, :]
             ix = np.searchsorted(heatmap.edges, x, side="right") - 1
@@ -194,10 +215,10 @@ def calibrate_ridge(features, predictions, *,
 def surrogate_components(model, deviations):
     """Per-event additive terms [N,2,P]; sum plus intercept is Ridge output."""
     a = np.asarray(deviations, dtype=np.float64)
-    if a.ndim != 3 or a.shape[1] != 2 or model.coef_.size != a.shape[1] * a.shape[2]:
+    if a.ndim < 3 or a.shape[-2] != 2 or model.coef_.size != np.prod(a.shape[1:]):
         raise ValueError("Incompatible feature grid and fitted Ridge")
-    c = a * np.asarray(model.coef_).reshape(1, 2, -1)
-    output = float(model.intercept_) + c.sum(axis=(1, 2))
+    c = a * np.asarray(model.coef_).reshape((1,) + a.shape[1:])
+    output = float(model.intercept_) + c.reshape(len(c), -1).sum(axis=1)
     return c, output
 
 
