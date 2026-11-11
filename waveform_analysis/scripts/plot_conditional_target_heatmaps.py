@@ -645,8 +645,9 @@ def run(args):
     from matplotlib.colors import TwoSlopeNorm
     from matplotlib.ticker import MaxNLocator
 
+    external_cfd = getattr(args, "comparison_predictions_npz", None)
     if (args.comparison_model_dir is not None and
-            args.comparison_predictions_npz is not None):
+            external_cfd is not None):
         raise ValueError("Choose one comparison source: model-dir or CFD NPZ")
     root = args.output_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -656,8 +657,8 @@ def run(args):
     reference_predictions = predictions
     comparison_predictions = None
     matching = None
-    if args.comparison_model_dir is not None or args.comparison_predictions_npz is not None:
-        if args.comparison_predictions_npz is not None:
+    if args.comparison_model_dir is not None or external_cfd is not None:
+        if external_cfd is not None:
             (predictions, comparison_provenance, comparison_predictions,
              reference_rows, common_event_ids, matching) = load_external_cfd_difference(
                 args, reference_predictions, provenance, log)
