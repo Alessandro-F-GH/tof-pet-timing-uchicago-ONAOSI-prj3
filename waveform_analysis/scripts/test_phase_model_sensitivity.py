@@ -36,8 +36,10 @@ def fit_local_oscillation(x, time_ns, frequency_GHz, fit_mask):
     m = np.asarray(fit_mask, bool)
     if y.ndim != 2 or t.shape != (y.shape[1],) or m.shape != t.shape:
         raise ValueError("Invalid waveform/time/mask shapes")
-    if m.sum() < 20 or (np.ptp(t[m]) * frequency_GHz < 2):
-        raise ValueError("At least two cycles of the frequency required in fit window")
+    if m.sum() < 16 or (np.ptp(t[m]) * frequency_GHz < 1.5):
+        raise ValueError(
+            "Oscillation fit window too short: need at least 16 samples and "
+            "1.5 periods. Extend prepared baseline/tail or shift boundaries.")
     theta = 2 * np.pi * frequency_GHz * t
     A = np.column_stack((np.ones(m.sum()), t[m] - np.mean(t[m]),
                          np.cos(theta[m]), np.sin(theta[m])))
@@ -83,7 +85,10 @@ def phase_rotate_prepared(pairs, time_ns, *, frequency_GHz=2.5,
         weights = temporal_filter_weights(
             t, region=section, baseline_end_ns=baseline_end_ns,
             tail_start_ns=tail_start_ns, transition_ns=transition_ns)
-        fit_mask = weights > (1 - 1e-12)
+        # Include the cosine-transition samples in the sinusoid fit:
+        # on Wide input the pre-LED plateau alone may span <2 periods.
+        # Rotation still fades to precisely zero at the protected edge.
+        fit_mask = weights > 0.
         for d in detectors:
             amp, phi = fit_local_oscillation(
                 source[:, d, :], t, frequency_GHz, fit_mask)
