@@ -68,23 +68,36 @@ def load_conditional_map(path, *, feature_name="waveform"):
         )
     p = len(m.positions)
     bins = len(m.edges) - 1
-    if (p < 2 or bins < 2 or m.positions[0] < 0
-            or np.any(np.diff(m.positions) <= 0)
-            or np.any(np.diff(m.time_ps) <= 0)
-            or m.time_ps.shape != (p,)
-            or m.mean.ndim != 2 or m.mean.shape[0] != 2
-            or m.scale.shape != m.mean.shape
-            or m.positions[-1] >= m.mean.shape[1]
-            or m.target_mean.shape != (2, bins, p)
-            or m.counts.shape != m.target_mean.shape
-            or not np.all(np.diff(m.edges) > 0)
-            or not np.isfinite(m.edges).all()
-            or not np.isfinite(m.mean).all()
-            or not np.isfinite(m.scale).all()
-            or np.any(m.scale <= 0)
-            or not np.isfinite(m.baseline_ps)
-            or np.any(m.counts < 0)):
-        raise ValueError("Invalid conditional heatmap shapes or statistics")
+    failures = {}
+    checks = {
+        "at least two time positions": p >= 2,
+        "at least two z bins": bins >= 2,
+        "nonnegative first position": p > 0 and m.positions[0] >= 0,
+        "strictly increasing positions": bool(np.all(np.diff(m.positions) > 0)),
+        "strictly increasing times": bool(np.all(np.diff(m.time_ps) > 0)),
+        "time shape": m.time_ps.shape == (p,),
+        "normalization shape": m.mean.ndim == 2 and m.mean.shape[0] == 2,
+        "normalization scale shape": m.scale.shape == m.mean.shape,
+        "positions within normalization": m.mean.ndim == 2 and p > 0 and m.positions[-1] < m.mean.shape[-1],
+        "mean target shape": m.target_mean.shape == (2, bins, p),
+        "counts shape": m.counts.shape == m.target_mean.shape,
+        "strictly increasing z edges": bool(np.all(np.diff(m.edges) > 0)),
+        "finite z edges": bool(np.isfinite(m.edges).all()),
+        "finite normalization mean": bool(np.isfinite(m.mean).all()),
+        "finite normalization scale": bool(np.isfinite(m.scale).all()),
+        "positive normalization scale": bool(np.all(m.scale > 0)),
+        "finite baseline": bool(np.isfinite(m.baseline_ps)),
+        "nonnegative counts": bool(np.all(m.counts >= 0)),
+    }
+    failures = [name for name, ok in checks.items() if not ok]
+    if failures:
+        raise ValueError(
+            f"Invalid conditional heatmap {Path(path)} feature={feature_name}: "
+            f"{', '.join(failures)}; positions={m.positions.shape}, "
+            f"time={m.time_ps.shape}, mean={m.mean.shape}, scale={m.scale.shape}, "
+            f"target={m.target_mean.shape}, counts={m.counts.shape}, "
+            f"z_edges={m.edges.shape}, minimum_scale="
+            f"{float(np.nanmin(m.scale)) if m.scale.size else 'empty'}")
     return m
 
 
