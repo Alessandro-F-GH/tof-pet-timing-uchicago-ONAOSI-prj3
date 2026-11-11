@@ -64,18 +64,52 @@ def event_peak_frequency_phase(x, t_ns, *, low_GHz=1.5,
 
 
 def group_grid(frequency, phase, prediction, *, frequency_bins=8,
-               phase_bins=12, low=1.5, high=3.5):
-    f = np.asarray(frequency)
-    phi = np.asarray(phase)
-    y = np.asarray(prediction)
-    if not (f.shape == phi.shape == y.shape):
+               phase_bins=12, low=1.5, high=3.5,
+               frequency_binning="quantile", phase_binning="uniform"):
+    """Balanced rank-frequency bins, with optional balanced phase bins.
+
+    Identical FFT peak frequencies can cross rank-bin boundaries; boundaries
+    therefore describe observed ranges and can overlap at tied frequencies.
+    """
+    f = np.asarray(frequency, np.float64)
+    phi = np.asarray(phase, np.float64)
+    y = np.asarray(prediction, np.float64)
+    if (f.ndim != 1 or f.shape != phi.shape or f.shape != y.shape
+            or len(f) < frequency_bins or len(phi) < phase_bins
+            or not all(np.isfinite(v).all() for v in (f, phi, y))):
         raise ValueError("Frequency, phase and prediction must align")
-    f_edges = np.linspace(low, high, frequency_bins+1)
-    p_edges = np.linspace(-np.pi, np.pi, phase_bins+1)
-    f_bin = np.clip(np.searchsorted(f_edges, f, side="right")-1,
-                    0, frequency_bins-1)
-    p_bin = np.clip(np.searchsorted(p_edges, phi, side="right")-1,
-                    0, phase_bins-1)
+    if frequency_binning not in ("quantile", "uniform"):
+        raise ValueError("Invalid frequency binning")
+    if phase_binning not in ("quantile", "uniform"):
+        raise ValueError("Invalid phase binning")
+    if frequency_binning == "quantile":
+        f_bin = np.empty(len(f), dtype=int)
+        for j, members in enumerate(np.array_split(np.argsort(f, kind="stable"),
+                                                    frequency_bins)):
+            f_bin[members] = j
+        f_ranges = [(float(f[f_bin == j].min()), float(f[f_bin == j].max()))
+                    for j in range(frequency_bins)]
+    else:
+        f_edges = np.linspace(low, high, frequency_bins + 1)
+        f_bin = np.clip(np.searchsorted(f_edges, f, side="right")-1,
+                        0, frequency_bins-1)
+        f_ranges = [(float(f_edges[j]), float(f_edges[j+1]))
+                    for j in range(frequency_bins)]
+    if phase_binning == "quantile":
+        p_bin = np.empty(len(phi), dtype=int)
+        for j, members in enumerate(np.array_split(np.argsort(phi, kind="stable"),
+                                                    phase_bins)):
+            p_bin[members] = j
+        p_ranges = [(float(np.degrees(phi[p_bin == j].min())),
+                     float(np.degrees(phi[p_bin == j].max())))
+                    for j in range(phase_bins)]
+    else:
+        p_edges = np.linspace(-np.pi, np.pi, phase_bins + 1)
+        p_bin = np.clip(np.searchsorted(p_edges, phi, side="right")-1,
+                        0, phase_bins-1)
+        p_ranges = [(float(np.degrees(p_edges[j])),
+                     float(np.degrees(p_edges[j+1])))
+                    for j in range(phase_bins)]
     global_mean = float(np.mean(y))
     records = []
     for i in range(frequency_bins):
@@ -83,10 +117,14 @@ def group_grid(frequency, phase, prediction, *, frequency_bins=8,
             values = y[(f_bin == i) & (p_bin == j)]
             records.append({
                 "frequency_bin": i, "phase_bin": j,
-                "frequency_center_GHz": float((f_edges[i]+f_edges[i+1])/2),
-                "phase_center_deg": float(np.degrees((p_edges[j]+p_edges[j+1])/2)),
+                "frequency_min_GHz": f_ranges[i][0],
+                "frequency_max_GHz": f_ranges[i][1],
+                "frequency_center_GHz": float(np.mean(f_ranges[i])),
+                "phase_min_deg": p_ranges[j][0],
+                "phase_max_deg": p_ranges[j][1],
+                "phase_center_deg": float(np.mean(p_ranges[j])),
                 "n": int(len(values)),
-                "mean_prediction_ps": (float(values.mean()) if len(values) else None),
+                "mean_prediction_ps": float(values.mean()) if len(values) else None,
                 "mean_deviation_ps": (
                     float(values.mean()-global_mean) if len(values) else None),
                 "std_prediction_ps": (
@@ -98,7 +136,8 @@ def group_grid(frequency, phase, prediction, *, frequency_bins=8,
     return records, f_bin, p_bin
 
 
-def make_plots(out, tag, records, frequency, phase, n_f, n_p, min_cell_events):
+def make_plots(out, tag, records, frequency, phase, n_f, n_p,
+               min_cell_events, phase_binning="uniform"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -110,25 +149,30 @@ def make_plots(out, tag, records, frequency, phase, n_f, n_p, min_cell_events):
         if rec["n"] >= min_cell_events:
             means[i, j] = rec["mean_deviation_ps"]
     fig, ax = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
-    extent = [-180, 180, np.min(frequency), np.max(frequency)]
-    # Use actual declared band centers, not observed extrema.
-    centers = np.array([r["frequency_center_GHz"] for r in records[::n_p]])
-    band_step = centers[1]-centers[0] if len(centers)>1 else 1.
-    extent[2:] = [centers[0]-band_step/2, centers[-1]+band_step/2]
     vmax = float(np.nanmax(np.abs(means))) if np.isfinite(means).any() else 1.
     vmax = max(vmax, .01)
-    im = ax[0].imshow(means, origin="lower", aspect="auto", extent=extent,
-                      vmin=-vmax, vmax=vmax, cmap="RdBu_r")
+    # Equally tall rows represent equally populated frequency groups, not
+    # equally wide GHz intervals. Label with actual observed ranges.
+    im = ax[0].imshow(means, origin="lower", aspect="auto",
+                      extent=(0, n_p, 0, n_f), vmin=-vmax, vmax=vmax,
+                      cmap="RdBu_r")
     fig.colorbar(im, ax=ax[0], label="Mean prediction minus global mean (ps)")
     ax[0].set_title(f"{tag} | min {min_cell_events} events/cell")
-    ax[0].set_xlabel("Phase at event-specific peak (degrees)")
-    ax[0].set_ylabel("Peak frequency (GHz)")
-    im2 = ax[1].imshow(counts, origin="lower", aspect="auto", extent=extent,
-                       cmap="viridis")
+    im2 = ax[1].imshow(counts, origin="lower", aspect="auto",
+                       extent=(0, n_p, 0, n_f), cmap="viridis")
     fig.colorbar(im2, ax=ax[1], label="Events")
     ax[1].set_title("Counts (all cells)")
-    ax[1].set_xlabel("Phase at event-specific peak (degrees)")
-    ax[1].set_ylabel("Peak frequency (GHz)")
+    freq_labels = [
+        f"{records[i*n_p]['frequency_min_GHz']:.3f}–"
+        f"{records[i*n_p]['frequency_max_GHz']:.3f}"
+        for i in range(n_f)]
+    phase_labels = [f"{records[j]['phase_center_deg']:.0f}°"
+                    for j in range(n_p)]
+    for a in ax:
+        a.set_yticks(np.arange(n_f)+.5, freq_labels)
+        a.set_xticks(np.arange(n_p)+.5, phase_labels, rotation=45)
+        a.set_xlabel("Phase bin" if phase_binning=="quantile" else "Phase (degrees)")
+        a.set_ylabel("Peak frequency bin (GHz range)")
     fig.savefig(out/f"{tag}_frequency_phase.png", dpi=170)
     fig.savefig(out/f"{tag}_frequency_phase.pdf")
     plt.close(fig)
@@ -174,6 +218,8 @@ def run(args):
         "model": manifest["model"], "events": int(len(rows)),
         "band_GHz": [args.band_GHz[0], args.band_GHz[1]],
         "frequency_bins": args.frequency_bins, "phase_bins": args.phase_bins,
+        "frequency_binning": args.frequency_binning,
+        "phase_binning": args.phase_binning,
         "amplitude_percentile": args.min_amplitude_percentile,
         "fft_padding": args.fft_padding,
         "time_reference": "t=0 at prepared LED crossing",
@@ -213,10 +259,13 @@ def run(args):
                 freq[selected], phase[selected], predictions[rows][selected],
                 frequency_bins=args.frequency_bins,
                 phase_bins=args.phase_bins, low=args.band_GHz[0],
-                high=args.band_GHz[1])
+                high=args.band_GHz[1],
+                frequency_binning=args.frequency_binning,
+                phase_binning=args.phase_binning)
             tag = f"{name}_detector{d+1}"
             make_plots(out, tag, records, freq[selected], phase[selected],
-                       args.frequency_bins, args.phase_bins, args.min_cell_events)
+                       args.frequency_bins, args.phase_bins, args.min_cell_events,
+                       phase_binning=args.phase_binning)
             for rec in records:
                 all_records.append({"window":name, "detector":d+1, **rec})
             np.savez_compressed(
@@ -232,12 +281,20 @@ def run(args):
                 "peak_frequency_std_GHz": float(np.std(freq[selected])),
                 "occupied_cells_above_threshold": occupied,
                 "total_cells": len(records),
+                "frequency_bin_counts": [
+                    int(np.sum(f_bin == j)) for j in range(args.frequency_bins)],
+                "frequency_bin_ranges_GHz": [
+                    [records[j*args.phase_bins]["frequency_min_GHz"],
+                     records[j*args.phase_bins]["frequency_max_GHz"]]
+                    for j in range(args.frequency_bins)],
             }
             print(f"PEAK GROUP | {tag} | used={selected.sum()} "
                   f"| frequency={np.mean(freq[selected]):.3f}±"
                   f"{np.std(freq[selected]):.3f} GHz "
                   f"| df={true_df_GHz:.3f} GHz "
-                  f"| populated_cells={occupied}/{len(records)}",
+                  f"| populated_cells={occupied}/{len(records)} "
+                  f"| frequency_bin_counts="
+                  f"{[int(np.sum(f_bin == j)) for j in range(args.frequency_bins)]}",
                   flush=True)
     with (out/"frequency_phase_bins.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=list(all_records[0]))
@@ -260,6 +317,10 @@ def parser():
     p.add_argument("--fft-padding", type=int, default=4)
     p.add_argument("--frequency-bins", type=int, default=8)
     p.add_argument("--phase-bins", type=int, default=12)
+    p.add_argument("--frequency-binning", choices=("quantile", "uniform"),
+                   default="quantile")
+    p.add_argument("--phase-binning", choices=("uniform", "quantile"),
+                   default="uniform")
     p.add_argument("--min-cell-events", type=int, default=20)
     p.add_argument("--min-amplitude-percentile", type=float, default=20.)
     p.add_argument("--tail-window-ns", nargs=2, type=float, default=[12.,45.])
