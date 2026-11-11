@@ -204,16 +204,12 @@ def run(args):
             dev_waves, calibration, heatmap, **common)
         a_val, valid_val = heatmap_pointwise_features(
             dev_waves, validation, heatmap, **common)
-        a_blind, valid_blind = heatmap_pointwise_features(
-            blind_waves, np.arange(len(blind_pred)), heatmap, **common)
         feature_arrays[key] = {
-            "calibration": a_cal, "validation": a_val, "blind": a_blind,
+            "calibration": a_cal, "validation": a_val,
             "calibration_valid": valid_cal, "validation_valid": valid_val,
-            "blind_valid": valid_blind,
         }
         common_maps[key] = heatmap
-        print(f"FEATURE | {key} | calibration={a_cal.shape} | "
-              f"blind_coverage={valid_blind.mean():.1%}", flush=True)
+        print(f"FEATURE | {key} | calibration={a_cal.shape}", flush=True)
 
     configurations = {
         "original": ("original",),
@@ -232,21 +228,46 @@ def run(args):
         # Shape [event, representation, detector, time]. All names share time.
         def stacked(part):
             return np.stack([feature_arrays[name][part] for name in feature_names], axis=1)
-        a_cal, a_val, a_blind = (
-            stacked("calibration"), stacked("validation"), stacked("blind"))
-        v_cal, v_val, v_blind = (
-            stacked("calibration_valid"), stacked("validation_valid"),
-            stacked("blind_valid"))
+        a_cal, a_val = stacked("calibration"), stacked("validation")
+        v_cal, v_val = stacked("calibration_valid"), stacked("validation_valid")
         ridge, cv = calibrate_ridge(
             a_cal.reshape(len(a_cal), -1), dev_pred[calibration],
             alphas=args.alphas, folds=args.cv_folds, seed=args.seed)
         c_cal, y_cal = surrogate_components(ridge, a_cal)
         c_val, y_val = surrogate_components(ridge, a_val)
-        c_blind, y_blind = surrogate_components(ridge, a_blind)
-        if not np.allclose(
-            y_blind, ridge.predict(a_blind.reshape(len(a_blind), -1)),
-            atol=1e-7, rtol=1e-10):
-            raise AssertionError("Additive reconstruction differs from Ridge")
+
+        # Stream Blind in bounded-size chunks. Avoid materializing the full
+        # [events, representations, detectors, time] float64 tensor.
+        y_blind = np.empty(len(blind_pred), dtype=np.float64)
+        blind_support = np.empty(len(blind_pred), dtype=np.float32)
+        valid_sum = np.zeros(len(feature_names), dtype=np.int64)
+        total_valid_cells = 0
+        for left in range(0, len(blind_pred), args.chunk_size):
+            right = min(left + args.chunk_size, len(blind_pred))
+            indices = np.arange(left, right, dtype=np.int64)
+            parts, masks = [], []
+            for feature in feature_names:
+                hm = common_maps[feature]
+                baseline = (None if hm.representation == "original"
+                            else baseline_indices(dev_time, args.baseline_start_ns,
+                                                  args.baseline_end_ns))
+                a_part, v_part = heatmap_pointwise_features(
+                    blind_waves, indices, hm,
+                    full_time_ps=dev_time, baseline_positions=baseline,
+                    retained=retain, min_count=args.min_count,
+                    chunk_size=args.chunk_size)
+                parts.append(a_part)
+                masks.append(v_part)
+            a_chunk = np.stack(parts, axis=1)
+            v_chunk = np.stack(masks, axis=1)
+            _, predicted = surrogate_components(ridge, a_chunk)
+            y_blind[left:right] = predicted
+            blind_support[left:right] = v_chunk.mean(axis=(1, 2, 3))
+            valid_sum += v_chunk.sum(axis=(0, 2, 3))
+            total_valid_cells += v_chunk.size
+        coverage_per_rep = {
+            feature: float(valid_sum[j] / (len(blind_pred) * 2 * a_cal.shape[-1]))
+            for j, feature in enumerate(feature_names)}
         metrics = {
             "features": list(feature_names),
             "regularization": cv,
@@ -258,10 +279,8 @@ def run(args):
             "coverage": {
                 "calibration": float(v_cal.mean()),
                 "validation": float(v_val.mean()),
-                "blind": float(v_blind.mean()),
-                "blind_per_representation": {
-                    feature: float(v_blind[:, j].mean())
-                    for j, feature in enumerate(feature_names)},
+                "blind": float(valid_sum.sum() / total_valid_cells),
+                "blind_per_representation": coverage_per_rep,
             },
             "missing_cell_policy": "zero deviation from reference mean, mask retained",
             "interpretation": "association-based additive surrogate, not causal attribution",
@@ -278,8 +297,7 @@ def run(args):
             blind_event_ids=np.asarray(blind.event_index, dtype=np.int64),
             blind_teacher_prediction_ps=blind_pred,
             blind_surrogate_prediction_ps=y_blind,
-            blind_valid=v_blind,
-            blind_support_fraction=v_blind.mean(axis=(1, 2, 3)))
+            blind_support_fraction=blind_support)
         (destination / "metrics.json").write_text(
             json.dumps(metrics, indent=2), encoding="utf-8")
         _plot_fidelity(destination / "blind_fidelity.png",
@@ -289,7 +307,28 @@ def run(args):
         # Diagnostic: raw heatmap color per representation, and calibrated
         # additive contributions aggregated across representations.
         shared_time = common_maps["original"].time_ps / 1000.
-        for row, group in zip(rows, groups):
+        # Recompute only selected diagnostic events (small bounded subset).
+        local_a = []
+        local_valid = []
+        for feature in feature_names:
+            hm = common_maps[feature]
+            baseline = (None if hm.representation == "original"
+                        else baseline_indices(dev_time, args.baseline_start_ns,
+                                              args.baseline_end_ns))
+            a_part, v_part = heatmap_pointwise_features(
+                blind_waves, rows, hm, full_time_ps=dev_time,
+                baseline_positions=baseline, retained=retain,
+                min_count=args.min_count, chunk_size=args.chunk_size)
+            local_a.append(a_part)
+            local_valid.append(v_part)
+        local_a = np.stack(local_a, axis=1)
+        local_valid = np.stack(local_valid, axis=1)
+        local_c, local_pred = surrogate_components(ridge, local_a)
+        if not np.allclose(local_pred, y_blind[rows], atol=1e-7, rtol=1e-10):
+            raise AssertionError("Local recomputation disagrees with streamed Blind")
+        calibrated_radius = float(max(np.nanpercentile(
+            np.abs(local_c.sum(axis=1)), 98), 1.))
+        for local_index, (row, group) in enumerate(zip(rows, groups)):
             event_id = int(blind.event_index[row])
             folder = destination / group / f"event_{event_id}"
             folder.mkdir(parents=True, exist_ok=True)
@@ -307,12 +346,11 @@ def run(args):
                     np.abs(hm.target_mean - reference_mean), 98), 1.))
                 _plot_waveforms(
                     folder / f"heatmap_{feature}_colored_waveforms.png",
-                    values=a_blind[row, j], good=v_blind[row, j],
+                    values=local_a[local_index, j], good=local_valid[local_index, j],
                     radius=radius, title=f"Heatmap {feature} deviation", **plot_args)
-            combined_contributions = c_blind[row].sum(axis=0)
-            combined_valid = np.any(v_blind[row], axis=0)
-            radius = float(max(np.nanpercentile(
-                np.abs(c_blind[rows].sum(axis=1)), 98), 1.))
+            combined_contributions = local_c[local_index].sum(axis=0)
+            combined_valid = np.any(local_valid[local_index], axis=0)
+            radius = calibrated_radius
             _plot_waveforms(
                 folder / "ridge_combined_colored_waveforms.png",
                 values=combined_contributions, good=combined_valid,
@@ -322,10 +360,10 @@ def run(args):
                 folder / "local_profiles.npz",
                 feature_names=np.asarray(feature_names),
                 time_ps=common_maps["original"].time_ps,
-                heatmap_deviation_ps=a_blind[row],
-                ridge_contribution_ps=c_blind[row],
+                heatmap_deviation_ps=local_a[local_index],
+                ridge_contribution_ps=local_c[local_index],
                 combined_ridge_contribution_ps=combined_contributions,
-                valid=v_blind[row],
+                valid=local_valid[local_index],
                 teacher_prediction_ps=blind_pred[row],
                 ridge_prediction_ps=y_blind[row])
         results[config_name] = metrics
