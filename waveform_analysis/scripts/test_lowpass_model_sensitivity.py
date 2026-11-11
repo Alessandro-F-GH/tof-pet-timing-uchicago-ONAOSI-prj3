@@ -27,12 +27,57 @@ from waveform_analysis.scripts.evaluate_conditional_knn import _prediction_paylo
 from waveform_analysis.scripts.analyze_waveform_fft import validate_grid
 
 
-def lowpass_prepared(pairs, *, sample_rate_GHz, cutoff_GHz,
-                     order=4, detectors=(0, 1), clip=True):
-    """SOS zero-phase low-pass on entire original prepared grid, one channel at a time.
 
-    Filtering is performed in the prepared affine amplitude units; an LTI
-    low-pass commutes with affine scaling because DC gain is unity.
+def temporal_filter_weights(time_ns, *, region="full",
+                            baseline_end_ns=-1.0, tail_start_ns=12.0,
+                            transition_ns=0.5):
+    """Blend weights in [0,1], zero over the protected leading edge.
+
+    Full: all samples filtered, to reproduce the original experiment.
+    Baseline: samples before baseline_end_ns filtered, cosine fade to zero.
+    Tail: samples after tail_start_ns filtered, cosine fade up to one.
+    No direct multiplication of independently filtered snippets: filter
+    the whole trace, blend only outside the protected interval.
+    """
+    t = np.asarray(time_ns, dtype=np.float64)
+    if (t.ndim != 1 or t.size < 32 or not np.isfinite(t).all()
+            or np.any(np.diff(t) <= 0)):
+        raise ValueError("Expected finite monotonic prepared time axis")
+    if region not in {"full", "baseline", "tail", "baseline_tail"}:
+        raise ValueError("Invalid low-pass intervention region")
+    if region == "full":
+        return np.ones_like(t)
+    if (not np.isfinite(baseline_end_ns) or not np.isfinite(tail_start_ns)
+            or baseline_end_ns >= tail_start_ns or not np.isfinite(transition_ns)
+            or transition_ns <= 0):
+        raise ValueError("Baseline/tail boundaries need an ordered protected window and positive transition")
+    if baseline_end_ns <= t[0] or tail_start_ns >= t[-1]:
+        raise ValueError("Selected baseline and tail regions must fall inside the prepared time grid")
+    if t[0] >= baseline_end_ns - transition_ns or t[-1] <= tail_start_ns + transition_ns:
+        raise ValueError("Insufficient samples for the chosen fade transitions")
+    weights = np.zeros_like(t)
+    if region in {"baseline", "baseline_tail"}:
+        # w=1 before (end-transition), w=0 from baseline_end onward.
+        u = np.clip((baseline_end_ns - t) / transition_ns, 0., 1.)
+        weights = np.maximum(weights, .5 - .5 * np.cos(np.pi * u))
+    if region in {"tail", "baseline_tail"}:
+        # w=0 up to tail_start, w=1 after (start+transition).
+        u = np.clip((t - tail_start_ns) / transition_ns, 0., 1.)
+        weights = np.maximum(weights, .5 - .5 * np.cos(np.pi * u))
+    protected = (t >= baseline_end_ns) & (t <= tail_start_ns)
+    if np.any(weights[protected] != 0.):
+        raise AssertionError("Leading-edge protection mask unexpectedly nonzero")
+    return weights
+
+def lowpass_prepared(pairs, *, sample_rate_GHz, cutoff_GHz,
+                     order=4, detectors=(0, 1), clip=True,
+                     time_ns=None, region="full", baseline_end_ns=-1.,
+                     tail_start_ns=12., transition_ns=.5):
+    """Filter the full trace, then blend changes ONLY in selected regions.
+
+    Filtering uses prepared affine amplitudes. Region baseline_tail preserves
+    every sample between baseline_end_ns and tail_start_ns bit-for-bit.
+    The filtering remains noncausal and modified samples are OOD inputs.
     """
     from scipy.signal import butter, sosfiltfilt
     x = np.asarray(pairs, np.float32)
@@ -46,14 +91,29 @@ def lowpass_prepared(pairs, *, sample_rate_GHz, cutoff_GHz,
         raise ValueError("Choose detector 1, detector 2 or both")
     sos = butter(order, cutoff_GHz, fs=sample_rate_GHz,
                  btype="lowpass", output="sos")
+    if region == "full":
+        weight = np.ones(x.shape[-1], dtype=np.float64)
+    else:
+        if time_ns is None:
+            raise ValueError("time_ns required for selective filtering")
+        if np.shape(time_ns) != (x.shape[-1],):
+            raise ValueError("time_ns does not match waveform length")
+        weight = temporal_filter_weights(
+            time_ns, region=region, baseline_end_ns=baseline_end_ns,
+            tail_start_ns=tail_start_ns, transition_ns=transition_ns)
     out = x.copy()
+    preclip_max = 0.
     for detector in detectors:
-        out[:, detector, :] = sosfiltfilt(
-            sos, x[:, detector, :].astype(np.float64), axis=-1).astype(np.float32)
-    preclip_max = float(np.max(np.abs(out[:, list(detectors), :] - np.clip(
-        out[:, list(detectors), :], 0., 1.))))
-    if clip:
-        out[:, list(detectors), :] = np.clip(out[:, list(detectors), :], 0., 1.)
+        original = x[:, detector, :].astype(np.float64)
+        filtered = sosfiltfilt(sos, original, axis=-1)
+        blended = original + (filtered - original) * weight[None, :]
+        # Do not change unselected time samples, including the protected edge.
+        preclip_max = max(preclip_max, float(np.max(
+            np.abs(blended - np.clip(blended, 0., 1.)))))
+        if clip:
+            blended = np.where(weight[None, :] > 0,
+                               np.clip(blended, 0., 1.), original)
+        out[:, detector, :] = blended.astype(np.float32)
     return out, preclip_max
 
 
@@ -110,6 +170,15 @@ def run(args):
     if waveforms is None or waveforms.shape != (dataset.n_events, 2, len(time_ps)):
         raise ValueError("Prepared waveform shape mismatch")
     fs = 1000. / dt_ps
+    time_ns = time_ps / 1000.
+    weights = temporal_filter_weights(
+        time_ns, region=args.filter_region,
+        baseline_end_ns=args.baseline_end_ns,
+        tail_start_ns=args.tail_start_ns,
+        transition_ns=args.transition_ns)
+    protected_indices = (time_ns >= args.baseline_end_ns) & (time_ns <= args.tail_start_ns)
+    if args.filter_region != "full" and not protected_indices.any():
+        raise ValueError("No samples inside protected rising-edge interval")
     if any(not 0 < c < fs / 2 for c in cutoffs):
         raise ValueError(f"Cutoffs must lie strictly below Nyquist {fs/2:.4g} GHz")
     store = RunStore(run_dir, artifact_root=config["preprocessing"].get("artifact_root"))
@@ -161,7 +230,14 @@ def run(args):
         for cutoff in cutoffs:
             altered, preclip = lowpass_prepared(
                 inputs, sample_rate_GHz=fs, cutoff_GHz=cutoff,
-                order=args.order, detectors=channels)
+                order=args.order, detectors=channels,
+                time_ns=time_ns, region=args.filter_region,
+                baseline_end_ns=args.baseline_end_ns,
+                tail_start_ns=args.tail_start_ns,
+                transition_ns=args.transition_ns)
+            if args.filter_region != "full" and not np.array_equal(
+                    altered[:, :, protected_indices], inputs[:, :, protected_indices]):
+                raise AssertionError("Protected rising-edge samples changed after filtering")
             altered_prediction = tshap._predict_bounded(
                 spec, fitted, altered, args.batch_size)
             delta = altered_prediction - baseline
@@ -177,6 +253,17 @@ def run(args):
                 "mae_delta_ps": float(np.mean(np.abs(delta))),
                 "max_abs_delta_ps": float(np.max(np.abs(delta))),
                 "filter_preclip_excess": preclip,
+                "protected_samples_exactly_unchanged": (
+                    bool(np.array_equal(
+                        altered[:, :, protected_indices],
+                        inputs[:, :, protected_indices]))
+                    if args.filter_region != "full" else None),
+                "perturbed_input_rms_prepared_units": float(np.sqrt(
+                    np.mean((altered.astype(np.float64) -
+                             inputs.astype(np.float64)) ** 2))),
+                "max_abs_input_delta_prepared_units": float(np.max(
+                    np.abs(altered.astype(np.float64) -
+                           inputs.astype(np.float64)))),
                 "pearson_original_vs_filtered": (
                     float(np.corrcoef(baseline, altered_prediction)[0, 1])
                     if len(rows) >= 3 and baseline.std() > 0
@@ -199,15 +286,24 @@ def run(args):
             "event_ids": ids[rows].tolist() if len(rows) < 100 else None,
             "filter_detector": args.filter_detector,
             "cutoffs_GHz": cutoffs, "butterworth_order": args.order,
-            "filter": "sosfiltfilt zero-phase on full prepared input; clipped [0,1]",
+            "filter_region": args.filter_region,
+            "protected_window_ns": [args.baseline_end_ns, args.tail_start_ns],
+            "transition_ns": args.transition_ns,
+            "protected_sample_count": int(protected_indices.sum()),
+            "modified_sample_count": int((weights > 0).sum()),
+            "filter": ("sosfiltfilt zero-phase applied to full prepared trace, "
+                       "then cosine-blended only in selected regions; clipped "
+                       "only on blended samples"),
             "original_replay_max_abs_error_ps": max_replay_delta,
             "original_replay_rmse_ps": replay_rmse,
             "replay_absolute_tolerance_ps": replay_tolerance_ps,
             "frozen_transform": True, "frozen_model": True,
             "sampling_GHz": fs, "statistics": records,
-            "note": ("Filtering can shift or distort the LED rising edge and may "
-                     "induce noncausal pre-ringing. Sensitivity to low-pass is "
-                     "not evidence that kernels explicitly encode oscillation phase.")
+            "note": ("Selective filtering preserves the protected rising-edge "
+                     "samples exactly, but the low-pass signal is computed "
+                     "noncausally from the whole waveform; even a masked "
+                     "intervention can be out of training distribution. "
+                     "Sensitivity does not demonstrate oscillation-phase encoding.")
         }
         (out / "summary.json").write_text(
             json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
@@ -234,6 +330,16 @@ def parser():
     p.add_argument("--cutoff-GHz", type=float, nargs="+",
                    default=[5., 3., 2., 1.5, 1.],
                    help="Low-pass -3dB frequencies (GHz); above/below 2.5GHz")
+    p.add_argument("--filter-region",
+                   choices=("full", "baseline", "tail", "baseline_tail"),
+                   default="full",
+                   help="Filter entire waveform (legacy) or only baseline/tail")
+    p.add_argument("--baseline-end-ns", type=float, default=-1.0,
+                   help="Protected rising edge starts here; baseline fades out before it")
+    p.add_argument("--tail-start-ns", type=float, default=12.0,
+                   help="Protected rising edge ends here; tail fades in after it")
+    p.add_argument("--transition-ns", type=float, default=0.5,
+                   help="Cosine transition width at filtered/unfiltered boundaries")
     p.add_argument("--order", type=int, default=4)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--seed", type=int, default=42)
