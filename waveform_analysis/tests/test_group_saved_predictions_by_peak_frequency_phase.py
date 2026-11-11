@@ -33,3 +33,30 @@ def test_frequency_phase_bins_group_predictions():
     assert len(matched) == 1
     assert matched[0]["n"] == 2
     assert matched[0]["mean_prediction_ps"] == 20.
+
+
+def test_quantile_frequency_bins_balance_counts_and_preserve_ties():
+    rng = np.random.default_rng(12)
+    values = np.round(rng.normal(2.4, .18, size=8000), 2)
+    phase = rng.uniform(-np.pi, np.pi, size=len(values))
+    pred = rng.normal(size=len(values))
+    rows, fbin, pbin = group_grid(
+        values, phase, pred, frequency_bins=8, phase_bins=12,
+        frequency_binning="quantile", phase_binning="uniform")
+    assert len(rows) == 96
+    counts = np.bincount(fbin, minlength=8)
+    assert counts.sum() == len(values)
+    assert np.max(np.abs(counts - 1000)) < 200
+    for val in np.unique(values):
+        assert np.unique(fbin[values == val]).size == 1
+
+
+def test_optional_quantile_phase_bins():
+    freq = np.linspace(2, 3, 240)
+    phase = np.linspace(-3, 3, 240)**3 / 9
+    pred = np.sin(phase)
+    rows, fbin, pbin = group_grid(
+        freq, phase, pred, frequency_bins=6, phase_bins=8,
+        frequency_binning="quantile", phase_binning="quantile")
+    assert np.bincount(fbin, minlength=6).tolist() == [40]*6
+    assert np.bincount(pbin, minlength=8).tolist() == [30]*8
