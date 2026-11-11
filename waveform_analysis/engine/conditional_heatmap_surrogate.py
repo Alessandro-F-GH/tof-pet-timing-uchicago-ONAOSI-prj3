@@ -160,7 +160,7 @@ def _ridge_fit(features, predictions, alpha):
     if (x.ndim != 2 or y.shape != (len(x),) or len(x) < 3
             or not np.isfinite(x).all() or not np.isfinite(y).all()):
         raise ValueError("Need finite reference features and teacher predictions")
-    return Ridge(alpha=float(alpha), fit_intercept=True).fit(x, y)
+    return Ridge(alpha=float(alpha), fit_intercept=True, solver="lsqr", tol=1e-6).fit(x, y)
 
 
 def calibrate_ridge(features, predictions, *,
