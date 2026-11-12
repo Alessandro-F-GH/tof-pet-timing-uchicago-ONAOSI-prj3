@@ -185,7 +185,7 @@ def _fold_evaluator(
         logger.info(
             "CV FOLD START | model=%s | candidate=%s | fold=%d/%d "
             "| train=%d | validation=%d | params=%s",
-            spec.name, candidate[:12], fold_id + 1,
+            spec.name, candidate[:12], fold_id,
             int(config["cross_validation"]["folds"]),
             len(fold.train), len(fold.validation),
             _format_optimized_params(space, parameters),
@@ -224,7 +224,7 @@ def _fold_evaluator(
             logger.info(
                 "CV FOLD DONE | model=%s | candidate=%s | fold=%d/%d "
                 "| CTR=%.2f ps | RMSE=%.2f ps | elapsed=%.1f s",
-                spec.name, candidate[:12], fold_id + 1,
+                spec.name, candidate[:12], fold_id,
                 int(config["cross_validation"]["folds"]),
                 float(score["ctr_ps"]), float(score["rmse_ps"]),
                 time.monotonic() - started,
