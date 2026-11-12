@@ -1,5 +1,5 @@
 from __future__ import annotations
-import copy, json, shutil
+import copy, json, shutil, time
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash, write_csv
 from waveform_analysis.core.dependencies import planner_fingerprints as _planner_fingerprints
@@ -199,6 +199,8 @@ def run_batch(batch, *, logger=None):
     for config in configs.values():
         write_run_config(config, managed_runs=managed, validate_only=True)
     _print_batch_plan(batch, plan)
+    print("BATCH START | name=%s | runs=%d | results=%s" %
+          (batch.name, len(plan["studies"]), batch.output_dir), flush=True)
     _confirm(plan)
     _apply(plan)
     for config in configs.values():
@@ -209,9 +211,13 @@ def run_batch(batch, *, logger=None):
     _write(batch, plan, "running", statuses)
     published = set()
     try:
-        for item in plan["studies"]:
+        for run_number, item in enumerate(plan["studies"], 1):
             config = configs[item["config"]["run_id"]]
             run_id = config["run_id"]
+            started = time.monotonic()
+            print("BATCH RUN START | %d/%d | %s | action=%s | stage=%s" %
+                  (run_number, len(plan["studies"]), run_id,
+                   item["action"], item["stage"]), flush=True)
             output = (
                 Path(config["output_dir"]).resolve()
                 if item["action"] == "keep"
@@ -219,6 +225,9 @@ def run_batch(batch, *, logger=None):
             )
             outputs.append(output)
             statuses[run_id] = "complete"
+            print("BATCH RUN DONE | %d/%d | %s | elapsed=%.1f s" %
+                  (run_number, len(plan["studies"]), run_id,
+                   time.monotonic()-started), flush=True)
             _write(batch, plan, "running", statuses)
             mode = str(config["mode"])
             if mode not in published:

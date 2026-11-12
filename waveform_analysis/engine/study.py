@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, logging, pickle, shutil
+import json, logging, pickle, shutil, time
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.dependencies import stage_fingerprint as _stage
@@ -181,6 +181,15 @@ def _fold_evaluator(
         input_cache = FitInputCache()
         transform_cache = FeatureTransformCache()
         fitted = prediction = corrected = None
+        started = time.monotonic()
+        logger.info(
+            "CV FOLD START | model=%s | candidate=%s | fold=%d/%d "
+            "| train=%d | validation=%d | params=%s",
+            spec.name, candidate[:12], fold_id + 1,
+            int(config["cross_validation"]["folds"]),
+            len(fold.train), len(fold.validation),
+            _format_optimized_params(space, parameters),
+        )
         try:
             fitted = fit_on_indices(
                 spec,
@@ -212,6 +221,14 @@ def _fold_evaluator(
                 seed=semantic_seed(config["seed"], candidate, fold_id, "metric"),
             )
             led = shared.fold_metrics[fold_id]
+            logger.info(
+                "CV FOLD DONE | model=%s | candidate=%s | fold=%d/%d "
+                "| CTR=%.2f ps | RMSE=%.2f ps | elapsed=%.1f s",
+                spec.name, candidate[:12], fold_id + 1,
+                int(config["cross_validation"]["folds"]),
+                float(score["ctr_ps"]), float(score["rmse_ps"]),
+                time.monotonic() - started,
+            )
             return {
                 "seed": int(seed),
                 "n_train": int(len(fold.train)),
@@ -262,6 +279,11 @@ def _evaluate_candidate(
     )
     inc_id = None if inc is None else str(inc["candidate_id"])
     inc_folds = None if inc_id is None else store.read_fold_rows(inc_id)
+    logger.info(
+        "CV CANDIDATE START | model=%s | %s | resumed_folds=%d/%d",
+        spec.name, _format_optimized_params(space, params),
+        len(folds), int(config["cross_validation"]["folds"]),
+    )
     summary, _ = evaluate_candidate(
         candidate_id=identifier,
         parameters=params,

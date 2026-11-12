@@ -183,6 +183,11 @@ def discover_runs(root, *, complete=True):
     runs = []
     for path in sorted(root.rglob('metadata/config.json')):
         run = path.parent.parent
+        # An interrupted or removed batch member can retain its config without
+        # a run manifest. Such a run is not a reportable result; skip it.
+        # Do not silently swallow malformed manifests for existing runs.
+        if not (run / 'metadata/manifest.json').is_file():
+            continue
         # Grouped reports reference original runs; they contain no copied runs.
         result = read_run(run)
         if not complete or result['manifest'].get('status') == 'complete':

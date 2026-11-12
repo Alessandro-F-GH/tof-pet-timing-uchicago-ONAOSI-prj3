@@ -249,6 +249,44 @@ def fit_on_indices(
     if spec.requires_frozen_features and frozen_features is None:
         raise ValueError("This model requires frozen control-fitted features")
     idx = np.asarray(indices, np.int64)
+    # For full-development composite Ridge, stream cached feature blocks rather
+    # than allocating the entire 75k x 52k row matrix. CV remains unchanged.
+    if (frozen_features is not None
+            and spec.name in ("direct_multirocket_rdst", "shared_multirocket_rdst")
+            and frozen_features.feature_blocks
+            and idx.size == dataset.n_events
+            and np.array_equal(idx, np.arange(dataset.n_events))):
+        from waveform_analysis.engine.streaming_ridge import fit_streamed_composite_ridge
+        from waveform_analysis.engine.memory_diagnostics import monitor_memory
+        y = np.asarray(model_target(dataset, config["mode"]), dtype=np.float64)
+        with monitor_memory(logger, label="final-composite-ridge"):
+            artifact = fit_streamed_composite_ridge(
+                frozen_features, y, parameters,
+                shared=spec.name.startswith("shared_"),
+                rows_per_chunk=int(config.get("runtime", {}).get("ridge_rows_per_chunk", 128)),
+                logger=logger,
+            )
+        result = FittedModel(
+            artifact, dict(artifact.metadata), float(config["ml_output"]["max_abs_ps"]),
+            np.asarray(frozen_features.sample_mask, dtype=bool),
+            frozen_features.transform,
+        )
+        result.metadata.update({
+            "training_events": int(y.size),
+            "sample_mask_fit_role": dataset.manifest.get("sample_mask_fit_role", "not_applied"),
+            "sample_mask_identity": dataset.manifest.get("sample_mask_identity"),
+            "sample_mask_control_events": dataset.manifest.get("sample_mask_control_events", 0),
+            "input_samples_before_mask": int(frozen_features.sample_mask.size),
+            "input_samples_after_mask": int(frozen_features.sample_mask.sum()),
+            "prediction_chunk_size": int(config.get("runtime", {}).get(
+                "prediction_chunk_size", _DEFAULT_PREDICTION_CHUNK_SIZE)),
+            "feature_transform": frozen_features.transform.spec.name,
+            "feature_transform_identity": frozen_features.transform.identity,
+            "feature_transform_parameters": frozen_features.transform.parameters,
+            "feature_transform_seed": int(frozen_features.transform.seed),
+        })
+        return result
+
     if frozen_features is not None:
         x = frozen_features.rows(idx)
         y = np.asarray(model_target(dataset, config["mode"])[idx], dtype=np.float64)
