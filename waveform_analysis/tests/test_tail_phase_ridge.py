@@ -10,13 +10,20 @@ from waveform_analysis.scripts.test_tail_phase_ridge import _align, _cached_wide
 
 
 def test_join_uses_event_identity_not_position():
-    rows = _align([101, 103, 102, 105], [105, 101, 102], role="development")
+    rows, pred_rows = _align([101, 103, 102, 105], [105, 101, 102], role="development")
     np.testing.assert_array_equal(rows, [3, 0, 2])
+    np.testing.assert_array_equal(pred_rows, [0, 1, 2])
 
 
-def test_join_rejects_missing_event():
-    with pytest.raises(ValueError, match="missing"):
-        _align([1, 3], [1, 2], role="blind")
+def test_join_intersects_missing_events():
+    cache_rows, pred_rows = _align([1, 3], [1, 2], role="blind")
+    np.testing.assert_array_equal(cache_rows, [0])
+    np.testing.assert_array_equal(pred_rows, [0])
+
+
+def test_join_rejects_disjoint_events():
+    with pytest.raises(ValueError, match="no matching"):
+        _align([1, 3], [2, 4], role="blind")
 
 
 def test_join_rejects_duplicate_event():
@@ -48,11 +55,13 @@ def test_cached_wide_phase_with_nonmatching_event_order(tmp_path):
              minimum=np.zeros((2, 1)), maximum=np.ones((2, 1)))
     args = SimpleNamespace(frequency_ghz=2.5, tail_start_ns=5.,
                            tail_end_ns=30., batch_size=2)
-    coeff, path = _cached_wide(
+    coeff, path, matched, counts = _cached_wide(
         tmp_path, "development", np.array([19, 18]), "/same/48V-R1.root", args
     )
     assert Path(path) == base
     assert coeff.shape == (2, 2)
+    np.testing.assert_array_equal(matched, [0, 1])
+    assert counts["n_matched"] == 2
     features = _features(coeff, "relative")
     np.testing.assert_allclose(
         features[:, 0], np.cos([phase + .4, phase]), atol=.01
@@ -60,3 +69,9 @@ def test_cached_wide_phase_with_nonmatching_event_order(tmp_path):
     np.testing.assert_allclose(
         features[:, 1], -np.sin([phase + .4, phase]), atol=.01
     )
+
+
+def test_join_partial_cache_from_filtered_population():
+    cache_rows, pred_rows = _align([18, 44, 78], [18, 23, 44, 55, 78], role="development")
+    np.testing.assert_array_equal(cache_rows, [0, 1, 2])
+    np.testing.assert_array_equal(pred_rows, [0, 2, 4])
