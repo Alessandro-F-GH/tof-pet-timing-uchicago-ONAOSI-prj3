@@ -206,7 +206,7 @@ def run(args):
     family = {"energy_to_energy": "energy", "timing_to_timing": "timing"}[config["mode"]]
 
     store = RunStore(
-        args.filtered_run, artifact_root=config["preprocessing"]["artifact_root"]
+        args.filtered_run, artifact_root=config["preprocessing"].get("artifact_root")
     )
     development = _predictions(store, "development")
     blind = _predictions(store, "blind")
