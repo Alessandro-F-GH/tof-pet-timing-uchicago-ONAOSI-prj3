@@ -19,7 +19,8 @@ def configs(tmp_path):
     for original in batch.runs:
         config = deepcopy(original)
         config['batch_output_dir'] = str(tmp_path)
-        config['output_dir'] = str(tmp_path / 'timing/onishi' / config['model']['name'])
+        mode_tag = 'energy' if config['mode'] == 'energy_to_energy' else 'timing'
+        config['output_dir'] = str(tmp_path / mode_tag / config['window_name'] / config['model']['name'])
         config['_board'] = 'FBK'
         result.append(config)
     return result
@@ -39,10 +40,13 @@ def test_settings_have_one_owner_and_resolve_exactly(tmp_path):
     assert 'cross_validation' in raw['settings']
     assert 'channels' in raw
     assert all('channels' not in d for d in raw['datasets'].values())
+    timing_run = next(c for c in runs if c['mode'] == 'timing_to_timing')
     mode = json.loads((tmp_path / 'timing/mode.json').read_text())
-    assert mode['settings']['ml_input'] == runs[0]['ml_input']
-    context = json.loads((tmp_path / 'timing/onishi/context.json').read_text())
+    assert mode['settings']['ml_input'] == timing_run['ml_input']
+    context = json.loads((tmp_path / 'timing/wide/context.json').read_text())
     assert set(context) == {'window_name', 'window_ns'}
+    assert context['window_name'] == timing_run['window_name']
+    assert context['window_ns'] == timing_run['window_ns']
     for config in runs:
         directory = Path(config['output_dir'])
         local = json.loads((directory / 'metadata/config.json').read_text())
@@ -97,7 +101,7 @@ def test_old_layout_rejected_without_side_effects(tmp_path):
     (directory / 'config.json').write_text('{"control": {}}')
     (directory / 'manifest.json').write_text('{"status":"complete"}')
     before = contents(tmp_path)
-    with pytest.raises(ValueError, match='convert_results.py'):
+    with pytest.raises(ValueError, match='historical result compatibility'):
         read_run(directory)
     assert contents(tmp_path) == before
 

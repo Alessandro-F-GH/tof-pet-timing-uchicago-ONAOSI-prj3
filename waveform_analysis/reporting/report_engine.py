@@ -22,6 +22,7 @@ from waveform_analysis.reporting.stats import (
     pearson_r,
 )
 from waveform_analysis.data.results import discover_runs, resolve_run_config
+from waveform_analysis.data.storage import RunStore
 from waveform_analysis.reporting.latex_tables import (
     DATASET_TABLE_VERSION,
     export_dataset_tables,
@@ -58,10 +59,6 @@ def collect_runs(root):
     return runs
 
 
-def _uses_development_cv(run):
-    return run["manifest"].get("selection_method", "development_cv") != "ridge_cv"
-
-
 def _summaries(runs):
     validation = []
     blind = []
@@ -74,18 +71,17 @@ def _summaries(runs):
             "formulation": m["estimator_formulation"],
             "candidate_id": b["candidate_id"],
         }
-        if _uses_development_cv(run):
-            validation.append(
-                {
-                    **base,
-                    "selection_metric": b["selection_metric"],
-                    "ctr_mean_ps": b["validation_ctr_mean_ps"],
-                    "ctr_std_ps": b["validation_ctr_std_ps"],
-                    "rmse_mean_ps": b["validation_rmse_mean_ps"],
-                    "rmse_std_ps": b["validation_rmse_std_ps"],
-                    "folds": b["folds"],
-                }
-            )
+        validation.append(
+            {
+                **base,
+                "selection_metric": b["selection_metric"],
+                "ctr_mean_ps": b["validation_ctr_mean_ps"],
+                "ctr_std_ps": b["validation_ctr_std_ps"],
+                "rmse_mean_ps": b["validation_rmse_mean_ps"],
+                "rmse_std_ps": b["validation_rmse_std_ps"],
+                "folds": b["folds"],
+            }
+        )
         blind.append(
             {
                 **base,
@@ -115,8 +111,14 @@ def _groups(runs):
 
 
 def _payload(run):
-    with np.load(run["directory"] / "artifacts" / "pred.npz") as d:
-        return {k: np.asarray(d[k]) for k in d.files}
+    """Load blind predictions from the artifact store, with legacy local fallback."""
+    directory = Path(run["directory"])
+    config = resolve_run_config(directory)
+    store = RunStore(
+        directory,
+        artifact_root=config.get("preprocessing", {}).get("artifact_root"),
+    )
+    return store.load_predictions()
 
 
 def _correlation(group):
@@ -240,13 +242,6 @@ def _scatters(group, directory, cfg):
         if np.isfinite(r)
         else "Model-only Pearson r = n/a",
     )
-    group = [run for run in group if _uses_development_cv(run)]
-    if not group:
-        for metric in ("ctr", "rmse"):
-            output_path(directory, f"validation_vs_blind_{metric}", cfg).unlink(
-                missing_ok=True
-            )
-        return
     labels = [run["manifest"]["model"] for run in group]
     ctr = np.asarray([run["blind"]["ctr_ps"] for run in group], float)
     rmse = np.asarray([run["blind"]["rmse_ps"] for run in group], float)
@@ -288,7 +283,7 @@ def _windows(runs, root, cfg):
         if len(windows) < 2:
             continue
         for model in sorted(
-            {r["manifest"]["model"] for r in mr if not _uses_development_cv(r)}
+            {r["manifest"]["model"] for r in mr}
         ):
             model_runs = sorted(
                 [r for r in mr if r["manifest"]["model"] == model],
@@ -310,10 +305,8 @@ def _windows(runs, root, cfg):
                     output_path(directory, f"windows_{model}_{metric}", cfg),
                     cfg,
                     ylabel=f"Blind {metric.upper()} [ps]",
-                    title=f"{model}: all waveform windows (RidgeCV lambda selection)",
+                    title=f"{model}: all waveform windows",
                 )
-        if not any(_uses_development_cv(r) for r in mr):
-            continue
         for metric in ("ctr", "rmse"):
             labels = []
             values = {"shared": [], "direct": []}
@@ -326,7 +319,6 @@ def _windows(runs, root, cfg):
                         r
                         for r in wr
                         if r["manifest"]["estimator_formulation"] == form
-                        and _uses_development_cv(r)
                     ]
                     if candidates:
                         selection_metric = str(
@@ -454,23 +446,8 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
         write_csv(tables / "validation.csv", validation)
     else:
         (tables / "validation.csv").unlink(missing_ok=True)
-    ridge_rows = [
-        {
-            "mode": r["manifest"]["mode"],
-            "window": r["manifest"].get("window_name"),
-            "model": r["manifest"]["model"],
-            "ridge_alpha": r["best"]["parameters"]["ridge_alpha"],
-            "internal_cv": r["best"]["internal_cv"],
-            "internal_cv_mse_ps2": r["best"]["internal_cv_mse_ps2"],
-            "n_train": r["best"]["n_train"],
-        }
-        for r in runs
-        if not _uses_development_cv(r)
-    ]
-    if ridge_rows:
-        write_csv(tables / "ridge_cv.csv", ridge_rows)
-    else:
-        (tables / "ridge_cv.csv").unlink(missing_ok=True)
+    # Remove the obsolete RidgeCV-only table from previous report outputs.
+    (tables / "ridge_cv.csv").unlink(missing_ok=True)
     write_csv(tables / "blind.csv", blind)
     seed = int(root_config["settings"]["seed"])
     for (mode, window), group in _groups(runs).items():

@@ -28,10 +28,17 @@ def canonical_hash(value: Any) -> str:
 
 
 def source_signature(path: Path) -> dict[str, Any]:
-    p = Path(path).resolve()
+    """Return a portable source identity without machine-specific directories.
+
+    The basename is the logical source name; size and modification time help
+    invalidate cached products when the input file changes. The absolute path
+    is deliberately excluded so a cache can be reused after moving the same
+    acquisition file to another machine.
+    """
+    p = Path(path).expanduser()
     s = p.stat()
     return {
-        "path": str(p),
+        "path": p.name,
         "size_bytes": int(s.st_size),
         "mtime_ns": int(s.st_mtime_ns),
     }

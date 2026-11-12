@@ -76,6 +76,6 @@ MODEL_SPEC = ModelSpec(
     explain=explain,
     estimator_formulation="direct",
     feature_transform=FEATURE_TRANSFORM,
-    selection_method="ridge_cv",
+    selection_method="development_cv",
     artifact_format="pickle",
 )

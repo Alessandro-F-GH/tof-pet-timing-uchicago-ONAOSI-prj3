@@ -53,7 +53,7 @@ def batch_root(run):
         path = parent / 'config.json'
         if path.is_file() and read_json(path).get('format') == FORMAT:
             return parent
-    raise ValueError(f'No canonical batch configuration above {run}; convert old results with scripts/convert_results.py')
+    raise ValueError(f'No canonical batch configuration above {run}; start a new result root; historical result compatibility is not supported')
 
 
 
@@ -103,7 +103,7 @@ def resolve_run_config(run):
     batch = read_json(root / 'config.json')
     local = read_json(run / 'metadata/config.json')
     if set(local) != {'model'}:
-        raise ValueError(f'Noncanonical model configuration in {run}; run scripts/convert_results.py')
+        raise ValueError(f'Noncanonical model configuration in {run}; start a new result root; historical result compatibility is not supported')
     context_dir = run.parent if run != root else root
     mode_dir = context_dir.parent if context_dir.parent.is_relative_to(root) else root
     mode = read_json(mode_dir / 'mode.json')
@@ -183,6 +183,11 @@ def discover_runs(root, *, complete=True):
     runs = []
     for path in sorted(root.rglob('metadata/config.json')):
         run = path.parent.parent
+        # An interrupted or removed batch member can retain its config without
+        # a run manifest. Such a run is not a reportable result; skip it.
+        # Do not silently swallow malformed manifests for existing runs.
+        if not (run / 'metadata/manifest.json').is_file():
+            continue
         # Grouped reports reference original runs; they contain no copied runs.
         result = read_run(run)
         if not complete or result['manifest'].get('status') == 'complete':

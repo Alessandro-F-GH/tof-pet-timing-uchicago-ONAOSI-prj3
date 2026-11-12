@@ -35,9 +35,13 @@ def _config(tmp_path):
     return {
         "mode": "energy_to_energy",
         "window_name": "test",
+        "window_ns": {"start": -1.5, "end": 2.0},
         "seed": 1001,
         "runtime": {"prediction_chunk_size": 5},
-        "preprocessing": {"cache_dir": str(tmp_path)},
+        "preprocessing": {
+            "cache_dir": str(tmp_path),
+            "artifact_root": str(tmp_path / "artifact_store"),
+        },
     }
 
 

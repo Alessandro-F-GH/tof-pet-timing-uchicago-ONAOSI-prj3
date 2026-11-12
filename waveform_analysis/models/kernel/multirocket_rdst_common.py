@@ -65,6 +65,17 @@ def transform(artifact, values):
     ], axis=1)
 
 
+def transform_block(artifact, values, block_name):
+    """Apply one feature family without computing or concatenating the other."""
+    if np.shape(values)[-1] != artifact.metadata["input_samples"]:
+        raise ValueError("Combined input length differs from its frozen control grid")
+    if block_name == "multirocket":
+        return multirocket.transform(artifact.multirocket, values)
+    if block_name == "rdst":
+        return rdst.transform(artifact.rdst, values)
+    raise ValueError(f"Unknown combined feature block: {block_name}")
+
+
 def save_transform(artifact, path):
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -130,5 +141,7 @@ def make_spec(name, fit_transform_callback, fit_callback):
             name=f"{name}_aeon_{multirocket.AEON_VERSION}_v{TRANSFORM_VERSION}",
             parameters=transform_parameters, fit_transform=fit_transform_callback,
             transform=transform, save=save_transform,
+            block_names=("multirocket", "rdst"),
+            transform_block=transform_block,
         ),
     )

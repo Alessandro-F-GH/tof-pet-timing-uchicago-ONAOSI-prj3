@@ -25,6 +25,10 @@ def persist_result(directory, config=None, manifest=None):
         defaults[role].update(manifest.get(f'{role}_dataset', {}))
         defaults[role].update(config.pop(role, {}))
     defaults.update(config)
+    defaults.setdefault('preprocessing', {})
+    defaults['preprocessing'].setdefault(
+        'artifact_root', str(directory / 'artifact_store')
+    )
     write_run_config(defaults)
     if manifest:
         write_run_manifest(directory, manifest)

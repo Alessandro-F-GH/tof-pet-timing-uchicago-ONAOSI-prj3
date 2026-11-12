@@ -49,13 +49,10 @@ def test_model_spaces_are_seedless():
     for path in root.glob("*.json"):
         space = json.loads(path.read_text())
         assert "seed" not in (space.get("optimization") or {})
+        assert optimization_config(space).strategy in {"fixed", "grid", "optuna"}
         if space.get("model") in {"direct_linear_ridge", "shared_linear_ridge"}:
-            from waveform_analysis.core.ridge import ridge_cv_config
-
-            assert ridge_cv_config(space).alphas
-            assert "optimization" not in space
-        else:
-            assert optimization_config(space).strategy in {"fixed", "grid", "optuna"}
+            assert space["optimization"]["strategy"] == "grid"
+            assert space["parameters"]["ridge_alpha"]["choices"]
 
 
 def test_locally_connected_fixed_bound_is_a_scalar():

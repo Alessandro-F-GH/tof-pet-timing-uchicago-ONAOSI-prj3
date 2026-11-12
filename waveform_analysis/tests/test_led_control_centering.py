@@ -112,9 +112,9 @@ def test_reporting_rejects_uncentered_legacy_results(tmp_path):
     tables = root / 'tables'
     tables.mkdir()
     (tables / 'runs.csv').write_text('path\nrun\n')
-    with pytest.raises(ValueError, match='convert'):
+    with pytest.raises(ValueError, match='historical result compatibility'):
         report_engine.collect_runs(root)
-    with pytest.raises(ValueError, match='convert'):
+    with pytest.raises(ValueError, match='historical result compatibility'):
         from waveform_analysis.data.results import read_run_manifest
         read_run_manifest(store.root)
 
@@ -150,5 +150,5 @@ def test_batch_planner_rebuilds_old_uncentered_runs(tmp_path):
     store.metadata_dir.mkdir(parents=True,exist_ok=True)
     store.manifest_path.write_text(json.dumps({'schema_version': 51, 'status': 'complete'}))
     (store.metadata_dir / 'config.json').write_text('{}')
-    with pytest.raises(ValueError, match='convert'):
+    with pytest.raises(ValueError, match='historical result compatibility'):
         _run_state(cfg, {cfg['run_id']: _planner_fingerprints(cfg)})
