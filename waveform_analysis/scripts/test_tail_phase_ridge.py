@@ -1,8 +1,8 @@
 """Exploratory tail-phase correction to a saved low-pass Linear Ridge model.
 
-Uses ORIGINAL, unfiltered samples from the ROOT input files, not legacy main
-branch caches. Exact join: filtered prediction event_id == ROOT event_index,
-independently for development and blind. No original-model refit or modification.
+Uses ORIGINAL, unfiltered *prepared ML wide windows* from main-branch XAI
+cache. Exact join: filtered prediction event_id == cache event_index,
+independently for development and blind. No model refit or modification.
 """
 from __future__ import annotations
 
@@ -15,10 +15,8 @@ from sklearn.linear_model import Ridge
 
 from waveform_analysis.core.io import atomic_json
 from waveform_analysis.data.results import resolve_run_config
-from waveform_analysis.data.root_io import iterate_energy_chunks
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.reporting.stats import metric_values, paired_model_bootstrap
-from waveform_analysis.signal.pulses import decode_oriented, pulse_hits
 
 
 def _unique(ids, label):
@@ -46,100 +44,96 @@ def _align(root_ids, prediction_ids, *, role):
     return permutation[locations]
 
 
-def _phase_of_tail(waveform, *, dt_ns, time0_ns, frequency_ghz,
-                   tail_start_ns, tail_end_ns, threshold_mv):
-    """Absolute-acquisition-time Fourier coefficient from post-peak tail."""
-    signal = np.asarray(waveform, dtype=np.float64)
-    hits = pulse_hits(signal, threshold_mv, dt_ns * 1e-9)
-    if not hits:
-        raise ValueError("No pulse above the native energy trigger threshold")
-    lead = int(hits[0].leading_index)
-    # Same first-pulse convention as energy selection; determine the peak
-    # in a bounded interval, not from the entire acquisition record.
-    stop = min(signal.size, lead + max(2, int(np.ceil(10.0 / dt_ns))))
-    peak = lead + int(np.argmax(signal[lead:stop]))
-    first = peak + int(np.ceil(tail_start_ns / dt_ns - 1e-9))
-    last = peak + int(np.floor(tail_end_ns / dt_ns + 1e-9)) + 1
-    if first < 0 or last > signal.size or last - first < 16:
-        raise ValueError("Post-peak tail interval does not fit native ROOT waveform")
-    segment = signal[first:last]
-    if not np.all(np.isfinite(segment)):
-        raise ValueError("Nonfinite native samples in tail")
-    n = segment.size
-    local = np.arange(n, dtype=np.float64) * dt_ns
-    # Remove linear tail drift; use tapered, fixed-frequency complex projection.
-    slope, intercept = np.polyfit(local, segment, 1)
-    detrended = segment - (slope * local + intercept)
-    taper = np.hanning(n)
-    complex_amplitude = 2 * np.dot(
-        detrended * taper, np.exp(-2j * np.pi * frequency_ghz * local)
-    ) / taper.sum()
-    absolute_time = time0_ns + first * dt_ns
-    return complex_amplitude * np.exp(
-        -2j * np.pi * np.remainder(frequency_ghz * absolute_time, 1.0)
-    )
+def _cached_wide(root, role, prediction_ids, expected_root, args):
+    """Match saved wide, UNFILTERED ML inputs with low-pass Ridge predictions.
 
-
-def _phase_from_root(root_file, prediction_ids, config, role, args):
-    """Stream raw ROOT, decode ONLY requested events, require exact ID coverage."""
-    prediction_ids = _unique(prediction_ids, f"{role} predictions")
-    results = np.empty((len(prediction_ids), 2), dtype=np.complex128)
-    found = np.zeros(len(prediction_ids), dtype=bool)
-    order = np.argsort(prediction_ids)
-    wanted = prediction_ids[order]
-    dataset = config[role]
-    channels = dataset["channels"]
-    energy_ch = tuple(map(int, channels["energy"]))
-    polarity = tuple(map(int, channels.get("polarities", [1, 1])))
-    thresholds = tuple(map(float, config["preprocessing"]["energy"]["trigger_threshold_mV"]))
-    root_file = Path(root_file).resolve()
-
-    scanned = 0
-    for chunk in iterate_energy_chunks(
-        root_file, energy_channels_one_based=energy_ch,
-        timing_channels_one_based=None, step_size="128 MB", entry_stop=None,
-    ):
-        ids = _unique(chunk.event_index, f"{role} ROOT chunk")
-        scanned += ids.size
-        locations = np.searchsorted(wanted, ids)
-        match = locations < wanted.size
-        match[match] &= wanted[locations[match]] == ids[match]
-        for local in np.flatnonzero(match):
-            pos = int(order[locations[local]])
-            if found[pos]:
-                raise ValueError(f"{role}: duplicate ROOT event_index={prediction_ids[pos]}")
-            for detector in range(2):
-                signal = decode_oriented(
-                    chunk.samples[detector][local],
-                    chunk.vertical_gain_v_per_count[local, detector],
-                    chunk.vertical_offset_v[local, detector],
-                    polarity[detector],
-                )
-                results[pos, detector] = _phase_of_tail(
-                    signal,
-                    dt_ns=float(chunk.horizontal_interval_s[local, detector]) * 1e9,
-                    time0_ns=float(chunk.horizontal_offset_s[local, detector]) * 1e9,
-                    frequency_ghz=args.frequency_ghz,
-                    tail_start_ns=args.tail_start_ns,
-                    tail_end_ns=args.tail_end_ns,
-                    threshold_mv=thresholds[detector],
-                )
-            found[pos] = True
-    if not np.all(found):
-        missing = prediction_ids[~found]
+    The cache is original main-branch prepared-dataset format. Time is relative
+    to each detector's own ML/LED alignment (energy_time_ps); never use a native
+    ROOT acquisition clock or samples outside the model's input window.
+    """
+    root = Path(root).expanduser().resolve()
+    candidates = []
+    for directory in (root / "artifact_store" / "products" / "prepared-datasets").glob("*"):
+        manifest_path = directory / "manifest.json"
+        if not (directory / "energy_windows.npy").is_file() or not manifest_path.is_file():
+            continue
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        source = Path(str(manifest.get("dataset_source", "")).replace("\\\\", "/")).name
+        if (manifest.get("dataset_role") == role
+                and manifest.get("mode") == "energy_to_energy"
+                and manifest.get("window_ns") == {"start": -2.0, "end": 50.0}
+                and source == Path(expected_root).name
+                and int(manifest.get("subsampling", -1)) == 1):
+            candidates.append((directory, manifest))
+    if len(candidates) != 1:
         raise ValueError(
-            f"{role}: {missing.size}/{len(prediction_ids)} prediction events not in "
-            f"{root_file}; first IDs={missing[:10].tolist()}"
+            f"{role}: expected exactly one wide unfiltered dataset from "
+            f"{Path(expected_root).name} in {root}; found {len(candidates)}. "
+            "Do not choose an ambiguous cache."
         )
-    if not np.all(np.isfinite(results)):
-        raise ValueError(f"{role}: nonfinite Fourier coefficients")
+    directory, manifest = candidates[0]
+    ids = np.load(directory / "event_index.npy", mmap_mode="r")
+    rows = _align(ids, prediction_ids, role=role)
+    wave = np.load(directory / "energy_windows.npy", mmap_mode="r")
+    with np.load(directory / "energy_transform.npz") as tr:
+        minimum = np.asarray(tr["minimum"], np.float64)
+        maximum = np.asarray(tr["maximum"], np.float64)
+    time_ns = np.asarray(
+        np.load(directory / "energy_time_ps.npy", mmap_mode="r"), np.float64
+    ) * 1e-3
+    if wave.ndim != 3 or wave.shape[1] != 2 or wave.shape[0] != len(ids):
+        raise ValueError(f"{role}: malformed cached energy_windows array")
+    if wave.shape[-1] != len(time_ns):
+        raise ValueError(f"{role}: waveform and time axis lengths differ")
+    if np.any(np.diff(time_ns) <= 0):
+        raise ValueError(f"{role}: non-increasing ML relative time axis")
+    if np.max(np.abs(np.diff(time_ns) - np.median(np.diff(time_ns)))) > 1e-7:
+        raise ValueError(f"{role}: nonuniform ML sampling")
+    selection = np.flatnonzero(
+        (time_ns >= args.tail_start_ns - 1e-9)
+        & (time_ns <= args.tail_end_ns + 1e-9)
+    )
+    if (selection.size < 16 or selection[0] == 0
+            or selection[-1] >= wave.shape[2]):
+        raise ValueError(
+            f"{role}: requested tail [{args.tail_start_ns}, {args.tail_end_ns}] ns "
+            "must lie strictly inside wide ML window"
+        )
+    if minimum.shape != (2, 1) or maximum.shape != (2, 1):
+        raise ValueError(f"{role}: unsupported cache normalization shape")
+    if np.any(maximum <= minimum):
+        raise ValueError(f"{role}: invalid normalization limits")
     print(
-        f"{role.upper()} ROOT JOIN | source={root_file} | scanned={scanned} "
-        f"| requested={len(prediction_ids)} | matched={int(found.sum())} "
-        f"| matched_by=event_index | order=prediction_event_id",
+        f"{role.upper()} CACHE | {directory} | source={manifest['dataset_source']} "
+        f"| cache_n={len(ids)} pred_n={len(prediction_ids)} matched={len(rows)} "
+        f"| ML_time_ns=[{time_ns[0]:.4f},{time_ns[-1]:.4f}] "
+        f"| analysis_ns=[{time_ns[selection[0]]:.4f},{time_ns[selection[-1]]:.4f}]",
         flush=True,
     )
-    return results
+    # Memmap-backed cache: process batches; output follows prediction event_id order.
+    result = np.empty((len(rows), 2), dtype=np.complex128)
+    tail_times = time_ns[selection]
+    t = tail_times - tail_times.mean()
+    taper = np.hanning(t.size)
+    reference = np.exp(-2j * np.pi * args.frequency_ghz * tail_times)
+    # Linearly detrend in the time domain, then apply the Hann Fourier kernel.
+    osc_kernel = taper * reference
+    scale = taper.sum()
+    if args.batch_size <= 0:
+        raise ValueError("batch-size must be positive")
+    for start in range(0, len(rows), args.batch_size):
+        end = min(start + args.batch_size, len(rows))
+        x = np.asarray(wave[rows[start:end]], np.float64)[:, :, selection]
+        x = minimum[None, :, :] + x * (maximum - minimum)[None, :, :]
+        if not np.all(np.isfinite(x)):
+            raise ValueError(f"{role}: nonfinite original ML waveforms")
+        mean = x.mean(axis=-1, keepdims=True)
+        slope = np.einsum("bcn,n->bc", x, t) / np.dot(t, t)
+        detrended = x - mean - slope[:, :, None] * t[None, None, :]
+        result[start:end] = (
+            2 / scale * np.einsum("bcn,n->bc", detrended, osc_kernel)
+        )
+    return result, str(directory)
 
 
 def _features(coefficients, representation):
@@ -200,13 +194,13 @@ def run(args):
     ):
         raise ValueError("Development and blind predictions originate from different Ridge fits")
 
-    dev_coeff = _phase_from_root(
-        config["development"]["root_file"], development["event_id"],
-        config, "development", args,
+    dev_coeff, dev_cache = _cached_wide(
+        args.cache_root, "development", development["event_id"],
+        config["development"]["root_file"], args,
     )
-    blind_coeff = _phase_from_root(
-        config["blind"]["root_file"], blind["event_id"],
-        config, "blind", args,
+    blind_coeff, blind_cache = _cached_wide(
+        args.cache_root, "blind", blind["event_id"],
+        config["blind"]["root_file"], args,
     )
     dev_x = _features(dev_coeff, args.representation)
     blind_x = _features(blind_coeff, args.representation)
@@ -236,12 +230,12 @@ def run(args):
         "exploratory_warning": "Phase fitted on in-sample development Ridge residuals; "
                                "previously inspected blind is not an untouched holdout.",
         "filtered_run": str(Path(args.filtered_run).resolve()),
-        "source_root_development": str(Path(config["development"]["root_file"]).resolve()),
-        "source_root_blind": str(Path(config["blind"]["root_file"]).resolve()),
-        "join_key": "prediction.event_id == ROOT.event_index",
+        "original_ml_cache_development": dev_cache,
+        "original_ml_cache_blind": blind_cache,
+        "join_key": "prediction.event_id == cached_original_ML.event_index",
         "frequency_ghz": args.frequency_ghz,
-        "tail_window_ns_after_native_pulse_peak": [args.tail_start_ns, args.tail_end_ns],
-        "phase_reference": "absolute_scope_acquisition_time",
+        "tail_window_ns_relative_to_ML_anchor": [args.tail_start_ns, args.tail_end_ns],
+        "phase_reference": "per_detector_ML_LED_anchor_t_equals_zero",
         "representation": args.representation,
         "alpha": args.alpha,
         "coefficients": phase_model.coef_.tolist(),
@@ -281,6 +275,8 @@ def run(args):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--cache-root", type=Path, default=Path.home() / "UC_cache")
+    p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--filtered-run", type=Path, required=True)
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--frequency-ghz", type=float, default=2.5)
