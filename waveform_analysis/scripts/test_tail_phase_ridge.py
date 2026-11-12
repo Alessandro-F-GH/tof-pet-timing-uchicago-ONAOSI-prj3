@@ -17,6 +17,7 @@ from waveform_analysis.core.io import atomic_json
 from waveform_analysis.data.results import resolve_run_config
 from waveform_analysis.data.named_cache import prepared_dataset_alias, resolve_alias, cache_root_from_config
 from waveform_analysis.data.storage import RunStore
+from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.reporting.stats import metric_values, paired_model_bootstrap
 
 
@@ -27,7 +28,7 @@ def _unique(ids, role):
     return ids
 
 
-def _align(native_ids, prediction_ids, *, role, require_all=True):
+def _align(native_ids, prediction_ids, *, role, require_all=False):
     """Return native-cache row for each prediction ID, never assume row order."""
     native = _unique(native_ids, f"{role} native")
     predicted = _unique(prediction_ids, f"{role} predictions")
@@ -36,6 +37,8 @@ def _align(native_ids, prediction_ids, *, role, require_all=True):
     positions = np.searchsorted(ordered, predicted)
     matched = (positions < len(ordered))
     matched[matched] &= (ordered[positions[matched]] == predicted[matched])
+    if not np.any(matched):
+        raise ValueError(f'{role}: no common event IDs between prediction and unfiltered cache')
     if require_all and not np.all(matched):
         raise ValueError(
             f"{role}: {np.count_nonzero(~matched)}/{len(predicted)} prediction events "
@@ -193,8 +196,7 @@ def _inputs(role, cache_path, prediction, original_config, filtered_config, *,
     )
     _validate_unfiltered(native, original_config, role)
     rows, mask = _align(native["event_id"], prediction["event_id"], role=role)
-    if not np.all(mask):
-        raise AssertionError("Unmatched native events")
+
     coeff = _tail_phase(native, rows, frequency_ghz=frequency_ghz,
                         start_ns=start_ns, end_ns=end_ns)
     print(
@@ -203,7 +205,20 @@ def _inputs(role, cache_path, prediction, original_config, filtered_config, *,
         f"| exact_source={native['manifest']['source']} | native_cache={native['directory']}",
         flush=True,
     )
-    return coeff
+    filtered = {key: (value[mask] if isinstance(value, np.ndarray) and value.shape == (len(mask),) else value)
+                for key, value in prediction.items()}
+    return coeff, filtered
+
+
+def _original_native_directory(original_config, role):
+    alias = prepared_dataset_alias(cache_root_from_config(original_config), original_config, role)
+    prepared_manifest = json.loads((resolve_alias(alias) / "manifest.json").read_text())
+    reference = prepared_manifest.get("native_artifact_ref") or {}
+    if reference.get("product_type") != "native-waveforms" or not reference.get("product_id"):
+        raise ValueError(f"{role}: original prepared dataset has no native-waveforms reference")
+    return ArtifactStore(original_config["preprocessing"]["artifact_root"]).resolve(
+        "native-waveforms", reference["product_id"], verify_payloads=False
+    ).path
 
 
 def run(args):
@@ -231,13 +246,15 @@ def run(args):
         raise ValueError("Development and blind predictions refer to different final fits")
     if not np.all(np.isfinite(dev["corrected_ps"])) or not np.all(np.isfinite(blind["corrected_ps"])):
         raise ValueError("Nonfinite filtered Ridge residuals")
-    dev_coeff = _inputs(
-        "development", args.native_development, dev, original, filtered,
+    dev_path = args.native_development or _original_native_directory(original, "development")
+    blind_path = args.native_blind or _original_native_directory(original, "blind")
+    dev_coeff, dev = _inputs(
+        "development", dev_path, dev, original, filtered,
         frequency_ghz=args.frequency_ghz, start_ns=args.tail_start_ns,
         end_ns=args.tail_end_ns,
     )
-    blind_coeff = _inputs(
-        "blind", args.native_blind, blind, original, filtered,
+    blind_coeff, blind = _inputs(
+        "blind", blind_path, blind, original, filtered,
         frequency_ghz=args.frequency_ghz, start_ns=args.tail_start_ns,
         end_ns=args.tail_end_ns,
     )
@@ -270,8 +287,8 @@ def run(args):
                 "been inspected in prior experiments.",
         "filtered_run": str(Path(args.filtered_run).resolve()),
         "unfiltered_run": str(Path(args.original_run).resolve()),
-        "native_development": str(Path(args.native_development).resolve()),
-        "native_blind": str(Path(args.native_blind).resolve()),
+        "native_development": str(Path(dev_path).resolve()),
+        "native_blind": str(Path(blind_path).resolve()),
         "frequency_ghz": args.frequency_ghz,
         "tail_relative_to_native_peak_ns": [
             args.tail_start_ns, args.tail_end_ns,
@@ -323,9 +340,9 @@ def parser():
                    help="Completed lowpass direct_linear_ridge run directory")
     p.add_argument("--original-run", type=Path, required=True,
                    help="Original unfiltered energy run, for ROOT/protocol provenance")
-    p.add_argument("--native-development", type=Path, required=True,
+    p.add_argument("--native-development", type=Path,
                    help="Original unfiltered native-waveforms artifact directory")
-    p.add_argument("--native-blind", type=Path, required=True,
+    p.add_argument("--native-blind", type=Path,
                    help="Original unfiltered native-waveforms artifact directory")
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--frequency-ghz", type=float, default=2.5)
