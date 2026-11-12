@@ -15,6 +15,7 @@ from sklearn.linear_model import Ridge
 
 from waveform_analysis.core.io import atomic_json
 from waveform_analysis.data.results import resolve_run_config
+from waveform_analysis.data.named_cache import prepared_dataset_alias, resolve_alias, cache_root_from_config
 from waveform_analysis.data.storage import RunStore
 from waveform_analysis.reporting.stats import metric_values, paired_model_bootstrap
 
@@ -60,7 +61,7 @@ def _native_cache(directory, *, expected_source, role):
     paths = {
         name: directory / f"energy_{name}.npy"
         for name in ("windows_mV", "window_start_time_s", "sample_interval_s",
-                     "rising_start")
+                     "rising_stop")
     }
     for path in paths.values():
         if not path.is_file():
@@ -74,7 +75,7 @@ def _native_cache(directory, *, expected_source, role):
     n = len(native["event_id"])
     if (native["windows_mV"].shape[:2] != (n, 2)
             or any(native[name].shape != (n, 2)
-                   for name in ("window_start_time_s", "sample_interval_s", "rising_start"))):
+                   for name in ("window_start_time_s", "sample_interval_s", "rising_stop"))):
         raise ValueError(f"{role}: inconsistent native cache shapes")
     return native
 
@@ -88,18 +89,23 @@ def _validate_unfiltered(native, original_run_config, role):
         original_run_config[role]["root_file"]
     ).resolve():
         raise ValueError(f"{role}: original-run ROOT differs from native cache ROOT")
-    # Native cache manifest stores selection provenance, not preprocessing
-    # config. Verify through original prepared dataset's explicit native ref,
-    # if supplied separately, rather than mistaking filenames for provenance.
+    alias = prepared_dataset_alias(cache_root_from_config(original_run_config), original_run_config, role)
+    prepared_dir = resolve_alias(alias)
+    prepared_manifest = json.loads((prepared_dir / "manifest.json").read_text())
+    expected = (prepared_manifest.get("native_artifact_ref") or {}).get("product_id")
+    actual = json.loads((native["directory"] / ".artifact.json").read_text()).get("product_id")
+    if not expected or expected != actual:
+        raise ValueError(f"{role}: native waveform artifact does not match original unfiltered prepared dataset")
+
 
 
 def _tail_phase(native, rows, *, frequency_ghz, start_ns, end_ns):
-    """Oscillation at fixed f in post-onset tail; phase on absolute scope time."""
+    """Oscillation at fixed f in post-peak tail; phase on absolute scope time."""
     out = np.empty((len(rows), 2), dtype=np.complex128)
     waves = native["windows_mV"]
     starts = native["window_start_time_s"]
     intervals = native["sample_interval_s"]
-    rising = native["rising_start"]
+    rising = native["rising_stop"]
     if end_ns <= start_ns or start_ns < 0:
         raise ValueError("Require nonnegative tail interval with end > start")
     for i, row in enumerate(rows):
@@ -107,9 +113,9 @@ def _tail_phase(native, rows, *, frequency_ghz, start_ns, end_ns):
             dt_ns = float(intervals[row, detector]) * 1e9
             if not np.isfinite(dt_ns) or dt_ns <= 0:
                 raise ValueError(f"Invalid sample interval at native row {row}")
-            onset = int(rising[row, detector])
-            first = onset + int(np.ceil(start_ns / dt_ns - 1e-9))
-            last = onset + int(np.floor(end_ns / dt_ns + 1e-9)) + 1
+            peak = int(rising[row, detector])
+            first = peak + int(np.ceil(start_ns / dt_ns - 1e-9))
+            last = peak + int(np.floor(end_ns / dt_ns + 1e-9)) + 1
             if first < 0 or last > waves.shape[2] or last - first < 16:
                 raise ValueError(
                     f"Tail not contained in native waveform at event_id="
@@ -267,7 +273,7 @@ def run(args):
         "native_development": str(Path(args.native_development).resolve()),
         "native_blind": str(Path(args.native_blind).resolve()),
         "frequency_ghz": args.frequency_ghz,
-        "tail_relative_to_native_rising_start_ns": [
+        "tail_relative_to_native_peak_ns": [
             args.tail_start_ns, args.tail_end_ns,
         ],
         "phase_reference": "native_scope_absolute_time",
@@ -323,8 +329,8 @@ def parser():
                    help="Original unfiltered native-waveforms artifact directory")
     p.add_argument("--output-root", type=Path, required=True)
     p.add_argument("--frequency-ghz", type=float, default=2.5)
-    p.add_argument("--tail-start-ns", type=float, default=10.0)
-    p.add_argument("--tail-end-ns", type=float, default=40.0)
+    p.add_argument("--tail-start-ns", type=float, default=5.0)
+    p.add_argument("--tail-end-ns", type=float, default=30.0)
     p.add_argument("--representation", choices=("relative", "individual"),
                    default="relative")
     p.add_argument("--alpha", type=float, default=1.0)
