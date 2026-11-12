@@ -96,7 +96,6 @@
   "sweep": {
     "models": [
       "direct_linear_ridge",
-      "onishi_cnn",
       "direct_multirocket_rdst"
     ],
     "modes": [
