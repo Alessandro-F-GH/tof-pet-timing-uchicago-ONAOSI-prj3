@@ -184,7 +184,7 @@ def _predictions(store, role):
     with np.load(path, allow_pickle=False) as payload:
         result = {name: np.asarray(payload[name]) for name in payload.files}
     for field in ("event_id", "prediction_ps", "corrected_ps",
-                  "led_residual_ps", "final_fit_fingerprint"):
+                  "led_residual_ps"):
         if field not in result:
             raise ValueError(f"{role}: missing prediction field {field}")
     n = len(_unique(result["event_id"], f"{role} predictions"))
@@ -210,10 +210,17 @@ def run(args):
     )
     development = _predictions(store, "development")
     blind = _predictions(store, "blind")
-    if str(np.asarray(development["final_fit_fingerprint"]).item()) != str(
-        np.asarray(blind["final_fit_fingerprint"]).item()
-    ):
-        raise ValueError("Development and blind predictions originate from different Ridge fits")
+    dev_fp = development.get("final_fit_fingerprint")
+    blind_fp = blind.get("final_fit_fingerprint")
+    if dev_fp is not None and blind_fp is not None:
+        if str(np.asarray(dev_fp).item()) != str(np.asarray(blind_fp).item()):
+            raise ValueError("Development and blind predictions originate from different Ridge fits")
+    else:
+        print(
+            "PROVENANCE | Legacy predictions have no final_fit_fingerprint; "
+            "fit identity cannot be cross-checked from prediction payloads.",
+            flush=True,
+        )
 
     dev_coeff, dev_cache, dev_rows, dev_matching = _cached_wide(
         args.cache_root, "development", development["event_id"],
