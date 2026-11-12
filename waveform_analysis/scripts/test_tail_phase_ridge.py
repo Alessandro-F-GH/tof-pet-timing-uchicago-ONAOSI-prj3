@@ -204,8 +204,6 @@ def run(args):
     if config["model"]["name"] != "direct_linear_ridge" or config["mode"] not in ("energy_to_energy", "timing_to_timing"):
         raise ValueError("Input run must be energy_to_energy or timing_to_timing / direct_linear_ridge")
     family = {"energy_to_energy": "energy", "timing_to_timing": "timing"}[config["mode"]]
-    if not config["preprocessing"].get("lowpass", {}).get("enabled", False):
-        raise ValueError("Input Ridge run must use filtered waveforms")
 
     store = RunStore(
         args.filtered_run, artifact_root=config["preprocessing"]["artifact_root"]
