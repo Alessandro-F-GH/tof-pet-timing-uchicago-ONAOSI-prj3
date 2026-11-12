@@ -56,7 +56,7 @@ def test_cached_wide_phase_with_nonmatching_event_order(tmp_path):
     args = SimpleNamespace(frequency_ghz=2.5, tail_start_ns=5.,
                            tail_end_ns=30., batch_size=2)
     coeff, path, matched, counts = _cached_wide(
-        tmp_path, "development", np.array([19, 18]), "/same/48V-R1.root", args
+        tmp_path, "development", np.array([19, 18]), "/same/48V-R1.root", {"start": -2.0, "end": 50.0}, "energy", args
     )
     assert Path(path) == base
     assert coeff.shape == (2, 2)
