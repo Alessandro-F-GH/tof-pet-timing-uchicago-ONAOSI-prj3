@@ -1,5 +1,5 @@
 {
-  "cache_dir": "processed_data/ml_protocol_v3_lowpass_2GHz",
+  "cache_dir": "processed_data/FBK_ml_protocol_v3_lowpass_2GHz",
   "materialized_window_ns": {
     "before": 5,
     "after": 62
@@ -91,7 +91,7 @@
     "step_size": "128 MB",
     "max_events": 0
   },
-  "artifact_root": "artifact_store_lowpass_2GHz",
+  "artifact_root": "FBK_artifact_store_lowpass_2GHz",
   "lowpass": {
     "enabled": true,
     "cutoff_GHz": 2,
