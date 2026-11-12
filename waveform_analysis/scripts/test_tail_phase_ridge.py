@@ -26,22 +26,34 @@ def _unique(ids, label):
     return ids
 
 
-def _align(root_ids, prediction_ids, *, role):
-    """Return the ROOT row of every prediction, preserving prediction order."""
-    source = _unique(root_ids, f"{role} ROOT")
+def _align(cache_ids, prediction_ids, *, role):
+    """Inner join, preserving prediction order. Return cache rows and prediction rows."""
+    source = _unique(cache_ids, f"{role} cached input")
     requested = _unique(prediction_ids, f"{role} predictions")
+    if not source.size or not requested.size:
+        raise ValueError(f"{role}: empty input population")
     permutation = np.argsort(source)
     sorted_ids = source[permutation]
     locations = np.searchsorted(sorted_ids, requested)
     present = locations < sorted_ids.size
     present[present] &= sorted_ids[locations[present]] == requested[present]
-    if not np.all(present):
-        missing = requested[~present]
-        raise ValueError(
-            f"{role}: {missing.size} prediction IDs missing from ROOT, "
-            f"first missing IDs={missing[:10].tolist()}"
-        )
-    return permutation[locations]
+    prediction_rows = np.flatnonzero(present)
+    if not prediction_rows.size:
+        raise ValueError(f"{role}: no matching event IDs")
+    cache_rows = permutation[locations[present]]
+    if not np.array_equal(source[cache_rows], requested[prediction_rows]):
+        raise RuntimeError(f"{role}: inconsistent matched event IDs")
+    return cache_rows, prediction_rows
+
+
+def _subset_predictions(predictions, rows):
+    """Apply the matched event selection to every event-valued prediction field."""
+    n = len(predictions["event_id"])
+    return {
+        key: (np.asarray(value)[rows] if np.asarray(value).ndim >= 1
+              and np.asarray(value).shape[0] == n else value)
+        for key, value in predictions.items()
+    }
 
 
 def _cached_wide(root, role, prediction_ids, expected_root, args):
@@ -73,7 +85,8 @@ def _cached_wide(root, role, prediction_ids, expected_root, args):
         )
     directory, manifest = candidates[0]
     ids = np.load(directory / "event_index.npy", mmap_mode="r")
-    rows = _align(ids, prediction_ids, role=role)
+    rows, prediction_rows = _align(ids, prediction_ids, role=role)
+    missing_count = len(prediction_ids) - len(prediction_rows)
     wave = np.load(directory / "energy_windows.npy", mmap_mode="r")
     with np.load(directory / "energy_transform.npz") as tr:
         minimum = np.asarray(tr["minimum"], np.float64)
@@ -106,6 +119,7 @@ def _cached_wide(root, role, prediction_ids, expected_root, args):
     print(
         f"{role.upper()} CACHE | {directory} | source={manifest['dataset_source']} "
         f"| cache_n={len(ids)} pred_n={len(prediction_ids)} matched={len(rows)} "
+        f"| pred_not_in_cache={missing_count} "
         f"| ML_time_ns=[{time_ns[0]:.4f},{time_ns[-1]:.4f}] "
         f"| analysis_ns=[{time_ns[selection[0]]:.4f},{time_ns[selection[-1]]:.4f}]",
         flush=True,
@@ -133,7 +147,9 @@ def _cached_wide(root, role, prediction_ids, expected_root, args):
         result[start:end] = (
             2 / scale * np.einsum("bcn,n->bc", detrended, osc_kernel)
         )
-    return result, str(directory)
+    return result, str(directory), prediction_rows, {"n_cache": int(len(ids)),
+        "n_predictions": int(len(prediction_ids)), "n_matched": int(len(rows)),
+        "n_predictions_missing_from_cache": int(missing_count)}
 
 
 def _features(coefficients, representation):
@@ -194,14 +210,16 @@ def run(args):
     ):
         raise ValueError("Development and blind predictions originate from different Ridge fits")
 
-    dev_coeff, dev_cache = _cached_wide(
+    dev_coeff, dev_cache, dev_rows, dev_matching = _cached_wide(
         args.cache_root, "development", development["event_id"],
         config["development"]["root_file"], args,
     )
-    blind_coeff, blind_cache = _cached_wide(
+    blind_coeff, blind_cache, blind_rows, blind_matching = _cached_wide(
         args.cache_root, "blind", blind["event_id"],
         config["blind"]["root_file"], args,
     )
+    development = _subset_predictions(development, dev_rows)
+    blind = _subset_predictions(blind, blind_rows)
     dev_x = _features(dev_coeff, args.representation)
     blind_x = _features(blind_coeff, args.representation)
 
@@ -233,6 +251,9 @@ def run(args):
         "original_ml_cache_development": dev_cache,
         "original_ml_cache_blind": blind_cache,
         "join_key": "prediction.event_id == cached_original_ML.event_index",
+        "join_policy": "strict event-ID inner join; metrics on matched events only",
+        "development_matching": dev_matching,
+        "blind_matching": blind_matching,
         "frequency_ghz": args.frequency_ghz,
         "tail_window_ns_relative_to_ML_anchor": [args.tail_start_ns, args.tail_end_ns],
         "phase_reference": "per_detector_ML_LED_anchor_t_equals_zero",
