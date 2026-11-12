@@ -56,7 +56,7 @@ def _subset_predictions(predictions, rows):
     }
 
 
-def _cached_wide(root, role, prediction_ids, expected_root, expected_window, args):
+def _cached_wide(root, role, prediction_ids, expected_root, expected_window, family, args):
     """Match saved wide, UNFILTERED ML inputs with low-pass Ridge predictions.
 
     The cache is original main-branch prepared-dataset format. Time is relative
@@ -68,15 +68,16 @@ def _cached_wide(root, role, prediction_ids, expected_root, expected_window, arg
         "start": float(expected_window["start"]),
         "end": float(expected_window["end"]),
     }
+    mode = {"energy": "energy_to_energy", "timing": "timing_to_timing"}[family]
     candidates = []
     for directory in (root / "artifact_store" / "products" / "prepared-datasets").glob("*"):
         manifest_path = directory / "manifest.json"
-        if not (directory / "energy_windows.npy").is_file() or not manifest_path.is_file():
+        if not (directory / f"{family}_windows.npy").is_file() or not manifest_path.is_file():
             continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         source = Path(str(manifest.get("dataset_source", "")).replace("\\\\", "/")).name
         if (manifest.get("dataset_role") == role
-                and manifest.get("mode") == "energy_to_energy"
+                and manifest.get("mode") == mode
                 and manifest.get("window_ns") == expected_window
                 and source == Path(expected_root).name
                 and int(manifest.get("subsampling", -1)) == 1):
@@ -92,12 +93,12 @@ def _cached_wide(root, role, prediction_ids, expected_root, expected_window, arg
     ids = np.load(directory / "event_index.npy", mmap_mode="r")
     rows, prediction_rows = _align(ids, prediction_ids, role=role)
     missing_count = len(prediction_ids) - len(prediction_rows)
-    wave = np.load(directory / "energy_windows.npy", mmap_mode="r")
-    with np.load(directory / "energy_transform.npz") as tr:
+    wave = np.load(directory / f"{family}_windows.npy", mmap_mode="r")
+    with np.load(directory / f"{family}_transform.npz") as tr:
         minimum = np.asarray(tr["minimum"], np.float64)
         maximum = np.asarray(tr["maximum"], np.float64)
     time_ns = np.asarray(
-        np.load(directory / "energy_time_ps.npy", mmap_mode="r"), np.float64
+        np.load(directory / f"{family}_time_ps.npy", mmap_mode="r"), np.float64
     ) * 1e-3
     if wave.ndim != 3 or wave.shape[1] != 2 or wave.shape[0] != len(ids):
         raise ValueError(f"{role}: malformed cached energy_windows array")
@@ -200,8 +201,9 @@ def _predictions(store, role):
 
 def run(args):
     config = resolve_run_config(args.filtered_run)
-    if config["model"]["name"] != "direct_linear_ridge" or config["mode"] != "energy_to_energy":
-        raise ValueError("Input run must be energy_to_energy/direct_linear_ridge")
+    if config["model"]["name"] != "direct_linear_ridge" or config["mode"] not in ("energy_to_energy", "timing_to_timing"):
+        raise ValueError("Input run must be energy_to_energy or timing_to_timing / direct_linear_ridge")
+    family = {"energy_to_energy": "energy", "timing_to_timing": "timing"}[config["mode"]]
     if not config["preprocessing"].get("lowpass", {}).get("enabled", False):
         raise ValueError("Input Ridge run must use filtered waveforms")
 
@@ -217,11 +219,11 @@ def run(args):
 
     dev_coeff, dev_cache, dev_rows, dev_matching = _cached_wide(
         args.cache_root, "development", development["event_id"],
-        config["development"]["root_file"], config["window_ns"], args,
+        config["development"]["root_file"], config["window_ns"], family, args,
     )
     blind_coeff, blind_cache, blind_rows, blind_matching = _cached_wide(
         args.cache_root, "blind", blind["event_id"],
-        config["blind"]["root_file"], config["window_ns"], args,
+        config["blind"]["root_file"], config["window_ns"], family, args,
     )
     development = _subset_predictions(development, dev_rows)
     blind = _subset_predictions(blind, blind_rows)
@@ -259,6 +261,7 @@ def run(args):
         "join_policy": "strict event-ID inner join; metrics on matched events only",
         "development_matching": dev_matching,
         "blind_matching": blind_matching,
+        "mode": config["mode"],
         "frequency_ghz": args.frequency_ghz,
         "tail_window_ns_relative_to_ML_anchor": [args.tail_start_ns, args.tail_end_ns],
         "phase_reference": "per_detector_ML_LED_anchor_t_equals_zero",
