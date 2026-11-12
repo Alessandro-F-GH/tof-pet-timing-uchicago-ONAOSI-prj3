@@ -56,7 +56,7 @@ def _subset_predictions(predictions, rows):
     }
 
 
-def _cached_wide(root, role, prediction_ids, expected_root, args):
+def _cached_wide(root, role, prediction_ids, expected_root, expected_window, args):
     """Match saved wide, UNFILTERED ML inputs with low-pass Ridge predictions.
 
     The cache is original main-branch prepared-dataset format. Time is relative
@@ -64,6 +64,10 @@ def _cached_wide(root, role, prediction_ids, expected_root, args):
     ROOT acquisition clock or samples outside the model's input window.
     """
     root = Path(root).expanduser().resolve()
+    expected_window = {
+        "start": float(expected_window["start"]),
+        "end": float(expected_window["end"]),
+    }
     candidates = []
     for directory in (root / "artifact_store" / "products" / "prepared-datasets").glob("*"):
         manifest_path = directory / "manifest.json"
@@ -73,14 +77,15 @@ def _cached_wide(root, role, prediction_ids, expected_root, args):
         source = Path(str(manifest.get("dataset_source", "")).replace("\\\\", "/")).name
         if (manifest.get("dataset_role") == role
                 and manifest.get("mode") == "energy_to_energy"
-                and manifest.get("window_ns") == {"start": -2.0, "end": 50.0}
+                and manifest.get("window_ns") == expected_window
                 and source == Path(expected_root).name
                 and int(manifest.get("subsampling", -1)) == 1):
             candidates.append((directory, manifest))
     if len(candidates) != 1:
         raise ValueError(
             f"{role}: expected exactly one wide unfiltered dataset from "
-            f"{Path(expected_root).name} in {root}; found {len(candidates)}. "
+            f"{Path(expected_root).name} with ML window {expected_window} "
+            f"in {root}; found {len(candidates)}. "
             "Do not choose an ambiguous cache."
         )
     directory, manifest = candidates[0]
@@ -212,11 +217,11 @@ def run(args):
 
     dev_coeff, dev_cache, dev_rows, dev_matching = _cached_wide(
         args.cache_root, "development", development["event_id"],
-        config["development"]["root_file"], args,
+        config["development"]["root_file"], config["window_ns"], args,
     )
     blind_coeff, blind_cache, blind_rows, blind_matching = _cached_wide(
         args.cache_root, "blind", blind["event_id"],
-        config["blind"]["root_file"], args,
+        config["blind"]["root_file"], config["window_ns"], args,
     )
     development = _subset_predictions(development, dev_rows)
     blind = _subset_predictions(blind, blind_rows)
