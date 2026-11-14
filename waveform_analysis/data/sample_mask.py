@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 
 from waveform_analysis.core.io import canonical_hash
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
+from waveform_analysis.data.cache_store import get_or_build
 from waveform_analysis.data.dataset import PreparedDataset
+from waveform_analysis.data.named_cache import alias_path, mode_name
 from waveform_analysis.signal.sample_mask import SAMPLE_CONSTANT_FRACTION, control_clipping_sample_mask
 
 SAMPLE_MASK_VERSION = 1
@@ -31,24 +31,10 @@ def attach_control_sample_mask(
             raise ValueError("Control and target timing grids differ; cannot transfer sample mask")
         control_fp = str(control.manifest["fingerprint"])
         n_control = control.n_events
-    recipe = ProductRecipe(
-        "sample-masks",
-        {
-            "version": SAMPLE_MASK_VERSION,
-            "mode": mode,
-            "control_prepared_fingerprint": control_fp,
-            "time_ps": time.tolist(),
-            "fraction": SAMPLE_CONSTANT_FRACTION,
-        },
-        parents=(str(control.directory.name),) if control_fp and control is not None else (),
-        implementation=f"control-clipping-mask-v{SAMPLE_MASK_VERSION}",
-    )
-    resolved_artifact_root = (
-        Path(artifact_root).expanduser().resolve()
-        if artifact_root is not None
-        else Path(cache_root).expanduser().resolve() / "artifact_store"
-    )
-    store = ArtifactStore(resolved_artifact_root)
+    root = Path(cache_root).expanduser().resolve()
+    control_name = str(control.directory.parent.name) if control is not None else "no_control"
+    mask_dir = alias_path(root, "sample_masks", control_name, mode_name(mode),
+                          f"samples_{time.size}")
 
     def build(directory):
         mask = (
@@ -58,20 +44,17 @@ def attach_control_sample_mask(
         )
         np.savez(directory / "mask.npz", mask=np.asarray(mask, dtype=bool), time_ps=time)
 
-    reference = store.get_or_build(recipe, build, metadata={
-        "fit_role": "control" if control_fp is not None else "not_applied",
-        "control_events": n_control,
-    })
+    reference = get_or_build(root, mask_dir, build)
     with np.load(reference.payload_path("mask.npz"), allow_pickle=False) as data:
         mask = np.asarray(data["mask"], dtype=bool)
         stored_time = np.asarray(data["time_ps"], dtype=np.float64)
     if mask.shape != time.shape or not mask.any() or not np.array_equal(stored_time, time):
-        raise ValueError(f"Invalid stored sample mask {reference.product_id}")
+        raise ValueError(f"Invalid stored sample mask {reference.identifier}")
 
     manifest = dict(dataset.manifest)
     manifest.update({
         "sample_mask_version": SAMPLE_MASK_VERSION,
-        "sample_mask_identity": reference.product_id,
+        "sample_mask_identity": reference.identifier,
         "sample_mask_fit_role": "control" if control_fp is not None else "not_applied",
         "sample_mask_control_events": n_control,
         "sample_mask_control_fingerprint": control_fp,
@@ -81,7 +64,7 @@ def attach_control_sample_mask(
     protocol = canonical_hash({
         "prepared_fingerprint": manifest["fingerprint"],
         "event_population_identity": manifest["event_population_identity"],
-        "sample_mask_identity": reference.product_id,
+        "sample_mask_identity": reference.identifier,
     })
     manifest["analysis_protocol_identity"] = protocol
     manifest["analysis_population_identity"] = protocol
