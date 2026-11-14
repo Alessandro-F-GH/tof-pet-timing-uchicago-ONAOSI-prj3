@@ -104,7 +104,7 @@ class ExperimentArtifactStore:
                 seed=int(data["seed"]),
                 shuffle=bool(int(data["shuffle"])),
             )
-        if len(split.assignment) != int(dataset.n_events) or len(split.folds) != int(cv["folds"]):
+        if len(fold_assignment(split)) != int(dataset.n_events) or len(split.folds) != int(cv["folds"]):
             raise ValueError("Shared CV cache differs from the Development population or fold configuration")
         raw_metrics = json.loads(
             metrics_file.read_text(encoding="utf-8")
