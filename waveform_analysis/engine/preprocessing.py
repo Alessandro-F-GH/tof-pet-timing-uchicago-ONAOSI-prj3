@@ -54,6 +54,7 @@ def apply_frozen_preprocessing(
         control_artifact["selection_rules"],
         config["mode"],
         cache_dir=cache_root / f"{role}_selection",
+        control_dataset=config["control"],
         rebuild=rebuild,
         logger=logger,
     )
@@ -64,6 +65,7 @@ def apply_frozen_preprocessing(
         config["preprocessing"],
         config["mode"],
         cache_dir=cache_root / f"{role}_native",
+        control_dataset=config["control"],
         rebuild=rebuild,
         logger=logger,
     )

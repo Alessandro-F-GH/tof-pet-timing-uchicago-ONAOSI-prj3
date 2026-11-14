@@ -108,6 +108,7 @@ def preprocess_selected(
     mode,
     *,
     cache_dir,
+    control_dataset=None,
     rebuild=False,
     logger=None,
 ):
@@ -318,7 +319,7 @@ def preprocess_selected(
             logger.info(
                 "Materialized preprocessing | %s | %s | n=%d", root.name, mode, rows.size
             )
-    alias = native_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
+    alias = native_alias(cache_root_from_config(preprocessing, cache_dir), dataset, control_dataset or dataset, mode)
     reference = get_or_build(
         cache_root_from_config(preprocessing, cache_dir), alias, build,
         rebuild=rebuild,

@@ -504,7 +504,7 @@ def apply_selection_rules(
     mode,
     *,
     cache_dir,
-    artifact_root=None,
+    control_dataset=None,
     rebuild=False,
     logger=None,
 ):
@@ -593,7 +593,7 @@ def apply_selection_rules(
             logger.info(
                 "Frozen selection | %s | %s | selected=%d/%d", root.name, mode, rows.size, n
             )
-    alias = selection_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
+    alias = selection_alias(cache_root_from_config(preprocessing, cache_dir), dataset, control_dataset or dataset, mode)
     reference = get_or_build(
         cache_root_from_config(preprocessing, cache_dir), alias, build,
         rebuild=rebuild,

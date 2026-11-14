@@ -16,7 +16,7 @@ SAMPLE_MASK_VERSION = 1
 
 def attach_control_sample_mask(
     dataset: PreparedDataset, control: PreparedDataset | None, *, cache_root: Path,
-    artifact_root: Path | None = None, logger=None,
+    logger=None,
 ) -> PreparedDataset:
     """Resolve a control-fitted sample mask without mutating prepared waveforms."""
     mode = dataset.manifest["mode"]
@@ -32,9 +32,14 @@ def attach_control_sample_mask(
         control_fp = str(control.manifest["fingerprint"])
         n_control = control.n_events
     root = Path(cache_root).expanduser().resolve()
-    control_name = str(control.directory.parent.name) if control is not None else "no_control"
-    mask_dir = alias_path(root, "sample_masks", control_name, mode_name(mode),
-                          f"samples_{time.size}")
+    reference_dataset = control if control is not None else dataset
+    reference_path = Path(reference_dataset.directory).resolve()
+    if not reference_path.is_relative_to(root):
+        raise ValueError("Prepared dataset must belong to the selected cache root")
+    mask_dir = alias_path(
+        root, "sample_masks", *reference_path.relative_to(root).parts,
+        mode_name(mode), f"samples_{time.size}",
+    )
 
     def build(directory):
         mask = (
@@ -43,8 +48,13 @@ def attach_control_sample_mask(
             else np.ones(time.size, dtype=bool)
         )
         np.savez(directory / "mask.npz", mask=np.asarray(mask, dtype=bool), time_ps=time)
+        (directory / "control.txt").write_text(str(control_fp), encoding="utf-8")
 
-    reference = get_or_build(root, mask_dir, build)
+    rebuild_mask = False
+    if (mask_dir / ".complete").is_file() and mode == "timing_to_timing":
+        control_file = mask_dir / "control.txt"
+        rebuild_mask = not control_file.is_file() or control_file.read_text(encoding="utf-8") != control_fp
+    reference = get_or_build(root, mask_dir, build, rebuild=rebuild_mask)
     with np.load(reference.payload_path("mask.npz"), allow_pickle=False) as data:
         mask = np.asarray(data["mask"], dtype=bool)
         stored_time = np.asarray(data["time_ps"], dtype=np.float64)
