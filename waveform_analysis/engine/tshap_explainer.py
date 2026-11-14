@@ -17,11 +17,7 @@ from importlib.metadata import version
 import numpy as np
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import imputer_alias, get_or_build_named, cache_root_from_config
 from waveform_analysis.data.results import batch_root, discover_runs, read_run, resolve_run_config
-from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import mode_family, model_target, waveform_view
 from waveform_analysis.engine.train import (
     load_fitted_model, predict_indices, release_training_memory, saved_model_complete,
@@ -125,23 +121,12 @@ def _tshap_run_inputs(results=None, model_dir=None):
 
 
 def _apply_tshap_cache(config, *, cache_root=None, artifact_root=None):
-    """Override run-local cache paths with a portable shared cache bundle."""
+    """Select a named cache bundle for prepared waveform inputs."""
     if cache_root is not None and artifact_root is not None:
         raise ValueError("Specify cache_root or artifact_root, not both")
     if cache_root is not None:
         root = Path(cache_root).expanduser().resolve()
-        store = root / "artifact_store"
-        if not store.is_dir():
-            raise FileNotFoundError(
-                f"Shared cache artifact store not found: {store}. "
-                "Expected the prepare-cache bundle layout."
-            )
         config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
-        config["preprocessing"]["artifact_root"] = str(store)
-    elif artifact_root is not None:
-        config["preprocessing"]["artifact_root"] = str(
-            Path(artifact_root).expanduser().resolve()
-        )
     return config
 
 
@@ -1065,21 +1050,18 @@ def _dataset_mean_difference_mv(
 def _native_led_baselines(
     artifact_root, dataset, mode, dataset_indices, baseline_window_ns
 ):
-    """Read trigger-relative baselines from the exact referenced native product."""
-    from waveform_analysis.data.artifact_store import ArtifactStore
+    """Read trigger-relative baselines from the prepared population native cache."""
 
     dataset_indices = np.asarray(dataset_indices, dtype=np.int64).reshape(-1)
     if dataset_indices.size == 0:
         return np.empty((0, 2), dtype=np.float64)
     if np.any(dataset_indices < 0) or np.any(dataset_indices >= dataset.n_events):
         raise ValueError("LED baseline dataset indices are out of range")
-    native_ref = dataset.manifest.get("native_artifact_ref")
-    if not native_ref or not native_ref.get("product_id"):
-        raise ValueError("Prepared dataset has no native waveform artifact reference")
-    reference = ArtifactStore(artifact_root).resolve(
-        str(native_ref["product_type"]), str(native_ref["product_id"])
-    )
-    native_manifest = json.loads((reference.path / "manifest.json").read_text(encoding="utf-8"))
+    native_path = dataset.manifest.get("native_cache_path")
+    if not native_path:
+        raise ValueError("Prepared waveform manifest lacks native_cache_path")
+    native_path = Path(native_path)
+    native_manifest = json.loads((native_path / "manifest.json").read_text(encoding="utf-8"))
     family = mode_family(mode)
     if (
         native_manifest.get("source") != dataset.manifest.get("analysis_source")
@@ -1089,15 +1071,15 @@ def _native_led_baselines(
         raise ValueError("Native waveform artifact does not match prepared dataset provenance")
     source_event_ids = np.asarray(dataset.event_index, dtype=np.int64)[dataset_indices]
     native_event_ids = np.asarray(
-        np.load(reference.payload_path("event_index.npy"), mmap_mode="r"), dtype=np.int64
+        np.load(native_path / "event_index.npy", mmap_mode="r"), dtype=np.int64
     )
     row_lookup = {int(event_id): row for row, event_id in enumerate(native_event_ids)}
     missing = [int(event_id) for event_id in source_event_ids if int(event_id) not in row_lookup]
     if missing:
         raise ValueError(f"Native waveform artifact is missing prepared events: {missing[:5]}")
     rows = np.asarray([row_lookup[int(event_id)] for event_id in source_event_ids], dtype=np.int64)
-    waves = np.load(reference.payload_path(f"{family}_windows_mV.npy"), mmap_mode="r")
-    intervals = np.load(reference.payload_path(f"{family}_sample_interval_s.npy"), mmap_mode="r")
+    waves = np.load(native_path / f"{family}_windows_mV.npy", mmap_mode="r")
+    intervals = np.load(native_path / f"{family}_sample_interval_s.npy", mmap_mode="r")
     from waveform_analysis.signal.baseline import baseline_level_mV
     baseline = np.empty((len(rows), 2), dtype=np.float64)
     for output_row, native_row in enumerate(rows):
