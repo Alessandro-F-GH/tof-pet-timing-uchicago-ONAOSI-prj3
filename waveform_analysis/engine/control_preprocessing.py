@@ -46,7 +46,7 @@ def _artifact_fingerprint(
 ):
     preprocessing_identity = {
         key: value for key, value in preprocessing.items()
-        if key not in {"cache_dir", "artifact_root"}
+        if key != "cache_dir"
     }
     return canonical_hash(
         {
@@ -177,7 +177,6 @@ def fit_control_artifact(
                 rules,
                 mode,
                 cache_dir=Path(cache_root) / "control_selection",
-                artifact_root=preprocessing.get("artifact_root"),
                 rebuild=rebuild,
                 logger=logger,
             )

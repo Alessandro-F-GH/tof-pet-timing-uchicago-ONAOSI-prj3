@@ -54,7 +54,6 @@ def apply_frozen_preprocessing(
         control_artifact["selection_rules"],
         config["mode"],
         cache_dir=cache_root / f"{role}_selection",
-        artifact_root=config["preprocessing"]["artifact_root"],
         rebuild=rebuild,
         logger=logger,
     )
@@ -112,7 +111,6 @@ def prepare_role_dataset(
     prepared = attach_control_sample_mask(
         prepared, control_prepared,
         cache_root=Path(config["preprocessing"]["cache_dir"]),
-        artifact_root=Path(config["preprocessing"]["artifact_root"]),
         logger=logger
     )
     result = selection, native, prepared

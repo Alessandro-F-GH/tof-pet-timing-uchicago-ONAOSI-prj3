@@ -896,8 +896,7 @@ def _publish_run_metadata(store, spec, config, control, control_dir, development
 
 def run_study(config, *, logger=None):
     run_dir = Path(config["output_dir"]).resolve()
-    artifact_root = Path(config["preprocessing"]["artifact_root"]).expanduser().resolve()
-    store = RunStore(run_dir, artifact_root=artifact_root)
+    store = RunStore(run_dir)
     logger = logger or _logger(run_dir)
     spec = get_model(config["model"]["name"])
     space = config["model"]["space"]

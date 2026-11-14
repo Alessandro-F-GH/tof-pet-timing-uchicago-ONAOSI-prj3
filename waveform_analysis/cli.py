@@ -228,7 +228,6 @@ def main() -> None:
         root = args.cache_root.expanduser().resolve()
         for run in batch.runs:
             run["preprocessing"]["cache_dir"] = str(root / "preprocessing")
-            run["preprocessing"]["artifact_root"] = str(root / "artifact_store")
     for output in run_batch(batch, logger=logger):
         print(output)
 
