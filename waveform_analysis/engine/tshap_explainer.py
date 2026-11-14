@@ -118,10 +118,8 @@ def _tshap_run_inputs(results=None, model_dir=None):
     return runs, root
 
 
-def _apply_tshap_cache(config, *, cache_root=None, artifact_root=None):
+def _apply_tshap_cache(config, *, cache_root=None):
     """Select a named cache bundle for prepared waveform inputs."""
-    if cache_root is not None and artifact_root is not None:
-        raise ValueError("Specify cache_root or artifact_root, not both")
     if cache_root is not None:
         root = Path(cache_root).expanduser().resolve()
         config["preprocessing"]["cache_dir"] = str(root / "preprocessing")
@@ -831,7 +829,7 @@ LOCAL_GROUP_LABELS = {
 
 
 def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
-    """Load validated blind predictions, including legacy run-local result artifacts."""
+    """Load validated blind predictions from run-local artifacts."""
     predictions_path = Path(run_store.predictions_path)
     if not predictions_path.is_file():
         raise FileNotFoundError(
@@ -1046,7 +1044,7 @@ def _dataset_mean_difference_mv(
 
 
 def _native_led_baselines(
-    artifact_root, dataset, mode, dataset_indices, baseline_window_ns
+    dataset, mode, dataset_indices, baseline_window_ns
 ):
     """Read trigger-relative baselines from the prepared population native cache."""
 
@@ -1208,7 +1206,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     plt.close(fig)
 def _refresh_local_presentation(
     destination, *, waveform_transform, led_threshold_mv, baseline_window_ns,
-    dataset, mode, seed, artifact_root
+    dataset, mode, seed
 ):
     """Refresh plots from cached attributions and a cached dataset-mean waveform."""
     summary_path = destination / "summary.json"
@@ -1246,7 +1244,7 @@ def _refresh_local_presentation(
     if "dataset_index" not in arrays:
         raise ValueError("Cached local explanations are missing dataset indices")
     led_baselines_mv = _native_led_baselines(
-        artifact_root, dataset, mode, arrays["dataset_index"], baseline_window_ns
+        dataset, mode, arrays["dataset_index"], baseline_window_ns
     )
 
     if "dataset_mean_difference_mv" in arrays:
@@ -1436,7 +1434,7 @@ def _explanation_destination(output_root, run_directory):
 
 def explain_tshap(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
-    cache_root=None, artifact_root=None, output_root=None, max_events=100,
+    cache_root=None, output_root=None, max_events=100,
     window_samples=20, stride_samples=20, predict_batch_size=64, seed=42,
     roi=False, overwrite=False, imputer_components=32,
     imputer_fit_events=2000, imputer_tuning_events=300,
@@ -1497,7 +1495,7 @@ def explain_tshap(
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
-            _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
+            _apply_tshap_cache(config, cache_root=cache_root)
             if not _matches_tshap_window(config, ml_window):
                 if model_dir is not None:
                     raise ValueError(
@@ -1526,7 +1524,7 @@ def explain_tshap(
 
             spec = get_model(manifest["model"])
             run_store = RunStore(
-                directory, artifact_root=config["preprocessing"]["artifact_root"]
+                directory
             )
             fitted_model_dir = _resolve_tshap_model_directory(
                 spec, run_store, directory, explicit_model_dir=model_dir is not None
@@ -1810,7 +1808,7 @@ def explain_tshap(
 
 def explain_tshap_local(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
-    cache_root=None, artifact_root=None, output_root=None, events_per_group=2,
+    cache_root=None, output_root=None, events_per_group=2,
     extreme_margin=0.05, window_samples=20, stride_samples=20,
     predict_batch_size=64, seed=42, overwrite=False, logger=None,
     imputer_components=32, imputer_fit_events=2000,
@@ -1866,7 +1864,7 @@ def explain_tshap_local(
         directory = Path(run["directory"])
         try:
             config = resolve_run_config(directory)
-            _apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
+            _apply_tshap_cache(config, cache_root=cache_root)
             if not _matches_tshap_window(config, ml_window):
                 if model_dir is not None:
                     raise ValueError(
@@ -1894,7 +1892,7 @@ def explain_tshap_local(
             selected_runs += 1
             spec = get_model(manifest["model"])
             run_store = RunStore(
-                directory, artifact_root=config["preprocessing"]["artifact_root"]
+                directory
             )
             fitted_model_dir = _resolve_tshap_model_directory(
                 spec, run_store, directory, explicit_model_dir=model_dir is not None
@@ -1952,7 +1950,6 @@ def explain_tshap_local(
                     dataset=blind,
                     mode=config["mode"],
                     seed=int(seed),
-                    artifact_root=Path(config["preprocessing"]["artifact_root"]),
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
@@ -2010,7 +2007,7 @@ def explain_tshap_local(
                         selected_led_times_ps = np.asarray(led_times[dataset_indices], dtype=np.float64)
                         baseline_window_ns = config["preprocessing"]["selection"]["baseline_window_ns"]
                         led_baselines_mv = _native_led_baselines(
-                            config["preprocessing"]["artifact_root"], blind, config["mode"], dataset_indices, baseline_window_ns
+                            blind, config["mode"], dataset_indices, baseline_window_ns
                         )
                         if not np.isfinite(led_threshold_mv) or not np.all(np.isfinite(selected_led_times_ps)):
                             raise ValueError("LED threshold and crossing times must be finite")
