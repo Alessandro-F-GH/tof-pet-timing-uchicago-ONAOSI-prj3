@@ -151,87 +151,12 @@ def _parser() -> argparse.ArgumentParser:
                          help="Maximum remaining Development events used as KNN reference (default: all)")
         cmd.add_argument("--knn-reference-block", type=int, default=512,
                          help="Number of reference waveforms processed per distance block")
-    cpa = sub.add_parser("explain-cpa",
-                         help="Chronological prefix attribution using frozen wide-window models")
-    cpa_source = cpa.add_mutually_exclusive_group(required=True)
-    cpa_source.add_argument("--results", type=Path, help="Canonical saved-model result root")
-    cpa_source.add_argument("--model-dir", type=Path, help="One saved-model result directory")
-    cpa.add_argument("--models", nargs="+", help="Override default best/Onishi/Ridge models")
-    cpa.add_argument("--mode", choices=("energy", "timing"))
-    cpa_board = cpa.add_mutually_exclusive_group()
-    cpa_board.add_argument("--board", choices=("UC", "FBK"),
-                           help="Run one board (legacy single-board invocation)")
-    cpa_board.add_argument("--boards", nargs="+", choices=("UC", "FBK"),
-                           metavar="BOARD",
-                           help="Process UC and/or FBK sequentially; --results is their parent directory")
-    cpa.add_argument("--cache-root", type=Path,
-                     help="Prepared base waveform cache for single-board invocation")
-    cpa.add_argument("--uc-cache-root", type=Path,
-                     help="UC prepared cache for --boards (e.g. $HOME/UC_cache)")
-    cpa.add_argument("--fbk-cache-root", type=Path,
-                     help="FBK prepared cache for --boards (e.g. $HOME/FBK_cache)")
-    cpa.add_argument("--artifact-root", type=Path,
-                     help="Optional artifact store for newer externally referenced models")
-    cpa.add_argument("--output-root", type=Path, default=Path("cpa_results"))
-    cpa.add_argument("--max-events", type=int, default=1024)
-    cpa.add_argument("--fit-events", type=int, default=1024)
-    cpa.add_argument("--validation-events", type=int, default=128)
-    cpa.add_argument("--bootstrap", type=int, default=100)
-    cpa.add_argument("--predict-batch-size", type=int, default=64)
-    cpa.add_argument("--seed", type=int, default=42)
-    cpa.add_argument("--imputer", choices=("ar", "weighted-knn"), default="ar")
-    cpa.add_argument("--knn-k", nargs="+", type=int,
-                     default=[1,3,5,10,20,50,100])
-    cpa.add_argument("--knn-tau-ns", nargs="+", type=float,
-                     default=[0.25,0.5,1.,2.,5.])
-    cpa.add_argument("--orders", nargs="+", type=int, default=[8,16,32,64,128])
-    cpa.add_argument("--local-samples", type=int, default=100)
-    cpa.add_argument("--ridge-alpha", type=float, default=1e-3)
-    cpa.add_argument("--train-stride", type=int, default=4)
-    cpa.add_argument("--overwrite", action="store_true")
     for command in (plots, report):
         command.add_argument(
             "--exclude-models", nargs="+", default=[], metavar="MODEL",
             help="Model names to omit from reporting only (space-separated)",
         )
     return parser
-
-
-def _cpa_jobs(args):
-    """Resolve per-board result trees and prepared caches before any computation.
-
-    Explicit per-board cache arguments prevent accidentally evaluating an
-    FBK model against UC prepared waveforms or vice versa. The execution
-    remains sequential; each board is handled by the existing CPA engine.
-    """
-    if args.boards is None:
-        if args.cache_root is None:
-            raise ValueError("Single-board CPA requires --cache-root")
-        if args.uc_cache_root is not None or args.fbk_cache_root is not None:
-            raise ValueError("Use --uc-cache-root/--fbk-cache-root only with --boards")
-        return [(args.results, args.model_dir, args.board, args.cache_root)]
-
-    if args.model_dir is not None:
-        raise ValueError("--boards requires --results pointing to the parent of UC/FBK")
-    if args.cache_root is not None:
-        raise ValueError("For --boards provide --uc-cache-root/--fbk-cache-root, not --cache-root")
-    if len(set(args.boards)) != len(args.boards):
-        raise ValueError("Each board may be listed only once")
-    cache_roots = {"UC": args.uc_cache_root, "FBK": args.fbk_cache_root}
-    jobs = []
-    # Validate both trees before starting a potentially expensive all-events run.
-    for board in args.boards:
-        result_tree = args.results.expanduser().resolve() / board
-        cache = cache_roots[board]
-        if cache is None:
-            raise ValueError(f"--{board.lower()}-cache-root is required for --boards {board}")
-        cache = cache.expanduser().resolve()
-        if not result_tree.is_dir():
-            raise FileNotFoundError(f"CPA {board} results directory not found: {result_tree}")
-        if not cache.is_dir():
-            raise FileNotFoundError(f"CPA {board} prepared cache not found: {cache}")
-        jobs.append((result_tree, None, board, cache))
-    return jobs
 
 
 def main() -> None:
@@ -245,33 +170,6 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
-    if args.command == "explain-cpa":
-        from .engine.cpa_explainer import explain_cpa
-        try:
-            jobs = _cpa_jobs(args)
-        except (ValueError, FileNotFoundError) as exc:
-            raise SystemExit(str(exc)) from exc
-        for result_tree, model_dir, board, cache_root in jobs:
-            logger.info("CPA board %s | results=%s | prepared cache=%s",
-                        board or "auto", result_tree or model_dir, cache_root)
-            for output in explain_cpa(
-                result_tree, model_dir=model_dir, models=args.models,
-                mode=args.mode, board=board, cache_root=cache_root,
-                artifact_root=args.artifact_root, output_root=args.output_root,
-                max_events=args.max_events, fit_events=args.fit_events,
-                validation_events=args.validation_events,
-                bootstrap=args.bootstrap, seed=args.seed,
-                predict_batch_size=args.predict_batch_size,
-                orders=tuple(sorted(set(args.orders))),
-                local_samples=args.local_samples, ridge_alpha=args.ridge_alpha,
-                train_stride=args.train_stride,
-                imputer_method=args.imputer,
-                knn_k=tuple(args.knn_k), knn_tau_ns=tuple(args.knn_tau_ns),
-                overwrite=args.overwrite,
-                logger=logger,
-            ):
-                print(output)
-        return
     if args.command == "explain-tshap" and args.method == "conditional-knn":
         from .engine.conditional_knn_tshap import explain_conditional_knn
         for output in explain_conditional_knn(
