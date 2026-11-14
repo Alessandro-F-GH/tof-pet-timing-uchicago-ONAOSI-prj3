@@ -63,3 +63,11 @@ def test_stage_local_invalidation_preserves_upstream_state(tmp_path):
     assert store.stage_status("final_fit", "final_fit-fingerprint") == "complete"
     assert store.stage_status("blind", "blind-fingerprint") == "missing"
     assert store.stage_status("bootstrap", "bootstrap-fingerprint") == "complete"
+
+
+def test_stage_resume_uses_explicit_completion_without_fingerprint(tmp_path):
+    store = RunStore(tmp_path)
+    assert store.stage_status("cv", "any") == "missing"
+    store.mark_stage("cv", "old-fingerprint")
+    assert store.stage_status("cv", "changed-fingerprint") == "complete"
+    assert "fingerprint" not in store.read_state()["stages"]["cv"]

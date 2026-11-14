@@ -148,19 +148,16 @@ class RunStore:
         v.setdefault("stages", {})
         return v
 
-    def stage_status(self, stage, fingerprint):
+    def stage_status(self, stage, fingerprint=None):
         item = self.read_state()["stages"].get(str(stage))
         if not isinstance(item, dict):
             return "missing"
-        if item.get("fingerprint") != str(fingerprint):
-            return "stale"
         return "complete" if item.get("status") == "complete" else "incomplete"
 
-    def mark_stage(self, stage, fingerprint, *, status="complete", metadata=None):
+    def mark_stage(self, stage, fingerprint=None, *, status="complete", metadata=None):
         state = self.read_state()
         state["stages"][stage] = {
             "status": str(status),
-            "fingerprint": str(fingerprint),
             "metadata": dict(metadata or {}),
         }
         atomic_json(self.state_path, state)

@@ -1,8 +1,7 @@
 from __future__ import annotations
-import copy, json, shutil, time
+import copy, json, time
 from pathlib import Path
 from waveform_analysis.core.io import atomic_json, canonical_hash, write_csv
-from waveform_analysis.core.dependencies import planner_fingerprints as _planner_fingerprints
 from waveform_analysis.core.config import BatchConfig
 from waveform_analysis.data.results import write_run_config
 from waveform_analysis.engine.preprocessing import (
@@ -50,70 +49,48 @@ def _runtime_configs(batch):
 
 
 
-def _run_state(config, previous):
+def _run_state(config, previous=None):
+    """Resume existing result files; never infer invalidation from hashes."""
+    from waveform_analysis.data.storage import RunStore
+    from waveform_analysis.engine.train import saved_model_complete
+    from waveform_analysis.models import get_model
+
     path = Path(config["output_dir"])
-    current = _planner_fingerprints(config)
     if not path.exists() or not any(path.iterdir()):
-        return "run", "all", current
+        return "run", "all", None
     manifest = _read_json(path / "metadata" / "manifest.json")
-    if manifest is not None:
-        from waveform_analysis.data.results import batch_root
-        batch_root(path)  # Old layouts must be explicitly converted, never rebuilt implicitly.
-    old = (previous or {}).get(config["run_id"])
-    if not isinstance(old, dict):
-        return "rebuild", "unknown_dependencies", current
-    if (
-        old.get("preprocessing") != current["preprocessing"]
-        or old.get("development") != current["development"]
-    ):
-        return "rebuild", "development", current
-    if old.get("cv") != current["cv"]:
-        return "resume", "cv", current
-    for stage in ("selection", "final_fit", "blind", "bootstrap", "xai", "plots"):
-        if old.get(stage) != current[stage]:
-            return "resume", stage, current
-    if manifest is not None and manifest.get("status") == "complete":
-        artifact_root = config.get("preprocessing", {}).get("artifact_root")
-        if artifact_root:
-            from waveform_analysis.data.storage import RunStore
-            store = RunStore(path, artifact_root=artifact_root)
-            if not store.predictions_path.is_file():
-                return "resume", "blind", current
-            if not store.development_predictions_path.is_file():
-                return "resume", "development_diagnostic", current
-            if not store.bootstrap_path.is_file() or not store.bootstrap_draws_path.is_file():
-                return "resume", "bootstrap", current
-            if config.get("save_model", True):
-                from waveform_analysis.engine.train import saved_model_complete
-                from waveform_analysis.models import get_model
-                if not saved_model_complete(get_model(config["model"]["name"]), store.model_dir):
-                    return "resume", "final_fit", current
-        return "keep", "complete", current
-    return "resume", "incomplete", current
+    if manifest is None or manifest.get("status") != "complete":
+        return "resume", "incomplete", None
+    store = RunStore(path)
+    checks = (
+        ("cv", store.cv_path),
+        ("selection", store.best_path),
+        ("final_fit", store.final_fit_path),
+        ("blind", store.predictions_path),
+        ("development_diagnostic", store.development_predictions_path),
+        ("bootstrap", store.bootstrap_path),
+        ("bootstrap", store.bootstrap_draws_path),
+    )
+    for stage, filename in checks:
+        if not filename.is_file():
+            return "resume", stage, None
+    if config.get("save_model", True):
+        if not saved_model_complete(get_model(config["model"]["name"]), store.model_dir):
+            return "resume", "final_fit", None
+    return "keep", "complete", None
 
 
 def _plan_batch(batch):
-    root = Path(batch.output_dir).resolve()
-    previous_manifest = _read_json(root / "manifest.json") or {}
-    previous = previous_manifest.get("planner_fingerprints", {})
     studies = []
-    current = {}
     for config in batch.runs:
-        action, stage, fingerprints = _run_state(config, previous)
-        current[config["run_id"]] = fingerprints
-        studies.append(
-            {
-                "config": config,
-                "action": action,
-                "stage": stage,
-                "path": Path(config["output_dir"]).resolve(),
-            }
-        )
-    return {
-        "studies": studies,
-        "planner_fingerprints": current,
-        "destructive": any(i["action"] == "rebuild" for i in studies),
-    }
+        action, stage, _ = _run_state(config)
+        studies.append({
+            "config": config,
+            "action": action,
+            "stage": stage,
+            "path": Path(config["output_dir"]).resolve(),
+        })
+    return {"studies": studies, "destructive": False}
 
 
 def _print_batch_plan(batch, plan):
@@ -130,32 +107,6 @@ def _print_batch_plan(batch, plan):
         f"  {('REMAKE' if any(i['action'] != 'keep' for i in plan['studies']) else 'KEEP'):7s} report"
     )
 
-
-def _confirm(plan):
-    if not plan["destructive"]:
-        return
-    print(
-        "\nOne or more incompatible/CV-invalidated model result scopes will be rebuilt."
-    )
-    try:
-        answer = input("Proceed? [y/N] ").strip().lower()
-    except EOFError as exc:
-        raise RuntimeError(
-            "Batch requires destructive confirmation in an interactive terminal"
-        ) from exc
-    if answer not in {"y", "yes"}:
-        raise SystemExit("Batch cancelled; no existing results were modified.")
-
-
-def _apply(plan):
-    rebuilding = {i['path'] for i in plan['studies'] if i['action'] == 'rebuild'}
-    for scope in {path.parent for path in rebuilding}:
-        owners = {p.parent.parent.resolve() for p in scope.glob('*/metadata/config.json')}
-        if owners <= rebuilding:
-            (scope / 'population.json').unlink(missing_ok=True)
-    for item in plan["studies"]:
-        if item["action"] == "rebuild" and item["path"].exists():
-            shutil.rmtree(item["path"])
 
 
 def _rows(batch, plan, statuses=None):
@@ -183,7 +134,6 @@ def _write(batch, plan, status, statuses=None):
         root / "manifest.json",
         {
             "status": status,
-            "planner_fingerprints": plan["planner_fingerprints"],
         },
     )
     write_csv(root / "tables" / "runs.csv", rows)
@@ -201,8 +151,6 @@ def run_batch(batch, *, logger=None):
     _print_batch_plan(batch, plan)
     print("BATCH START | name=%s | runs=%d | results=%s" %
           (batch.name, len(plan["studies"]), batch.output_dir), flush=True)
-    _confirm(plan)
-    _apply(plan)
     for config in configs.values():
         config["_managed_runs"] = managed
         write_run_config(config, managed_runs=managed)
