@@ -112,6 +112,8 @@ class SharedCVCache:
             )
 
         get_or_build(self.root, directory, build)
+        folds_file = directory / "folds.npz"
+        metrics_file = directory / "led_folds.json"
         provenance_file = directory / "population.json"
         provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
         if (
