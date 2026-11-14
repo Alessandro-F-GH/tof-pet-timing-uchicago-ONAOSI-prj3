@@ -55,6 +55,11 @@ def test_dependency_graph_defines_transitive_invalidation():
 
 def test_stage_local_invalidation_preserves_upstream_state(tmp_path):
     store = RunStore(tmp_path)
+    for file in (store.cv_path, store.candidates_path, store.best_path,
+                 store.final_fit_path, store.blind_path, store.predictions_path,
+                 store.bootstrap_path, store.bootstrap_draws_path):
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
     for stage in ("cv", "selection", "final_fit", "blind", "bootstrap"):
         store.mark_stage(stage, f"{stage}-fingerprint")
     store.invalidate_stage("blind")
@@ -68,6 +73,9 @@ def test_stage_local_invalidation_preserves_upstream_state(tmp_path):
 def test_stage_resume_uses_explicit_completion_without_fingerprint(tmp_path):
     store = RunStore(tmp_path)
     assert store.stage_status("cv", "any") == "missing"
+    for file in (store.cv_path, store.candidates_path):
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
     store.mark_stage("cv", "old-fingerprint")
     assert store.stage_status("cv", "changed-fingerprint") == "complete"
     assert "fingerprint" not in store.read_state()["stages"]["cv"]
