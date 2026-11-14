@@ -23,9 +23,10 @@ def test_run_state_uses_files_not_recipe_hashes(tmp_path):
     assert _run_state(c)[:2] == ("run", "all")
     store = RunStore(c["output_dir"])
     assert _run_state(c)[:2] == ("run", "all")
-    store.write_manifest({"status": "running"})
+    store.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    store.manifest_path.write_text('{"status":"running"}')
     assert _run_state(c)[:2] == ("resume", "incomplete")
-    store.write_manifest({"status": "complete"})
+    store.manifest_path.write_text('{"status":"complete"}')
     assert _run_state(c)[:2] == ("resume", "cv")
     store.cv_path.parent.mkdir(parents=True, exist_ok=True)
     store.cv_path.write_text("candidate_id\n")
@@ -35,7 +36,8 @@ def test_run_state_uses_files_not_recipe_hashes(tmp_path):
 def test_resume_ignores_changed_nonstructural_config(tmp_path):
     c = config(tmp_path)
     store = RunStore(c["output_dir"])
-    store.write_manifest({"status": "complete"})
+    store.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    store.manifest_path.write_text('{"status":"complete"}')
     for name in (store.cv_path, store.best_path, store.final_fit_path,
                  store.predictions_path, store.development_predictions_path,
                  store.bootstrap_path, store.bootstrap_draws_path):
