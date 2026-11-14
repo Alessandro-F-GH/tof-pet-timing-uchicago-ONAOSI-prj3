@@ -121,6 +121,9 @@ def test_frozen_transform_and_feature_cache_receive_masked_control_or_developmen
         'window_name': 'wide',
         'window_ns': {'start': -2.0, 'end': 50.0},
         'seed': 1,
+        'control': {'root_file': str(tmp_path / 'control.root')},
+        'development': {'root_file': str(tmp_path / 'development.root')},
+        'blind': {'root_file': str(tmp_path / 'blind.root')},
         'runtime': {'prediction_chunk_size': 25},
         'preprocessing': {'cache_dir': str(tmp_path)},
     }

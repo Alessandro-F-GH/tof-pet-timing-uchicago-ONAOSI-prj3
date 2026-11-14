@@ -37,6 +37,9 @@ def _config(tmp_path):
         "window_name": "test",
         "window_ns": {"start": -1.5, "end": 2.0},
         "seed": 1001,
+        "control": {"root_file": str(tmp_path / "control.root")},
+        "development": {"root_file": str(tmp_path / "development.root")},
+        "blind": {"root_file": str(tmp_path / "blind.root")},
         "runtime": {"prediction_chunk_size": 5},
         "preprocessing": {
             "cache_dir": str(tmp_path),

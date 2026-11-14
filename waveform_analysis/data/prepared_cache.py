@@ -7,6 +7,7 @@ from typing import Any
 from waveform_analysis.data.dataset import PreparedDataset, load_prepared_dataset
 from waveform_analysis.data.named_cache import prepared_dataset_alias, cache_root_from_config
 from waveform_analysis.data.cache_store import cache_complete
+from waveform_analysis.data.sample_mask import attach_control_sample_mask
 
 
 class PreparedCacheLookup:
@@ -30,7 +31,6 @@ class PreparedCacheLookup:
             else self.find("control", config, manifest)
         ) if mode == "timing_to_timing" else None
 
-        from waveform_analysis.data.sample_mask import attach_control_sample_mask
         dataset = attach_control_sample_mask(
             dataset, control,
             cache_root=Path(config["preprocessing"]["cache_dir"]),

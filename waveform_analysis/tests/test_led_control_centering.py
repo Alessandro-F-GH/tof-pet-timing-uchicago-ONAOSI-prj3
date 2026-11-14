@@ -41,7 +41,7 @@ def test_prepared_targets_and_selection_use_frozen_control_mean(
     tmp_path, monkeypatch, role, control_mean,
 ):
     native = SimpleNamespace(
-        n_events=4, manifest={"fingerprint": "native", "source": "acquisition"},
+        n_events=4, directory=tmp_path / "native", manifest={"fingerprint": "native", "source": "acquisition"},
         energy_windows_mV=np.zeros((4, 2, 6)),
         energy_sample_interval_s=np.full((4, 2), 1e-9),
         event_index=np.arange(4), bias_voltage_V=np.full(4, 48.),
@@ -53,8 +53,9 @@ def test_prepared_targets_and_selection_use_frozen_control_mean(
     mode = "energy_to_energy"
     dataset_cfg = {"root_file": str(tmp_path / 'data.root'), "true_tof_ps": 10.}
     cfg = {"mode": mode, "window_ns": {"start": -1, "end": 1},
-           "ml_input": {"subsampling": 1}, role: dataset_cfg,
-           "preprocessing": {"selection": {"baseline_window_ns": [-2, -1]},
+           "ml_input": {"subsampling": 1}, "control": dataset_cfg,
+           "development": dataset_cfg, "blind": dataset_cfg,
+           "preprocessing": {"cache_dir": str(tmp_path), "selection": {"baseline_window_ns": [-2, -1]},
                              "led_selection": {"coincidence_window_ns": 1},
                              "energy": {"vertical_scale_limit_mV": [[-1, 1], [-1, 1]]}}}
     artifact = {"fingerprint": "control", "selected_led_threshold_mV": {mode: 5.},
