@@ -25,7 +25,7 @@ from sklearn.linear_model import Ridge
 from waveform_analysis.core.io import atomic_json
 from waveform_analysis.data.imputation import load_wide_development, root_relative
 from waveform_analysis.data.results import resolve_run_config
-from waveform_analysis.data.splits import make_cv_split, semantic_seed
+from waveform_analysis.data.splits import make_cv_split
 from waveform_analysis.engine.search import candidate_manifest, grid_candidates
 from waveform_analysis.engine.validation import best_complete_candidate, evaluate_candidate
 from waveform_analysis.models.kernel import multirocket_common as mr, rdst_common as rd
@@ -207,7 +207,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
     led_folds = {
         int(fold.fold_id): metric_values(
             target[np.asarray(fold.validation, np.int64)], fit_cfg,
-            seed=semantic_seed(seed, "led", int(fold.fold_id))
+            seed=int(seed)
         )
         for fold in split.folds
     }
@@ -237,7 +237,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
             residual = target[va] - model.predict(x[va])
             result = metric_values(
                 residual, fit_cfg,
-                seed=semantic_seed(seed, identifier, int(fold.fold_id), "metric")
+                seed=int(seed)
             )
             led = led_folds[int(fold.fold_id)]
             return {
@@ -295,7 +295,7 @@ def evaluate_prefix(features, rdst_ranges, target, split, family, candidates,
             residual = target[va] - model.predict(x[va])
             result = metric_values(
                 residual, fit_cfg,
-                seed=semantic_seed(seed, identifier, int(fold.fold_id), "metric")
+                seed=int(seed)
             )
             led = led_folds[int(fold.fold_id)]
             return {

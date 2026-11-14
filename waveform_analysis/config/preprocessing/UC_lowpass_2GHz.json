@@ -95,6 +95,6 @@
   "lowpass": {
     "enabled": true,
     "cutoff_GHz": 2,
-    "order": 4
+    "order": 5
   }
 }

@@ -7,6 +7,9 @@ def pruning(**kw):
     v={"enabled":True,"startup_complete_candidates":2,"min_folds_before_prune":1,"max_degradation_ps":5.0,"prune_if_worse_than_led":False,"led_max_degradation_ps":0.0};v.update(kw);return v
 def test_folds_are_deterministic_disjoint_and_cover():
     a=make_cv_split(103,population_identity="dev",batch_seed=1001,n_folds=5,shuffle=True);b=make_cv_split(103,population_identity="dev",batch_seed=1001,n_folds=5,shuffle=True);c=make_cv_split(103,population_identity="dev",batch_seed=1002,n_folds=5,shuffle=True)
+    assert a.seed == 1001 and b.seed == 1001 and c.seed == 1002
+    other=make_cv_split(103,population_identity="renamed_dev",batch_seed=1001,n_folds=5,shuffle=True)
+    for x,y in zip(a.folds,other.folds):np.testing.assert_array_equal(x.validation,y.validation)
     for x,y in zip(a.folds,b.folds):np.testing.assert_array_equal(x.validation,y.validation);assert not set(x.train)&set(x.validation)
     assert set(np.concatenate([x.validation for x in a.folds]))==set(range(103));assert any(not np.array_equal(x.validation,y.validation) for x,y in zip(a.folds,c.folds))
 def test_common_fold_pruning_and_exact_threshold():

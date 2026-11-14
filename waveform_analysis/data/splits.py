@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 
 import numpy as np
-
-
-def semantic_seed(base: int, *parts: object) -> int:
-    payload = "|".join(map(str, (int(base), *parts))).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:4], "little") & 0x7FFFFFFF
 
 
 @dataclass(frozen=True)
@@ -67,7 +61,7 @@ def make_cv_split(
             "development population must contain at least one event per fold"
         )
 
-    seed = semantic_seed(int(batch_seed), str(population_identity), "cv")
+    seed = int(batch_seed)
     order = np.arange(n_events, dtype=np.int64)
     if bool(shuffle):
         order = np.random.default_rng(seed).permutation(order)

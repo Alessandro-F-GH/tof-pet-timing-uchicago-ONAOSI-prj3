@@ -16,7 +16,7 @@ def test_2ghz_lowpass_suppresses_2p5ghz_oscillation():
     x = (np.cos(2*np.pi*0.5e9*t)
          + np.cos(2*np.pi*2.5e9*t))
     filtered = filter_native_waveform(
-        x, dt, {"lowpass": {"enabled": True, "cutoff_GHz": 2., "order": 4}})
+        x, dt, {"lowpass": {"enabled": True, "cutoff_GHz": 2., "order": 5}})
     center = slice(512, -512)
     def amplitude(s, ghz):
         z = np.exp(-2j*np.pi*ghz*1e9*t[center])

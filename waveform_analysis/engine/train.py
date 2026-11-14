@@ -14,7 +14,6 @@ from waveform_analysis.signal.sample_mask import (
     apply_sample_mask,
     apply_sample_mask_to_time,
 )
-from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.data.view import model_target, model_sample_mask, waveform_view
 
 
@@ -58,10 +57,7 @@ class FeatureTransformCache:
         transform_parameters = dict(
             spec.parameters(dict(parameters or {}), config) or {}
         )
-        parameter_hash = canonical_hash(transform_parameters)
-        transform_seed = semantic_seed(
-            int(seed_base), "feature_transform", spec.name, parameter_hash
-        )
+        transform_seed = int(seed_base)
         identity = canonical_hash(
             {
                 "name": spec.name,

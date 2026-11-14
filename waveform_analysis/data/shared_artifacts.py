@@ -13,7 +13,6 @@ from waveform_analysis.data.splits import (
     cv_split_from_assignment,
     fold_assignment,
     make_cv_split,
-    semantic_seed,
 )
 from waveform_analysis.reporting.stats import metric_values
 from waveform_analysis.data.view import model_target
@@ -87,7 +86,7 @@ class ExperimentArtifactStore:
                 score = metric_values(
                     target[validation],
                     config["fit"],
-                    seed=semantic_seed(split.seed, "led", int(fold.fold_id)),
+                    seed=split.seed,
                 )
                 metrics[int(fold.fold_id)] = {
                     "fold_id": int(fold.fold_id),

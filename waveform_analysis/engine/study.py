@@ -23,7 +23,6 @@ from waveform_analysis.engine.search import (
     suggest_parameters,
 )
 from waveform_analysis.data.shared_artifacts import ExperimentArtifactStore
-from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.reporting.stats import (
     blind_event_bootstrap,
     metric_values,
@@ -169,15 +168,7 @@ def _fold_evaluator(
 
     def evaluate(parameters, fold):
         fold_id = int(fold.fold_id)
-        seed = semantic_seed(
-            config["seed"],
-            config["mode"],
-            config.get("window_name"),
-            spec.name,
-            candidate,
-            fold_id,
-            "fit",
-        )
+        seed = int(config["seed"])
         input_cache = FitInputCache()
         transform_cache = FeatureTransformCache()
         fitted = prediction = corrected = None
@@ -199,7 +190,7 @@ def _fold_evaluator(
                 fold.train,
                 parameters,
                 seed=seed,
-                transform_seed_base=semantic_seed(seed, "transform"),
+                transform_seed_base=seed,
                 feature_transform_cache=transform_cache,
                 fit_input_cache=input_cache,
                 logger=logger,
@@ -218,7 +209,7 @@ def _fold_evaluator(
             score = metric_values(
                 corrected,
                 config["fit"],
-                seed=semantic_seed(config["seed"], candidate, fold_id, "metric"),
+                seed=seed,
             )
             led = shared.fold_metrics[fold_id]
             logger.info(
@@ -376,13 +367,7 @@ def _optuna(
     sampler_path = store.root / "optuna_sampler.pkl"
     sampler = _sampler(
         sampler_path,
-        semantic_seed(
-            config["seed"],
-            config["mode"],
-            config.get("window_name"),
-            spec.name,
-            "optuna",
-        ),
+        int(config["seed"]),
         opt.n_startup_trials,
     )
     study = optuna.create_study(
@@ -516,14 +501,7 @@ def _select(store, candidates, config):
 
 
 def _fit_final(spec, space, config, development, best, logger, frozen_development=None):
-    seed = semantic_seed(
-        config["seed"],
-        config["mode"],
-        config.get("window_name"),
-        spec.name,
-        best["candidate_id"],
-        "final_fit",
-    )
+    seed = int(config["seed"])
     fitted = fit_on_indices(
         spec,
         space,
@@ -532,7 +510,7 @@ def _fit_final(spec, space, config, development, best, logger, frozen_developmen
         np.arange(development.n_events, dtype=np.int64),
         best["parameters"],
         seed=seed,
-        transform_seed_base=semantic_seed(seed, "transform"),
+        transform_seed_base=seed,
         logger=logger,
         frozen_features=frozen_development,
     )
@@ -743,7 +721,7 @@ def _evaluate_blind(store, spec, space, config, control, development, best, fina
             corrected,
             led,
             config["fit"],
-            seed=semantic_seed(config["seed"], spec.name, "blind_central"),
+            seed=int(config["seed"]),
         )
         store.save_predictions(
             event_id=np.asarray(blind.event_index, dtype=np.int64),
@@ -806,7 +784,7 @@ def _estimate_blind_uncertainty(store, spec, config, blind_fp, logger):
             pred["led_residual_ps"],
             config["fit"],
             n_resamples=int(config["bootstrap"]["n_resamples"]),
-            seed=semantic_seed(config["seed"], spec.name, "bootstrap"),
+            seed=int(config["seed"]),
         )
         store.write_bootstrap(summary)
         store.save_bootstrap_draws(

@@ -11,7 +11,6 @@ from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.core.artifact_identity import ProductRecipe
 from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.named_cache import transform_alias, feature_alias, get_or_build_named, cache_root_from_config
-from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
@@ -112,10 +111,7 @@ def prepare_frozen_transform(
         str(control_dataset.manifest["analysis_protocol_identity"])
         if fit_role == "control" else "no_fit"
     )
-    seed = semantic_seed(
-        int(config["seed"]), mode, config.get("window_name"),
-        spec.feature_transform.name, "frozen_transform",
-    )
+    seed = int(config["seed"])
     sample_mask = model_sample_mask(development_dataset, mode)
     input_samples = int(sample_mask.sum())
     if fit_role == "control" and not np.array_equal(
