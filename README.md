@@ -1,67 +1,34 @@
-# TOF-PET detector timing analysis
+# TOF-PET waveform timing analysis
 
-Python analysis software developed for the ONAOSI / University of Chicago TOF-PET project. The waveform study investigates whether machine-learning corrections based on digitized detector pulses can improve coincidence timing resolution beyond a conventional leading-edge discriminator (LED) reference.
+Python analysis for the ONAOSI / University of Chicago TOF-PET project. The main workflow studies coincidence timing corrections from two-detector digitized waveforms, with leading-edge discrimination (LED) as the reference.
 
-The experiments compare linear regression, neural networks, and time-series feature transformations (MiniROCKET, MultiROCKET and random dilated shapelets). They examine direct models of detector pairs, shared detector-level models, short and extended observation windows, and time-series SHAP (TSHAP) explanations.
+## Repository
 
-## Repository contents
+- [waveform_analysis](waveform_analysis/README.md): waveform preparation, correction models, cross-validation, blind evaluation, reporting, and interpretability.
+- `janus_data_analysis`: Janus / Pico-TDC timing analyses.
+- `trc_converter`: oscilloscope trace conversion.
+- `utils_fit`: fitting utilities.
+- `report`, `update_report`, `presentation`: research material.
 
-| Directory | Purpose |
-| --- | --- |
-| [`waveform_analysis/`](waveform_analysis/) | Waveform preprocessing, model training, evaluation, reporting and interpretability |
-| [`janus_data_analysis/`](janus_data_analysis/) | Pico-TDC / Janus timing studies |
-| [`utils_fit/`](utils_fit/) | Shared timing-resolution and fitting utilities |
-| [`trc_converter/`](trc_converter/) | Oscilloscope waveform conversion tools |
-| [`report/`](report/), [`update_report/`](update_report/) | Research reports and associated figures/tables |
-| [`presentation/`](presentation/) | Presentation materials |
+Acquisition ROOT files are not included. Set their local paths in the dataset configurations before running an experiment.
 
-The main thesis-related workflow is in **[`waveform_analysis/`](waveform_analysis/README.md)**.
+## Final filtered comparison
 
-## Data availability
+The two checked-in comparison configurations are:
 
-**The experimental waveform datasets are not publicly available in this repository because of their size and GitHub hosting limits.** The benchmark configurations reference local ROOT acquisition files, which must be supplied separately to execute the experiments. The published code and configurations document the analysis workflow, but cloning the repository alone will not reproduce the numerical results.
+- `waveform_analysis/config/batches/UC_lowpass_final.json`
+- `waveform_analysis/config/batches/FBK_lowpass_final.json`
 
-## Getting started
+Both use a fifth-order Butterworth low-pass filter with 2 GHz cutoff on the native energy and timing waveforms of both detector channels, before LED selection and waveform cropping.
 
-Use a Python environment with the dependencies in `waveform_analysis/requirements.txt`:
+Each board configuration evaluates the same five models—direct/shared Ridge, Onishi CNN, direct RDST and direct MultiRocket—on energy/timing signals and two windows: Onishi (−1.5 to 2 ns), and wide (−2 to 50 ns UC; −2 to 60 ns FBK). The models are independent: there is no MultiRocket–RDST combined model in this comparison.
+
+Install dependencies and inspect the configuration before running:
 
 ```bash
 python -m pip install -r waveform_analysis/requirements.txt
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/UC_lowpass_final.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/UC_lowpass_final.json
 ```
 
-From the repository root, inspect a supplied batch configuration:
-
-```bash
-python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/benchmark_UC.json
-```
-
-To run a batch **after providing the referenced acquisition files and configuring their paths**:
-
-```bash
-python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/benchmark_UC.json
-```
-
-To prepare reusable preprocessing and feature caches on one machine before running
-experiments elsewhere, use a dedicated cache bundle:
-
-```bash
-python -m waveform_analysis.cli prepare-cache --config waveform_analysis/config/batches/benchmark_UC.json --cache-root /path/to/cache_bundle
-```
-
-Copy the cache bundle to the destination machine, then point the batch run at it:
-
-```bash
-python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/benchmark_UC.json --cache-root /path/to/cache_bundle
-```
-
-The preparation command does not run cross-validation, hyperparameter selection,
-supervised model fitting, blind evaluation or reporting. The cache bundle does not
-include the original ROOT acquisitions or Python dependencies; those must be
-available on the destination machine. Keep the software versions compatible with
-the environment used to generate the cache.
-
-See the [waveform analysis guide](waveform_analysis/README.md) for models, configuration files, saved-result reporting and TSHAP commands. [`ARCHITECTURE.md`](waveform_analysis/ARCHITECTURE.md) describes the software internals for maintainers.
-
-## Reproducibility scope
-
-The pipeline separates **control**, **development**, and **blind/test** data: control data determine preprocessing and timing-calibration rules, development data are used for model selection and fitting, and blind data are used for final evaluation. The repository provides source code, model configurations and tests, but not the large experimental acquisitions or an exact lockfile for every software dependency. Only the configuration and environment actually used for a particular experiment should be treated as its reproducibility record.
+See [waveform_analysis/README.md](waveform_analysis/README.md) for the runtime layout, cache and resume commands. The supplied datasets, configuration, environment and saved outputs are required for numerical reproducibility; the repository alone is not sufficient.

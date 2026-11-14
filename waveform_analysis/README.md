@@ -1,127 +1,82 @@
 # Waveform timing analysis
 
-This package implements waveform-based coincidence timing correction for two-detector TOF-PET measurements. It covers event selection, LED calibration, waveform preprocessing, model training, blind evaluation, reporting and post-training interpretability.
+The pipeline corrects two-detector TOF-PET coincidence timing using digitized energy or timing waveforms. It includes native waveform filtering, LED/event selection, control-fitted preprocessing, model selection by development cross-validation, full-development fitting, blind evaluation and event bootstrap uncertainty.
 
-The workflow separates three dataset roles:
+## Dataset roles
 
-- **Control:** determine event-selection, normalization, feature-transform and LED-calibration settings.
-- **Development:** select hyperparameters and fit models using the frozen control-derived rules.
-- **Blind/test:** evaluate final models and estimate event-bootstrap uncertainty without refitting.
+- **Control**: fit event-selection, LED-calibration and waveform preprocessing rules, and control-fitted feature transforms.
+- **Development**: select model hyperparameters using common CV folds and train the final model.
+- **Blind**: evaluate the frozen final model. Bootstrap resamples blind events without retraining.
 
-## Data and installation
+No ROOT acquisition files are included in this repository.
 
-**Experimental ROOT waveform files are not publicly provided because of their size and GitHub hosting limits.** Batch JSON files contain paths to local acquisitions. To run a real experiment, provide the corresponding data and update those paths as needed. The code and configurations can be inspected without the data; model fitting and numerical reproduction require them.
+## Definitive model comparison
 
-From the repository root:
+| Board | Preprocessing | Onishi window | Wide window |
+|---|---|---|---|
+| UC | Butterworth low-pass, 2 GHz, order 5 | −1.5 to 2 ns | −2 to 50 ns |
+| FBK | Butterworth low-pass, 2 GHz, order 5 | −1.5 to 2 ns | −2 to 60 ns |
 
-```bash
-python -m pip install -r waveform_analysis/requirements.txt
-```
+Filtering acts on **both detector channels** on complete native traces, before triggering and cropping. The same filter settings apply to energy and timing.
 
-The requirements specify supported minimum versions for most libraries and pin `aeon==1.6.0` and `tshap==0.0.1`. They do not constitute a complete snapshot of the thesis training environment.
+The five comparison models are `direct_linear_ridge`, `shared_linear_ridge`, `onishi_cnn`, `direct_rdst` and `direct_multirocket`. Both observation windows and both input modes are evaluated for each model, for 40 runs total.
 
-## Run an experiment
-
-Check the configuration before launching a batch:
-
-```bash
-python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/benchmark_UC.json
-```
-
-Run the configured experiments after the required ROOT files are available:
+Additional registered estimators remain available for exploratory work; they are not part of the definitive comparison. Ridge alpha is selected by the generic development CV, using `sklearn.linear_model.Ridge`. The Onishi CNN has its separate MSE training procedure. All selected estimators are refitted on the full development population before blind prediction.
 
 ```bash
-python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/benchmark_UC.json
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/UC_lowpass_final.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/UC_lowpass_final.json
+
+python -m waveform_analysis.cli check-batch --config waveform_analysis/config/batches/FBK_lowpass_final.json
+python -m waveform_analysis.cli batch --config waveform_analysis/config/batches/FBK_lowpass_final.json
 ```
 
-The supplied UC and FBK benchmark JSON files define dataset locations, waveform modes, observation windows, model sweeps, cross-validation and bootstrap settings. Other configurations under `config/batches/` cover additional experiments; in particular, combined MultiROCKET–RDST models have separate example configurations. A configuration is not automatically an exact manifest of every reported thesis result.
+Each batch has its own result directory. An explicitly configured integer seed controls the stochastic steps; seeds are not derived from filenames, model names or hash-based population identifiers.
 
-## Models
+## Preparation, results and resume
 
-Supported families include:
-
-| Family | Implementations |
-| --- | --- |
-| Linear Ridge | Direct and shared, using scikit-learn RidgeCV |
-| MiniROCKET | Direct and shared, using sktime |
-| MultiROCKET | Direct and shared, using aeon with Ridge regression |
-| Random dilated shapelets (RDST) | Direct and shared, using aeon with Ridge regression |
-| MultiROCKET + RDST | Direct and shared, with separately regularized feature blocks |
-| Neural networks | Direct and shared MLPs, an Onishi-inspired CNN, and additional research architectures |
-
-Direct models learn from the detector pair together. Shared models apply a common detector-level function and combine its outputs as a difference. The model registry also contains experimental alternatives not all included in the final thesis comparisons.
-
-Most feature-based models use development cross-validation to select the Ridge penalty after a control-fitted transformation. The linear Ridge baselines use their separate RidgeCV procedure. The Onishi-inspired CNN has a separate fixed-epoch training procedure. Model settings are recorded in `config/model_spaces/`.
-
-## Results and reporting
-
-Training writes run metadata, model artifacts, predictions, metrics and figures under the configured results root (by default within `waveform_analysis/results/`, which is not tracked in Git).
-
-Generate reports or remake plots from existing results without retraining:
+A batch can reuse precomputed preparation and frozen features using a dedicated cache bundle:
 
 ```bash
-python -m waveform_analysis.cli report waveform_analysis/results/UC/benchmark_48V_final
-python -m waveform_analysis.cli plots --results waveform_analysis/results/UC/benchmark_48V_final
+python -m waveform_analysis.cli prepare-cache \
+  --config waveform_analysis/config/batches/UC_lowpass_final.json \
+  --cache-root /path/to/UC_cache
+
+python -m waveform_analysis.cli batch \
+  --config waveform_analysis/config/batches/UC_lowpass_final.json \
+  --cache-root /path/to/UC_cache
 ```
 
-The paths above are examples: the corresponding results directory must already exist locally. Reporting reads saved results; it does not recreate missing trained models or original predictions. Commands for additional saved-model diagnostics and grouped reporting are available in the CLI and `scripts/`.
+Keep UC and FBK caches separate. The execution runner maintains per-stage completion records, completed CV candidate/fold rows and an Optuna sampler for resuming interrupted model selection. Cached transforms/features are shared where appropriate; they are never refitted for blind evaluation.
 
-## Post-training TSHAP
+Within each model's result directory, `model/` contains the saved model and its fitted transform, `artifacts/predictions.npz` holds blind predictions, `artifacts/development_predictions.npz` holds development predictions, and `artifacts/bootstrap.npz` holds bootstrap draws. CV results and stage metadata are recorded in `tables/` and `metadata/`. Models and prediction arrays are stored directly under their own run rather than in a separate content-addressed artifact directory.
 
-The maintained interpretability workflow is TSHAP on frozen saved models, using
-verified control/blind caches. Model training and blind evaluation do not run
-any alternative XAI procedure.
+**Cache implementation note:** preprocessing, sample masks and frozen-feature caches still use the shared scientific artifact store and readable alias paths. The run-local result storage and the shared-CV cache have been simplified; the remaining cache layer is being consolidated. Use a fresh cache and result directory for the new filtered experiments.
+
+## Interpretation and diagnostics
+
+Model training does not fit an XAI surrogate. The current post-training commands are:
 
 ```bash
 python -m waveform_analysis.cli explain-tshap \
-  --results waveform_analysis/results/UC/benchmark_48V_final \
-  --models direct_multirocket direct_rdst shared_linear_ridge \
-  --cache-root /path/to/cache_bundle \
-  --ml-window wide \
-  --imputation hermite_ppca
+  --results waveform_analysis/results/UC/filtered_2GHz_order5_benchmark \
+  --models direct_linear_ridge shared_linear_ridge \
+  --windows wide --mode energy --max-events 100
 
-# Explain one saved-model run directly (no batch result-root scan).
-python -m waveform_analysis.cli explain-tshap \
-  --model-dir waveform_analysis/results/UC/benchmark_48V_final/energy/wide/direct_multirocket \
-  --cache-root /path/to/cache_bundle \
-  --max-events 100 \
-  --window-samples 20 \
-  --stride-samples 20
+python -m waveform_analysis.cli explain-tshap-local \
+  --results waveform_analysis/results/UC/filtered_2GHz_order5_benchmark \
+  --models direct_linear_ridge shared_linear_ridge \
+  --windows wide --mode energy
 ```
 
-TSHAP supports two perturbation modes: `--imputation reference` performs symmetric two-player window substitution against a reproducible sample of independent control waveforms; `--imputation hermite_ppca` reconstructs each masked segment from that waveform's own observed context using detector-specific Hermite-PPCA models. Reference substitution is the default; select Hermite-PPCA explicitly when desired. Both modes use multi-baseline scoring and the upstream temporal aggregation/ROI implementation. The control reference count is configurable with `--n-baselines` (default: 8).
+The existing CLI supports reference-waveform and conditional kNN paired temporal-window TSHAP. These are still separate implementations; imputation benchmarking and unification into a single frozen-imputer workflow are the next cleanup stage. Local-importance deletion and the separate temporal/progressive-window study are retained. The paired-window scores correspond to a two-player Shapley game, not to exact Shapley values of individual time samples.
 
-The imputer cache stores fitted detector-specific PPCA models and position-dependent blend weights as immutable ArtifactStore products, exposed through a stable named alias. Its identity includes the control population, board, channel/mode, time grid, window configuration, and selected reference-baseline cohort. Changes in baseline selection therefore cannot silently reuse an incompatible imputer. Global and local TSHAP outputs remain in the dedicated XAI tree, separate from run results.
+Source-domain diagnostics (FFT, acquisition phase and filtering sensitivity) remain available in `scripts/`.
 
-Conditional temporal occlusion retains signed prediction differences in ps. Window scores distributed over samples are densities in ps/sample, not exact individual-sample Shapley values. This conditional reconstruction approach is not mathematically equivalent to reference-baseline SHAP. The
-existing absolute-importance plots are provisional, pending the final
-signed local, response-conditioned and global analyses. Use
-`explain-tshap-local` for the current local diagnostic.
-
-## Imputation diagnostics
-
-`scripts/train_ppca_interpolation_blend.py` and
-`scripts/evaluate_imputation_benchmark.py` are retained for quality checks.
-The benchmark compares reference substitution, interpolation, PPCA, and the
-position-specific blend, with RMSE measured in mV. These diagnostics are not
-part of the fitted timing-correction model.
-
-## Other commands
-
-The CLI retains `diagnostics`, `explain-tshap` and
-`explain-tshap-local`. Old grouped-occlusion, shapelet-coefficient ranking,
-and regression-surrogate XAI commands have been removed.
-
-## Development and technical details
-
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) describes model interfaces, result ownership, frozen-feature caching and pipeline dependencies.
-- [`CLEANUP_NOTES.md`](CLEANUP_NOTES.md) records legacy cleanup decisions and candidate archival utilities.
-- [`tests/`](tests/) contains regression and integration tests for pipeline components.
-
-From the repository root, with test dependencies available, run:
+## Development
 
 ```bash
 python -m pytest waveform_analysis/tests
 ```
 
-The tests do not establish numerical reproduction of the original acquisition-based experiments. For research results, retain the exact batch configuration, package versions, source-data identities and saved evaluation artifacts.
+Production ROOT data are required to verify actual timing performance. The code and synthetic tests alone do not demonstrate numerical equivalence of training outcomes across library, OS or GPU environments.
