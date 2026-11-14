@@ -217,7 +217,7 @@ def _evaluate_events(engine, tuned, waveforms, predict, reference_predictions, l
 
 def explain_conditional_knn(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
-    cache_root=None, artifact_root=None, output_root=None, local=False,
+    cache_root=None, output_root=None, local=False,
     max_events=100, events_per_group=2, extreme_margin=.05,
     window_samples=20, stride_samples=10, predict_batch_size=64,
     seed=42, overwrite=False, knn_k=DEFAULT_K, knn_tuning_events=512,
@@ -248,11 +248,11 @@ def explain_conditional_knn(
             continue
         try:
             config = resolve_run_config(directory)
-            base._apply_tshap_cache(config, cache_root=cache_root, artifact_root=artifact_root)
+            base._apply_tshap_cache(config, cache_root=cache_root)
             if not base._matches_tshap_window(config, selected_window) or not base._matches_tshap_mode(config, mode):
                 continue
             spec = get_model(manifest["model"])
-            run_store = RunStore(directory, artifact_root=config["preprocessing"]["artifact_root"])
+            run_store = RunStore(directory)
             model_path = base._resolve_tshap_model_directory(
                 spec, run_store, directory, explicit_model_dir=model_dir is not None
             )
@@ -460,7 +460,7 @@ def explain_conditional_knn(
                     led_status = "available"
                     try:
                         led_baselines = base._native_led_baselines(
-                            config["preprocessing"]["artifact_root"], blind, config["mode"],
+                            blind, config["mode"],
                             ids, config["preprocessing"]["selection"]["baseline_window_ns"]
                         )
                     except (FileNotFoundError, ValueError) as exc:
