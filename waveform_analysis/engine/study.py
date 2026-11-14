@@ -22,7 +22,7 @@ from waveform_analysis.engine.search import (
     optimization_config,
     suggest_parameters,
 )
-from waveform_analysis.data.shared_artifacts import ExperimentArtifactStore
+from waveform_analysis.data.shared_artifacts import SharedCVCache
 from waveform_analysis.reporting.stats import (
     blind_event_bootstrap,
     metric_values,
@@ -554,7 +554,7 @@ def _model(
 
 def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
                                 frozen_transform, frozen_development):
-    shared = ExperimentArtifactStore(
+    shared = SharedCVCache(
         Path(config["batch_output_dir"]) / "artifacts"
     ).prepare_cv(development, config)
     cv_fp = _stage(

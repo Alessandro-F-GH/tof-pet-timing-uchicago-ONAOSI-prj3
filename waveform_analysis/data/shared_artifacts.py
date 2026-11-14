@@ -12,6 +12,8 @@ from waveform_analysis.data.splits import (
     fold_assignment,
     make_cv_split,
 )
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import dataset_name, safe_component
 from waveform_analysis.reporting.stats import metric_values
 from waveform_analysis.data.view import model_target
 
@@ -33,7 +35,7 @@ def _write_npz(path, **arrays):
         stream.flush()
 
 
-class ExperimentArtifactStore:
+class SharedCVCache:
     """Persist and reload common CV folds and LED reference metrics."""
 
     def __init__(self, root):
@@ -46,9 +48,15 @@ class ExperimentArtifactStore:
             f"{config['window_ns']['start']}_to_{config['window_ns']['end']}ns"
         ))
         cv_label = f"folds_{int(cv['folds'])}_shuffle_{int(bool(cv['shuffle']))}"
-        directory = self.root / "cv" / str(config["mode"]) / window / cv_label / f"seed_{int(config['seed'])}"
-        folds_file = directory / "folds.npz"
-        metrics_file = directory / "led_folds.json"
+        directory = (
+            self.root / "cv"
+            / dataset_name(config["control"])
+            / dataset_name(config["development"])
+            / safe_component(config["mode"])
+            / safe_component(window)
+            / cv_label
+            / f"seed_{int(config['seed'])}"
+        )
 
         def build(directory):
             split = make_cv_split(
@@ -88,15 +96,35 @@ class ExperimentArtifactStore:
                 seed=np.asarray(split.seed, dtype=np.int64),
                 shuffle=np.asarray(int(split.shuffle), dtype=np.int8),
             )
+            (directory / "population.json").write_text(
+                json.dumps({
+                    "event_population_identity": population_id,
+                    "n_events": int(dataset.n_events),
+                    "n_folds": int(cv["folds"]),
+                    "shuffle": bool(cv["shuffle"]),
+                    "seed": int(config["seed"]),
+                }, indent=2) + "\n", encoding="utf-8"
+            )
             (directory / "led_folds.json").write_text(
                 json.dumps({str(key): value for key, value in metrics.items()},
                            sort_keys=True, indent=2) + "\n",
                 encoding="utf-8",
             )
 
-        if not folds_file.is_file() or not metrics_file.is_file():
-            directory.mkdir(parents=True, exist_ok=True)
-            build(directory)
+        get_or_build(self.root, directory, build)
+        provenance_file = directory / "population.json"
+        provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
+        if (
+            provenance.get("event_population_identity") != population_id
+            or provenance.get("n_events") != int(dataset.n_events)
+            or provenance.get("n_folds") != int(cv["folds"])
+            or provenance.get("shuffle") != bool(cv["shuffle"])
+            or provenance.get("seed") != int(config["seed"])
+        ):
+            raise ValueError(
+                "Shared CV cache population or settings differ; use a new cache "
+                "directory or rebuild the named cache"
+            )
 
         with np.load(folds_file, allow_pickle=False) as data:
             split = cv_split_from_assignment(
@@ -110,4 +138,4 @@ class ExperimentArtifactStore:
             metrics_file.read_text(encoding="utf-8")
         )
         metrics = {int(key): value for key, value in raw_metrics.items()}
-        return SharedCVArtifacts(directory, split, metrics, f"{config['mode']}/{window}/{cv_label}/seed_{split.seed}")
+        return SharedCVArtifacts(directory, split, metrics, directory.relative_to(self.root).as_posix())
