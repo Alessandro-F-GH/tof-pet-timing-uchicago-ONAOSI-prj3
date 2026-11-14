@@ -47,19 +47,14 @@ def window_name(config: dict[str, Any]) -> str:
 
 
 def cache_root_from_config(config: dict[str, Any], fallback=None) -> Path:
-    """Return the readable cache bundle root."""
+    """Return the explicit preprocessing cache directory."""
     preprocessing = config.get("preprocessing", config)
-    named = preprocessing.get("named_cache_root")
-    if named:
-        return Path(named).expanduser().resolve()
-    cache_dir = preprocessing.get("cache_dir")
-    if cache_dir:
-        cache_path = Path(cache_dir).expanduser().resolve()
-        return cache_path.parent if cache_path.name == "preprocessing" else cache_path
+    directory = preprocessing.get("cache_dir")
+    if directory:
+        return Path(directory).expanduser().resolve()
     if fallback is not None:
-        fallback_path = Path(fallback).expanduser().resolve()
-        return fallback_path.parent if fallback_path.name == "preprocessing" else fallback_path
-    raise ValueError("Cannot resolve named cache root")
+        return Path(fallback).expanduser().resolve()
+    raise ValueError("Cannot resolve preprocessing cache directory")
 
 
 def alias_path(root, *parts) -> Path:
@@ -81,7 +76,7 @@ def selection_alias(root, dataset, control_dataset, mode) -> Path:
 
 
 def native_alias(root, dataset, control_dataset, mode) -> Path:
-    return alias_path(root, "native", dataset_name(dataset), mode_name(mode))
+    return alias_path(root, "native", dataset_name(control_dataset), dataset_name(dataset), mode_name(mode))
 
 
 def prepared_dataset_alias(root, config, role: str) -> Path:
@@ -102,14 +97,14 @@ def transform_alias(root, config, model_name: str, fit_role: str) -> Path:
     fit_dataset = config.get(fit_role, config.get("development", config["control"]))
     return alias_path(
         root, "transforms", model_name, dataset_name(config["control"]),
-        dataset_name(fit_dataset), mode_name(config["mode"]), window_name(config),
+        dataset_name(fit_dataset), mode_name(config["mode"]), window_name(config), f"seed_{int(config['seed'])}",
     )
 
 
 def feature_alias(root, config, model_name: str, dataset, role: str, block="combined") -> Path:
     return alias_path(
         root, "features", model_name, dataset_name(config["control"]),
-        dataset_name(dataset), mode_name(config["mode"]), window_name(config), role, block,
+        dataset_name(dataset), mode_name(config["mode"]), window_name(config), f"seed_{int(config['seed'])}", role, block,
     )
 
 
