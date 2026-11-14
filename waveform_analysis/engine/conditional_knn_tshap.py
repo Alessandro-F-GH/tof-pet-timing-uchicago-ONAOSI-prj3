@@ -17,8 +17,8 @@ from time import perf_counter
 import numpy as np
 
 from waveform_analysis.core.io import atomic_json, canonical_hash
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore, ArtifactMissing
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import alias_path, cache_root_from_config, dataset_name, mode_name, window_name
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.results import batch_root, discover_runs, read_run, resolve_run_config
 from waveform_analysis.data.storage import RunStore
@@ -27,7 +27,7 @@ from waveform_analysis.engine.train import load_fitted_model, predict_indices, r
 from waveform_analysis.engine.diagnostics import diagnostic_random_state
 from waveform_analysis.engine.conditional_knn_imputer import (
     IMPUTER_VERSION, PairedWindowKNN, KNNSelection, WEIGHT_NAMES,
-    digest, reference_validation_split,
+    reference_validation_split,
 )
 from waveform_analysis.engine import tshap_explainer as base
 from waveform_analysis.models import get_model
@@ -104,7 +104,7 @@ def _plot_diagnostics(path, time_ps, scores, difference_window, difference_compl
     plt.close(fig)
 
 
-def _load_tuning(store, recipe, engine, validation, logger):
+def _load_tuning(cache_root, tuning_path, engine, validation, logger):
     def build(directory):
         tuned = engine.tune(validation, logger=logger)
         np.savez_compressed(
@@ -118,13 +118,13 @@ def _load_tuning(store, recipe, engine, validation, logger):
             "method": "deterministic_knn_conditional_mean",
             "configuration": tuned.summary(engine),
         })
-    artifact = store.get_or_build(recipe, build)
+    artifact = get_or_build(cache_root, tuning_path, build)
     with np.load(artifact.payload_path("tuning.npz"), allow_pickle=False) as a:
         tuned = KNNSelection(*(np.asarray(a[k]) for k in (
             "ks", "selected_k", "selected_weight", "mse", "mae", "mse_mv2", "mae_mv"
         )))
     if logger:
-        logger.info("KNN TUNING ARTIFACT | id=%s | path=%s", artifact.product_id, artifact.path)
+        logger.info("KNN tuning cache | id=%s | path=%s", artifact.identifier, artifact.path)
         for item in tuned.summary(engine):
             logger.debug(
                 "KNN TUNED | observed=%s | window=%d | k=%d | weight=%s | "
@@ -287,27 +287,13 @@ def explain_conditional_knn(
                         reference_waves, starts, window_samples, keep, knn_k,
                         scale_mv=frozen_scale, reference_block=knn_reference_block,
                     )
-                    recipe = ProductRecipe(
-                        "knn-conditional-tuning",
-                        {
-                            "version": IMPUTER_VERSION,
-                            "development_protocol": development.manifest.get("analysis_protocol_identity"),
-                            "reference_event_hash": digest(np.asarray(development.event_index[reference_idx])),
-                            "validation_event_hash": digest(np.asarray(development.event_index[validation_idx])),
-                            "reference_waveform_hash": digest(reference_waves),
-                            "validation_waveform_hash": digest(validation_waves),
-                            "retained_mask_hash": digest(keep),
-                            "transform_min_hash": digest(scale.minimum),
-                            "transform_max_hash": digest(scale.maximum),
-                            "starts": list(map(int, starts)),
-                            "width": int(window_samples), "stride": int(stride_samples),
-                            "k_candidates": list(map(int, sorted(set(knn_k)))),
-                            "metric": "hidden_normalized_MSE",
-                            "weights": list(WEIGHT_NAMES),
-                        },
-                        implementation=f"paired-knn-conditional-v{IMPUTER_VERSION}",
+                    root = cache_root_from_config(config)
+                    tuning_path = alias_path(
+                        root, "imputers", "conditional_knn",
+                        dataset_name(config["control"]), mode_name(config["mode"]),
+                        window_name(config), f"w{window_samples}_s{stride_samples}",
+                        f"seed_{int(seed)}",
                     )
-                    store = ArtifactStore(config["preprocessing"]["artifact_root"])
                     logger.info(
                         "KNN SETUP | run=%s | family=%s | reference=%d | validation=%d | "
                         "windows=%d | k=%s | window_samples=%d | stride_samples=%d | retained_samples=%d",
@@ -315,7 +301,7 @@ def explain_conditional_knn(
                         len(starts), sorted(set(knn_k)), window_samples, stride_samples, int(keep.sum())
                     )
                     tuned, tuned_artifact = _load_tuning(
-                        store, recipe, engine, validation_waves, logger
+                        root, tuning_path, engine, validation_waves, logger
                     )
                     suffix = "tshap_conditional_knn_local" if local else "tshap_conditional_knn"
                     destination = base._explanation_destination(output_root, directory).parent / suffix
@@ -324,7 +310,7 @@ def explain_conditional_knn(
                         "version": METHOD_VERSION,
                         "final_fit": manifest["stage_fingerprints"]["final_fit"],
                         "blind": manifest["dataset_populations"]["blind"]["analysis_protocol_identity"],
-                        "tuning_artifact": tuned_artifact.product_id,
+                        "tuning_artifact": tuned_artifact.identifier,
                         "model": spec.name, "mode": config["mode"], "seed": int(seed),
                         "max_events": None if local else int(max_events),
                         "events_per_group": int(events_per_group) if local else None,
@@ -477,7 +463,7 @@ def explain_conditional_knn(
                             config["preprocessing"]["artifact_root"], blind, config["mode"],
                             ids, config["preprocessing"]["selection"]["baseline_window_ns"]
                         )
-                    except (ArtifactMissing, FileNotFoundError) as exc:
+                    except (FileNotFoundError, ValueError) as exc:
                         led_status = f"native LED reference unavailable: {exc}"
                         logger.warning("KNN LOCAL PLOT | LED lines omitted | %s", exc)
                     threshold = float(blind.manifest["fixed_led_threshold_mV"])
