@@ -94,7 +94,10 @@ def sample_mask_alias(root, config) -> Path:
 
 
 def transform_alias(root, config, model_name: str, fit_role: str) -> Path:
-    fit_dataset = config.get(fit_role, config.get("development", config["control"]))
+    fit_dataset = (config.get(fit_role) or config.get("development")
+                   or config.get("control"))
+    if fit_dataset is None or "control" not in config:
+        raise ValueError("Frozen transform cache naming requires Control and a fit dataset")
     return alias_path(
         root, "transforms", model_name, dataset_name(config["control"]),
         dataset_name(fit_dataset), mode_name(config["mode"]), window_name(config), f"seed_{int(config['seed'])}",
