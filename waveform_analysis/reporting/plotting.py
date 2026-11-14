@@ -192,7 +192,7 @@ def plot_run_cv(run, cfg):
 
 def _plot_run_residual_distribution(run, cfg, *, dataset_role):
     run = Path(run)
-    filename = "pred.npz" if dataset_role == "blind" else "development_pred.npz"
+    filename = "predictions.npz" if dataset_role == "blind" else "development_predictions.npz"
     stem = "blind" if dataset_role == "blind" else "development"
     path = run / "artifacts" / filename
     manifest_path = run / "metadata" / "manifest.json"
@@ -353,7 +353,7 @@ def plot_run_blind_boxplot(run, cfg):
     """Render the LED/correction comparison for one saved blind population."""
     run = Path(run)
     output = output_path(run / "plots", "blind_boxplot", cfg)
-    path = run / "artifacts" / "pred.npz"
+    path = run / "artifacts" / "predictions.npz"
     if not path.is_file():
         output.unlink(missing_ok=True)
         return None
