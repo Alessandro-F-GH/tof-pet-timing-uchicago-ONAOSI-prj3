@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from waveform_analysis.core.io import atomic_json, canonical_hash
+from waveform_analysis.core.io import atomic_json
 from waveform_analysis.core.config import BatchConfig
 from waveform_analysis.data.feature_cache import (
     prepare_frozen_transform,
@@ -16,36 +16,6 @@ from waveform_analysis.engine.preprocessing import fit_control, prepare_role_dat
 from waveform_analysis.models import get_model
 
 CACHE_MANIFEST_VERSION = 1
-
-
-def _batch_identity(batch: BatchConfig, configs: list[dict[str, Any]]) -> str:
-    """Describe the requested work without binding cache identity to local paths."""
-    runs = []
-    for config in configs:
-        datasets = {}
-        for role in ("control", "development", "blind"):
-            datasets[role] = {
-                key: value
-                for key, value in config[role].items()
-                if key != "root_file"
-            }
-        runs.append({
-            "run_id": config["run_id"],
-            "mode": config["mode"],
-            "window_name": config.get("window_name"),
-            "window_ns": config["window_ns"],
-            "seed": config["seed"],
-            "model": config["model"],
-            "datasets": datasets,
-            "fit": config["fit"],
-            "ml_input": config["ml_input"],
-            "preprocessing": {
-                key: value
-                for key, value in config["preprocessing"].items()
-                if key not in {"cache_dir", "artifact_root"}
-            },
-        })
-    return canonical_hash({"schema_version": CACHE_MANIFEST_VERSION, "batch": batch.name, "runs": runs})
 
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
@@ -69,9 +39,7 @@ def prepare_batch_cache(
 
     root = Path(cache_root).expanduser().resolve()
     preprocessing_root = root / "preprocessing"
-    artifact_root = root / "artifact_store"
     preprocessing_root.mkdir(parents=True, exist_ok=True)
-    artifact_root.mkdir(parents=True, exist_ok=True)
     manifest_path = root / "cache_manifest.json"
 
     configs = _runtime_configs(batch)
@@ -92,18 +60,14 @@ def prepare_batch_cache(
         raise ValueError("Cache preparation selected no runs")
     for config in configs:
         config["preprocessing"]["cache_dir"] = str(preprocessing_root)
-        config["preprocessing"]["artifact_root"] = str(artifact_root)
 
-    batch_fingerprint = _batch_identity(batch, configs)
     records: list[dict[str, Any]] = []
     manifest: dict[str, Any] = {
         "schema_version": CACHE_MANIFEST_VERSION,
         "status": "preparing",
         "batch_name": batch.name,
-        "batch_fingerprint": batch_fingerprint,
         "layout": {
             "preprocessing": "preprocessing/",
-            "artifact_store": "artifact_store/",
         },
         "prepared_runs": records,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -157,9 +121,6 @@ def prepare_batch_cache(
                     )
                 run_record["transform_identity"] = frozen_transform.identity
                 run_record["fit_role"] = frozen_transform.fit_role
-                # Do not materialize feature matrices here. TSHAP starts from
-                # original prepared waveforms and reapplies this frozen transform
-                # independently to every original or perturbed input.
 
             records.append(run_record)
             manifest["status"] = "running"

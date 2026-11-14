@@ -55,16 +55,7 @@ def load_wide_development(results, channel, cache_root=None, *, return_transform
     prep = cfg["preprocessing"]
     if cache_root is not None:
         root = Path(cache_root).expanduser().resolve()
-        prep["named_cache_root"] = str(root)
         prep["cache_dir"] = str(root / "preprocessing")
-        prep["artifact_root"] = str(root / "artifact_store")
-    elif "artifact_root" not in prep:
-        raise ValueError(
-            "This result has no stored artifact_root; supply --cache-root "
-            "pointing to the prepared waveform cache"
-        )
-    # Keep cache_root in the public signature for older callers, but canonical
-    # prepared datasets are resolved through immutable manifest references.
     lookup = PreparedCacheLookup()
     dataset = lookup.find("development", cfg, manifest)
     control_dataset = lookup.find("control", cfg, manifest) if include_control else None
