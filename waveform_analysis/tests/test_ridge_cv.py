@@ -84,20 +84,18 @@ def test_ridge_requires_the_common_outer_cross_validation(tmp_path):
         load_batch_config(path)
 
 
-def test_planner_tracks_both_outer_cv_and_alpha_grid(tmp_path):
-    config = planner_config(tmp_path)
-    source = Path(__file__).resolve().parents[1] / "config/batches/test_ridge.json"
-    batch = load_batch_config(source)
-    ridge_run = next(run for run in batch.runs if run["mode"] == "energy_to_energy")
-    config["model"] = deepcopy(ridge_run["model"])
-    config["cross_validation"] = deepcopy(ridge_run["cross_validation"])
-    before = planner_fingerprints(config)
-    changed_cv = deepcopy(config)
-    changed_cv["cross_validation"]["folds"] += 1
-    assert planner_fingerprints(changed_cv)["cv"] != before["cv"]
-    changed_grid = deepcopy(config)
-    changed_grid["model"]["space"]["parameters"]["ridge_alpha"]["choices"] = [1.0, 2.0]
-    assert planner_fingerprints(changed_grid)["cv"] != before["cv"]
+def test_planner_does_not_reuse_incomplete_cv(tmp_path):
+    from waveform_analysis.engine.batch import _run_state
+
+    cfg = planner_config(tmp_path)
+    cfg["model"]["name"] = "direct_linear_ridge"
+    store = RunStore(cfg["output_dir"])
+    store.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    store.manifest_path.write_text('{"status": "complete"}')
+    assert _run_state(cfg)[:2] == ("resume", "cv")
+    store.cv_path.parent.mkdir(parents=True, exist_ok=True)
+    store.cv_path.write_text("candidate_id\\n")
+    assert _run_state(cfg)[:2] == ("resume", "selection")
 
 
 @pytest.mark.parametrize("name", ["direct_linear_ridge", "shared_linear_ridge"])
@@ -286,26 +284,17 @@ def test_actual_ridge_batch_blind_reporting_and_resume(tmp_path, monkeypatch, mi
     assert batch_engine.run_batch(resolved) == outputs
     assert len(fit_calls) == (3 if mixed else 2)
     search_count_before_recovery = len(search_calls)
-    # Missing artifact references trigger inference from the persisted model,
-    # without retraining or assuming that payloads live inside the run folder.
-    reference_path = outputs[0] / "metadata/artifact_references.json"
-    references = json.loads(reference_path.read_text())
-    references.pop("blind_predictions")
-    reference_path.write_text(json.dumps(references))
+    # Deleting run-local predictions must trigger saved-model inference without retraining.
+    blind_file = RunStore(outputs[0]).predictions_path
+    blind_file.unlink()
     study.run_study(runs[0])
-    assert len(fit_calls) == (3 if mixed else 2)
-    assert len(search_calls) == search_count_before_recovery
-    assert RunStore(
-        outputs[0], artifact_root=runs[0]["preprocessing"]["artifact_root"]
-    ).predictions_path.is_file()
-    # Missing development prediction references recover through inference too.
-    references = json.loads(reference_path.read_text())
-    references.pop("development_predictions")
-    reference_path.write_text(json.dumps(references))
-    study.run_study(runs[0])
-    assert RunStore(
-        outputs[0], artifact_root=runs[0]["preprocessing"]["artifact_root"]
-    ).development_predictions_path.is_file()
+    assert blind_file.is_file()
     assert len(fit_calls) == (3 if mixed else 2)
     assert len(search_calls) == search_count_before_recovery
 
+    development_file = RunStore(outputs[0]).development_predictions_path
+    development_file.unlink()
+    study.run_study(runs[0])
+    assert development_file.is_file()
+    assert len(fit_calls) == (3 if mixed else 2)
+    assert len(search_calls) == search_count_before_recovery
