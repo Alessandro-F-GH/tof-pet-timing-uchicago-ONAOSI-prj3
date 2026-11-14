@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from waveform_analysis.engine.conditional_knn import ConditionalKNN, tshap_windows
-from waveform_analysis.scripts.evaluate_conditional_knn import _prediction_payload, _choose
+from waveform_analysis.data.saved_prediction_inputs import _prediction_payload
 
 
 def test_aggregated_distances_and_loo_against_bruteforce():
@@ -108,14 +108,3 @@ def test_saved_prediction_provenance_and_id_alignment(tmp_path):
         _prediction_payload(file, Dataset(), manifest)
 
 
-def test_choose_can_select_single_or_distinct_k():
-    # [events, windows, {W,R}, k, weight]
-    e = np.ones((4, 3, 2, 2, 1))
-    e[:, :, 0, 0, 0] = 0.1
-    e[:, :, 0, 1, 0] = 1.0
-    e[:, :, 1, 0, 0] = 1.0
-    e[:, :, 1, 1, 0] = 0.1
-    decision = _choose(e, np.array([5, 50]), False)
-    assert decision["separate"]["window"]["k"] == 5
-    assert decision["separate"]["complement"]["k"] == 50
-    assert decision["single"]["k"] in (5, 50)

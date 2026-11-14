@@ -20,7 +20,7 @@ from waveform_analysis.data.view import mode_family
 from waveform_analysis.engine.train import load_fitted_model, release_training_memory
 from waveform_analysis.engine import tshap_explainer as tshap
 from waveform_analysis.models import get_model
-from waveform_analysis.scripts.evaluate_conditional_knn import _prediction_payload
+from waveform_analysis.data.saved_prediction_inputs import _prediction_payload
 from waveform_analysis.scripts.analyze_waveform_fft import validate_grid
 from waveform_analysis.scripts.test_lowpass_model_sensitivity import temporal_filter_weights
 

@@ -16,7 +16,7 @@ import numpy as np
 
 from waveform_analysis.engine.sample_normalization import (
     fit_first_difference_stats, fit_time_sample_stats)
-from waveform_analysis.scripts.evaluate_conditional_knn import _load_inputs, _logger
+from waveform_analysis.data.saved_prediction_inputs import _load_inputs, _logger
 
 CHANNEL_NAMES = ("detector_1", "detector_2", "detector_2_minus_1")
 PERCENTILE_BANDS = ((2., 12.), (45., 55.), (88., 98.))
