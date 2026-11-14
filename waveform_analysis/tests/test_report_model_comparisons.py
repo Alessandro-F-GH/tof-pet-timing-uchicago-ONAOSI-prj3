@@ -26,7 +26,7 @@ def report_inputs(tmp_path, monkeypatch):
     ]:
         directory = tmp_path / name
         (directory / "artifacts").mkdir(parents=True)
-        np.savez(directory / "artifacts/pred.npz", event_id=np.arange(32),
+        np.savez(directory / "artifacts/predictions.npz", event_id=np.arange(32),
                  prediction_ps=np.arange(32) * ctr, corrected_ps=np.arange(32),
                  led_residual_ps=np.arange(32) * 1.3)
         runs.append({

@@ -155,6 +155,7 @@ def test_empty_control_bookkeeping_does_not_relax_training_requirements(
 ):
     native = SimpleNamespace(
         n_events=2,
+        directory=tmp_path / "native",
         manifest={"fingerprint": "native", "source": "control.root"},
         energy_windows_mV=np.zeros((2, 2, 6)),
         energy_sample_interval_s=np.full((2, 2), 1e-9),
@@ -167,6 +168,7 @@ def test_empty_control_bookkeeping_does_not_relax_training_requirements(
         "ml_input": {"subsampling": 1},
         "control": {"root_file": str(tmp_path / "control.root"), "true_tof_ps": 0},
         "preprocessing": {
+            "cache_dir": str(tmp_path),
             "selection": {"baseline_window_ns": [-2, -1]},
             "led_selection": {"coincidence_window_ns": 2},
             "energy": {"vertical_scale_limit_mV": [[-1, 1], [-1, 1]]},

@@ -106,6 +106,7 @@ def test_saved_model_requires_its_bundled_feature_transform(tmp_path):
     spec = SimpleNamespace(
         name="test-model",
         artifact_format="pickle",
+        requires_frozen_features=True,
         feature_transform=transform_spec,
         save=lambda artifact, path: (
             path.mkdir(parents=True, exist_ok=True),

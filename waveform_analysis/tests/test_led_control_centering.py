@@ -143,13 +143,12 @@ def test_control_artifact_persists_separate_mode_calibrations(tmp_path, monkeypa
     assert loaded['led_control_mean_ps'] == means
 
 
-def test_batch_planner_rebuilds_old_uncentered_runs(tmp_path):
-    from waveform_analysis.engine.batch import _planner_fingerprints, _run_state
+def test_batch_planner_resumes_incomplete_run_outputs(tmp_path):
+    from waveform_analysis.engine.batch import _run_state
     from waveform_analysis.tests.test_batch_planner import config
+
     cfg = config(tmp_path)
-    store = RunStore(cfg['output_dir'])
-    store.metadata_dir.mkdir(parents=True,exist_ok=True)
-    store.manifest_path.write_text(json.dumps({'schema_version': 51, 'status': 'complete'}))
-    (store.metadata_dir / 'config.json').write_text('{}')
-    with pytest.raises(ValueError, match='historical result compatibility'):
-        _run_state(cfg, {cfg['run_id']: _planner_fingerprints(cfg)})
+    store = RunStore(cfg["output_dir"])
+    store.metadata_dir.mkdir(parents=True, exist_ok=True)
+    store.manifest_path.write_text(json.dumps({"status": "complete"}))
+    assert _run_state(cfg)[:2] == ("resume", "cv")
