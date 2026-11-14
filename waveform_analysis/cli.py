@@ -95,7 +95,7 @@ def _parser() -> argparse.ArgumentParser:
                              help="Restrict the batch to energy or timing runs")
     tshap_local_cache = tshap_local.add_mutually_exclusive_group()
     tshap_local_cache.add_argument("--cache-root", type=Path,
-                                   help="Shared prepare-cache bundle (uses preprocessing/ and artifact_store/)")
+                                   help="Shared cache bundle (preprocessing/)")
     tshap_local.add_argument("--output-root", type=Path, help="Dedicated XAI output directory (default: ./xai, outside --results)")
     tshap_local.add_argument("--events-per-group", type=int, default=2,
                              help="Number of events per local category (default: 2; 10 total)")
