@@ -1,4 +1,4 @@
-"""Shared cross-validation products backed by the canonical artifact store."""
+"""Shared CV folds and LED reference metrics saved under readable run paths."""
 from __future__ import annotations
 
 import json
@@ -7,8 +7,6 @@ from pathlib import Path
 
 import numpy as np
 
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
 from waveform_analysis.data.splits import (
     cv_split_from_assignment,
     fold_assignment,
@@ -39,28 +37,17 @@ class ExperimentArtifactStore:
     """Own CV split assignments and LED fold metrics as one immutable product."""
 
     def __init__(self, root):
-        self.store = ArtifactStore(root)
+        self.root = Path(root).resolve()
 
     def prepare_cv(self, dataset, config):
         cv = config["cross_validation"]
         population_id = str(dataset.manifest["event_population_identity"])
-        parameters = {
-            "version": CV_ARTIFACT_VERSION,
-            "event_population_identity": population_id,
-            "mode": config["mode"],
-            "window_ns": config["window_ns"],
-            "seed": int(config["seed"]),
-            "folds": int(cv["folds"]),
-            "shuffle": bool(cv["shuffle"]),
-            "fit": config["fit"],
-            "minimum_events_per_fold": int(cv["minimum_events_per_fold"]),
-        }
-        recipe = ProductRecipe(
-            "cross-validation",
-            parameters,
-            parents=(population_id,),
-            implementation=f"cv-split-and-led-metrics-v{CV_ARTIFACT_VERSION}",
-        )
+        window = str(config.get("window_name") or (
+            f"{config['window_ns']['start']}_to_{config['window_ns']['end']}ns"
+        ))
+        directory = self.root / "cv" / str(config["mode"]) / window
+        folds_file = directory / "folds.npz"
+        metrics_file = directory / "led_folds.json"
 
         def build(directory):
             split = make_cv_split(
@@ -106,23 +93,18 @@ class ExperimentArtifactStore:
                 encoding="utf-8",
             )
 
-        reference = self.store.get_or_build(
-            recipe,
-            build,
-            metadata={
-                "event_population_identity": population_id,
-                "folds": int(cv["folds"]),
-                "seed": int(config["seed"]),
-            },
-        )
-        with np.load(reference.payload_path("folds.npz"), allow_pickle=False) as data:
+        if not folds_file.is_file() or not metrics_file.is_file():
+            directory.mkdir(parents=True, exist_ok=True)
+            build(directory)
+
+        with np.load(folds_file, allow_pickle=False) as data:
             split = cv_split_from_assignment(
                 np.asarray(data["assignment"], dtype=np.int64),
                 seed=int(data["seed"]),
                 shuffle=bool(int(data["shuffle"])),
             )
         raw_metrics = json.loads(
-            reference.payload_path("led_folds.json").read_text(encoding="utf-8")
+            metrics_file.read_text(encoding="utf-8")
         )
         metrics = {int(key): value for key, value in raw_metrics.items()}
-        return SharedCVArtifacts(reference.path, split, metrics, reference.product_id)
+        return SharedCVArtifacts(directory, split, metrics, f"{config['mode']}/{window}/seed_{split.seed}")
