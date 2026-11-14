@@ -34,7 +34,7 @@ def _write_npz(path, **arrays):
 
 
 class ExperimentArtifactStore:
-    """Own CV split assignments and LED fold metrics as one immutable product."""
+    """Persist and reload common CV folds and LED reference metrics."""
 
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -45,7 +45,7 @@ class ExperimentArtifactStore:
         window = str(config.get("window_name") or (
             f"{config['window_ns']['start']}_to_{config['window_ns']['end']}ns"
         ))
-        directory = self.root / "cv" / str(config["mode"]) / window
+        directory = self.root / "cv" / str(config["mode"]) / window / f"seed_{int(config['seed'])}"
         folds_file = directory / "folds.npz"
         metrics_file = directory / "led_folds.json"
 
