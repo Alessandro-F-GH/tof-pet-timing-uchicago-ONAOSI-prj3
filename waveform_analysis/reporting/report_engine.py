@@ -14,7 +14,6 @@ from waveform_analysis.reporting.plotting import (
     render_run_plots,
     scatter_with_labels,
 )
-from waveform_analysis.data.splits import semantic_seed
 from waveform_analysis.reporting.stats import (
     align_by_event_id,
     metric_values,
@@ -159,15 +158,7 @@ def _paired(group, payloads, metric, root_config, seed):
                 fit,
                 metric=metric,
                 n_resamples=n,
-                seed=semantic_seed(
-                    seed,
-                    mode,
-                    group[0]["manifest"].get("window_name"),
-                    metric,
-                    labels[i],
-                    labels[j],
-                    "paired_model",
-                ),
+                seed=int(seed),
             )
             central[i, j] = r["difference_ps"]
             central[j, i] = -r["difference_ps"]
@@ -208,10 +199,7 @@ def _ensemble_ctr(group, payloads, seed):
                     raise ValueError("saved LED residuals differ on matched events")
                 # Average already-saved predictions; do not clip or recenter.
                 residual = led_a[led_idx] - (0.5 * a[prediction_idx] + 0.5 * b[prediction_idx])
-                value = metric_values(residual, fit, seed=semantic_seed(
-                    seed, run["manifest"]["mode"], run["manifest"].get("window_name"),
-                    *sorted((labels[i], labels[j])), "ensemble_ctr",
-                ))["ctr_ps"]
+                value = metric_values(residual, fit, seed=int(seed))["ctr_ps"]
                 matrix[i, j] = matrix[j, i] = value
             except (ValueError, KeyError) as exc:
                 unavailable.append({"row": labels[i], "column": labels[j], "reason": str(exc)})
