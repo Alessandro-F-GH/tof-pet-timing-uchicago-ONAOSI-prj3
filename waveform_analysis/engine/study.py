@@ -630,7 +630,13 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
         parents={"selection": selection_fp},
     )
     fitted = None
-    if _sync(store, "final_fit", final_fp, logger) != "complete":
+    final_status = _sync(store, "final_fit", final_fp, logger)
+    if (final_status == "complete" and config.get("save_model", True)
+            and not saved_model_complete(spec, store.model_dir)):
+        logger.warning("Final fit model missing | invalidating final fit and downstream stages")
+        store.invalidate_from("final_fit")
+        final_status = "missing"
+    if final_status != "complete":
         logger.info(
             "Final fit | %s | training on full development set | n=%d",
             _model_label(spec.name),
