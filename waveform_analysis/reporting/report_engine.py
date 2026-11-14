@@ -110,13 +110,9 @@ def _groups(runs):
 
 
 def _payload(run):
-    """Load blind predictions from the artifact store, with legacy local fallback."""
+    """Load blind predictions from the selected run-local result directory."""
     directory = Path(run["directory"])
-    config = resolve_run_config(directory)
-    store = RunStore(
-        directory,
-        artifact_root=config.get("preprocessing", {}).get("artifact_root"),
-    )
+    store = RunStore(directory)
     return store.load_predictions()
 
 

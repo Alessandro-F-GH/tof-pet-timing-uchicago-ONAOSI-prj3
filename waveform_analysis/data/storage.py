@@ -270,6 +270,7 @@ class RunStore:
             "prediction_ps": np.asarray(prediction_ps, dtype=np.float64),
             "corrected_ps": np.asarray(corrected_ps, dtype=np.float64),
             "led_residual_ps": np.asarray(led_residual_ps, dtype=np.float64),
+            "dataset_role": np.asarray(dataset_role),
             **(metadata or {}),
         }
         path = (self.predictions_path if dataset_role == "blind"
