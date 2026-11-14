@@ -5,7 +5,7 @@ import numpy as np
 from utils_fit import fit_ctr_ps
 from waveform_analysis.signal.metrics import rmse_ps
 
-from waveform_analysis.data.splits import bootstrap_draw_indices, semantic_seed
+from waveform_analysis.data.splits import bootstrap_draw_indices
 
 ctr_estimate = fit_ctr_ps
 
@@ -32,8 +32,8 @@ def paired_central_metrics(corrected_ps, led_ps, fit_cfg: dict, *, seed: int) ->
     corrected, led = _finite_pair(corrected_ps, led_ps)
     if corrected.size < 5:
         raise ValueError("paired blind evaluation requires at least five finite events")
-    model = metric_values(corrected, fit_cfg, seed=semantic_seed(seed, "model"))
-    reference = metric_values(led, fit_cfg, seed=semantic_seed(seed, "led"))
+    model = metric_values(corrected, fit_cfg, seed=int(seed))
+    reference = metric_values(led, fit_cfg, seed=int(seed))
     ctr_improvement = reference["ctr_ps"] - model["ctr_ps"]
     rmse_improvement = reference["rmse_ps"] - model["rmse_ps"]
     return {
@@ -76,7 +76,7 @@ def blind_event_bootstrap(
         raise ValueError("n_resamples must be >= 1")
 
     central = paired_central_metrics(
-        corrected, led, fit_cfg, seed=semantic_seed(seed, "central")
+        corrected, led, fit_cfg, seed=int(seed)
     )
     draws = {
         "ctr_ps": np.empty(n_resamples, dtype=np.float64),
@@ -92,10 +92,10 @@ def blind_event_bootstrap(
         model = metric_values(
             corrected[sampled],
             fit_cfg,
-            seed=semantic_seed(seed, "draw", index, "model"),
+            seed=int(seed),
         )
         reference = metric_values(
-            led[sampled], fit_cfg, seed=semantic_seed(seed, "draw", index, "led")
+            led[sampled], fit_cfg, seed=int(seed)
         )
         draws["ctr_ps"][index] = model["ctr_ps"]
         draws["led_ctr_ps"][index] = reference["ctr_ps"]
@@ -177,10 +177,10 @@ def paired_model_bootstrap(
 
     if metric == "ctr":
         central_a = metric_values(
-            first, fit_cfg, seed=semantic_seed(seed, "central", "a")
+            first, fit_cfg, seed=int(seed)
         )["ctr_ps"]
         central_b = metric_values(
-            second, fit_cfg, seed=semantic_seed(seed, "central", "b")
+            second, fit_cfg, seed=int(seed)
         )["ctr_ps"]
     else:
         central_a = rmse_ps(first)
@@ -193,10 +193,10 @@ def paired_model_bootstrap(
         sampled = bootstrap_draw_indices(ids.size, rng)
         if metric == "ctr":
             a = metric_values(
-                first[sampled], fit_cfg, seed=semantic_seed(seed, index, "a")
+                first[sampled], fit_cfg, seed=int(seed)
             )["ctr_ps"]
             b = metric_values(
-                second[sampled], fit_cfg, seed=semantic_seed(seed, index, "b")
+                second[sampled], fit_cfg, seed=int(seed)
             )["ctr_ps"]
         else:
             a = rmse_ps(first[sampled])
