@@ -45,7 +45,8 @@ class ExperimentArtifactStore:
         window = str(config.get("window_name") or (
             f"{config['window_ns']['start']}_to_{config['window_ns']['end']}ns"
         ))
-        directory = self.root / "cv" / str(config["mode"]) / window / f"seed_{int(config['seed'])}"
+        cv_label = f"folds_{int(cv['folds'])}_shuffle_{int(bool(cv['shuffle']))}"
+        directory = self.root / "cv" / str(config["mode"]) / window / cv_label / f"seed_{int(config['seed'])}"
         folds_file = directory / "folds.npz"
         metrics_file = directory / "led_folds.json"
 
@@ -103,8 +104,10 @@ class ExperimentArtifactStore:
                 seed=int(data["seed"]),
                 shuffle=bool(int(data["shuffle"])),
             )
+        if len(split.assignment) != int(dataset.n_events) or len(split.folds) != int(cv["folds"]):
+            raise ValueError("Shared CV cache differs from the Development population or fold configuration")
         raw_metrics = json.loads(
             metrics_file.read_text(encoding="utf-8")
         )
         metrics = {int(key): value for key, value in raw_metrics.items()}
-        return SharedCVArtifacts(directory, split, metrics, f"{config['mode']}/{window}/seed_{split.seed}")
+        return SharedCVArtifacts(directory, split, metrics, f"{config['mode']}/{window}/{cv_label}/seed_{split.seed}")
