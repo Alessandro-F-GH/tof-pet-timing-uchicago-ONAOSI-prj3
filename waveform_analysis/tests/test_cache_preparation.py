@@ -10,17 +10,16 @@ from waveform_analysis.engine import cache_preparation
 
 def _batch(tmp_path):
     run = {
-        "run_id": "energy__wide__direct_ridge",
+        "run_id": "energy__wide__direct_linear_ridge",
         "mode": "energy_to_energy",
         "window_name": "wide",
         "window_ns": {"start": -2.0, "end": 50.0},
         "seed": 17,
         "fit": {"histogram_bin_width_ps": 5},
-        "model": {"name": "direct_ridge", "space": {"parameters": {}}},
+        "model": {"name": "direct_linear_ridge", "space": {"parameters": {}}},
         "ml_input": {"subsampling": 1},
         "preprocessing": {
             "cache_dir": str(tmp_path / "old-cache"),
-            "artifact_root": str(tmp_path / "old-artifacts"),
         },
         "control": {"root_file": "control.root", "channels": {"energy": ["a"]}},
         "development": {"root_file": "development.root", "channels": {"energy": ["a"]}},
@@ -67,7 +66,7 @@ def test_prepare_batch_cache_records_complete_without_training(tmp_path, monkeyp
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["status"] == "complete"
-    assert manifest["prepared_runs"][0]["run_id"] == "energy__wide__direct_ridge"
+    assert manifest["prepared_runs"][0]["run_id"] == "energy__wide__direct_linear_ridge"
     assert (tmp_path / "portable-cache" / "preprocessing").is_dir()
     assert [call[0] for call in calls] == ["control", "control", "development", "blind"]
     assert not any("fit" in str(call[0]).lower() for call in calls if call[0] not in {"control", "development", "blind"})
