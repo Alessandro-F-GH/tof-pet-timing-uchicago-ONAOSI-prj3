@@ -18,7 +18,7 @@ preprocessing/
 
 Directory names derive from the explicit dataset label or ROOT filename, board-specific cache root, mode and window. Change the cache root or semantic dataset name when changing preprocessing settings. The cache does not compare configuration hashes to determine whether an existing file should be reused.
 
-A directory is reusable only after the `.complete` marker has been written. Build output is assembled under a temporary sibling directory, then published into its final location. An interrupted build cannot be mistaken for a complete cache. A complete cache can be reused during resume. Concurrent writes to the same semantic cache name are not supported.
+A directory is reusable only after the `.complete` marker has been written. Build output is assembled under a temporary sibling directory, then published into its final location. An interrupted build cannot be mistaken for a complete cache. A complete cache can be reused during resume. Concurrent writes to the same semantic cache name are not supported; callers must coordinate workers or separate cache roots.
 
 ## Results and resume
 

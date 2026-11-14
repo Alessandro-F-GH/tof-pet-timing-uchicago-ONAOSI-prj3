@@ -49,9 +49,9 @@ python -m waveform_analysis.cli batch \
 
 Keep UC and FBK caches separate. The execution runner maintains per-stage completion records, completed CV candidate/fold rows and an Optuna sampler for resuming interrupted model selection. Cached transforms/features are shared where appropriate; they are never refitted for blind evaluation.
 
-Within each model's result directory, `model/` contains the saved model and its fitted transform, `artifacts/predictions.npz` holds blind predictions, `artifacts/development_predictions.npz` holds development predictions, and `artifacts/bootstrap.npz` holds bootstrap draws. CV results and stage metadata are recorded in `tables/` and `metadata/`. Models and prediction arrays are stored directly under their own run rather than in a separate content-addressed artifact directory.
+Within each model's result directory, `model/` contains the saved model and its fitted transform, `artifacts/predictions.npz` holds blind predictions, `artifacts/development_predictions.npz` holds development predictions, and `artifacts/bootstrap.npz` holds bootstrap draws. CV results and stage metadata are recorded in `tables/` and `metadata/`. Model and prediction arrays are stored directly under each run. The batch runner can resume completed CV folds, and never needs an external artifact registry.
 
-**Cache implementation note:** preprocessing, sample masks and frozen-feature caches still use the shared scientific artifact store and readable alias paths. The run-local result storage and the shared-CV cache have been simplified; the remaining cache layer is being consolidated. Use a fresh cache and result directory for the new filtered experiments.
+**Cache implementation:** Control selection, native waveforms, prepared populations, control-derived timing sample masks, frozen transforms and feature matrices now use direct, human-readable cache paths. Incomplete cache builds cannot be reused: an atomic publication step writes a `.complete` marker only after successful materialization. See [CACHE.md](CACHE.md) for the layout and the explicit cache-isolation rules. Use new cache/result roots for scientific configuration changes; old artifact-store directories are not migrated automatically.
 
 ## Interpretation and diagnostics
 

@@ -38,9 +38,9 @@ Ridge regularization is selected using development CV and a `Ridge` estimator; t
 
 ## Results and caches
 
-Model run results use the nested `<batch>/<mode>/<window>/<model>/` layout. The fitted model and transform live in `model/`, and saved blind/development predictions plus bootstrap draws live in `artifacts/` with readable filenames. Incomplete CV work can be resumed from saved candidate/fold outputs, and stage state is stored under `metadata/`.
+Model run results use the nested `<batch>/<mode>/<window>/<model>/` layout. The fitted model and transform live in `model/`, and saved blind/development predictions plus bootstrap draws live in `artifacts/` with readable filenames. Incomplete CV work can be resumed from saved candidate/fold outputs, and stage state is stored under `metadata/`. Stage resume checks recorded completion and required outputs rather than a dependency-hash reconciliation step.
 
-Shared CV assignments use `<batch>/artifacts/cv/<mode>/<window>/seed_<seed>/`. Input preparation and frozen feature caches still have an ArtifactStore implementation under a named cache bundle. Those caches are not yet unified with the simpler run-local storage. New protocols should use new cache/result directories.
+Shared CV assignments use `<batch>/artifacts/cv/<mode>/<window>/seed_<seed>/`. Input preparation, fitted timing masks and frozen feature caches use direct named directories with `.complete` markers for atomic publication; no artifact registry or alias-to-hash lookups remain in the active pipeline. See [CACHE.md](CACHE.md). New scientific protocols must use fresh cache/result directories to avoid silent reuse of an identically named but scientifically incompatible cache.
 
 ## Interpretability
 
