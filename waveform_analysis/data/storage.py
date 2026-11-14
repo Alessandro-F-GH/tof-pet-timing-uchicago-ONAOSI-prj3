@@ -152,7 +152,16 @@ class RunStore:
         item = self.read_state()["stages"].get(str(stage))
         if not isinstance(item, dict):
             return "missing"
-        return "complete" if item.get("status") == "complete" else "incomplete"
+        if item.get("status") != "complete":
+            return "incomplete"
+        required = {
+            "cv": (self.cv_path, self.candidates_path),
+            "selection": (self.best_path,),
+            "final_fit": (self.final_fit_path,),
+            "blind": (self.blind_path, self.predictions_path),
+            "bootstrap": (self.bootstrap_path, self.bootstrap_draws_path),
+        }.get(str(stage), ())
+        return "complete" if all(path.is_file() for path in required) else "incomplete"
 
     def mark_stage(self, stage, fingerprint=None, *, status="complete", metadata=None):
         state = self.read_state()
