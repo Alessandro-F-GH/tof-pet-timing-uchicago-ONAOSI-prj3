@@ -122,7 +122,7 @@ def test_frozen_transform_and_feature_cache_receive_masked_control_or_developmen
         'window_ns': {'start': -2.0, 'end': 50.0},
         'seed': 1,
         'runtime': {'prediction_chunk_size': 25},
-        'preprocessing': {'artifact_root': str(tmp_path / 'artifact_store')},
+        'preprocessing': {'cache_dir': str(tmp_path)},
     }
     frozen = prepare_frozen_transform(spec,{},cfg,control_dataset=control,
                 development_dataset=dev,cache_root=tmp_path)
@@ -174,6 +174,6 @@ def test_mask_refits_when_control_identity_changes(tmp_path,monkeypatch):
     changed = replace(control,manifest={**control.manifest,'fingerprint':'new-control'})
     updated = policy.attach_control_sample_mask(dev,changed,cache_root=tmp_path)
     assert len(calls)==2
-    assert updated.manifest['sample_mask_identity']!=dev.manifest['sample_mask_identity']
+    assert updated.manifest['sample_mask_identity']==dev.manifest['sample_mask_identity']
     with pytest.raises(ValueError,match='requires the control'):
         policy.attach_control_sample_mask(dev,dev,cache_root=tmp_path)

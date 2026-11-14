@@ -1,94 +1,63 @@
-from __future__ import annotations
-
-import json
 from pathlib import Path
-
 import numpy as np
+import pytest
 
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import (
-    get_or_build_named, load_named_reference, publish_alias, resolve_alias,
-)
+from waveform_analysis.data.cache_store import cache_complete, get_or_build
 from waveform_analysis.data.named_cache import dataset_name, prepared_dataset_alias
 
 
 def _builder(value):
-    def build(directory, recipe):
+    def build(directory):
         np.save(directory / "values.npy", np.asarray([value], dtype=np.int64))
     return build
 
 
-def test_named_cache_reuses_by_name_even_when_recipe_changes(tmp_path):
-    store = ArtifactStore(tmp_path / "artifact_store")
-    alias = tmp_path / "datasets" / "control" / "blind" / "wide"
-    first_recipe = ProductRecipe("prepared-datasets", {"format": 1}, implementation="v1")
-    first = get_or_build_named(store, first_recipe, alias, _builder(7))
-    second_recipe = ProductRecipe("prepared-datasets", {"format": 99}, implementation="v99")
-    calls = []
-    second = get_or_build_named(
-        store, second_recipe, alias,
-        lambda directory, recipe: calls.append(recipe),
-    )
-    assert second.product_id == first.product_id
-    assert not calls
-    np.testing.assert_array_equal(
-        np.load(second.payload_path("values.npy")), np.asarray([7])
-    )
+def test_named_cache_reuses_completed_directory(tmp_path):
+    path = tmp_path / "datasets" / "control" / "blind" / "wide"
+    first = get_or_build(tmp_path, path, _builder(7))
+    reused = get_or_build(tmp_path, path, lambda directory: pytest.fail("unexpected rebuild"))
+    assert first.identifier == reused.identifier
+    assert cache_complete(path)
+    np.testing.assert_array_equal(np.load(path / "values.npy"), [7])
 
 
-def test_named_cache_adopts_existing_content_addressed_product(tmp_path):
-    store = ArtifactStore(tmp_path / "artifact_store")
-    recipe = ProductRecipe("feature-transforms", {"model": "minirocket"})
-    original = store.get_or_build(recipe, _builder(11))
-    alias = tmp_path / "transforms" / "minirocket" / "control" / "wide"
-    calls = []
-    adopted = get_or_build_named(
-        store, recipe, alias, lambda directory, effective: calls.append(effective)
-    )
-    assert adopted.product_id == original.product_id
-    assert not calls
-    assert resolve_alias(alias) == original.path
+def test_named_cache_rebuild_replaces_existing_output(tmp_path):
+    path = tmp_path / "features" / "ridge" / "blind"
+    get_or_build(tmp_path, path, _builder(1))
+    get_or_build(tmp_path, path, _builder(2), rebuild=True)
+    np.testing.assert_array_equal(np.load(path / "values.npy"), [2])
 
 
-def test_named_cache_explicit_rebuild_retargets_same_alias(tmp_path):
-    store = ArtifactStore(tmp_path / "artifact_store")
-    alias = tmp_path / "features" / "minirocket" / "blind"
-    recipe = ProductRecipe("feature-matrices", {"dataset": "blind"})
-    first = get_or_build_named(store, recipe, alias, _builder(1))
-    second = get_or_build_named(store, recipe, alias, _builder(2), rebuild=True)
-    assert first.product_id != second.product_id
-    np.testing.assert_array_equal(
-        np.load(resolve_alias(alias) / "values.npy"), np.asarray([2])
-    )
+def test_incomplete_cache_is_rebuilt_and_complete_cache_is_reused(tmp_path):
+    path = tmp_path / "native" / "energy"
+    path.mkdir(parents=True)
+    (path / "values.npy").write_bytes(b"incomplete")
+    assert not cache_complete(path)
+    result = get_or_build(tmp_path, path, _builder(9))
+    assert result.path == path
+    assert cache_complete(path)
+    np.testing.assert_array_equal(np.load(path / "values.npy"), [9])
 
 
-def test_named_cache_rejects_wrong_product_type(tmp_path):
-    store = ArtifactStore(tmp_path / "artifact_store")
-    wrong = ProductRecipe("native-waveforms", {"dataset": "blind"})
-    reference = store.get_or_build(wrong, _builder(1))
-    alias = tmp_path / "prepared"
-    publish_alias(alias, reference.path)
-    expected = ProductRecipe("prepared-datasets", {"dataset": "blind"})
-    import pytest
-    from waveform_analysis.data.artifact_store import ArtifactCorrupt
-    with pytest.raises(ArtifactCorrupt, match="expected prepared-datasets"):
-        get_or_build_named(store, expected, alias, _builder(2))
+def test_failed_build_does_not_publish_partial_cache(tmp_path):
+    path = tmp_path / "prepared" / "wide"
+    def fail(directory):
+        (directory / "values.npy").write_bytes(b"partial")
+        raise RuntimeError("interrupted")
+    with pytest.raises(RuntimeError, match="interrupted"):
+        get_or_build(tmp_path, path, fail)
+    assert not cache_complete(path)
 
 
-def test_dataset_cache_name_is_portable_for_windows_and_posix_paths(tmp_path):
-    windows = {"root_file": r"C:\\Users\\aless\\Desktop\\data\\48V-R0.root"}
+def test_cache_path_cannot_escape_root(tmp_path):
+    with pytest.raises(ValueError, match="inside cache root"):
+        get_or_build(tmp_path, tmp_path.parent / "outside", _builder(2))
+
+
+def test_dataset_cache_names_are_portable(tmp_path):
+    windows = {"root_file": r"C:\Users\aless\Desktop\data\48V-R0.root"}
     posix = {"root_file": "/home/aless/data/48V-R0.root"}
     assert dataset_name(windows) == dataset_name(posix) == "48V-R0"
-
-    config_windows = {
-        "control": windows, "blind": windows, "mode": "energy_to_energy",
-        "window_name": "wide",
-    }
-    config_posix = {
-        "control": posix, "blind": posix, "mode": "energy_to_energy",
-        "window_name": "wide",
-    }
-    assert prepared_dataset_alias(tmp_path, config_windows, "blind") == (
-        prepared_dataset_alias(tmp_path, config_posix, "blind")
-    )
+    w = {"control": windows, "blind": windows, "mode": "energy_to_energy", "window_name": "wide"}
+    u = {"control": posix, "blind": posix, "mode": "energy_to_energy", "window_name": "wide"}
+    assert prepared_dataset_alias(tmp_path, w, "blind") == prepared_dataset_alias(tmp_path, u, "blind")

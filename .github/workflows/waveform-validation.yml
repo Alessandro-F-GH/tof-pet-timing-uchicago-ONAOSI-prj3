@@ -1,30 +1,28 @@
-name: Artifact store validation
+name: Waveform pipeline validation
 
 on:
   push:
     branches:
-      - codex/artifact-store-refactor
+      - codex/lean-cache-xai-cleanup
   pull_request:
     branches:
       - main
 
 jobs:
-  artifact-store:
+  validation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install pipeline and test dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r waveform_analysis/requirements.txt pytest
-      - name: Compile Python sources
+      - name: Compile source
         run: python -m compileall -q waveform_analysis
-      - name: Run full regression suite
+      - name: Run regression tests
         env:
           PYTHONPATH: .
         run: python -m pytest -q waveform_analysis/tests

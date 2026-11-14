@@ -69,7 +69,6 @@ def test_prepare_batch_cache_records_complete_without_training(tmp_path, monkeyp
     assert manifest["status"] == "complete"
     assert manifest["prepared_runs"][0]["run_id"] == "energy__wide__direct_ridge"
     assert (tmp_path / "portable-cache" / "preprocessing").is_dir()
-    assert (tmp_path / "portable-cache" / "artifact_store").is_dir()
     assert [call[0] for call in calls] == ["control", "control", "development", "blind"]
     assert not any("fit" in str(call[0]).lower() for call in calls if call[0] not in {"control", "development", "blind"})
 

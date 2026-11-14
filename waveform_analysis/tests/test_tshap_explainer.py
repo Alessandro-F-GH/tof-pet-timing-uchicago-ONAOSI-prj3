@@ -419,13 +419,9 @@ def test_tshap_model_directory_and_shared_cache_resolution(tmp_path):
     assert _effective_tshap_window(None, model_dir=None) == "wide"
 
     cache = tmp_path / "cache"
-    (cache / "artifact_store").mkdir(parents=True)
-    config = {"preprocessing": {"cache_dir": "old-cache", "artifact_root": "old-store"}}
+    config = {"preprocessing": {"cache_dir": "old-cache"}}
     _apply_tshap_cache(config, cache_root=cache)
     assert config["preprocessing"]["cache_dir"] == str((cache / "preprocessing").resolve())
-    assert config["preprocessing"]["artifact_root"] == str((cache / "artifact_store").resolve())
-    with pytest.raises(ValueError, match="cache_root or artifact_root"):
-        _apply_tshap_cache(config, cache_root=cache, artifact_root=cache / "artifact_store")
 
 
 def test_tshap_model_directory_requires_run_metadata(tmp_path):
