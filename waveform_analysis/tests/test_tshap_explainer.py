@@ -165,7 +165,7 @@ def test_local_selection_rejects_stale_materialized_predictions(tmp_path):
     )
     manifest = {"stage_fingerprints": {"final_fit": "current-fit"}}
 
-    with pytest.raises(ValueError, match="different final model"):
+    with pytest.raises(ValueError, match="do not match the final model"):
         _load_materialized_local_predictions(store, blind, manifest)
 
 
@@ -429,7 +429,7 @@ def test_tshap_model_directory_requires_run_metadata(tmp_path):
         _resolve_model_run_directory(tmp_path / "raw_model_artifact")
 
 
-def test_tshap_uses_complete_legacy_local_model_without_reference(tmp_path):
+def test_tshap_uses_only_complete_run_local_model(tmp_path):
     from types import SimpleNamespace
 
     run = tmp_path / "run"
@@ -437,35 +437,13 @@ def test_tshap_uses_complete_legacy_local_model_without_reference(tmp_path):
     local.mkdir(parents=True)
     (local / "model.pkl").write_bytes(b"model")
     (local / "sample_mask.npy").write_bytes(b"mask")
-    reference_path = run / "metadata" / "model_reference.json"
-    reference_path.parent.mkdir()
-    store = SimpleNamespace(
-        model_reference_path=reference_path,
-        model_dir=tmp_path / "unresolved",
-    )
+    store = SimpleNamespace(model_dir=local)
     spec = SimpleNamespace(artifact_format="pickle", feature_transform=None)
     assert _resolve_tshap_model_directory(spec, store, run) == local
 
-
-def test_tshap_prefers_registered_model_artifact_over_local_copy(tmp_path):
-    from types import SimpleNamespace
-
-    run = tmp_path / "run"
-    local = run / "model"
-    local.mkdir(parents=True)
-    (local / "model.pkl").write_bytes(b"model")
-    (local / "sample_mask.npy").write_bytes(b"mask")
-    reference_path = run / "metadata" / "model_reference.json"
-    reference_path.parent.mkdir()
-    reference_path.write_text("{}", encoding="utf-8")
-    external = tmp_path / "external_model"
-    store = SimpleNamespace(
-        model_reference_path=reference_path,
-        model_dir=external,
-    )
-    spec = SimpleNamespace(artifact_format="pickle", feature_transform=None)
-    assert _resolve_tshap_model_directory(spec, store, run) == external
-
+    missing = SimpleNamespace(model_dir=tmp_path / "external")
+    with pytest.raises(FileNotFoundError, match="Incomplete model"):
+        _resolve_tshap_model_directory(spec, missing, run)
 
 
 @pytest.mark.parametrize("model_name", ["direct_multirocket", "shared_linear_ridge"])
@@ -540,7 +518,7 @@ def test_global_presentation_refresh_uses_cached_tshap_arrays_only(tmp_path):
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
     assert summary["plot_version"] == 21
     assert summary["global_plot"]["layout"] == "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis"
-    assert summary["global_plot"]["importance_colour_scale"].startswith("shared PowerNorm(gamma=1.6)")
+    assert summary["global_plot"]["importance_colour_scale"].startswith("one shared PowerNorm(gamma=1.6)")
     assert summary["global_plot"]["histogram_colour"] == "#4c78a8"
     assert summary["waveform_dispersion"].startswith("shaded mean +/- one population standard deviation")
     assert summary["global_plot"]["output_formats"] == ["PNG (240 dpi)", "PDF (vector)"]
@@ -565,11 +543,7 @@ def test_cli_exposes_only_tshap_interpretability_commands():
     local_args = commands["explain-tshap-local"]._mutually_exclusive_groups
     assert any({"--results", "--model-dir"} <= {option for action in group._group_actions for option in action.option_strings}
                for group in global_args)
-    assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
-               for group in global_args)
     assert any({"--results", "--model-dir"} <= {option for action in group._group_actions for option in action.option_strings}
-               for group in local_args)
-    assert any({"--cache-root", "--artifact-root"} <= {option for action in group._group_actions for option in action.option_strings}
                for group in local_args)
     assert "explain-regression" not in commands
     for command in ("explain-tshap", "explain-tshap-local"):
@@ -631,7 +605,7 @@ def test_reference_cohort_selection_deterministic(tmp_path):
     from types import SimpleNamespace
     waves = np.arange(60*2*8, dtype=np.float32).reshape(60,2,8)
     control = SimpleNamespace(n_events=60, event_index=np.arange(60),
-                              energy_windows=waves)
+                              energy_windows=waves, energy_time_ps=np.arange(8, dtype=float))
     first, ids = _sample_control_baselines(
         control, "energy_to_energy", n_baselines=8, seed=42)
     again, again_ids = _sample_control_baselines(
