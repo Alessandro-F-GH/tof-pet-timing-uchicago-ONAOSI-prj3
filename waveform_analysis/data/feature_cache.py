@@ -8,9 +8,8 @@ from pathlib import Path
 import numpy as np
 
 from waveform_analysis.core.io import canonical_hash
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import transform_alias, feature_alias, get_or_build_named, cache_root_from_config
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import transform_alias, feature_alias, cache_root_from_config
 from waveform_analysis.engine.train import FittedFeatureTransform
 from waveform_analysis.data.view import model_sample_mask, waveform_view
 from waveform_analysis.signal.sample_mask import apply_sample_mask
@@ -98,9 +97,9 @@ def _pair(dataset, mode, indices=None) -> np.ndarray:
 
 def prepare_frozen_transform(
     spec, model_space, config, *, control_dataset, development_dataset,
-    cache_root, logger=None, legacy_transform_path=None,
+    cache_root, logger=None,
 ) -> FrozenTransform | None:
-    """Load or fit one immutable feature transform in the shared artifact store."""
+    """Load or fit a frozen transform in its named cache directory."""
     if not uses_frozen_model_input(spec):
         return None
 
@@ -119,48 +118,25 @@ def prepare_frozen_transform(
     ):
         raise ValueError("Control and development model masks differ")
 
-    recipe = ProductRecipe(
-        "feature-transforms",
-        {
-            "schema_version": _CACHE_VERSION,
-            "model": spec.name,
-            "transform": spec.feature_transform.name,
-            "parameters": transform_parameters,
-            "seed": int(seed),
-            "fit_role": fit_role,
-            "fit_identity": fit_identity,
-            "sample_mask_identity": development_dataset.manifest.get("sample_mask_identity"),
-            "sample_mask": sample_mask.tolist(),
-            "input_samples": input_samples,
-            "mode": mode,
-            "window_ns": config["window_ns"],
-        },
-        implementation=f"{spec.feature_transform.name}:frozen-transform-v{_CACHE_VERSION}",
+    alias = transform_alias(
+        cache_root_from_config(config, cache_root), config,
+        spec.feature_transform.name, fit_role,
     )
-    store = ArtifactStore(config["preprocessing"].get("artifact_root", Path(cache_root) / "artifact_store"))
+    transform_id = alias.relative_to(cache_root_from_config(config, cache_root)).as_posix()
 
-    def build(directory, effective_recipe=None):
-        if legacy_transform_path is not None:
-            source = Path(legacy_transform_path).expanduser().resolve()
-            if not source.is_file():
-                raise FileNotFoundError(f"Legacy fitted transformation not found: {source}")
-            with source.open("rb") as stream:
-                artifact = pickle.load(stream)
-            if not hasattr(artifact, "metadata"):
-                raise ValueError(f"Legacy transformation has no metadata: {source}")
+    def build(directory):
+        if fit_role == "control":
+            fit_pair = _pair(control_dataset, mode)
         else:
-            if fit_role == "control":
-                fit_pair = _pair(control_dataset, mode)
-            else:
-                fit_pair = _pair(development_dataset, mode, np.asarray([0], dtype=np.int64))
-            try:
-                artifact, _ = spec.feature_transform.fit_transform(
-                    transform_parameters, fit_pair, seed=int(seed),
-                    config=({**model_space, "_frozen_transform_only": True}
-                            if spec.bounded_transform_batches else model_space),
-                )
-            finally:
-                del fit_pair
+            fit_pair = _pair(development_dataset, mode, np.asarray([0], dtype=np.int64))
+        try:
+            artifact, _ = spec.feature_transform.fit_transform(
+                transform_parameters, fit_pair, seed=int(seed),
+                config=({**model_space, "_frozen_transform_only": True}
+                        if spec.bounded_transform_batches else model_space),
+            )
+        finally:
+            del fit_pair
         if spec.requires_frozen_features:
             view = waveform_view(control_dataset, mode, np.asarray([0], dtype=np.int64))
             artifact.time_ps = np.asarray(view.time_ps, dtype=np.float64)[sample_mask]
@@ -169,29 +145,26 @@ def prepare_frozen_transform(
         if isinstance(metadata, dict):
             metadata["transform_fit_role"] = fit_role
             metadata["input_samples"] = input_samples
-            metadata["transform_identity"] = (effective_recipe or recipe).product_id
+            metadata["transform_identity"] = transform_id
             metadata["control_analysis_protocol_identity"] = fit_identity
         with (directory / "transform.pkl").open("wb") as stream:
             pickle.dump(artifact, stream, protocol=pickle.HIGHEST_PROTOCOL)
             stream.flush()
             os.fsync(stream.fileno())
 
-    alias = transform_alias(cache_root_from_config(config, cache_root), config, spec.feature_transform.name, fit_role)
-    reference = get_or_build_named(store, recipe, alias, build, metadata={
-        "fit_role": fit_role, "model": spec.name, "transform": spec.feature_transform.name,
-    })
+    reference = get_or_build(cache_root_from_config(config, cache_root), alias, build)
     with (reference.payload_path("transform.pkl")).open("rb") as stream:
         artifact = pickle.load(stream)
     if logger:
         logger.info(
-            "Model transform artifact | %s | fit=%s | id=%s",
-            spec.name.replace("_", " ").title(), fit_role, reference.product_id[:12],
+            "Model transform artifact | %s | fit=%s | path=%s",
+            spec.name.replace("_", " ").title(), fit_role, reference.path,
         )
     wrapper = FittedFeatureTransform(
-        spec.feature_transform, artifact, reference.product_id,
+        spec.feature_transform, artifact, reference.identifier,
         transform_parameters, int(seed), {},
     )
-    return FrozenTransform(wrapper, reference.product_id, fit_role, input_samples, sample_mask)
+    return FrozenTransform(wrapper, reference.identifier, fit_role, input_samples, sample_mask)
 
 
 def prepare_frozen_features(
@@ -203,40 +176,6 @@ def prepare_frozen_features(
     if not np.array_equal(model_sample_mask(dataset, mode), frozen_transform.sample_mask):
         raise ValueError("Dataset mask differs from the frozen model transform mask")
     dataset_identity = str(dataset.manifest["analysis_protocol_identity"])
-    recipe = ProductRecipe(
-        "feature-matrices",
-        {
-            "schema_version": _CACHE_VERSION,
-            "transform_identity": frozen_transform.identity,
-            "dataset_identity": dataset_identity,
-            "role": str(role),
-            "mode": mode,
-        },
-        parents=(frozen_transform.identity,),
-        implementation=f"{spec.feature_transform.name}:feature-matrix-v{_CACHE_VERSION}",
-    )
-    store = ArtifactStore(config["preprocessing"].get(
-        "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
-    ))
-
-    # Prefer a legacy combined matrix when one already exists. Its recipe is
-    # intentionally unchanged so caches created before block storage remain valid.
-    combined = store.lookup(recipe)
-    if combined.status == "hit":
-        features = store.open_array(combined.reference, "features.npy")
-        if features.shape[0] != int(dataset.n_events) or features.ndim != 2:
-            raise ValueError("Cached feature matrix has incompatible shape")
-        if logger:
-            logger.info(
-                "Model input artifact | %s | %s | events=%d | features=%d | id=%s",
-                spec.name.replace("_", " ").title(), role, features.shape[0],
-                features.shape[1], combined.reference.product_id[:12],
-            )
-        return FrozenFeatureSet(
-            features, np.asarray(frozen_transform.sample_mask, dtype=bool),
-            frozen_transform.transform, combined.reference.product_id, str(role),
-        )
-
     transform_spec = spec.feature_transform
     if transform_spec.block_names and transform_spec.transform_block is not None:
         block_arrays = []
@@ -248,21 +187,7 @@ def prepare_frozen_features(
                 int(frozen_transform.transform.artifact.metadata["batch_size"]),
             )
         for block_name in transform_spec.block_names:
-            block_recipe = ProductRecipe(
-                "feature-blocks",
-                {
-                    "schema_version": 1,
-                    "transform_identity": frozen_transform.identity,
-                    "dataset_identity": dataset_identity,
-                    "role": str(role),
-                    "mode": mode,
-                    "block": block_name,
-                },
-                parents=(frozen_transform.identity,),
-                implementation=f"{transform_spec.name}:{block_name}:feature-block-v1",
-            )
-
-            def build_block(directory, effective_recipe=None, block_name=block_name):
+            def build_block(directory, block_name=block_name):
                 first = np.asarray(
                     transform_spec.transform_block(
                         frozen_transform.transform.artifact,
@@ -301,23 +226,13 @@ def prepare_frozen_features(
                     del matrix
 
             block_alias = feature_alias(cache_root_from_config(config, cache_root), config, transform_spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role), block_name)
-            block_ref = get_or_build_named(
-                store, block_recipe, block_alias, build_block,
-                metadata={"model": spec.name, "block": block_name,
-                          "role": str(role), "events": int(dataset.n_events),
-                          "dataset_identity": dataset_identity},
-            )
-            block = store.open_array(block_ref, "features.npy")
+            block_ref = get_or_build(cache_root_from_config(config, cache_root), block_alias, build_block)
+            block = np.load(block_ref.payload_path("features.npy"), mmap_mode="r")
             if block.ndim != 2 or block.shape[0] != int(dataset.n_events):
                 raise ValueError(f"Cached feature block {block_name} has incompatible shape")
             block_arrays.append(block)
-            block_ids.append(block_ref.product_id)
-        identity = canonical_hash({
-            "transform_identity": frozen_transform.identity,
-            "dataset_identity": dataset_identity,
-            "role": str(role), "mode": mode,
-            "blocks": dict(zip(transform_spec.block_names, block_ids)),
-        })
+            block_ids.append(block_ref.identifier)
+        identity = "/".join(block_ids)
         if logger:
             logger.info(
                 "Model input blocks | %s | %s | events=%d | blocks=%s",
@@ -370,20 +285,17 @@ def prepare_frozen_features(
             del matrix
 
     alias = feature_alias(cache_root_from_config(config, cache_root), config, transform_spec.name, config.get(str(role), {"root_file": dataset.manifest.get("dataset_source", role)}), str(role))
-    reference = get_or_build_named(store, recipe, alias, build, metadata={
-        "model": spec.name, "role": str(role), "events": int(dataset.n_events),
-        "dataset_identity": dataset_identity,
-    })
-    features = store.open_array(reference, "features.npy")
+    reference = get_or_build(cache_root_from_config(config, cache_root), alias, build)
+    features = np.load(reference.payload_path("features.npy"), mmap_mode="r")
     if features.shape[0] != int(dataset.n_events) or features.ndim != 2:
         raise ValueError("Cached feature matrix has incompatible shape")
     if logger:
         logger.info(
-            "Model input artifact | %s | %s | events=%d | features=%d | id=%s",
+            "Model input artifact | %s | %s | events=%d | features=%d | path=%s",
             spec.name.replace("_", " ").title(), role, features.shape[0],
-            features.shape[1], reference.product_id[:12],
+            features.shape[1], reference.path,
         )
     return FrozenFeatureSet(
         features, np.asarray(frozen_transform.sample_mask, dtype=bool),
-        frozen_transform.transform, reference.product_id, str(role),
+        frozen_transform.transform, reference.identifier, str(role),
     )
