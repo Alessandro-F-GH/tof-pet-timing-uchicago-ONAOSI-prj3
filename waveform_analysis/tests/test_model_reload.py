@@ -60,7 +60,7 @@ def test_incomplete_model_is_detected(tmp_path):
 
 
 
-def test_run_store_pins_model_outside_result_tree(tmp_path):
+def test_run_store_saves_model_in_result_tree(tmp_path):
     spec = get_model("direct_linear_ridge")
     rng = np.random.default_rng(19)
     artifact = spec.fit(
@@ -77,19 +77,13 @@ def test_run_store_pins_model_outside_result_tree(tmp_path):
         sample_mask=np.ones(3, dtype=bool),
         feature_transform=None,
     )
-    run = RunStore(
-        tmp_path / "results" / "run",
-        artifact_root=tmp_path / "artifact_store",
+    run = RunStore(tmp_path / "results" / "run")
+    directory = run.save_model_artifact(
+        spec, fitted, {"ridge_alpha": 0.1}, final_fit_fingerprint="unused"
     )
-    reference = run.save_model_artifact(
-        spec, fitted, {"ridge_alpha": 0.1},
-        final_fit_fingerprint="a" * 64,
-    )
-    assert run.model_dir == reference.path
-    assert reference.path.is_dir()
-    assert not (run.root / "model").exists()
-    assert run.model_reference_path.is_file()
-    assert (reference.path / "model.pkl").is_file()
+    assert directory == run.model_dir == run.root / "model"
+    assert (directory / "model.pkl").is_file()
+    assert saved_model_complete(spec, directory)
 
 
 def test_saved_model_requires_its_bundled_feature_transform(tmp_path):

@@ -105,25 +105,11 @@ def _resolve_model_run_directory(model_dir):
 
 
 def _resolve_tshap_model_directory(spec, run_store, run_directory, *, explicit_model_dir=False):
-    """Resolve a final model, retaining compatibility with legacy local-model runs.
-
-    New runs with model_reference.json must use the referenced shared artifact.
-    Older runs without that reference may still carry a complete run-local model.
-    """
-    local_model = Path(run_directory) / "model"
-    has_reference = run_store.model_reference_path.is_file()
-    if saved_model_complete(spec, local_model) and (
-        explicit_model_dir or not has_reference
-    ):
-        return local_model
-    if not has_reference:
-        raise FileNotFoundError(
-            f"No model_reference.json and no complete local saved model found for "
-            f"{run_directory}. Expected a complete model under {local_model} "
-            "(including its frozen feature transform and sample mask), or a "
-            "registered final-model artifact."
-        )
-    return run_store.model_dir
+    """Use the fitted model saved inside the selected result run."""
+    model = run_store.model_dir
+    if not saved_model_complete(spec, model):
+        raise FileNotFoundError(f"Incomplete model directory: {model}")
+    return model
 
 
 def _tshap_run_inputs(results=None, model_dir=None):
@@ -864,29 +850,10 @@ LOCAL_GROUP_LABELS = {
 def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
     """Load validated blind predictions, including legacy run-local result artifacts."""
     predictions_path = Path(run_store.predictions_path)
-    legacy_local_path = Path(run_store.artifacts_dir) / "pred.npz"
-    references_path = Path(run_store.artifact_references_path)
-    legacy_local = (
-        not references_path.is_file()
-        and legacy_local_path.is_file()
-        and (
-            not predictions_path.is_file()
-            or predictions_path == legacy_local_path
-        )
-    )
     if not predictions_path.is_file():
-        if legacy_local:
-            # Older result bundles keep prediction arrays inside the run directory.
-            # --cache-root supplies the prepared-data store, but does not make that
-            # external store authoritative for a run that predates artifact references.
-            predictions_path = legacy_local_path
-        else:
-            raise FileNotFoundError(
-                "Materialized blind predictions are missing: "
-                f"{predictions_path}. No registered blind-prediction artifact or "
-                "legacy run-local artifacts/pred.npz was found. "
-                "Local TSHAP does not recompute predictions for the full blind population."
-            )
+        raise FileNotFoundError(
+            f"Materialized blind predictions are missing: {predictions_path}"
+        )
 
     with np.load(predictions_path, allow_pickle=False) as data:
         materialized = {key: np.asarray(data[key]) for key in data.files}
@@ -901,11 +868,8 @@ def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
 
     metadata_fields = {"final_fit_fingerprint", "analysis_protocol_identity"}
     missing_metadata = metadata_fields - set(materialized)
-    if missing_metadata and (not legacy_local or missing_metadata != metadata_fields):
-        raise ValueError(
-            "Materialized blind predictions are missing required provenance fields: "
-            + ", ".join(sorted(missing_metadata))
-        )
+    if missing_metadata:
+        raise ValueError(f"Prediction file lacks metadata: {sorted(missing_metadata)}")
 
     event_ids = np.asarray(materialized["event_id"], dtype=np.int64)
     predictions = np.asarray(materialized["prediction_ps"], dtype=np.float64)
@@ -965,54 +929,14 @@ def _load_materialized_local_predictions(run_store, blind, manifest, mode=None):
             scalar = scalar.decode("utf-8")
         return str(scalar)
 
-    if missing_metadata:
-        # Legacy pred.npz predates embedded provenance. Validate its owning run's
-        # completed stages and cross-check the saved target vector against the
-        # currently prepared blind dataset before accepting it.
-        state = run_store.read_state()
-        stages = state.get("stages", {})
-        for stage in ("final_fit", "blind"):
-            expected = str(manifest.get("stage_fingerprints", {}).get(stage) or "")
-            item = stages.get(stage, {})
-            if (
-                not expected
-                or item.get("status") != "complete"
-                or str(item.get("fingerprint", "")) != expected
-            ):
-                raise ValueError(
-                    "Legacy blind predictions cannot be provenance-validated: "
-                    f"the run's {stage!r} stage is not complete/current"
-                )
-
-        # Event IDs are matched exactly above, and saved targets are compared
-        # with the prepared blind targets below. Legacy manifests do not always
-        # carry event-population identities, so no additional identity gate is needed.
-        if mode is None:
-            raise ValueError(
-                "A mode is required to validate legacy blind prediction targets"
-            )
-        expected_targets = np.asarray(model_target(blind, mode), dtype=np.float64)
-        if expected_targets.shape != expected_shape or not np.allclose(
-            targets, expected_targets, rtol=1e-10, atol=1e-10
-        ):
-            raise ValueError(
-                "Legacy materialized blind targets do not match the prepared blind dataset"
-            )
-    else:
-        if not expected_protocol:
-            raise ValueError("Prepared blind dataset has no analysis-protocol identity")
-        saved_final_fit = metadata_text("final_fit_fingerprint")
-        if saved_final_fit != expected_final_fit:
-            raise ValueError(
-                "Materialized blind predictions belong to a different final model "
-                f"(saved={saved_final_fit}, expected={expected_final_fit})"
-            )
-        saved_protocol = metadata_text("analysis_protocol_identity")
-        if saved_protocol != expected_protocol:
-            raise ValueError(
-                "Materialized blind predictions belong to a different blind dataset "
-                f"(saved={saved_protocol}, expected={expected_protocol})"
-            )
+    if not expected_protocol:
+        raise ValueError("Prepared blind dataset has no analysis-protocol identity")
+    saved_final_fit = metadata_text("final_fit_fingerprint")
+    saved_protocol = metadata_text("analysis_protocol_identity")
+    if saved_final_fit != expected_final_fit:
+        raise ValueError("Saved predictions do not match the final model")
+    if saved_protocol != expected_protocol:
+        raise ValueError("Saved predictions do not match the blind population")
 
     if not all(np.all(np.isfinite(values)) for values in (
         predictions, corrected, targets

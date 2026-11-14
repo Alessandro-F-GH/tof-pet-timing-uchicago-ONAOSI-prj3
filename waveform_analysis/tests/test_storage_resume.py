@@ -18,53 +18,28 @@ def test_reading_does_not_implicitly_migrate(tmp_path):
 
 
 
-def test_numeric_products_are_shared_and_invalidation_drops_only_references(tmp_path):
-    artifact_root = tmp_path / "artifact_store"
-    store = RunStore(tmp_path / "results" / "run", artifact_root=artifact_root)
+def test_numeric_products_live_in_run_and_invalidation_removes_only_downstream(tmp_path):
+    store = RunStore(tmp_path / "results" / "run")
     predictions = store.save_predictions(
         event_id=np.arange(5),
         prediction_ps=np.arange(5, dtype=float),
         corrected_ps=np.arange(5, dtype=float) + 1,
         led_residual_ps=np.arange(5, dtype=float) + 2,
-        dataset_role="blind",
         metadata={
-            "final_fit_fingerprint": np.asarray("a" * 64),
-            "analysis_protocol_identity": np.asarray("b" * 64),
+            "final_fit_fingerprint": np.asarray("example"),
+            "analysis_protocol_identity": np.asarray("development"),
         },
     )
+    assert predictions == store.root / "artifacts" / "predictions.npz"
     assert predictions.is_file()
-    assert predictions.is_relative_to(artifact_root)
-    assert not (store.artifacts_dir / "pred.npz").exists()
     np.testing.assert_array_equal(store.load_predictions()["event_id"], np.arange(5))
-
-    draws = store.save_bootstrap_draws(
-        {"ctr_ps": np.arange(4, dtype=float)},
-        fingerprint="c" * 64,
-        blind_fingerprint="d" * 64,
-    )
+    draws = store.save_bootstrap_draws({"ctr_ps": np.arange(4, dtype=float)})
+    assert draws == store.root / "artifacts" / "bootstrap.npz"
     assert draws.is_file()
-    assert draws.is_relative_to(artifact_root)
-    assert not (store.artifacts_dir / "bootstrap.npz").exists()
 
     store.invalidate_from("blind")
-    assert not store.predictions_path.exists()
-    assert not store.bootstrap_draws_path.exists()
-    assert predictions.is_file()
-    assert draws.is_file()
-
-
-def test_external_store_does_not_fall_back_to_local_predictions(tmp_path):
-    store = RunStore(tmp_path / "run", artifact_root=tmp_path / "artifact_store")
-    store.artifacts_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        store.artifacts_dir / "pred.npz",
-        event_id=np.arange(2),
-        prediction_ps=np.zeros(2),
-        corrected_ps=np.ones(2),
-        led_residual_ps=np.ones(2),
-    )
-    assert not store.predictions_path.is_file()
-    assert store.predictions_path != store.artifacts_dir / "pred.npz"
+    assert not predictions.exists()
+    assert not draws.exists()
 
 def test_dependency_graph_defines_transitive_invalidation():
     assert STAGE_DEPENDENCIES["selection"] == ("cv",)
