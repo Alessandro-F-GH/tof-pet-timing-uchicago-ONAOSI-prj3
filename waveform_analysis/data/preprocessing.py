@@ -6,9 +6,8 @@ from typing import Any
 import numpy as np
 from numpy.lib.format import open_memmap
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import native_alias, get_or_build_named, cache_root_from_config
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import native_alias, cache_root_from_config
 from waveform_analysis.data.root_io import iterate_energy_chunks
 from waveform_analysis.signal.filtering import filter_native_waveform
 from waveform_analysis.engine.event_selection import (
@@ -118,21 +117,6 @@ def preprocess_selected(
     fingerprint = preprocessing_fingerprint(
         root, selection, dataset, preprocessing, mode
     )
-    recipe = ProductRecipe(
-        "native-waveforms",
-        {
-            "preprocessing_fingerprint": fingerprint,
-            "selection_fingerprint": selection.manifest["fingerprint"],
-            "mode": str(mode),
-        },
-        parents=(str(selection.manifest["fingerprint"]),),
-        implementation=f"native-waveform-format-{PREPROCESS_FORMAT_VERSION}",
-    )
-    artifact_root = preprocessing.get(
-        "artifact_root", str(Path(cache_dir).resolve().parent / "artifact_store")
-    )
-    store = ArtifactStore(artifact_root)
-
     def build(base):
         base.mkdir(parents=True, exist_ok=True)
         entries = np.asarray(selection.entry_index, np.int64)
@@ -335,19 +319,12 @@ def preprocess_selected(
                 "Materialized preprocessing | %s | %s | n=%d", root.name, mode, rows.size
             )
     alias = native_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
-    reference = get_or_build_named(
-        store, recipe, alias,
-        lambda directory, _recipe: build(directory),
+    reference = get_or_build(
+        cache_root_from_config(preprocessing, cache_dir), alias, build,
         rebuild=rebuild,
-        metadata={
-            "source": str(root),
-            "mode": str(mode),
-            "selection_fingerprint": selection.manifest["fingerprint"],
-        },
     )
     prepared = load_preprocessed(
         reference.path, root, selection, dataset, preprocessing, mode
     )
     manifest = dict(prepared.manifest)
-    manifest["artifact_product_id"] = reference.product_id
     return replace(prepared, manifest=manifest)

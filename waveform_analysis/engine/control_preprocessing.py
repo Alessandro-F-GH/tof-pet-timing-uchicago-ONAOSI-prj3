@@ -3,9 +3,8 @@ import json
 from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import control_alias, get_or_build_named, cache_root_from_config
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import control_alias, cache_root_from_config
 from waveform_analysis.reporting.preprocessing_plots import plot_led_selection
 from waveform_analysis.engine.event_selection import (
     fit_selection_rules,
@@ -157,20 +156,7 @@ def fit_control_artifact(
     fingerprint = _artifact_fingerprint(
         control_file, control_dataset, preprocessing, mode_fits, selected_modes
     )
-    recipe = ProductRecipe(
-        "control-preprocessing",
-        {
-            "control_fingerprint": fingerprint,
-            "modes": list(selected_modes),
-            "fit_by_mode": mode_fits,
-        },
-        implementation=f"control-preprocessing-v{CONTROL_ARTIFACT_VERSION}",
-    )
-    store = ArtifactStore(preprocessing.get(
-        "artifact_root", str(Path(cache_root).resolve() / "artifact_store")
-    ))
-
-    def build(directory, effective_recipe=None):
+    def build(directory):
         directory.mkdir(parents=True, exist_ok=True)
         rules = fit_selection_rules(
             control_file,
@@ -249,14 +235,9 @@ def fit_control_artifact(
         }
         atomic_json(directory / "manifest.json", manifest)
     alias = control_alias(cache_root_from_config(preprocessing, cache_root), control_dataset, selected_modes)
-    reference = get_or_build_named(
-        store, recipe, alias, build,
+    reference = get_or_build(
+        cache_root_from_config(preprocessing, cache_root), alias, build,
         rebuild=rebuild,
-        metadata={
-            "control_fingerprint": fingerprint,
-            "modes": list(selected_modes),
-            "fit_role": "control",
-        },
     )
     manifest = load_control_artifact(
         reference.path,
@@ -268,7 +249,6 @@ def fit_control_artifact(
         modes=selected_modes,
     )
     if logger:
-        logger.info("Control preprocessing artifact | id=%s", reference.product_id[:12])
+        logger.info("Control preprocessing cache | %s", reference.path)
     manifest = dict(manifest)
-    manifest["artifact_product_id"] = reference.product_id
     return manifest, reference.path

@@ -2,9 +2,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 import numpy as np
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import prepared_dataset_alias, get_or_build_named, cache_root_from_config
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import prepared_dataset_alias, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
     canonical_hash,
@@ -76,28 +75,6 @@ def prepare_ml_dataset(
     fp = dataset_fingerprint(
         preprocessed, control_artifact, config, dataset_config, dataset_role
     )
-    recipe = ProductRecipe(
-        "prepared-datasets",
-        {
-            "prepared_fingerprint": fp,
-            "dataset_role": str(dataset_role),
-            "mode": str(config["mode"]),
-            "window_ns": config["window_ns"],
-            "subsampling": int(config["ml_input"]["subsampling"]),
-        },
-        parents=tuple(
-            str(value) for value in (
-                preprocessed.manifest.get("artifact_product_id"),
-                control_artifact.get("artifact_product_id"),
-            ) if value
-        ),
-        implementation=f"prepared-dataset-format-{DATASET_FORMAT_VERSION}",
-    )
-    artifact_root = config["preprocessing"].get(
-        "artifact_root", str(Path(cache_dir).resolve() / "artifact_store")
-    )
-    store = ArtifactStore(artifact_root)
-
     def build(base):
         base.mkdir(parents=True, exist_ok=True)
         family = mode_family(config["mode"])
@@ -197,10 +174,7 @@ def prepare_ml_dataset(
             "analysis_protocol_identity": analysis_protocol_identity,
             "analysis_population_identity": analysis_protocol_identity,
             "control_fingerprint": control_artifact["fingerprint"],
-            "native_artifact_ref": {
-                "product_type": "native-waveforms",
-                "product_id": str(preprocessed.manifest.get("artifact_product_id", "")),
-            },
+            "native_cache_path": str(preprocessed.directory),
             "control_mode_fingerprint": _control_mode_fingerprint(
                 control_artifact, config["mode"]
             ),
@@ -257,17 +231,14 @@ def prepare_ml_dataset(
                 threshold,
             )
     alias = prepared_dataset_alias(cache_root_from_config(config, cache_dir), config, str(dataset_role))
-    reference = get_or_build_named(
-        store, recipe, alias,
-        lambda directory, _recipe: build(directory),
+    reference = get_or_build(
+        cache_root_from_config(config, cache_dir), alias, build,
         rebuild=rebuild,
-        metadata={"dataset_role": str(dataset_role), "prepared_fingerprint": fp},
     )
     dataset = load_prepared_dataset(reference.path)
     if dataset.manifest.get("fingerprint") != fp:
         raise ValueError("Prepared artifact manifest fingerprint mismatch")
     manifest = dict(dataset.manifest)
-    manifest["artifact_product_id"] = reference.product_id
     dataset = replace(dataset, manifest=manifest)
     if not allow_empty and not dataset.n_events:
         raise RuntimeError("Prepared artifact contains no events")

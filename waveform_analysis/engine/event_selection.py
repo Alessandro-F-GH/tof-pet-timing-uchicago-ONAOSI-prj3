@@ -17,9 +17,8 @@ from typing import Any
 import numpy as np
 from waveform_analysis.signal.photopeak import fit_photopeak
 from waveform_analysis.signal.peak import fit_histogram_peak
-from waveform_analysis.core.artifact_identity import ProductRecipe
-from waveform_analysis.data.artifact_store import ArtifactStore
-from waveform_analysis.data.named_cache import selection_alias, get_or_build_named, cache_root_from_config
+from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.named_cache import selection_alias, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
     canonical_hash,
@@ -513,23 +512,6 @@ def apply_selection_rules(
     root = Path(root_file).resolve()
     family = {"energy_to_energy": "energy", "timing_to_timing": "timing"}[str(mode)]
     fingerprint = application_fingerprint(root, dataset, preprocessing, rules, mode)
-    recipe = ProductRecipe(
-        "selected-events",
-        {
-            "application_fingerprint": fingerprint,
-            "rules_fingerprint": rules["fingerprint"],
-            "mode": str(mode),
-        },
-        parents=(str(rules["fingerprint"]),),
-        implementation=f"selection-application-v{SELECTION_APPLY_VERSION}",
-    )
-    resolved_artifact_root = (
-        Path(artifact_root).expanduser().resolve()
-        if artifact_root is not None
-        else Path(cache_dir).resolve().parent / "artifact_store"
-    )
-    store = ArtifactStore(resolved_artifact_root)
-
     def build(base):
         base.mkdir(parents=True, exist_ok=True)
         total = energy_event_count(root)
@@ -612,15 +594,9 @@ def apply_selection_rules(
                 "Frozen selection | %s | %s | selected=%d/%d", root.name, mode, rows.size, n
             )
     alias = selection_alias(cache_root_from_config(preprocessing, cache_dir), dataset, dataset, mode)
-    reference = get_or_build_named(
-        store, recipe, alias,
-        lambda directory, _recipe: build(directory),
+    reference = get_or_build(
+        cache_root_from_config(preprocessing, cache_dir), alias, build,
         rebuild=rebuild,
-        metadata={
-            "source": str(root),
-            "mode": str(mode),
-            "rules_fingerprint": rules["fingerprint"],
-        },
     )
     try:
         selected = load_selection(reference.path, root, dataset, preprocessing, rules, mode)
@@ -635,19 +611,12 @@ def apply_selection_rules(
                 "Stale selection cache | %s | %s | rebuilding selected events",
                 root.name, mode,
             )
-        reference = get_or_build_named(
-            store, recipe, alias,
-            lambda directory, _recipe: build(directory),
+        reference = get_or_build(
+            cache_root_from_config(preprocessing, cache_dir), alias, build,
             rebuild=True,
-            metadata={
-                "source": str(root),
-                "mode": str(mode),
-                "rules_fingerprint": rules["fingerprint"],
-            },
         )
         selected = load_selection(
             reference.path, root, dataset, preprocessing, rules, mode
         )
     manifest = dict(selected.manifest)
-    manifest["artifact_product_id"] = reference.product_id
     return replace(selected, manifest=manifest)
