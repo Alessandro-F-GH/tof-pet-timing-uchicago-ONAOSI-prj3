@@ -37,6 +37,7 @@ def _example():
             deletion[method][sequence] = {
                 "step": steps,
                 "removed_window_indices": order,
+                "removed_ranked_windows": np.r_[0, np.arange(1, len(order) + 1), len(order)],
                 "first_phase_count": len(positive) if sequence == "positive_negative" else len(negative),
                 "second_phase_count": len(negative) if sequence == "positive_negative" else len(positive),
                 "signed_prediction_change_ps": changes,
@@ -90,7 +91,8 @@ def test_replot_from_saved_artifacts_does_not_require_model(tmp_path):
         "signed_attributions_ps": {k: v.tolist() for k, v in scores.items()},
         "deletion": {
             method: {
-                sign: {key: value.tolist() for key, value in result.items()}
+                sign: {key: value.tolist() if isinstance(value, np.ndarray) else value
+                       for key, value in result.items()}
                 for sign, result in deletion[method].items()
             } for method in METHODS
         },
