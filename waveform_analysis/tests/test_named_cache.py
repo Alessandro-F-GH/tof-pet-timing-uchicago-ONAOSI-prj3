@@ -61,3 +61,25 @@ def test_dataset_cache_names_are_portable(tmp_path):
     w = {"control": windows, "blind": windows, "mode": "energy_to_energy", "window_name": "wide"}
     u = {"control": posix, "blind": posix, "mode": "energy_to_energy", "window_name": "wide"}
     assert prepared_dataset_alias(tmp_path, w, "blind") == prepared_dataset_alias(tmp_path, u, "blind")
+
+
+def test_failed_rebuild_preserves_last_complete_cache(tmp_path):
+    path = tmp_path / "features" / "complete"
+    get_or_build(tmp_path, path, _builder(7))
+
+    def fail(directory):
+        np.save(directory / "values.npy", np.asarray([99]))
+        raise RuntimeError("build failed")
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        get_or_build(tmp_path, path, fail, rebuild=True)
+    assert cache_complete(path)
+    np.testing.assert_array_equal(np.load(path / "values.npy"), [7])
+
+
+def test_changed_named_cache_rebuild_publishes_new_content(tmp_path):
+    path = tmp_path / "features" / "shared"
+    get_or_build(tmp_path, path, _builder(2))
+    get_or_build(tmp_path, path, _builder(8), rebuild=True)
+    assert cache_complete(path)
+    np.testing.assert_array_equal(np.load(path / "values.npy"), [8])

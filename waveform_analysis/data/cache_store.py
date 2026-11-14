@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -46,9 +47,18 @@ def get_or_build(root, path, builder: Callable[[Path], None], *, rebuild=False) 
     try:
         builder(temporary)
         (temporary / COMPLETE_FILE).write_text("complete\n", encoding="utf-8")
+        backup = None
         if path.exists():
-            shutil.rmtree(path)
-        os.replace(temporary, path)
+            backup = path.with_name(f".{path.name}.previous-{uuid.uuid4().hex}")
+            os.replace(path, backup)
+        try:
+            os.replace(temporary, path)
+        except OSError:
+            if backup is not None and backup.exists() and not path.exists():
+                os.replace(backup, path)
+            raise
+        if backup is not None and backup.exists():
+            shutil.rmtree(backup)
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
