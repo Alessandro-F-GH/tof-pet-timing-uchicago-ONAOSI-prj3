@@ -174,7 +174,9 @@ def prepare_ml_dataset(
             "analysis_protocol_identity": analysis_protocol_identity,
             "analysis_population_identity": analysis_protocol_identity,
             "control_fingerprint": control_artifact["fingerprint"],
-            "native_cache_path": str(preprocessed.directory),
+            "native_cache_relative_path": preprocessed.directory.relative_to(
+                cache_root_from_config(config, cache_dir)
+            ).as_posix(),
             "control_mode_fingerprint": _control_mode_fingerprint(
                 control_artifact, config["mode"]
             ),

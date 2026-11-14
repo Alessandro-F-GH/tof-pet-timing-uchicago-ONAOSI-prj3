@@ -85,9 +85,7 @@ def _matches_tshap_mode(config, mode):
 def _resolve_model_run_directory(model_dir):
     """Resolve a run directory from its result folder or its local model/ child.
 
-    The run directory owns the scientific metadata and model reference. A raw
-    shared ArtifactStore product is not sufficient because it has no unique
-    control/blind cohort or experiment configuration.
+    The run directory owns the scientific metadata and its saved fitted model.
     """
     path = Path(model_dir).expanduser().resolve()
     for candidate in (path, path.parent):
@@ -96,7 +94,7 @@ def _resolve_model_run_directory(model_dir):
     raise ValueError(
         f"Cannot identify a saved-model run from {path}. Pass the run directory "
         "containing metadata/manifest.json, or its local model/ subdirectory; "
-        "a raw ArtifactStore model product is not a complete run."
+        "the selected path must refer to a complete run."
     )
 
 
@@ -1057,10 +1055,19 @@ def _native_led_baselines(
         return np.empty((0, 2), dtype=np.float64)
     if np.any(dataset_indices < 0) or np.any(dataset_indices >= dataset.n_events):
         raise ValueError("LED baseline dataset indices are out of range")
-    native_path = dataset.manifest.get("native_cache_path")
-    if not native_path:
-        raise ValueError("Prepared waveform manifest lacks native_cache_path")
-    native_path = Path(native_path)
+    relative_path = dataset.manifest.get("native_cache_relative_path")
+    if not relative_path:
+        raise ValueError("Prepared waveform manifest lacks native_cache_relative_path")
+    dataset_root = next(
+        (parent.parent for parent in dataset.directory.parents
+         if parent.name == "datasets"),
+        None,
+    )
+    if dataset_root is None:
+        raise ValueError("Prepared dataset is not inside its named cache tree")
+    native_path = (dataset_root / relative_path).resolve()
+    if not native_path.is_relative_to(dataset_root.resolve()):
+        raise ValueError("Native cache path escapes the selected cache root")
     native_manifest = json.loads((native_path / "manifest.json").read_text(encoding="utf-8"))
     family = mode_family(mode)
     if (

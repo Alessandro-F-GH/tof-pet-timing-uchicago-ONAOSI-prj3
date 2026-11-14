@@ -27,8 +27,7 @@ class FrozenTransform:
 
 @dataclass(frozen=True)
 class FrozenFeatureSet:
-    # Legacy combined matrices are retained as one mmap. New composite caches
-    # keep their feature families in separate read-only mmaps.
+    # Composite transformations retain separate read-only feature matrices.
     _features: np.ndarray | None
     sample_mask: np.ndarray
     transform: FittedFeatureTransform
@@ -41,8 +40,7 @@ class FrozenFeatureSet:
     def features(self) -> np.ndarray:
         if self._features is not None:
             return self._features
-        # Compatibility accessor for diagnostics/tests; training uses rows()
-        # and therefore never materializes the full concatenated matrix.
+        # Training uses rows(), avoiding full concatenation.
         return np.concatenate(self.feature_blocks, axis=1)
 
     @property
@@ -245,7 +243,7 @@ def prepare_frozen_features(
             tuple(block_arrays), tuple(transform_spec.block_names),
         )
 
-    def build(directory, effective_recipe=None):
+    def build(directory):
         chunk_size = int(config.get("runtime", {}).get("prediction_chunk_size", 4096))
         if spec.bounded_transform_batches:
             chunk_size = min(
