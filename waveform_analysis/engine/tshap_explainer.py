@@ -152,7 +152,7 @@ def _selection_seed(seed, role="blind_events"):
         raise ValueError("TSHAP seed must be an integer")
     if role != "blind_events":
         raise ValueError(f"Unknown TSHAP sampling role: {role}")
-    return semantic_seed(seed, "tshap", role)
+    return int(seed)
 
 
 def _check_prepared_grids(control, blind, mode):
