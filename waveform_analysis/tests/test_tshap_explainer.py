@@ -551,7 +551,7 @@ def test_cli_exposes_only_tshap_interpretability_commands():
             option for action in commands[command]._actions
             for option in action.option_strings
         }
-        assert "--n-baselines" not in options
+        assert "--n-baselines" in options
         assert "--windows" in options
         assert "--mode" in options
         assert "--ml-window" not in options
