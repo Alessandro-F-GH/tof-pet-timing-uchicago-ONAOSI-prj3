@@ -95,7 +95,9 @@ def phase_rotate_prepared(pairs, time_ns, *, frequency_GHz=2.5,
             old = amp[:, None] * np.cos(theta[None, :] + phi[:, None])
             new = amp[:, None] * np.cos(theta[None, :] + phi[:, None] + angle)
             delta = weights[None, :] * (new - old)
-            result[:, d, :] = (source[:, d, :].astype(np.float64) + delta).astype(np.float32)
+            # Baseline and tail are disjoint interventions. Preserve the
+            # already rotated baseline when applying the tail correction.
+            result[:, d, :] = (result[:, d, :].astype(np.float64) + delta).astype(np.float32)
             info[f"{section}_detector{d+1}_amplitude"] = amp
             info[f"{section}_detector{d+1}_phase_rad"] = phi
     protected = (t >= baseline_end_ns) & (t <= tail_start_ns)
