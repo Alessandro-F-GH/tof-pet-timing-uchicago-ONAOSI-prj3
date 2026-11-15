@@ -101,6 +101,7 @@ def test_replot_from_saved_artifacts_does_not_require_model(tmp_path):
         "--replot-only", "--output-root", str(tmp_path)])
     assert args.model_dir is None
     assert run(args) == tmp_path.resolve()
+    folder = tmp_path / "ungrouped" / "event_172"
     assert all((folder / name).is_file() for name in PLOT_FILES)
     saved = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
     assert saved["event_plot_files"] == list(PLOT_FILES)
@@ -131,6 +132,7 @@ def test_replot_migrates_legacy_target_error_metrics_without_inference(tmp_path)
             for method in METHODS},
     }), encoding="utf-8")
     replot_saved(tmp_path)
+    folder = tmp_path / "ungrouped" / "event_173"
     payload = json.loads((folder / "results.json").read_text(encoding="utf-8"))
     for method in METHODS:
         for direction in ("positive_negative", "negative_positive"):
