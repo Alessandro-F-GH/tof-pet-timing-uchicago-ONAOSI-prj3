@@ -27,7 +27,7 @@ def test_frequency_phase_bins_group_predictions():
     predictions = np.array([10., 30., 40.])
     rec, f_bin, p_bin = group_grid(
         freq, phase, predictions, frequency_bins=2, phase_bins=4,
-        low=1.5, high=3.5)
+        low=1.5, high=3.5, frequency_binning="uniform")
     assert f_bin[0] == f_bin[1] != f_bin[2]
     assert p_bin[0] == p_bin[1] != p_bin[2]
     matched = [r for r in rec if r["frequency_bin"] == f_bin[0]
