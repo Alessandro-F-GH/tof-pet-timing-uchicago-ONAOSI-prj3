@@ -11,10 +11,11 @@ from waveform_analysis.scripts.compare_energy_timing_residuals import (
 
 
 def test_tukey_3iqr_either_channel():
-    # IQR is 2 for both coordinates: fences [-7, 9].
+    # Quantiles are computed from all observations, including the extremes.
+    # Both deliberately extreme points must lie beyond the 3-IQR fences.
     points = np.array([
         [-1., -1.], [0., 0.], [1., 1.], [2., 2.], [3., 3.],
-        [4., 4.], [11., 0.], [0., -20.],
+        [4., 4.], [15., 0.], [0., -20.],
     ])
     fences, outlier = tukey_fences(points, multiplier=3.)
     assert outlier[-2:].all()
