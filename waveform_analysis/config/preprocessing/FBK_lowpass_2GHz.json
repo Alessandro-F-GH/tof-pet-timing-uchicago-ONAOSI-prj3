@@ -58,7 +58,7 @@
     "max_iterations": 6,
     "convergence_tolerance_mV": 0.01,
     "selection_sigma_low": -2,
-    "selection_sigma_high": 4
+    "selection_sigma_high": 2
   },
   "tot_peak": {
     "histogram_bin_ns": 0.005,
