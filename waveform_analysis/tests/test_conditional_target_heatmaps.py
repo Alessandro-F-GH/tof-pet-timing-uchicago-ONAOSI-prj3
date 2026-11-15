@@ -110,9 +110,9 @@ def test_each_representation_has_its_own_train_statistics():
     )
     signals = np.array([
         [0, 0, 0, 1, 2, 3],
-        [0, 0, 0, 2, 4, 6],
-        [0, 0, 0, 3, 6, 9],
-        [0, 0, 0, 4, 8, 12],
+        [0, 0, 0, 2, 3, 6],
+        [0, 0, 0, 3, 7, 9],
+        [0, 0, 0, 4, 7, 12],
     ], dtype=np.float32)
     waves = np.stack([signals + .5, signals * 1.2 + .1], axis=1)
     rows = np.arange(4)
