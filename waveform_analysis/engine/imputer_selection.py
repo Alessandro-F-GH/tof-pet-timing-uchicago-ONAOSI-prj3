@@ -108,11 +108,12 @@ def _score_candidates(waves, masks, *, minimum, span, models, median,
             scale = span[:, hidden]
             truth_normalized = waves[:, :, hidden]
             for event, (indices, distances) in enumerate(neighbors):
+                knn_mask = (mask_number + n_windows) % (2 * n_windows)
                 for k in knn_k:
                     for weighting in WEIGHT_NAMES:
                         prediction, _ = knn.reconstruct(
-                            waves[event], mask_number, indices[mask_number],
-                            distances[mask_number], k, weighting
+                            waves[event], knn_mask, indices[knn_mask],
+                            distances[knn_mask], k, weighting
                         )
                         residual = (
                             prediction[:, hidden] - truth_normalized[event]
@@ -260,10 +261,10 @@ def benchmark_imputers(
                     ))
                 allowed = [r for r in rows if r["task"] == task]
                 selected[task] = min(allowed, key=lambda x: (
-                    x["evaluation_rmse_mv"], x["method"]
+                    x["tuning_rmse_mv"], x["method"]
                 )).copy()
                 logger.info("Imputer SELECTED | %s/%s | %s: %s %s | "
-                            "independent RMSE=%.5g mV", board, channel, task,
+                            "held-out RMSE=%.5g mV", board, channel, task,
                             selected[task]["method"], selected[task]["setting"],
                             selected[task]["evaluation_rmse_mv"])
 
@@ -287,7 +288,7 @@ def benchmark_imputers(
             _save_csv(directory / "comparison.csv", rows)
             atomic_json(directory / "selection.json", {
                 **expected, "selected": selected, "methods": rows,
-                "selection_rule": "min held-out pooled hidden-sample RMSE (mV), separately per task",
+                "selection_rule": "min tuning pooled hidden-sample RMSE (mV), separately per task; independent evaluation reported without selection",
                 "tuning_rule": "one global PPCA components or kNN (k, weighting) per task, over all positions",
                 "no_blind_used": True, "frozen": True,
             })
