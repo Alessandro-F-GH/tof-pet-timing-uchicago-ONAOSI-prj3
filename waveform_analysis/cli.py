@@ -37,6 +37,13 @@ def _parser() -> argparse.ArgumentParser:
                          help="Directory for the portable preprocessing cache bundle")
     prepare.add_argument("--models", nargs="+", metavar="MODEL",
                          help="Prepare caches only for these model names (default: all batch models)")
+    replot = sub.add_parser("plot-imputers",
+                            help="Regenerate RMSE plots from fitted benchmark without refitting")
+    replot.add_argument("--results", type=Path, required=True)
+    replot.add_argument("--cache-root", type=Path, required=True)
+    replot.add_argument("--output-root", type=Path, required=True)
+    replot.add_argument("--modes", nargs="+", choices=("energy", "timing"),
+                        default=["energy", "timing"])
     benchmark = sub.add_parser("benchmark-imputers",
                                help="Fit, tune and freeze reconstruction-RMSE-selected imputers")
     benchmark.add_argument("--results", type=Path, required=True)
@@ -159,6 +166,14 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
+    if args.command == "plot-imputers":
+        from .engine.imputer_selection import plot_existing_imputers
+        for output in plot_existing_imputers(
+            args.results, cache_root=args.cache_root,
+            output_root=args.output_root, modes=args.modes, logger=logger,
+        ):
+            print(output)
+        return
     if args.command == "benchmark-imputers":
         from .engine.imputer_selection import benchmark_imputers
         for output in benchmark_imputers(
