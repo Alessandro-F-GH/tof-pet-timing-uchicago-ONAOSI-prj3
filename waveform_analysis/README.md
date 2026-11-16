@@ -69,7 +69,60 @@ python -m waveform_analysis.cli explain-tshap-local \
   --windows wide --mode energy
 ```
 
-The existing CLI supports reference-waveform and conditional kNN paired temporal-window TSHAP. These are still separate implementations; imputation benchmarking and unification into a single frozen-imputer workflow are the next cleanup stage. Local-importance deletion and the separate temporal/progressive-window study are retained. The paired-window scores correspond to a two-player Shapley game, not to exact Shapley values of individual time samples.
+### Frozen imputer benchmark (recommended for XAI)
+
+Fit, tune, independently evaluate, and save waveform imputers **before** running TSHAP.
+The benchmark requires the already-prepared wide Development cache (no model retraining),
+and uses disjoint Development fitting/tuning/evaluation subsets. It compares joint PPCA
+(with candidate latent dimensions), conditional kNN (with one global k/weighting per
+task), Development median, Control reference substitution, and local linear
+interpolation for short missing windows. Selection minimizes pooled hidden-sample
+RMSE in physical mV over all eligible temporal positions. The two complementary
+coalitions can select different imputers. Independent evaluation scores are
+reported but never used for winner selection. No Blind events are used.
+
+Windows PowerShell (run from repository root):
+
+```powershell
+python -m waveform_analysis.cli benchmark-imputers `
+  --results waveform_analysis/results/UC/filtered_2GHz_order5_benchmark `
+  --cache-root UC_lowpass_rebuilt `
+  --output-root xai/fitted_imputers `
+  --modes energy `
+  --window-samples 20 --stride-samples 20
+```
+
+The benchmark writes `xai/fitted_imputers/UC/energy/wide/w20_s20/` with
+`selection.json`, `comparison.csv`, `fitted_imputers.npz`, and `.complete`.
+Repeat with FBK results and its own prepared cache for FBK; the same output root
+separates boards and modes automatically. A completed frozen selection is reused
+rather than silently refitted. Change the window settings/output root to trigger
+a distinct benchmark; `--overwrite` explicitly replaces the selected artifact.
+
+Run TSHAP with **the saved winners**, without any imputer or model fitting:
+
+```powershell
+python -m waveform_analysis.cli explain-tshap `
+  --results waveform_analysis/results/UC/filtered_2GHz_order5_benchmark `
+  --models direct_linear_ridge `
+  --windows wide --mode energy `
+  --cache-root UC_lowpass_rebuilt `
+  --imputer-root xai/fitted_imputers `
+  --output-root xai/UC_lowpass_linear `
+  --max-events 10 `
+  --window-samples 20 --stride-samples 20
+```
+
+The separate `tshap_frozen/` output includes per-run plots, CSVs, score arrays,
+and metadata identifying both selected imputers. Use `explain-tshap-local` with
+the same `--imputer-root` for representative local explanations. The frozen
+benchmark currently targets **wide** waveform input only; it fails explicitly
+if the selected cache or analysis grid does not match. The previous reference
+and conditional-kNN TSHAP commands remain available without `--imputer-root`.
+
+Local-importance deletion and the separate temporal/progressive-window study
+are retained. The paired-window scores correspond to a two-player Shapley game,
+not exact Shapley values of individual time samples.
 
 Source-domain diagnostics (FFT, acquisition phase and filtering sensitivity) remain available in `scripts/`.
 
