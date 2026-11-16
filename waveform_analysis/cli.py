@@ -37,6 +37,23 @@ def _parser() -> argparse.ArgumentParser:
                          help="Directory for the portable preprocessing cache bundle")
     prepare.add_argument("--models", nargs="+", metavar="MODEL",
                          help="Prepare caches only for these model names (default: all batch models)")
+    benchmark = sub.add_parser("benchmark-imputers",
+                               help="Fit, tune and freeze reconstruction-RMSE-selected imputers")
+    benchmark.add_argument("--results", type=Path, required=True)
+    benchmark.add_argument("--cache-root", type=Path, required=True)
+    benchmark.add_argument("--output-root", type=Path, required=True)
+    benchmark.add_argument("--modes", nargs="+", choices=("energy", "timing"),
+                           default=["energy", "timing"])
+    benchmark.add_argument("--window-samples", type=int, default=20)
+    benchmark.add_argument("--stride-samples", type=int, default=20)
+    benchmark.add_argument("--fit-events", type=int, default=2000)
+    benchmark.add_argument("--tuning-events", type=int, default=200)
+    benchmark.add_argument("--evaluation-events", type=int, default=200)
+    benchmark.add_argument("--ppca-components", type=int, nargs="+", default=[8, 16, 32])
+    benchmark.add_argument("--knn-k", type=int, nargs="+", default=[1, 3, 5, 10, 20])
+    benchmark.add_argument("--n-baselines", type=int, default=8)
+    benchmark.add_argument("--seed", type=int, default=42)
+    benchmark.add_argument("--overwrite", action="store_true")
     plots = sub.add_parser(
         "plots", help="Regenerate plots/reports from a result root only"
     )
@@ -115,6 +132,8 @@ def _parser() -> argparse.ArgumentParser:
     tshap_local.add_argument("--overwrite", action="store_true",
                              help="Force recomputation of local explanations")
     for cmd in (tshap, tshap_local):
+        cmd.add_argument("--imputer-root", type=Path,
+                         help="Previously fitted benchmark-imputers output; load winners without fitting")
         cmd.add_argument("--method", choices=("reference", "conditional-knn"), default="reference",
                          help="Choose original control-reference Shapley or deterministic conditional KNN")
         cmd.add_argument("--knn-k", nargs="+", type=int, default=[1, 3, 5, 10, 20, 50, 100],
@@ -140,6 +159,44 @@ def main() -> None:
         print(json.dumps(public_batch_config(batch), indent=2))
         return
     logger = configure_logging()
+    if args.command == "benchmark-imputers":
+        from .engine.imputer_selection import benchmark_imputers
+        for output in benchmark_imputers(
+            args.results, cache_root=args.cache_root, output_root=args.output_root,
+            modes=args.modes, window_samples=args.window_samples,
+            stride_samples=args.stride_samples, fit_events=args.fit_events,
+            tuning_events=args.tuning_events, evaluation_events=args.evaluation_events,
+            n_baselines=args.n_baselines, components=args.ppca_components,
+            knn_k=args.knn_k, seed=args.seed, overwrite=args.overwrite,
+            logger=logger,
+        ):
+            print(output)
+        return
+    if args.command == "explain-tshap" and args.imputer_root is not None:
+        from .engine.frozen_imputer_tshap import explain_frozen
+        for output in explain_frozen(
+            args.results, model_dir=args.model_dir, models=args.models,
+            ml_window=args.windows, mode=args.mode, cache_root=args.cache_root,
+            output_root=args.output_root, imputer_root=args.imputer_root,
+            max_events=args.max_events, window_samples=args.window_samples,
+            stride_samples=args.stride_samples, predict_batch_size=args.predict_batch_size,
+            seed=args.seed, overwrite=args.overwrite, local=False, logger=logger,
+        ):
+            print(output)
+        return
+    if args.command == "explain-tshap-local" and args.imputer_root is not None:
+        from .engine.frozen_imputer_tshap import explain_frozen
+        for output in explain_frozen(
+            args.results, model_dir=args.model_dir, models=args.models,
+            ml_window=args.windows, mode=args.mode, cache_root=args.cache_root,
+            output_root=args.output_root, imputer_root=args.imputer_root,
+            window_samples=args.window_samples, stride_samples=args.stride_samples,
+            predict_batch_size=args.predict_batch_size, seed=args.seed,
+            events_per_group=args.events_per_group, extreme_margin=args.extreme_margin,
+            overwrite=args.overwrite, local=True, logger=logger,
+        ):
+            print(output)
+        return
     if args.command == "explain-tshap" and args.method == "conditional-knn":
         from .engine.conditional_knn_tshap import explain_conditional_knn
         for output in explain_conditional_knn(
