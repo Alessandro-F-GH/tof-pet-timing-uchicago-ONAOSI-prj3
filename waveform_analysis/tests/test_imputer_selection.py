@@ -127,3 +127,60 @@ def test_frozen_shapley_zero_for_constant_model(tmp_path):
         np.testing.assert_allclose(result, 0.)
     finally:
         module.base._predict_bounded = original
+
+
+def test_position_rmse_matches_pooled_rmse_and_writes_plots(tmp_path):
+    from waveform_analysis.engine.imputer_diagnostics import (
+        position_rows, save_diagnostics, diagnostics_complete,
+    )
+    rng = np.random.default_rng(211)
+    reference = rng.normal(size=(9, 2, 16)).astype(np.float32)
+    validation = rng.normal(size=(4, 2, 16)).astype(np.float32)
+    starts = np.asarray([3, 6])
+    masks = _masks(16, starts, 3, np.ones(16, dtype=bool))
+    engine = PairedWindowKNN(
+        reference, starts, 3, np.ones(16, bool), [1, 2],
+        scale_mv=np.ones((2, 16)), reference_block=4,
+    )
+    keywords = dict(
+        minimum=np.zeros((2, 16)), span=np.ones((2, 16)),
+        models={}, median=np.median(reference.reshape(9, -1), axis=0),
+        control=reference[:2], knn=engine, knn_k=(1, 2),
+    )
+    global_scores, per_position = _score_candidates(
+        validation, masks, return_positions=True, **keywords,
+    )
+    chosen = {task: _winner_per_method(global_scores, task)
+              for task in ("remove_window", "keep_only")}
+    records = position_rows(
+        chosen, per_position, per_position, starts,
+        np.arange(16, dtype=float) * 1000, 3,
+    )
+    assert len(records) == sum(len(chosen[task]) for task in chosen) * len(starts)
+    for row in records:
+        assert np.isfinite(row["evaluation_rmse_mv"])
+        assert row["evaluation_rmse_mv"] >= 0
+    # Remove-window positions have equal numbers of hidden samples; pooled
+    # squared RMSE must equal the mean of the per-window squared RMSE.
+    for method, item in chosen["remove_window"].items():
+        values = [r["evaluation_rmse_mv"] for r in records
+                  if r["task"] == "remove_window" and r["method"] == method]
+        assert np.sqrt(np.mean(np.square(values))) == pytest.approx(
+            global_scores[("remove_window", method, item["setting"])], rel=1e-6,
+        )
+    summary = [
+        dict(task=task, method=method, setting=item["setting"],
+             tuning_rmse_mv=item["rmse_mv"],
+             evaluation_rmse_mv=item["rmse_mv"])
+        for task, winners in chosen.items()
+        for method, item in winners.items()
+    ]
+    selected = {task: min(
+        (row for row in summary if row["task"] == task),
+        key=lambda row: row["tuning_rmse_mv"],
+    ) for task in chosen}
+    save_diagnostics(tmp_path, records, summary, selected, "UC", "energy")
+    assert diagnostics_complete(tmp_path)
+    with np.load(tmp_path / "position_rmse.npz") as artifact:
+        assert artifact["evaluation_rmse_mv"].shape[1] == len(starts)
+    assert (tmp_path / "best_methods_summary.pdf").stat().st_size > 0
