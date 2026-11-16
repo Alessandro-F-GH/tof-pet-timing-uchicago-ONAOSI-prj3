@@ -94,6 +94,31 @@ python -m waveform_analysis.cli benchmark-imputers `
 
 The benchmark writes `xai/fitted_imputers/UC/energy/wide/w20_s20/` with
 `selection.json`, `comparison.csv`, `fitted_imputers.npz`, and `.complete`.
+It also saves `position_rmse.csv` / `position_rmse.npz`,
+`rmse_vs_position__remove_window.png/.pdf`,
+`rmse_vs_position__keep_only.png/.pdf`, and
+`best_methods_summary.png/.pdf`. For every method and task, the position
+curve uses the SINGLE globally tuning-selected setting and the independent
+evaluation RMSE of the missing region, expressed in physical mV. The bar plot
+shows the same globally tuned settings' pooled held-out RMSE and marks the
+overall winner for each task.
+
+Existing completed benchmarks (created before per-position diagnostics existed)
+can acquire the new figures WITHOUT refitting or retuning. The following
+recomputes reconstruction errors on the original saved tuning/evaluation
+Development event indices using the frozen fitted imputer artifacts:
+
+```powershell
+python -m waveform_analysis.cli plot-imputers `
+  --results waveform_analysis/results/UC/filtered_2GHz_order5_benchmark `
+  --cache-root UC_lowpass_rebuilt `
+  --output-root xai/fitted_imputers `
+  --modes energy
+```
+
+Note: `plot-imputers` still performs the held-out imputer inference needed
+to recover per-position RMSE, which can be expensive for conditional kNN,
+but it does NOT retrain PPCA, retune hyperparameters, or touch saved Ridge models.
 Repeat with FBK results and its own prepared cache for FBK; the same output root
 separates boards and modes automatically. A completed frozen selection is reused
 rather than silently refitted. Change the window settings/output root to trigger
