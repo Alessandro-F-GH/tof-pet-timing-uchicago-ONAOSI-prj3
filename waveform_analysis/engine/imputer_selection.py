@@ -429,3 +429,95 @@ class FrozenImputers:
     def empty_references(self):
         # v(empty) is the empirical Development reference expectation.
         return self.arrays["fit_reference"]
+
+
+def plot_existing_imputers(results, *, cache_root, output_root,
+                           modes=("energy", "timing"), logger=None):
+    """Generate diagnostics from frozen fit arrays, with NO refitting or tuning.
+
+    Reevaluate saved tuning/evaluation event indices on their prepared Development
+    waveforms. The original globally tuned method settings are not changed.
+    """
+    logger = logger or logging.getLogger(__name__)
+    results = Path(results).expanduser().resolve()
+    output_root = Path(output_root).expanduser().resolve()
+    board = results.parent.name
+    folders = []
+    for channel in modes:
+        if channel not in ("energy", "timing"):
+            raise ValueError(f"Unknown mode: {channel}")
+        loaded = load_wide_development(
+            results, channel, cache_root, return_transform=True,
+            include_control=True, include_sample_mask=True,
+        )
+        waves, time_ps, _, manifest, transform, _, retained = loaded
+        matches = list((output_root / board / channel / "wide").glob("w*_s*/selection.json"))
+        if not matches:
+            raise FileNotFoundError(
+                f"No existing fitted imputer benchmark under {output_root / board / channel / 'wide'}"
+            )
+        for selection_path in matches:
+            folder = selection_path.parent
+            if not (folder / ".complete").is_file():
+                raise FileNotFoundError(f"Incomplete frozen imputer benchmark: {folder}")
+            metadata = json.loads(selection_path.read_text(encoding="utf-8"))
+            if metadata["development_identity"] != manifest["analysis_protocol_identity"]:
+                raise ValueError("Frozen imputer and prepared Development identities differ")
+            with np.load(folder / "fitted_imputers.npz", allow_pickle=False) as saved:
+                arrays = {name: np.asarray(saved[name]) for name in saved.files}
+            starts = np.asarray(arrays["starts"], dtype=np.int64)
+            width = int(metadata["window_samples"])
+            masks = _masks(len(time_ps), starts, width, np.asarray(retained, bool))
+            if not np.array_equal(
+                starts, _starts(len(time_ps), width,
+                                int(metadata["stride_samples"]), np.asarray(retained, bool))
+            ):
+                raise ValueError("Frozen imputer windows disagree with current dataset")
+            minimum, span = _scale(transform, len(time_ps))
+            if not np.array_equal(minimum, arrays["minimum"]) or not np.array_equal(span, arrays["span"]):
+                raise ValueError("Frozen waveform normalization differs")
+            models = {}
+            settings = {task: {} for task in TASKS}
+            for row in metadata["methods"]:
+                task, method, setting = row["task"], row["method"], row["setting"]
+                settings[task][method] = {"setting": setting}
+                if method == "ppca_joint":
+                    c = int(setting)
+                    models[c] = SimpleNamespace(
+                        components=c,
+                        mean=arrays[f"ppca_{c}_mean"],
+                        W=arrays[f"ppca_{c}_W"],
+                        sigma2=float(arrays[f"ppca_{c}_sigma2"]),
+                    )
+            # Recover the SAME global method settings from the original tuning,
+            # and do not choose alternatives based on these new diagnostics.
+            knn_settings = sorted({
+                int(row["setting"].split(":")[0]) for row in metadata["methods"]
+                if row["method"] == "conditional_knn"
+            })
+            knn = PairedWindowKNN(
+                arrays["fit_reference"], starts, width,
+                np.asarray(retained, bool), knn_settings,
+                scale_mv=span,
+            ) if knn_settings else None
+            def score(ids):
+                _, positions = _score_candidates(
+                    np.asarray(waves[np.asarray(ids, np.int64)], np.float32),
+                    masks, minimum=minimum, span=span, models=models,
+                    median=arrays["median_physical"],
+                    control=arrays["control_baselines"],
+                    knn=knn, knn_k=knn_settings, logger=logger,
+                    return_positions=True,
+                )
+                return positions
+            logger.info("Replotting frozen imputers | %s | no refitting", folder)
+            tuning_positions = score(arrays["tuning_event_index"])
+            evaluation_positions = score(arrays["evaluation_event_index"])
+            rows = position_rows(
+                settings, tuning_positions, evaluation_positions,
+                starts, time_ps, width,
+            )
+            save_diagnostics(folder, rows, metadata["methods"],
+                             metadata["selected"], board, channel)
+            folders.append(folder)
+    return folders
