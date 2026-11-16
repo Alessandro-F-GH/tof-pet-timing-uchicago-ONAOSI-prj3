@@ -10,6 +10,7 @@ import csv
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -20,6 +21,7 @@ from waveform_analysis.engine.conditional_knn_imputer import (
     PairedWindowKNN, WEIGHT_NAMES,
 )
 from waveform_analysis.models.ppca_imputer import ProbabilisticPCA
+from waveform_analysis.engine.imputer_diagnostics import position_rows, save_diagnostics, diagnostics_complete
 from waveform_analysis.scripts.evaluate_imputation_benchmark import conditional_mean
 from waveform_analysis.scripts.train_ppca_interpolation_blend import linear_interpolation_batch
 
@@ -64,7 +66,7 @@ def _physical(waves, minimum, span):
 
 
 def _score_candidates(waves, masks, *, minimum, span, models, median,
-                      control, knn, knn_k, logger=None):
+                      control, knn, knn_k, logger=None, return_positions=False):
     """Physical-mV pooled MSE, with equal weight per hidden sample and event."""
     physical = _physical(waves, minimum, span)
     flat = physical.reshape(len(waves), -1)
@@ -72,26 +74,35 @@ def _score_candidates(waves, masks, *, minimum, span, models, median,
     n_windows = len(masks) // 2
     errors = {}
     counts = {task: 0 for task in TASKS}
+    positional_errors = {}
+    positional_counts = {}
 
-    def add(task, method, setting, error):
+    def add(task, method, setting, error, position):
         key = (task, method, setting)
-        errors[key] = errors.get(key, 0.0) + float(np.sum(error))
+        value = float(np.sum(error))
+        errors[key] = errors.get(key, 0.0) + value
+        if return_positions:
+            position_key = (*key, position)
+            positional_errors[position_key] = positional_errors.get(position_key, 0.0) + value
 
     # One nearest-neighbor search per event, reused for every task/position/k.
     neighbors = [knn.search(query) for query in waves] if knn is not None else None
     for mask_number, (task, start, observed, hidden) in enumerate(masks):
+        window_index = mask_number % n_windows
         hidden_flat = np.tile(hidden, 2)
         observed_flat = np.tile(observed, 2)
         truth = flat[:, hidden_flat]
         counts[task] += int(truth.size)
-        add(task, "median", "", (truth - median[hidden_flat]) ** 2)
+        if return_positions:
+            positional_counts[(task, window_index)] = int(truth.size)
+        add(task, "median", "", (truth - median[hidden_flat]) ** 2, window_index)
         # Reference substitution is scored as E_b[(x_M-b_M)^2], not the
         # squared error of its average; this matches reference TSHAP draws.
         reference_truth = control_phys[:, :, hidden].reshape(len(control), -1)
         reference_error = np.mean(
             (truth[:, None, :] - reference_truth[None, :, :]) ** 2, axis=1
         )
-        add(task, "reference", "", reference_error)
+        add(task, "reference", "", reference_error, window_index)
         if task == "remove_window":
             width = int(knn.ends[mask_number] - start)
             interpolation = np.stack([
@@ -100,10 +111,10 @@ def _score_candidates(waves, masks, *, minimum, span, models, median,
             ], axis=1)
             add(task, "linear", "", (
                 interpolation.reshape(len(waves), -1) - truth
-            ) ** 2)
+            ) ** 2, window_index)
         for components, model in models.items():
             prediction = conditional_mean(model, flat, observed_flat, hidden_flat)
-            add(task, "ppca_joint", str(components), (prediction - truth) ** 2)
+            add(task, "ppca_joint", str(components), (prediction - truth) ** 2, window_index)
         if neighbors is not None:
             scale = span[:, hidden]
             truth_normalized = waves[:, :, hidden]
@@ -118,11 +129,18 @@ def _score_candidates(waves, masks, *, minimum, span, models, median,
                         residual = (
                             prediction[:, hidden] - truth_normalized[event]
                         ) * scale
-                        add(task, "conditional_knn", f"{k}:{weighting}", residual ** 2)
+                        add(task, "conditional_knn", f"{k}:{weighting}", residual ** 2, window_index)
         if logger and (mask_number + 1) % max(1, n_windows // 3) == 0:
             logger.info("Imputer scoring | %d/%d masks", mask_number + 1, len(masks))
-    return {key: float(np.sqrt(sse / counts[key[0]]))
-            for key, sse in errors.items()}
+    pooled = {key: float(np.sqrt(sse / counts[key[0]]))
+              for key, sse in errors.items()}
+    if not return_positions:
+        return pooled
+    per_position = {
+        key: float(np.sqrt(sse / positional_counts[(key[0], key[3])]))
+        for key, sse in positional_errors.items()
+    }
+    return pooled, per_position
 
 
 def _winner_per_method(scores, task):
@@ -235,19 +253,19 @@ def benchmark_imputers(
             )
             med = np.median(flat_fit, axis=0)
             logger.info("Imputer tuning | %s/%s | n=%d", board, channel, len(tuning))
-            tune_scores = _score_candidates(
+            tune_scores, tune_positions = _score_candidates(
                 tuning, masks, minimum=minimum, span=span, models=models,
                 median=med, control=control, knn=engine,
-                knn_k=sorted(set(knn_k)), logger=logger,
+                knn_k=sorted(set(knn_k)), logger=logger, return_positions=True,
             )
             best_variants = {task: _winner_per_method(tune_scores, task)
                              for task in TASKS}
             logger.info("Imputer held-out evaluation | %s/%s | n=%d",
                         board, channel, len(evaluation))
-            eval_all = _score_candidates(
+            eval_all, eval_positions = _score_candidates(
                 evaluation, masks, minimum=minimum, span=span, models=models,
                 median=med, control=control, knn=engine,
-                knn_k=sorted(set(knn_k)), logger=logger,
+                knn_k=sorted(set(knn_k)), logger=logger, return_positions=True,
             )
             rows, selected = [], {}
             for task in TASKS:
@@ -286,6 +304,11 @@ def benchmark_imputers(
                 arrays[f"ppca_{c}_sigma2"] = np.asarray(model.sigma2)
             np.savez(directory / "fitted_imputers.npz", **arrays)
             _save_csv(directory / "comparison.csv", rows)
+            plots = position_rows(
+                best_variants, tune_positions, eval_positions,
+                starts, time_ps, window_samples,
+            )
+            save_diagnostics(directory, plots, rows, selected, board, channel)
             atomic_json(directory / "selection.json", {
                 **expected, "selected": selected, "methods": rows,
                 "selection_rule": "min tuning pooled hidden-sample RMSE (mV), separately per task; independent evaluation reported without selection",
@@ -298,6 +321,8 @@ def benchmark_imputers(
             if metadata.get(name) != value:
                 raise ValueError(f"Frozen imputer cache configuration mismatch ({name}). "
                                  "Choose a new output-root or --overwrite after reviewing inputs.")
+        if not diagnostics_complete(artifact.path):
+            logger.info("Existing benchmark has no position plots; regenerate them with plot-imputers")
         outputs.append(artifact.path)
         logger.info("Imputer benchmark saved | %s", artifact.path)
     return outputs
