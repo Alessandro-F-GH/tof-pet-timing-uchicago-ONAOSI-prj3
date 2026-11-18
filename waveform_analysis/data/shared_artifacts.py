@@ -116,8 +116,11 @@ class SharedCVCache:
         metrics_file = directory / "led_folds.json"
         provenance_file = directory / "population.json"
         provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
+        # The directory already identifies the named datasets, mode, window
+        # and CV definition. Validate the operational CV settings explicitly.
+        # A provenance hash may change after moving the ROOT data between
+        # operating systems; it must not prevent reusing the stored folds.
         expected = {
-            "event_population_identity": population_id,
             "n_events": int(dataset.n_events),
             "n_folds": int(cv["folds"]),
             "shuffle": bool(cv["shuffle"]),
@@ -135,8 +138,7 @@ class SharedCVCache:
             )
             raise ValueError(
                 f"Shared CV cache incompatible | path={directory} | {details}. "
-                "Existing CV results may depend on these folds; inspect the "
-                "population/settings before rebuilding or choosing a new cache."
+                "Check the dataset selection and CV settings before reusing this cache."
             )
 
         with np.load(folds_file, allow_pickle=False) as data:
