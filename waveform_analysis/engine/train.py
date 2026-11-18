@@ -478,7 +478,7 @@ def detector_swap_rmse(
     forward_prediction=None,
     chunk_size=None,
 ):
-    if spec.estimator_formulation == "shared":
+    if spec.estimator_formulation == "shared" and spec.swap_antisymmetry_enforced:
         return 0.0
     forward = (
         np.asarray(forward_prediction, np.float64).reshape(-1)
