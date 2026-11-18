@@ -66,7 +66,7 @@ def predict(artifact, pair):
 
 
 def explain(artifact, pair):
-    shared = artifact.metadata["input_definition"].startswith("sample-wise")
+    shared = artifact.metadata["shared_input_difference"]
     _features(pair, shared=shared)
     return np.asarray(artifact.regressor.feature_importances_, dtype=np.float64)
 
