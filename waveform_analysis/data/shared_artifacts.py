@@ -13,6 +13,7 @@ from waveform_analysis.data.splits import (
     make_cv_split,
 )
 from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.cache_settings import portable_settings
 from waveform_analysis.data.named_cache import dataset_name, safe_component
 from waveform_analysis.reporting.stats import metric_values
 from waveform_analysis.data.view import model_target
@@ -101,6 +102,7 @@ class SharedCVCache:
                     "n_folds": int(cv["folds"]),
                     "shuffle": bool(cv["shuffle"]),
                     "seed": int(config["seed"]),
+                    "fit_settings": portable_settings(config["fit"]),
                 }, indent=2) + "\n", encoding="utf-8"
             )
             (directory / "led_folds.json").write_text(
@@ -124,6 +126,8 @@ class SharedCVCache:
             "shuffle": bool(cv["shuffle"]),
             "seed": int(config["seed"]),
         }
+        if "fit_settings" in provenance:
+            expected["fit_settings"] = portable_settings(config["fit"])
         differences = {
             key: {"cached": provenance.get(key), "expected": value}
             for key, value in expected.items()
@@ -145,7 +149,10 @@ class SharedCVCache:
                 seed=int(data["seed"]),
                 shuffle=bool(int(data["shuffle"])),
             )
-        if len(fold_assignment(split)) != int(dataset.n_events) or len(split.folds) != int(cv["folds"]):
+        if (len(fold_assignment(split)) != int(dataset.n_events)
+                or len(split.folds) != int(cv["folds"])
+                or any(len(fold.validation) < int(cv["minimum_events_per_fold"])
+                       for fold in split.folds)):
             raise ValueError("Shared CV cache differs from the Development population or fold configuration")
         raw_metrics = json.loads(
             metrics_file.read_text(encoding="utf-8")
