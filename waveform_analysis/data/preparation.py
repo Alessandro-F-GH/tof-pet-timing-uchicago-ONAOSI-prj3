@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 import numpy as np
 from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.cache_settings import portable_settings, verify_settings
 from waveform_analysis.data.named_cache import prepared_dataset_alias, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
@@ -75,6 +76,7 @@ def prepare_ml_dataset(
     fp = dataset_fingerprint(
         preprocessed, control_artifact, config, dataset_config, dataset_role
     )
+    cache_settings = portable_settings({"dataset": dataset_config, "role": dataset_role, "mode": config["mode"], "window_ns": config["window_ns"], "ml_input": config["ml_input"], "preprocessing": config["preprocessing"]})
     def build(base):
         base.mkdir(parents=True, exist_ok=True)
         family = mode_family(config["mode"])
@@ -166,6 +168,7 @@ def prepare_ml_dataset(
         )
         manifest = {
             "format_version": DATASET_FORMAT_VERSION,
+            "cache_settings": cache_settings,
             "fingerprint": fp,
             "dataset_role": str(dataset_role),
             "dataset_source": str(Path(dataset_config["root_file"]).resolve()),
@@ -238,8 +241,9 @@ def prepare_ml_dataset(
         rebuild=rebuild,
     )
     dataset = load_prepared_dataset(reference.path)
-    if dataset.manifest.get("fingerprint") != fp:
-        raise ValueError("Prepared artifact manifest fingerprint mismatch")
+    verify_settings(dataset.manifest, cache_settings, label="Prepared ML dataset")
+    if dataset.manifest.get("mode") != config["mode"] or dataset.manifest.get("window_ns") != config["window_ns"]:
+        raise ValueError("Prepared ML dataset mode/window differs from requested settings")
     manifest = dict(dataset.manifest)
     dataset = replace(dataset, manifest=manifest)
     if not allow_empty and not dataset.n_events:
