@@ -12,7 +12,7 @@ _MODULES = {
     **{f'{form}_{family}': f'{kind}.{form}_{family}'
        for family, kind in [('linear_ridge', 'linear'), ('minirocket', 'kernel'),
                             ('rdst', 'kernel'), ('hydra', 'kernel'), ('multirocket', 'kernel'),
-                            ('multirocket_rdst', 'kernel')]
+                            ('multirocket_rdst', 'kernel'), ('decision_tree_regressor', 'tree')]
        for form in ('direct', 'shared')},
 }
 
