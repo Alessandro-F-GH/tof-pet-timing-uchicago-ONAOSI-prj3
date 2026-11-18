@@ -43,7 +43,6 @@ class SharedCVCache:
 
     def prepare_cv(self, dataset, config):
         cv = config["cross_validation"]
-        population_id = str(dataset.manifest["event_population_identity"])
         window = str(config.get("window_name") or (
             f"{config['window_ns']['start']}_to_{config['window_ns']['end']}ns"
         ))
@@ -61,7 +60,7 @@ class SharedCVCache:
         def build(directory):
             split = make_cv_split(
                 dataset.n_events,
-                population_identity=population_id,
+                population_identity="",
                 batch_seed=int(config["seed"]),
                 n_folds=int(cv["folds"]),
                 shuffle=bool(cv["shuffle"]),
@@ -98,7 +97,6 @@ class SharedCVCache:
             )
             (directory / "population.json").write_text(
                 json.dumps({
-                    "event_population_identity": population_id,
                     "n_events": int(dataset.n_events),
                     "n_folds": int(cv["folds"]),
                     "shuffle": bool(cv["shuffle"]),
