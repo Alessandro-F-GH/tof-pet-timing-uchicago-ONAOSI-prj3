@@ -99,7 +99,10 @@
       "shared_linear_ridge",
       "onishi_cnn",
       "direct_rdst",
-      "direct_multirocket"
+      "direct_multirocket",
+      "direct_mlp",
+      "direct_decision_tree_regressor",
+      "shared_decision_tree_regressor"
     ],
     "modes": [
       "energy_to_energy",
