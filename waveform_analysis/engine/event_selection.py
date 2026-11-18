@@ -18,6 +18,7 @@ import numpy as np
 from waveform_analysis.signal.photopeak import fit_photopeak
 from waveform_analysis.signal.peak import fit_histogram_peak
 from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.cache_settings import portable_settings, verify_settings
 from waveform_analysis.data.named_cache import selection_alias, cache_root_from_config
 from waveform_analysis.core.io import (
     atomic_json,
@@ -481,9 +482,8 @@ def application_fingerprint(root, dataset, preprocessing, rules, mode):
 
 def load_selection(directory, root, dataset, preprocessing, rules, mode):
     manifest = json.loads((directory / "manifest.json").read_text())
-    if manifest.get("fingerprint") != application_fingerprint(
-        root, dataset, preprocessing, rules, mode
-    ):
+    verify_settings(manifest, portable_settings({"dataset": dataset, "preprocessing": preprocessing, "mode": mode, "rules": {k: v for k, v in rules.items() if k not in {"fingerprint", "reference_source"}}}), label="Selection")
+    if manifest.get("mode") != mode:
         raise ValueError("selection cache stale")
     return SelectionData(
         directory,
@@ -577,6 +577,7 @@ def apply_selection_rules(
         _summary(base / "selection_summary.csv", counts, n)
         manifest = {
             "format_version": SELECTION_APPLY_VERSION,
+            "cache_settings": portable_settings({"dataset": dataset, "preprocessing": preprocessing, "mode": mode, "rules": {k: v for k, v in rules.items() if k not in {"fingerprint", "reference_source"}}}),
             "fingerprint": application_fingerprint(
                 root, dataset, preprocessing, rules, mode
             ),
