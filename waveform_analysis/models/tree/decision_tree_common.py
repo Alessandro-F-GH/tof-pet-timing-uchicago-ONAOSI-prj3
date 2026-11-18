@@ -46,6 +46,7 @@ def fit(params, train_x, train_target, *, seed, config, shared):
         random_state=int(seed),
     ).fit(x, y)
     return DecisionTreeArtifact(regressor, {
+        "shared_input_difference": bool(shared),
         "input_definition": "sample-wise detector difference s1-s2" if shared
                             else "concatenated detector waveforms [s1,s2]",
         "prediction_definition": "f_tree(s1-s2) [ps]" if shared
@@ -59,7 +60,7 @@ def fit(params, train_x, train_target, *, seed, config, shared):
 
 
 def predict(artifact, pair):
-    shared = artifact.metadata["input_definition"].startswith("sample-wise")
+    shared = artifact.metadata["shared_input_difference"]
     x = _features(pair, shared=shared)
     return np.asarray(artifact.regressor.predict(x), dtype=np.float64).reshape(-1)
 
