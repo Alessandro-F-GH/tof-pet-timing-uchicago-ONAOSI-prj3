@@ -59,6 +59,7 @@ class ModelSpec:
     requires_frozen_features: bool = False
     bounded_transform_batches: bool = False
     inplace_fit_input: bool = False
+    swap_antisymmetry_enforced: bool = True
 
     def __post_init__(self) -> None:
         if self.selection_method != "development_cv":
