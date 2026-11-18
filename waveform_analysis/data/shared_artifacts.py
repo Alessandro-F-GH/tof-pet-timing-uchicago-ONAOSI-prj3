@@ -116,16 +116,27 @@ class SharedCVCache:
         metrics_file = directory / "led_folds.json"
         provenance_file = directory / "population.json"
         provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
-        if (
-            provenance.get("event_population_identity") != population_id
-            or provenance.get("n_events") != int(dataset.n_events)
-            or provenance.get("n_folds") != int(cv["folds"])
-            or provenance.get("shuffle") != bool(cv["shuffle"])
-            or provenance.get("seed") != int(config["seed"])
-        ):
+        expected = {
+            "event_population_identity": population_id,
+            "n_events": int(dataset.n_events),
+            "n_folds": int(cv["folds"]),
+            "shuffle": bool(cv["shuffle"]),
+            "seed": int(config["seed"]),
+        }
+        differences = {
+            key: {"cached": provenance.get(key), "expected": value}
+            for key, value in expected.items()
+            if provenance.get(key) != value
+        }
+        if differences:
+            details = "; ".join(
+                f"{key}: cached={values['cached']!r}, expected={values['expected']!r}"
+                for key, values in differences.items()
+            )
             raise ValueError(
-                "Shared CV cache population or settings differ; use a new cache "
-                "directory or rebuild the named cache"
+                f"Shared CV cache incompatible | path={directory} | {details}. "
+                "Existing CV results may depend on these folds; inspect the "
+                "population/settings before rebuilding or choosing a new cache."
             )
 
         with np.load(folds_file, allow_pickle=False) as data:
