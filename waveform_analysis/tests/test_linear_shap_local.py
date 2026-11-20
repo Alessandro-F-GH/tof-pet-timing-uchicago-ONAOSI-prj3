@@ -221,3 +221,82 @@ def test_masked_development_mean_matches_full_population():
                                   np.array([1, 0, 1, 0, 1, 0], dtype=bool),
                                   chunk_size=2)
     np.testing.assert_allclose(result, data[:, :, [0, 2, 4]].mean(axis=0))
+
+
+
+def test_global_sampling_is_seeded_without_replacement():
+    from waveform_analysis.engine.linear_shap import _random_blind_indices
+
+    a = _random_blind_indices(100, 20, 43)
+    b = _random_blind_indices(100, 20, 43)
+    np.testing.assert_array_equal(a, b)
+    assert len(a) == len(np.unique(a)) == 20
+    assert np.all(np.diff(a) > 0)
+    np.testing.assert_array_equal(_random_blind_indices(4, 20, 43), np.arange(4))
+    with pytest.raises(ValueError, match="max_events"):
+        _random_blind_indices(4, 0, 43)
+    with pytest.raises(ValueError, match="seed"):
+        _random_blind_indices(4, 3, True)
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_global_mean_shap_averages_after_sign_separation(shared):
+    from waveform_analysis.engine.linear_shap import _global_mean_contributions
+
+    phi = np.array([
+        [[4., -2., 5., -1.], [-3., 2., -4., 3.]],
+        [[-6., 1., -2., 4.], [2., -5., 3., -1.]],
+    ])
+    starts, positive, negative = _global_mean_contributions(phi, 2, shared=shared)
+    np.testing.assert_array_equal(starts, [0, 2])
+    if shared:
+        assert positive.shape == negative.shape == (1, 2)
+        np.testing.assert_allclose(positive, [[4.5, 7.5]])
+        np.testing.assert_allclose(negative, [[-8., -4.]])
+    else:
+        assert positive.shape == negative.shape == (2, 2)
+        np.testing.assert_allclose(positive, [[2.5, 4.5], [2., 3.]])
+        np.testing.assert_allclose(negative, [[-4., -1.5], [-4., -2.5]])
+    np.testing.assert_allclose(
+        (positive + negative).sum(), phi.sum(axis=(1, 2)).mean()
+    )
+
+
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("window_name", ["wide", "onishi"])
+def test_global_linear_shap_plot_has_no_difference_panel(tmp_path, shared, window_name):
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.axes import Axes
+    from unittest.mock import patch
+    from waveform_analysis.engine.linear_shap import _plot_global_linear_shap
+
+    names, spans = [], []
+    old_title, old_span = Axes.set_title, Axes.axvspan
+
+    def track_title(self, value, *args, **kwargs):
+        names.append(value)
+        return old_title(self, value, *args, **kwargs)
+
+    def track_span(self, start, end, *args, **kwargs):
+        spans.append((start, end))
+        return old_span(self, start, end, *args, **kwargs)
+
+    n_channels = 1 if shared else 2
+    path = tmp_path / "global.pdf"
+    with (patch.object(Axes, "set_title", track_title),
+          patch.object(Axes, "axvspan", track_span)):
+        _plot_global_linear_shap(
+            path, time_ps=np.linspace(-2000, 6000, 16),
+            mean_waveform_mv=np.ones((2, 16)),
+            starts=np.array([0, 8]), group_samples=8,
+            mean_positive_ps=np.ones((n_channels, 2)),
+            mean_negative_ps=-np.ones((n_channels, 2)),
+            model_name="shared_linear_ridge" if shared else "direct_linear_ridge",
+            n_events=12, window_name=window_name,
+        )
+    assert path.is_file()
+    assert "Mean detector waveforms" in names
+    assert not any("difference" in title.lower() for title in names)
+    assert len(names) == (2 if shared else 3)
+    assert spans == ([(-1.5, 2.0)] * len(names) if window_name == "wide" else [])
