@@ -1123,7 +1123,9 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
                       led_baseline_mv, attribution, group, event_id, target_ps,
                       prediction_ps, improvement_ps, led_threshold_mv,
                       window_starts=None, window_scores=None, window_samples=None,
-                      attribution_method="TSHAP"):
+                      attribution_method="TSHAP",
+                      positive_window_scores=None, negative_window_scores=None,
+                      separate_detector_importance=False):
     """Plot the shared detector-waveform and temporal-attribution local layout.
 
     TSHAP uses one paired score; linear SHAP may supply separate detector scores.
@@ -1142,17 +1144,26 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ):
         raise ValueError("Waveforms and supplied LED threshold must be finite")
 
-    waveform_difference = _center_detector_difference(waveform_mv, dataset_mean_difference_mv)
+    if positive_window_scores is None:
+        waveform_difference = _center_detector_difference(waveform_mv, dataset_mean_difference_mv)
     if led_baseline_mv is None:
         led_levels_mv = None
     else:
         led_levels_mv = _led_reference_levels(led_baseline_mv, led_threshold_mv)
         led_line_start_ns, led_line_end_ns = _led_line_extent(time_ns)
 
-    fig, axes = plt.subplots(
-        3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
-        gridspec_kw={"height_ratios": [1.0, 0.85, 1.1]},
-    )
+    if positive_window_scores is not None:
+        n_panels = 3 if separate_detector_importance else 2
+        fig, axes = plt.subplots(
+            n_panels, 1,
+            figsize=(12.5, 8.5 if separate_detector_importance else 6.5),
+            sharex=True, constrained_layout=True,
+        )
+    else:
+        fig, axes = plt.subplots(
+            3, 1, figsize=(12.5, 8.5), sharex=True, constrained_layout=True,
+            gridspec_kw={"height_ratios": [1.0, 0.85, 1.1]},
+        )
     label = LOCAL_GROUP_LABELS[group]
     fig.suptitle(
         f"{label} | event {int(event_id)}\n"
@@ -1178,40 +1189,68 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9, ncols=3)
 
-    ax = axes[1]
-    ax.plot(time_ns, waveform_difference, linewidth=1.15,
-            label="Detector difference − dataset mean")
-    ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
-    ax.set_title("Detector difference relative to dataset mean")
-    ax.set_ylabel("Amplitude difference (mV)")
-    ax.grid(True, alpha=0.22, linewidth=0.6)
-    ax.legend(loc="best", fontsize=9)
-
-    ax = axes[2]
-    if window_starts is None or window_scores is None or window_samples is None:
-        raise ValueError("Local signed histogram requires raw pair-level window scores")
-    scores = np.asarray(window_scores, dtype=np.float64)
-    starts = np.asarray(window_starts, dtype=np.int64)
-    if scores.ndim != 2 or scores.shape[1] != len(starts) or scores.shape[0] not in (1, 2):
-        raise ValueError("Local window scores must have shape [1 or 2, windows]")
-    dt = float(np.median(np.diff(time_ps)))
-    centers = (time_ps[starts] + window_samples * dt / 2) / 1000
-    width = window_samples * dt / 1000
-    if scores.shape[0] == 1:
-        ax.bar(centers, scores[0], width=width, color="#4c78a8",
-               edgecolor="#4c78a8", linewidth=0.5, label="Paired detectors")
+    if positive_window_scores is None:
+        ax = axes[1]
+        ax.plot(time_ns, waveform_difference, linewidth=1.15,
+                label="Detector difference − dataset mean")
+        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=0.8)
+        ax.set_title("Detector difference relative to dataset mean")
+        ax.set_ylabel("Amplitude difference (mV)")
+        ax.grid(True, alpha=0.22, linewidth=0.6)
+        ax.legend(loc="best", fontsize=9)
+    if positive_window_scores is not None:
+        if window_starts is None or window_samples is None or negative_window_scores is None:
+            raise ValueError("Signed grouped SHAP needs starts, width, and both signs")
+        starts = np.asarray(window_starts, dtype=np.int64)
+        positive = np.asarray(positive_window_scores, dtype=np.float64)
+        negative = np.asarray(negative_window_scores, dtype=np.float64)
+        n_channels = 2 if separate_detector_importance else 1
+        if positive.shape != (n_channels, len(starts)) or negative.shape != positive.shape:
+            raise ValueError("Signed SHAP scores have wrong shape")
+        dt = float(np.median(np.diff(time_ps)))
+        group_widths = np.minimum(int(window_samples), len(time_ps) - starts)
+        centers = (time_ps[starts] + 0.5 * (group_widths - 1) * dt) / 1000.0
+        widths_ns = group_widths * dt / 1000.0
+        for detector in range(n_channels):
+            ax = axes[detector + 1]
+            ax.bar(centers, positive[detector], width=0.9 * widths_ns,
+                   color="#4c78a8", label="Positive SHAP")
+            ax.bar(centers, negative[detector], width=0.9 * widths_ns,
+                   color="#e45756", label="Negative SHAP")
+            ax.axhline(0, color="0.4", linewidth=0.7)
+            ax.set_title(
+                f"Detector {detector + 1} Linear SHAP" if separate_detector_importance
+                else "Pair Linear SHAP"
+            )
+            ax.set_ylabel("Contribution (ps)")
+            ax.grid(True, alpha=0.22, linewidth=0.6)
+            ax.legend(loc="best", fontsize=9)
+        axes[-1].set_xlabel("Waveform time (ns)")
     else:
-        for detector in range(2):
-            ax.bar(centers + (detector - 0.5) * 0.44 * width,
-                   scores[detector], width=0.44 * width,
-                   label=f"Detector {detector + 1}")
-    ax.axhline(0, color="0.4", linewidth=0.7)
-    ax.set_title(f"Signed {attribution_method} window contributions")
-    ax.set_ylabel("Pair contribution (ps)")
-    ax.set_xlabel("Waveform time (ns)")
-    ax.grid(True, alpha=0.22, linewidth=0.6)
-    ax.legend(loc="best", fontsize=9)
-
+        ax = axes[2]
+        if window_starts is None or window_scores is None or window_samples is None:
+            raise ValueError("Local signed histogram requires raw pair-level window scores")
+        scores = np.asarray(window_scores, dtype=np.float64)
+        starts = np.asarray(window_starts, dtype=np.int64)
+        if scores.ndim != 2 or scores.shape[1] != len(starts) or scores.shape[0] not in (1, 2):
+            raise ValueError("Local window scores must have shape [1 or 2, windows]")
+        dt = float(np.median(np.diff(time_ps)))
+        centers = (time_ps[starts] + window_samples * dt / 2) / 1000
+        width = window_samples * dt / 1000
+        if scores.shape[0] == 1:
+            ax.bar(centers, scores[0], width=width, color="#4c78a8",
+                   edgecolor="#4c78a8", linewidth=0.5, label="Paired detectors")
+        else:
+            for detector in range(2):
+                ax.bar(centers + (detector - 0.5) * 0.44 * width,
+                       scores[detector], width=0.44 * width,
+                       label=f"Detector {detector + 1}")
+        ax.axhline(0, color="0.4", linewidth=0.7)
+        ax.set_title(f"Signed {attribution_method} window contributions")
+        ax.set_ylabel("Pair contribution (ps)")
+        ax.set_xlabel("Waveform time (ns)")
+        ax.grid(True, alpha=0.22, linewidth=0.6)
+        ax.legend(loc="best", fontsize=9)
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 def _refresh_local_presentation(
