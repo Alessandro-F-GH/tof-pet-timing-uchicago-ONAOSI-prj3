@@ -126,6 +126,76 @@ def test_shared_linear_and_original_tshap_keep_difference_panel(tmp_path):
         assert "Detector difference relative to dataset mean" in titles
 
 
+
+@pytest.mark.parametrize(
+    ("separate", "expected_panels"),
+    [(True, 3), (False, 2)],
+)
+def test_wide_local_plot_shades_waveform_and_importance_only(
+    tmp_path, separate, expected_panels,
+):
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.axes import Axes
+    from unittest.mock import patch
+    from waveform_analysis.engine.tshap_explainer import _plot_local_event
+
+    seen = []
+    original = Axes.axvspan
+
+    def record_span(self, xmin, xmax, *args, **kwargs):
+        seen.append((self.get_title(), xmin, xmax))
+        return original(self, xmin, xmax, *args, **kwargs)
+
+    params = dict(
+        path=tmp_path / "wide.pdf",
+        time_ps=np.linspace(-2000, 6000, 16),
+        waveform_mv=np.ones((2, 16)),
+        dataset_mean_difference_mv=np.zeros(16),
+        led_baseline_mv=None,
+        attribution=np.zeros((2, 16)),
+        group="typical", event_id=7,
+        target_ps=3.0, prediction_ps=2.0,
+        improvement_ps=1.0, led_threshold_mv=5.0,
+        window_starts=np.array([0, 8]), window_samples=8,
+        positive_window_scores=np.ones((2 if separate else 1, 2)),
+        negative_window_scores=-np.ones((2 if separate else 1, 2)),
+        separate_detector_importance=separate,
+        highlight_time_ranges_ns=((-1.5, 2.0),),
+    )
+    with patch.object(Axes, "axvspan", record_span):
+        _plot_local_event(**params)
+    assert params["path"].is_file()
+    assert len(seen) == expected_panels
+    assert all((start, end) == (-1.5, 2.0) for _, start, end in seen)
+    assert any(title == "Detector waveforms" for title, _, _ in seen)
+    assert not any("difference" in title.lower() for title, _, _ in seen)
+
+
+def test_onishi_local_plot_has_no_reference_shading(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.axes import Axes
+    from unittest.mock import patch
+    from waveform_analysis.engine.tshap_explainer import _plot_local_event
+
+    with patch.object(Axes, "axvspan", side_effect=AssertionError("unexpected shading")):
+        _plot_local_event(
+            tmp_path / "onishi.pdf",
+            time_ps=np.linspace(-1500, 2000, 16),
+            waveform_mv=np.ones((2, 16)),
+            dataset_mean_difference_mv=np.zeros(16),
+            led_baseline_mv=None,
+            attribution=np.zeros((2, 16)),
+            group="typical", event_id=7,
+            target_ps=3.0, prediction_ps=2.0,
+            improvement_ps=1.0, led_threshold_mv=5.0,
+            window_starts=np.array([0, 8]),
+            window_scores=np.zeros((1, 2)), window_samples=8,
+        )
+    assert (tmp_path / "onishi.pdf").is_file()
+
+
 def test_invalid_feature_shapes_are_rejected():
     with pytest.raises(ValueError, match="coefficient"):
         linear_attributions(np.ones((1, 2, 7)), np.ones((2, 7)),
