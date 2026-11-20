@@ -343,9 +343,8 @@ def _plot_global_linear_shap(
     negative = np.asarray(mean_negative_ps, dtype=np.float64)
     starts = np.asarray(starts, dtype=np.int64)
     shared = model_name == "shared_linear_ridge"
-    n_importance = 1 if shared else 2
-    n_panels = n_importance + 2  # Mean waveforms, separate signs, net contribution.
-    expected = (n_importance, starts.size)
+    n_panels = 2 if shared else 3
+    expected = (n_panels - 1, starts.size)
     if means.shape != (2, time_ps.size) or positive.shape != expected or negative.shape != expected:
         raise ValueError("Global Linear SHAP waveform or contribution dimensions are inconsistent")
     if time_ps.size < 2 or not np.all(np.diff(time_ps) > 0):
@@ -373,7 +372,7 @@ def _plot_global_linear_shap(
     widths = np.minimum(int(group_samples), time_ns.size - starts)
     centers = time_ns[starts] + 0.5 * (widths - 1) * dt_ns
     widths_ns = widths * dt_ns
-    for channel in range(n_importance):
+    for channel in range(n_panels - 1):
         ax = axes[channel + 1]
         ax.bar(centers, positive[channel], width=0.9 * widths_ns,
                color="#4c78a8", label="Mean positive SHAP")
@@ -387,19 +386,6 @@ def _plot_global_linear_shap(
         ax.set_ylabel("Mean contribution (ps/event)")
         ax.grid(True, alpha=0.22, linewidth=0.6)
         ax.legend(loc="best", fontsize=9)
-
-    # Negative contributions already carry a minus sign. Net is therefore
-    # positive + negative, equivalent to positive - abs(negative).
-    # For direct models sum both detectors into one pair-level panel.
-    net_ps = (positive + negative).sum(axis=0)
-    ax = axes[-1]
-    ax.bar(centers, net_ps, width=0.9 * widths_ns,
-           color="#4c78a8", label="Net signed SHAP (detector sum)")
-    ax.axhline(0.0, color="0.4", linewidth=0.7)
-    ax.set_title("Net signed Linear SHAP — detector pair")
-    ax.set_ylabel("Mean signed contribution (ps/event)")
-    ax.grid(True, alpha=0.22, linewidth=0.6)
-    ax.legend(loc="best", fontsize=9)
     axes[-1].set_xlabel("Waveform time (ns)")
     if str(window_name).lower() == "wide":
         for ax in axes:
@@ -455,7 +441,7 @@ def explain_linear_shap_global(
         }
         if (destination / "summary.json").is_file() and not overwrite:
             old = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
-            if (old.get("plot_version") == 2
+            if (old.get("plot_version") == 3
                     and old.get("settings") == settings
                     and all((destination / filename).is_file() for filename in (
                         "global_importance.pdf", "global_attributions.npz",
@@ -532,7 +518,6 @@ def explain_linear_shap_global(
             mean_positive_contribution_ps=positive,
             mean_negative_contribution_ps=negative,
             mean_signed_contribution_ps=positive + negative,
-            mean_pair_signed_contribution_ps=(positive + negative).sum(axis=0),
             baseline_prediction_ps=np.asarray(baseline_prediction),
             mean_unbounded_prediction_ps=np.asarray(reconstructed.mean()),
             n_clipped_events=np.asarray(np.count_nonzero(np.abs(reconstructed - bounded) > 1e-7)),
@@ -559,7 +544,7 @@ def explain_linear_shap_global(
                     ])
         atomic_json(destination / "summary.json", {
             "method": "exact_interventional_linear_shap_global",
-            "plot_version": 2,
+            "plot_version": 3,
             "model": name,
             "mode": config["mode"],
             "window": config["window_name"],
