@@ -157,7 +157,7 @@ def explain_linear_shap_local(
         )
         if (destination / "summary.json").is_file() and not overwrite:
             old = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
-            if old.get("plot_version") == 2 and old.get("settings") == {
+            if old.get("plot_version") == 3 and old.get("settings") == {
                 "events_per_group": events_per_group,
                 "extreme_margin": extreme_margin,
                 "group_samples": group_samples,
@@ -244,6 +244,7 @@ def explain_linear_shap_local(
                 window_samples=int(group_samples),
                 attribution_method="Linear SHAP",
                 separate_detector_importance=(name == "direct_linear_ridge"),
+                highlight_time_ranges_ns=((-1.5, 2.0),) if str(config.get("window_name", "")).lower() == "wide" else None,
             )
             plots.append(filename)
             records.append({
@@ -278,7 +279,7 @@ def explain_linear_shap_local(
             writer.writerows(records)
         atomic_json(destination / "summary.json", {
             "method": "exact_interventional_linear_shap",
-            "plot_version": 2,
+            "plot_version": 3,
             "grouping": "sum_positive_and_negative_separately",
             "model": name,
             "background": "complete_prepared_development_mean",
