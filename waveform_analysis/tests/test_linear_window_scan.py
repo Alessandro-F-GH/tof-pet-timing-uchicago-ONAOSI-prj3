@@ -105,3 +105,10 @@ def test_alpha_selection_is_based_on_development_only(monkeypatch):
     alpha, score = _choose_alpha(x, y, split, [0.01, 10.0], cv, {}, 5, 2000)
     assert alpha in (0.01, 10.0)
     assert np.isfinite(score)
+
+
+def test_scan_elapsed_label():
+    from waveform_analysis.engine.linear_window_scan import _elapsed_label
+    assert _elapsed_label(0) == "0m00s"
+    assert _elapsed_label(85) == "1m25s"
+    assert _elapsed_label(3705) == "1h01m45s"
