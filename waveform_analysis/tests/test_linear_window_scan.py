@@ -152,3 +152,55 @@ def test_cli_custom_progressive_limits():
     ])
     assert args.scan_kind == "progressive"
     assert args.progressive_ends_ns == [2., 4., 8., 15., 50.]
+
+
+
+def test_consolidated_scan_csv_resume_and_atomic_rewrite(tmp_path):
+    from waveform_analysis.engine.linear_window_scan import (
+        _window_key, _read_scan_csv, _write_scan_csv,
+    )
+    path = tmp_path / "window_scan.csv"
+    rows = {
+        _window_key("fixed", 0, 1): {
+            "identity": "science", "kind": "fixed", "start_ns": 0.,
+            "end_ns": 1., "n_samples": 80, "ridge_alpha": .01,
+            "cv_score_ps": 55., "ctr_ps": 54., "ctr_bootstrap_std_ps": .7,
+            "led_ctr_ps": 62., "n_events_test": 900,
+        },
+    }
+    _write_scan_csv(path, rows)
+    loaded = _read_scan_csv(path)
+    assert set(loaded) == set(rows)
+    assert loaded[_window_key("fixed", 0, 1)]["identity"] == "science"
+    assert loaded[_window_key("fixed", 0, 1)]["ctr_ps"] == 54.
+    rows[_window_key("progressive", -1.5, 2)] = {
+        **next(iter(rows.values())), "kind": "progressive",
+        "start_ns": -1.5, "end_ns": 2.,
+    }
+    _write_scan_csv(path, rows)
+    assert len(_read_scan_csv(path)) == 2
+    assert not list(tmp_path.glob(".window_scan_*.csv"))
+
+
+def test_legacy_per_window_json_migration(tmp_path):
+    import json
+    from waveform_analysis.core.io import canonical_hash
+    from waveform_analysis.engine.linear_window_scan import (
+        _migrate_legacy_scan, _remove_legacy_files,
+    )
+    scientific = {"run": "example", "seed": 42}
+    old_settings = {**scientific, "scan_kind": "both", "step_ns": 1.}
+    old_identity = canonical_hash(old_settings)
+    (tmp_path / "settings.json").write_text(json.dumps({
+        **old_settings, "identity": old_identity,
+    }))
+    (tmp_path / "fixed_0.0000_1.0000.json").write_text(json.dumps({
+        "identity": old_identity, "kind": "fixed",
+        "start_ns": 0., "end_ns": 1., "ctr_ps": 55.,
+    }))
+    new_identity = canonical_hash(scientific)
+    rows = _migrate_legacy_scan(tmp_path, new_identity, scientific)
+    assert len(rows) == 1
+    assert next(iter(rows.values()))["identity"] == new_identity
+    _remove_legacy_files(tmp_path)
+    assert not list(tmp_path.glob("*.json"))
