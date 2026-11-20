@@ -1122,8 +1122,12 @@ def _led_line_extent(time_ns):
 def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
                       led_baseline_mv, attribution, group, event_id, target_ps,
                       prediction_ps, improvement_ps, led_threshold_mv,
-                      window_starts=None, window_scores=None, window_samples=None):
-    """Plot detector waveforms, their mean-centered difference, and pair-level TSHAP."""
+                      window_starts=None, window_scores=None, window_samples=None,
+                      attribution_method="TSHAP"):
+    """Plot the shared detector-waveform and temporal-attribution local layout.
+
+    TSHAP uses one paired score; linear SHAP may supply separate detector scores.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1188,15 +1192,21 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
         raise ValueError("Local signed histogram requires raw pair-level window scores")
     scores = np.asarray(window_scores, dtype=np.float64)
     starts = np.asarray(window_starts, dtype=np.int64)
-    if scores.shape != (1, len(starts)):
-        raise ValueError("Local paired window scores must have shape [1, windows]")
+    if scores.ndim != 2 or scores.shape[1] != len(starts) or scores.shape[0] not in (1, 2):
+        raise ValueError("Local window scores must have shape [1 or 2, windows]")
     dt = float(np.median(np.diff(time_ps)))
     centers = (time_ps[starts] + window_samples * dt / 2) / 1000
     width = window_samples * dt / 1000
-    ax.bar(centers, scores[0], width=width, color="#4c78a8",
-           edgecolor="#4c78a8", linewidth=0.5, label="Paired detectors")
+    if scores.shape[0] == 1:
+        ax.bar(centers, scores[0], width=width, color="#4c78a8",
+               edgecolor="#4c78a8", linewidth=0.5, label="Paired detectors")
+    else:
+        for detector in range(2):
+            ax.bar(centers + (detector - 0.5) * 0.44 * width,
+                   scores[detector], width=0.44 * width,
+                   label=f"Detector {detector + 1}")
     ax.axhline(0, color="0.4", linewidth=0.7)
-    ax.set_title("Joint signed TSHAP window contributions")
+    ax.set_title(f"Signed {attribution_method} window contributions")
     ax.set_ylabel("Pair contribution (ps)")
     ax.set_xlabel("Waveform time (ns)")
     ax.grid(True, alpha=0.22, linewidth=0.6)
