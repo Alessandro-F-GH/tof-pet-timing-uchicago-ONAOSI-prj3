@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +63,14 @@ def temporal_windows(start_ns, end_ns, step_ns=1.0, width_ns=None, *,
         left = start_ns + i * step_ns
         fixed.append(("fixed", left, left + width_ns))
     return prefix + fixed
+
+
+def _elapsed_label(seconds):
+    """Compact elapsed/ETA formatting for console progress messages."""
+    seconds = max(0, int(round(float(seconds))))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:d}h{minutes:02d}m{seconds:02d}s" if hours else f"{minutes:d}m{seconds:02d}s"
 
 
 def selected_indices(time_ps, frozen_mask, left_ns, right_ns, *, last_edge=False):
@@ -279,7 +288,32 @@ def scan_linear_windows(
         full_ctr = float(run["blind"]["ctr_ps"])
         led_ctr = float(run["blind"]["led_ctr_ps"])
         rows = []
-        for kind, left, right in windows:
+        start_time = time.monotonic()
+        computed_seconds = 0.0
+        computed_count = 0
+        cache_hits = 0
+        empty_count = 0
+        total = len(windows)
+        if logger:
+            logger.info(
+                "WINDOW SCAN START | board=%s | mode=%s | %d windows "
+                "(progressive=%d, fixed=%d) | step=%.3g ns | fixed width=%.3g ns "
+                "| development=%d | test=%d | alpha candidates=%d | CV folds=%d "
+                "| bootstrap=%d | output=%s",
+                root.parent.name, mode_name, total,
+                sum(item[0] == "progressive" for item in windows),
+                sum(item[0] == "fixed" for item in windows),
+                float(step_ns), float(step_ns if width_ns is None else width_ns),
+                len(y_dev), len(y_test), len(alphas), len(split.folds),
+                int(cfg["bootstrap"]["n_resamples"]), destination,
+            )
+        previous_kind = None
+        for position, (kind, left, right) in enumerate(windows, 1):
+            if kind != previous_kind:
+                if logger:
+                    logger.info("WINDOW SCAN PHASE | %s | %s", mode_name, kind.upper())
+                previous_kind = kind
+            label = f"{mode_name} | {position}/{total} | {kind} [{left:g}, {right:g}] ns"
             filename = f"{kind}_{left:.4f}_{right:.4f}.json"
             path = destination / filename
             indices = selected_indices(
@@ -287,19 +321,40 @@ def scan_linear_windows(
                 last_edge=(abs(right - end_ns) < 1e-9),
             )
             if not indices.size:
+                empty_count += 1
                 if logger:
-                    logger.warning("Skipping empty masked window %s [%s,%s)", kind, left, right)
+                    logger.warning("WINDOW SKIP | %s | no samples after frozen mask", label)
                 continue
             if path.exists() and not overwrite:
                 row = json.loads(path.read_text(encoding="utf-8"))
                 if row.get("identity") == identity:
+                    cache_hits += 1
                     rows.append(row)
+                    if logger:
+                        logger.info(
+                            "WINDOW CACHE HIT | %s | CTR=%.2f +/- %.2f ps | alpha=%g",
+                            label, row["ctr_ps"], row["ctr_bootstrap_std_ps"],
+                            row["ridge_alpha"],
+                        )
                     continue
 
+            window_start = time.monotonic()
+            if logger:
+                logger.info(
+                    "WINDOW START | %s | %d samples | CV %d candidates x %d folds",
+                    label, indices.size, len(alphas), len(split.folds),
+                )
             x_dev = _shared_difference(dev, cfg["mode"], indices)
             alpha, cv_score = _choose_alpha(
                 x_dev, y_dev, split, alphas, cv, cfg["fit"], study_seed, limit,
             )
+            if logger:
+                logger.info(
+                    "WINDOW CV DONE | %s | selected alpha=%g | CV %s=%.2f ps"
+                    " | elapsed=%s | final fit + test bootstrap next",
+                    label, alpha, cv["metric"].upper(), cv_score,
+                    _elapsed_label(time.monotonic() - window_start),
+                )
             model = fit_ridge(
                 {"ridge_alpha": alpha}, x_dev, y_dev,
                 model_name="shared_linear_ridge", fit_intercept=False,
@@ -326,13 +381,29 @@ def scan_linear_windows(
             }
             atomic_json(path, row)
             rows.append(row)
+            window_seconds = time.monotonic() - window_start
+            computed_seconds += window_seconds
+            computed_count += 1
             if logger:
+                remaining = total - position
+                eta = (
+                    _elapsed_label(remaining * computed_seconds / computed_count)
+                    if computed_count else "n/a"
+                )
                 logger.info(
-                    "%s | %s [%g, %g] ns | %d samples | alpha=%g | test CTR=%.2f ± %.2f ps",
-                    mode_name, kind, left, right, indices.size, alpha,
-                    row["ctr_ps"], row["ctr_bootstrap_std_ps"],
+                    "WINDOW DONE | %s | test CTR=%.2f +/- %.2f ps | alpha=%g "
+                    "| window=%s | elapsed=%s | remaining=%d | ETA~%s",
+                    label, row["ctr_ps"], row["ctr_bootstrap_std_ps"], alpha,
+                    _elapsed_label(window_seconds),
+                    _elapsed_label(time.monotonic() - start_time), remaining, eta,
                 )
 
+        if logger:
+            logger.info(
+                "WINDOW SCAN FINALIZING | %s | completed=%d/%d | cached=%d "
+                "| empty=%d | saving plots and CSV",
+                mode_name, computed_count, total, cache_hits, empty_count,
+            )
         for kind in ("progressive", "fixed"):
             _plot_curve(
                 rows, kind, destination / f"{kind}_ctr.pdf",
@@ -348,4 +419,12 @@ def scan_linear_windows(
             writer.writeheader()
             writer.writerows({key: row[key] for key in fields} for row in rows)
         outputs.append(destination)
+        if logger:
+            logger.info(
+                "WINDOW SCAN COMPLETE | %s | processed=%d/%d | fitted=%d "
+                "| cached=%d | empty=%d | total=%s | output=%s",
+                mode_name, len(rows) + empty_count, total,
+                computed_count, cache_hits, empty_count,
+                _elapsed_label(time.monotonic() - start_time), destination,
+            )
     return outputs
