@@ -1144,7 +1144,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ):
         raise ValueError("Waveforms and supplied LED threshold must be finite")
 
-    if positive_window_scores is None:
+    if not separate_detector_importance:
         waveform_difference = _center_detector_difference(waveform_mv, dataset_mean_difference_mv)
     if led_baseline_mv is None:
         led_levels_mv = None
@@ -1153,10 +1153,8 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
         led_line_start_ns, led_line_end_ns = _led_line_extent(time_ns)
 
     if positive_window_scores is not None:
-        n_panels = 3 if separate_detector_importance else 2
         fig, axes = plt.subplots(
-            n_panels, 1,
-            figsize=(12.5, 8.5 if separate_detector_importance else 6.5),
+            3, 1, figsize=(12.5, 8.5),
             sharex=True, constrained_layout=True,
         )
     else:
@@ -1189,7 +1187,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
     ax.grid(True, alpha=0.22, linewidth=0.6)
     ax.legend(loc="best", fontsize=9, ncols=3)
 
-    if positive_window_scores is None:
+    if not separate_detector_importance:
         ax = axes[1]
         ax.plot(time_ns, waveform_difference, linewidth=1.15,
                 label="Detector difference − dataset mean")
@@ -1212,7 +1210,7 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
         centers = (time_ps[starts] + 0.5 * (group_widths - 1) * dt) / 1000.0
         widths_ns = group_widths * dt / 1000.0
         for detector in range(n_channels):
-            ax = axes[detector + 1]
+            ax = axes[detector + 1] if separate_detector_importance else axes[2]
             ax.bar(centers, positive[detector], width=0.9 * widths_ns,
                    color="#4c78a8", label="Positive SHAP")
             ax.bar(centers, negative[detector], width=0.9 * widths_ns,
