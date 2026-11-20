@@ -169,3 +169,86 @@ def test_ranked_metric_bar_and_unannotated_scatter(tmp_path, monkeypatch, metric
     assert not ax.texts
     assert [t.get_text() for t in ax.get_legend().get_texts()] == ["A", "B"]
     assert "Pearson r" in ax.get_title()
+
+
+
+def test_window_plot_pairs_only_matching_direct_shared_families(report_inputs, monkeypatch):
+    root, runs, _ = report_inputs
+    # The paired MLP and CNN are both present; unpaired Onishi is omitted.
+    extra = dict(runs[0])
+    extra["manifest"] = {
+        **runs[0]["manifest"],
+        "model": "onishi_cnn", "estimator_formulation": "direct",
+    }
+    runs.append(extra)
+    for run in runs:
+        run["manifest"]["window_name"] = "wide"
+    short = dict(runs[0])
+    short["manifest"] = {**runs[0]["manifest"], "window_name": "onishi"}
+    runs.append(short)
+
+    captured = []
+    monkeypatch.setattr(engine, "paired_formulation_ctr_bar",
+                        lambda pairs, path, cfg, **kw: captured.append((pairs, Path(path), kw)))
+    output = engine.generate_report(root)
+    assert len(captured) == 1
+    pairs, path, settings = captured[0]
+    assert [(p["code"], p["window"]) for p in pairs] == [
+        ("CNN", "wide"), ("MLP", "wide"),
+    ]
+    assert pairs[0]["direct"]["ctr_ps"] == 95.
+    assert pairs[0]["shared"]["ctr_ps"] == 110.
+    assert pairs[1]["direct"]["ctr_ps"] == 90.
+    assert pairs[1]["shared"]["ctr_ps"] == 105.
+    assert settings["led_value"] == 130.
+    assert path.name == "paired_formulations_ctr.png"
+    assert path.parent == output / "plots/timing"
+
+
+def test_window_report_removes_legacy_plots_without_pairs(report_inputs, monkeypatch):
+    root, runs, _ = report_inputs
+    # No shared equivalent remains, so there must be no paired plot.
+    monkeypatch.setattr(engine, "paired_formulation_ctr_bar",
+                        lambda *args, **kw: pytest.fail("Unexpected paired plot"))
+    directory = root / "report/plots/timing"
+    directory.mkdir(parents=True)
+    (directory / "windows_ctr.png").write_text("obsolete")
+    (directory / "windows_direct_mlp_rmse.pdf").write_text("obsolete")
+    (directory / "paired_formulations_ctr.png").write_text("obsolete")
+    engine.generate_report(root, exclude_models=["shared_cnn1d", "antisymmetric_mlp"])
+    assert not list(directory.glob("windows_*"))
+    assert not list(directory.glob("paired_formulations_ctr.*"))
+
+
+def test_paired_formulation_plot_has_matching_colors_and_wide_led(tmp_path, monkeypatch):
+    cfg = plot_config()
+    pairs = [
+        {"code": "LIN", "window": "onishi",
+         "direct": {"ctr_ps": 80., "ctr_std_ps": 1.},
+         "shared": {"ctr_ps": 85., "ctr_std_ps": 2.}},
+        {"code": "LIN", "window": "wide",
+         "direct": {"ctr_ps": 76., "ctr_std_ps": 1.5},
+         "shared": {"ctr_ps": 82., "ctr_std_ps": 2.5}},
+    ]
+    seen = []
+
+    def capture(fig, path):
+        seen.append(fig.axes[0])
+        plt.close(fig)
+        return Path(path)
+
+    monkeypatch.setattr(plotting, "_save", capture)
+    plotting.paired_formulation_ctr_bar(
+        pairs, tmp_path / "paired.png", cfg, led_value=110., title="Comparison",
+    )
+    ax = seen[0]
+    assert [p.get_height() for p in ax.patches] == [80., 76., 85., 82.]
+    assert [p.get_facecolor() for p in ax.patches[:2]] == [
+        tuple(plt.matplotlib.colors.to_rgba(cfg["formulations"]["direct"]["color"]))
+    ] * 2
+    assert [t.get_text() for t in ax.get_xticklabels()] == [
+        "LIN\nOnishi", "LIN\nWide",
+    ]
+    baseline = next(line for line in ax.lines if line.get_label() == "LED (wide)")
+    assert baseline.get_linestyle() == "--"
+    np.testing.assert_array_equal(baseline.get_ydata(), [110., 110.])
