@@ -30,11 +30,14 @@ from waveform_analysis.reporting.stats import (
 
 
 def temporal_windows(start_ns, end_ns, step_ns=1.0, width_ns=None, *,
-                     progressive_start_ns=None, progressive_initial_end_ns=None):
+                     progressive_start_ns=None, progressive_initial_end_ns=None,
+                     progressive_ends_ns=None, scan_kind="both"):
     """Return (kind, left_ns, right_ns) with [left, right) convention.
 
-    Fixed windows have width=step by default and never overlap. The final
-    incomplete fixed window is excluded; prefixes always include the full end.
+    Fixed windows have width=step by default and never overlap. Explicit
+    progressive upper bounds replace uniform increments and preserve their
+    specified numerical order. The initial Onishi bound is included only when
+    supplied in the explicit list. The final incomplete fixed window is excluded.
     """
     start_ns, end_ns, step_ns = map(float, (start_ns, end_ns, step_ns))
     width_ns = step_ns if width_ns is None else float(width_ns)
@@ -42,7 +45,9 @@ def temporal_windows(start_ns, end_ns, step_ns=1.0, width_ns=None, *,
         raise ValueError("Window bounds, step and width must be finite")
     if end_ns <= start_ns or step_ns <= 0 or width_ns <= 0:
         raise ValueError("Expected end>start and positive step/width")
-    if width_ns > end_ns - start_ns + 1e-9:
+    if scan_kind not in ("both", "progressive", "fixed"):
+        raise ValueError("scan_kind must be both, progressive or fixed")
+    if scan_kind != "progressive" and width_ns > end_ns - start_ns + 1e-9:
         raise ValueError("Fixed width cannot exceed the available waveform duration")
     progressive_start = (
         start_ns if progressive_start_ns is None else float(progressive_start_ns)
@@ -54,15 +59,28 @@ def temporal_windows(start_ns, end_ns, step_ns=1.0, width_ns=None, *,
     )
     if not (start_ns <= progressive_start < first_end <= end_ns):
         raise ValueError("Progressive starting window must lie inside wide boundaries")
-    prefix = [("progressive", progressive_start, first_end)]
-    for i in range(1, int(np.ceil((end_ns - first_end) / step_ns)) + 1):
-        right = min(first_end + i * step_ns, end_ns)
-        prefix.append(("progressive", progressive_start, right))
+    if progressive_ends_ns is None:
+        ends = [first_end]
+        for i in range(1, int(np.ceil((end_ns - first_end) / step_ns)) + 1):
+            ends.append(min(first_end + i * step_ns, end_ns))
+    else:
+        ends = [float(value) for value in progressive_ends_ns]
+        if not ends or not all(np.isfinite(value) for value in ends):
+            raise ValueError("Explicit progressive ends must be a nonempty finite list")
+        if (any(value < first_end - 1e-9 or value > end_ns + 1e-9 for value in ends)
+                or any(a >= b for a, b in zip(ends, ends[1:]))):
+            raise ValueError(
+                "Progressive ends must increase strictly within [Onishi end, wide end]"
+            )
+    prefix = [("progressive", progressive_start, right) for right in ends]
     fixed = []
     for i in range(int(np.floor((end_ns - start_ns - width_ns) / step_ns + 1e-9)) + 1):
         left = start_ns + i * step_ns
         fixed.append(("fixed", left, left + width_ns))
-    return prefix + fixed
+    return (
+        (prefix if scan_kind in ("both", "progressive") else [])
+        + (fixed if scan_kind in ("both", "fixed") else [])
+    )
 
 
 def _elapsed_label(seconds):
@@ -209,7 +227,8 @@ def _plot_curve(rows, kind, path, *, led_ctr, full_ctr):
 
 def scan_linear_windows(
     results, *, mode=None, cache_root=None, output_root="xai/linear/window_scan",
-    step_ns=1.0, width_ns=None, seed=None, overwrite=False, logger=None,
+    step_ns=1.0, width_ns=None, progressive_ends_ns=None,
+    scan_kind="both", seed=None, overwrite=False, logger=None,
 ):
     """Run independent temporal scans for energy/timing saved *wide* Ridge runs."""
     root = Path(results).expanduser().resolve()
@@ -253,6 +272,8 @@ def scan_linear_windows(
             start_ns, end_ns, step_ns, width_ns,
             progressive_start_ns=max(start_ns, -1.5),
             progressive_initial_end_ns=min(end_ns, 2.0),
+            progressive_ends_ns=progressive_ends_ns,
+            scan_kind=scan_kind,
         )
         y_dev = np.asarray(model_target(dev, cfg["mode"]), np.float64)
         y_test = np.asarray(model_target(test, cfg["mode"]), np.float64)
@@ -272,6 +293,11 @@ def scan_linear_windows(
             "run": str(run["directory"]), "mode": cfg["mode"],
             "step_ns": step_ns, "width_ns": step_ns if width_ns is None else width_ns,
             "progressive_initial_window_ns": [max(start_ns, -1.5), min(end_ns, 2.0)],
+            "progressive_ends_ns": (
+                None if progressive_ends_ns is None
+                else [float(value) for value in progressive_ends_ns]
+            ),
+            "scan_kind": scan_kind,
             "seed": study_seed, "alphas": alphas, "cv": cv,
             "bootstrap": cfg["bootstrap"],
             "development_identity": dev.manifest["analysis_protocol_identity"],
