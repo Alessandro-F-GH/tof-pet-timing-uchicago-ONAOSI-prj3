@@ -13,6 +13,7 @@ from waveform_analysis.data.splits import (
     make_cv_split,
 )
 from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.cache_settings import portable_settings
 from waveform_analysis.data.named_cache import dataset_name, safe_component
 from waveform_analysis.reporting.stats import metric_values
 from waveform_analysis.data.view import model_target
@@ -43,7 +44,6 @@ class SharedCVCache:
 
     def prepare_cv(self, dataset, config):
         cv = config["cross_validation"]
-        population_id = str(dataset.manifest["event_population_identity"])
         window = str(config.get("window_name") or (
             f"{config['window_ns']['start']}_to_{config['window_ns']['end']}ns"
         ))
@@ -61,7 +61,7 @@ class SharedCVCache:
         def build(directory):
             split = make_cv_split(
                 dataset.n_events,
-                population_identity=population_id,
+                population_identity="",
                 batch_seed=int(config["seed"]),
                 n_folds=int(cv["folds"]),
                 shuffle=bool(cv["shuffle"]),
@@ -98,11 +98,11 @@ class SharedCVCache:
             )
             (directory / "population.json").write_text(
                 json.dumps({
-                    "event_population_identity": population_id,
                     "n_events": int(dataset.n_events),
                     "n_folds": int(cv["folds"]),
                     "shuffle": bool(cv["shuffle"]),
                     "seed": int(config["seed"]),
+                    "fit_settings": portable_settings(config["fit"]),
                 }, indent=2) + "\n", encoding="utf-8"
             )
             (directory / "led_folds.json").write_text(
@@ -116,16 +116,31 @@ class SharedCVCache:
         metrics_file = directory / "led_folds.json"
         provenance_file = directory / "population.json"
         provenance = json.loads(provenance_file.read_text(encoding="utf-8"))
-        if (
-            provenance.get("event_population_identity") != population_id
-            or provenance.get("n_events") != int(dataset.n_events)
-            or provenance.get("n_folds") != int(cv["folds"])
-            or provenance.get("shuffle") != bool(cv["shuffle"])
-            or provenance.get("seed") != int(config["seed"])
-        ):
+        # The directory already identifies the named datasets, mode, window
+        # and CV definition. Validate the operational CV settings explicitly.
+        # A provenance hash may change after moving the ROOT data between
+        # operating systems; it must not prevent reusing the stored folds.
+        expected = {
+            "n_events": int(dataset.n_events),
+            "n_folds": int(cv["folds"]),
+            "shuffle": bool(cv["shuffle"]),
+            "seed": int(config["seed"]),
+        }
+        if "fit_settings" in provenance:
+            expected["fit_settings"] = portable_settings(config["fit"])
+        differences = {
+            key: {"cached": provenance.get(key), "expected": value}
+            for key, value in expected.items()
+            if provenance.get(key) != value
+        }
+        if differences:
+            details = "; ".join(
+                f"{key}: cached={values['cached']!r}, expected={values['expected']!r}"
+                for key, values in differences.items()
+            )
             raise ValueError(
-                "Shared CV cache population or settings differ; use a new cache "
-                "directory or rebuild the named cache"
+                f"Shared CV cache incompatible | path={directory} | {details}. "
+                "Check the dataset selection and CV settings before reusing this cache."
             )
 
         with np.load(folds_file, allow_pickle=False) as data:
@@ -134,7 +149,10 @@ class SharedCVCache:
                 seed=int(data["seed"]),
                 shuffle=bool(int(data["shuffle"])),
             )
-        if len(fold_assignment(split)) != int(dataset.n_events) or len(split.folds) != int(cv["folds"]):
+        if (len(fold_assignment(split)) != int(dataset.n_events)
+                or len(split.folds) != int(cv["folds"])
+                or any(len(fold.validation) < int(cv["minimum_events_per_fold"])
+                       for fold in split.folds)):
             raise ValueError("Shared CV cache differs from the Development population or fold configuration")
         raw_metrics = json.loads(
             metrics_file.read_text(encoding="utf-8")

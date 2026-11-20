@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
 from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.cache_settings import portable_settings, verify_settings
 from waveform_analysis.data.named_cache import control_alias, cache_root_from_config
 from waveform_analysis.reporting.preprocessing_plots import plot_led_selection
 from waveform_analysis.engine.event_selection import (
@@ -130,10 +131,9 @@ def load_control_artifact(
     )
     directory = Path(directory).resolve()
     manifest = json.loads((directory / "manifest.json").read_text())
-    if manifest.get("fingerprint") != _artifact_fingerprint(
-        control_file, control_dataset, preprocessing, mode_fits, selected
-    ):
-        raise ValueError("control preprocessing artifact is stale")
+    verify_settings(manifest, portable_settings({"control_dataset": control_dataset, "preprocessing": preprocessing, "modes": list(selected), "led_fit_by_mode": mode_fits}), label="Control preprocessing")
+    if list(manifest.get("modes", [])) != list(selected) or manifest.get("led_fit_by_mode") != mode_fits:
+        raise ValueError("Control preprocessing modes or LED fit settings differ")
     return manifest
 
 
@@ -218,6 +218,7 @@ def fit_control_artifact(
                 )
         manifest = {
             "format_version": CONTROL_ARTIFACT_VERSION,
+            "cache_settings": portable_settings({"control_dataset": control_dataset, "preprocessing": preprocessing, "modes": list(selected_modes), "led_fit_by_mode": mode_fits}),
             "fingerprint": fingerprint,
             "control_dataset": control_dataset,
             "control_source": str(Path(control_file).resolve()),

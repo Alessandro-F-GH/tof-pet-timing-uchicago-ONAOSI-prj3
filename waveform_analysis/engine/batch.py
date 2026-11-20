@@ -166,11 +166,22 @@ def run_batch(batch, *, logger=None):
             print("BATCH RUN START | %d/%d | %s | action=%s | stage=%s" %
                   (run_number, len(plan["studies"]), run_id,
                    item["action"], item["stage"]), flush=True)
-            output = (
-                Path(config["output_dir"]).resolve()
-                if item["action"] == "keep"
-                else run_study(config, logger=logger)
-            )
+            try:
+                output = (
+                    Path(config["output_dir"]).resolve()
+                    if item["action"] == "keep"
+                    else run_study(config, logger=logger)
+                )
+            except Exception as exc:
+                print(
+                    "BATCH RUN FAILED | %d/%d | %s | action=%s | stage=%s "
+                    "| elapsed=%.1f s | error=%s: %s" %
+                    (run_number, len(plan["studies"]), run_id, item["action"],
+                     item["stage"], time.monotonic() - started,
+                     type(exc).__name__, exc),
+                    flush=True,
+                )
+                raise
             outputs.append(output)
             statuses[run_id] = "complete"
             print("BATCH RUN DONE | %d/%d | %s | elapsed=%.1f s" %
@@ -179,20 +190,42 @@ def run_batch(batch, *, logger=None):
             _write(batch, plan, "running", statuses)
             mode = str(config["mode"])
             if mode not in published:
-                control, _ = fit_control(config, rebuild=False, logger=None)
-                publish_preprocessing_diagnostics(
-                    config, "control", control, batch.output_dir, logger=logger
-                )
-                publish_preprocessing_diagnostics(
-                    config, "development", control, batch.output_dir, logger=logger
-                )
+                preprocessing_started = time.monotonic()
+                print("BATCH PREPROCESSING START | mode=%s | control" % mode, flush=True)
+                try:
+                    control, _ = fit_control(config, rebuild=False, logger=logger)
+                    print("BATCH PREPROCESSING CONTROL FIT DONE | mode=%s | elapsed=%.1f s" %
+                          (mode, time.monotonic() - preprocessing_started), flush=True)
+                    for role in ("control", "development"):
+                        role_started = time.monotonic()
+                        print("BATCH PREPROCESSING START | mode=%s | role=%s" %
+                              (mode, role), flush=True)
+                        publish_preprocessing_diagnostics(
+                            config, role, control, batch.output_dir, logger=logger
+                        )
+                        print("BATCH PREPROCESSING DONE | mode=%s | role=%s | elapsed=%.1f s" %
+                              (mode, role, time.monotonic() - role_started), flush=True)
+                except Exception as exc:
+                    print("BATCH PREPROCESSING FAILED | mode=%s | elapsed=%.1f s | error=%s: %s" %
+                          (mode, time.monotonic() - preprocessing_started,
+                           type(exc).__name__, exc), flush=True)
+                    raise
                 published.add(mode)
         for mode in sorted({str(c["mode"]) for c in configs.values()}):
             config = next(c for c in configs.values() if str(c["mode"]) == mode)
-            control, _ = fit_control(config, rebuild=False, logger=None)
-            publish_preprocessing_diagnostics(
-                config, "blind", control, batch.output_dir, logger=logger
-            )
+            blind_started = time.monotonic()
+            print("BATCH PREPROCESSING START | mode=%s | role=blind" % mode, flush=True)
+            try:
+                control, _ = fit_control(config, rebuild=False, logger=logger)
+                publish_preprocessing_diagnostics(
+                    config, "blind", control, batch.output_dir, logger=logger
+                )
+                print("BATCH PREPROCESSING DONE | mode=%s | role=blind | elapsed=%.1f s" %
+                      (mode, time.monotonic() - blind_started), flush=True)
+            except Exception as exc:
+                print("BATCH PREPROCESSING FAILED | mode=%s | role=blind | error=%s: %s" %
+                      (mode, type(exc).__name__, exc), flush=True)
+                raise
         from waveform_analysis.reporting.report import generate_report
         from waveform_analysis.reporting.latex_tables import DATASET_TABLE_VERSION
         from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION

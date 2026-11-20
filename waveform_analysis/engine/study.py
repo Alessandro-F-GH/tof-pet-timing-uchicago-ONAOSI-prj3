@@ -554,9 +554,14 @@ def _model(
 
 def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
                                 frozen_transform, frozen_development):
-    shared = SharedCVCache(
-        Path(config["batch_output_dir"]) / "artifacts"
-    ).prepare_cv(development, config)
+    cv_cache_root = Path(config["batch_output_dir"]) / "artifacts"
+    logger.info(
+        "Shared CV cache | checking | root=%s | events=%d | folds=%d | seed=%d",
+        cv_cache_root, development.n_events,
+        int(config["cross_validation"]["folds"]), int(config["seed"]),
+    )
+    shared = SharedCVCache(cv_cache_root).prepare_cv(development, config)
+    logger.info("Shared CV cache | ready | path=%s", shared.directory)
     cv_fp = _stage(
         "cv",
         {
@@ -571,7 +576,9 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
             else frozen_transform.identity,
         },
     )
-    if _sync(store, "cv", cv_fp, logger) != "complete":
+    cv_status = _sync(store, "cv", cv_fp, logger)
+    logger.info("Resume stage | cv=%s | model=%s", cv_status, spec.name)
+    if cv_status != "complete":
         candidates = _search(
             store,
             spec,
@@ -594,9 +601,11 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
         "selection", {"metric": config["cross_validation"]["metric"]},
         parents={"cv": cv_fp},
     )
+    selection_status = _sync(store, "selection", selection_fp, logger)
+    logger.info("Resume stage | selection=%s | model=%s", selection_status, spec.name)
     best = (
         store.read_json(store.best_path)
-        if _sync(store, "selection", selection_fp, logger) == "complete"
+        if selection_status == "complete"
         else None
     )
     if not isinstance(best, dict):
@@ -631,6 +640,7 @@ def _outer_cv_selection_and_fit(store, spec, space, config, development, logger,
     )
     fitted = None
     final_status = _sync(store, "final_fit", final_fp, logger)
+    logger.info("Resume stage | final_fit=%s | model=%s", final_status, spec.name)
     if (final_status == "complete" and config.get("save_model", True)
             and not saved_model_complete(spec, store.model_dir)):
         logger.warning("Final fit model missing | invalidating final fit and downstream stages")

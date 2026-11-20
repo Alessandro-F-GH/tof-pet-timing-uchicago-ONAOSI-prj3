@@ -137,9 +137,48 @@ def write_run_manifest(run, manifest):
         shared.pop(key, None)
     if context_path.is_file():
         previous = read_json(context_path)
+        # Contexts are named by dataset/mode/window. Metadata must be portable
+        # across machines; old SHA population/protocol identities and absolute
+        # cache paths are descriptive, not cache compatibility criteria.
         for key, value in shared.items():
-            if key in previous and previous[key] != value:
-                raise ValueError(f'Conflicting shared {key} in {context_path}; separate experiment contexts are required')
+            if key not in previous:
+                continue
+            old = previous[key]
+            if key == 'dataset_populations':
+                for role, population in value.items():
+                    if role not in old:
+                        continue
+                    prior = old[role]
+                    for field in ('n_selected', 'bias_voltage_V',
+                                  'n_before_fixed_led', 'n_after_fixed_led',
+                                  'n_dropped_window'):
+                        if (field in prior and field in population
+                                and prior[field] != population[field]):
+                            raise ValueError(
+                                f'Conflicting shared dataset_populations.{role}.{field} '
+                                f'in {context_path}: cached={prior[field]!r}, '
+                                f'current={population[field]!r}'
+                            )
+                # Retain previously published scientific labels for the report.
+                shared[key] = {
+                    **old,
+                    **{
+                        role: {**old.get(role, {}), **{
+                            field: entry
+                            for field, entry in data.items()
+                            if field not in {'population_identity', 'analysis_protocol_identity'}
+                        }}
+                        for role, data in value.items()
+                    },
+                }
+            elif key in {'control_artifact', 'sample_mask_identity'}:
+                # Historical absolute paths and hashes are not portable.
+                shared[key] = old
+            elif old != value:
+                raise ValueError(
+                    f'Conflicting shared {key} in {context_path}: '
+                    f'cached={old!r}, current={value!r}'
+                )
         shared = {**previous, **shared}
     _write(context_path, shared)
     derived = {'name', 'study_name', 'run_id', 'mode', 'window_name', 'window_ns', 'model',

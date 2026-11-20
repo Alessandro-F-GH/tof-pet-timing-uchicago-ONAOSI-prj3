@@ -526,12 +526,13 @@ def blind_metric_bar(
         ax.set_xticks(range(len(rows)), [row["code"] for row in rows])
         ax.set_ylabel(f"Blind {metric.upper()} [ps]")
         ax.set_xlabel(f"Model (ascending blind {metric.upper()})")
-        ax.set_title("Blind coincidence timing resolution" if metric == "ctr"
-                     else "Blind root mean squared error")
-        ax.legend(
-            handles=handles, loc=style.get("legend_location", "upper left"),
-            bbox_to_anchor=style.get("legend_anchor", [1.02, 1.0]),
-        )
+        if metric != "ctr":
+            ax.set_title("Blind root mean squared error")
+            ax.legend(
+                handles=handles, loc=style.get("legend_location", "upper left"),
+                bbox_to_anchor=style.get("legend_anchor", [1.02, 1.0]),
+            )
+        # Blind CTR is publication-ready: no title or side legend.
         _finish(ax, cfg)
         return _save(fig, path)
 

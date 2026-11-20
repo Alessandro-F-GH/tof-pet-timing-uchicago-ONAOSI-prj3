@@ -7,6 +7,7 @@ import numpy as np
 from numpy.lib.format import open_memmap
 from waveform_analysis.core.io import atomic_json, canonical_hash, source_signature
 from waveform_analysis.data.cache_store import get_or_build
+from waveform_analysis.data.cache_settings import portable_settings, verify_settings
 from waveform_analysis.data.named_cache import native_alias, cache_root_from_config
 from waveform_analysis.data.root_io import iterate_energy_chunks
 from waveform_analysis.signal.filtering import filter_native_waveform
@@ -65,10 +66,10 @@ def preprocessing_fingerprint(root, selection, dataset, preprocessing, mode):
 
 def load_preprocessed(directory, root, selection, dataset, preprocessing, mode):
     m = json.loads((directory / "manifest.json").read_text())
-    if m.get("fingerprint") != preprocessing_fingerprint(
-        root, selection, dataset, preprocessing, mode
-    ):
-        raise ValueError("preprocessing cache stale")
+    expected_settings = portable_settings({"dataset": dataset, "preprocessing": preprocessing, "mode": mode})
+    verify_settings(m, expected_settings, label="Native preprocessing")
+    if m.get("mode") != mode:
+        raise ValueError("Native preprocessing mode differs")
     return PreprocessedData(
         directory,
         m,
@@ -303,6 +304,7 @@ def preprocess_selected(
         np.save(base / "event_index.npy", np.asarray(selection.event_index)[rows])
         manifest = {
             "format_version": PREPROCESS_FORMAT_VERSION,
+            "cache_settings": portable_settings({"dataset": dataset, "preprocessing": preprocessing, "mode": mode}),
             "fingerprint": preprocessing_fingerprint(
                 root, selection, dataset, preprocessing, mode
             ),
