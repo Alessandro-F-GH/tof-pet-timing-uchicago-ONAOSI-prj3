@@ -69,17 +69,31 @@ def development_mean(dataset, mode, mask, *, chunk_size=2048):
 
 
 def grouped_contributions(phi, width):
-    """Nonoverlapping signed sums; final partial window is retained."""
+    """Sum positive and negative SHAP values separately in each time group.
+
+    Returns (starts, positive, negative) with detector axes preserved.
+    Positive and negative contributions never cancel within a group; their
+    sum is exactly the signed sum of the original sample-level attribution.
+    The final partial group is retained.
+    """
     if isinstance(width, bool) or int(width) != width or width < 1:
         raise ValueError("group_samples must be a positive integer")
+    phi = np.asarray(phi, dtype=np.float64)
+    if phi.ndim != 3 or not np.all(np.isfinite(phi)):
+        raise ValueError("Expected finite attributions [events,detectors,samples]")
     n = phi.shape[-1]
+    if not n:
+        raise ValueError("Cannot group empty attributions")
     starts = np.arange(0, n, int(width), dtype=np.int64)
-    scores = np.stack(
-        [np.sum(phi[..., start:min(start + width, n)], axis=-1)
-         for start in starts],
-        axis=-1,
+    positive = np.stack(
+        [np.maximum(phi[..., start:min(start + width, n)], 0).sum(axis=-1)
+         for start in starts], axis=-1,
     )
-    return starts, scores
+    negative = np.stack(
+        [np.minimum(phi[..., start:min(start + width, n)], 0).sum(axis=-1)
+         for start in starts], axis=-1,
+    )
+    return starts, positive, negative
 
 
 def _aligned_blind_predictions(store, blind):
@@ -143,7 +157,7 @@ def explain_linear_shap_local(
         )
         if (destination / "summary.json").is_file() and not overwrite:
             old = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
-            if old.get("settings") == {
+            if old.get("plot_version") == 2 and old.get("settings") == {
                 "events_per_group": events_per_group,
                 "extreme_margin": extreme_margin,
                 "group_samples": group_samples,
@@ -205,10 +219,14 @@ def explain_linear_shap_local(
         )
         # Prepare outputs only after all checks have passed.
         destination.mkdir(parents=True, exist_ok=True)
-        starts, scores = grouped_contributions(
-            phi if name == "direct_linear_ridge" else phi.sum(axis=1, keepdims=True),
-            int(group_samples),
+        starts, positive_scores, negative_scores = grouped_contributions(
+            phi, int(group_samples),
         )
+        if name == "shared_linear_ridge":
+            # Preserve contributions of both detector signals before summation:
+            # opposite signs never cancel prematurely.
+            positive_scores = positive_scores.sum(axis=1, keepdims=True)
+            negative_scores = negative_scores.sum(axis=1, keepdims=True)
         plots, records = [], []
         for i, choice in enumerate(selected):
             event_id = int(blind.event_index[indices[i]])
@@ -220,8 +238,12 @@ def explain_linear_shap_local(
                 group=choice["group"], event_id=event_id,
                 target_ps=targets[indices[i]], prediction_ps=predictions[indices[i]],
                 improvement_ps=improvements[indices[i]], led_threshold_mv=led_threshold_mv,
-                window_starts=starts, window_scores=scores[i], window_samples=int(group_samples),
+                window_starts=starts,
+                positive_window_scores=positive_scores[i],
+                negative_window_scores=negative_scores[i],
+                window_samples=int(group_samples),
                 attribution_method="Linear SHAP",
+                separate_detector_importance=(name == "direct_linear_ridge"),
             )
             plots.append(filename)
             records.append({
@@ -245,7 +267,9 @@ def explain_linear_shap_local(
             background_mean_normalized=mean_pair,
             attribution_ps_per_sample=phi,
             group_starts=starts,
-            group_scores_ps=scores,
+            group_positive_scores_ps=positive_scores,
+            group_negative_scores_ps=negative_scores,
+            group_scores_ps=positive_scores + negative_scores,
             baseline_prediction_ps=np.asarray(base_prediction),
         )
         with (destination / "events.csv").open("w", encoding="utf-8", newline="") as stream:
@@ -254,6 +278,8 @@ def explain_linear_shap_local(
             writer.writerows(records)
         atomic_json(destination / "summary.json", {
             "method": "exact_interventional_linear_shap",
+            "plot_version": 2,
+            "grouping": "sum_positive_and_negative_separately",
             "model": name,
             "background": "complete_prepared_development_mean",
             "mode": config["mode"],
