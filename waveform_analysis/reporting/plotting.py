@@ -537,6 +537,53 @@ def blind_metric_bar(
         return _save(fig, path)
 
 
+
+def paired_formulation_ctr_bar(pairs, path, cfg, *, led_value, title):
+    """Compare matched direct/shared model families and windows on saved test CTR.
+
+    Each entry has a shared family label, window, and both persisted scores and
+    bootstrap standard deviations; no model selection or fitting occurs here.
+    """
+    if not pairs:
+        raise ValueError("Paired formulation plot requires at least one complete pair")
+    style = cfg["bar"]
+    x = np.arange(len(pairs), dtype=float)
+    width = float(style["group_width"]) / 2
+    with plot_context(cfg):
+        fig, ax = plt.subplots(figsize=(
+            max(float(style["figure_width_min"]),
+                float(style["width_per_category"]) * len(pairs)),
+            float(style["figure_height"]),
+        ))
+        for form, offset in (("direct", -width / 2), ("shared", width / 2)):
+            y = np.asarray([pair[form]["ctr_ps"] for pair in pairs], dtype=float)
+            e = np.asarray([pair[form]["ctr_std_ps"] for pair in pairs], dtype=float)
+            if not np.all(np.isfinite(y)) or not np.all(np.isfinite(e)) or np.any(e < 0):
+                raise ValueError("Paired CTR and bootstrap errors must be finite and nonnegative")
+            ax.bar(
+                x + offset, y, width=width, yerr=e,
+                capsize=float(style["error_capsize"]),
+                color=cfg["formulations"][form]["color"],
+                edgecolor=style["edge_color"],
+                linewidth=float(style["edge_line_width"]),
+                label="Direct" if form == "direct" else "Shared",
+            )
+        if led_value is not None:
+            if not np.isfinite(led_value):
+                raise ValueError("LED wide reference must be finite")
+            ax.axhline(
+                led_value, color=cfg["reference"]["color"], linestyle="--",
+                linewidth=1.25, label="LED (wide)",
+            )
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'{pair["code"]}\n{pair["window"].capitalize()}' for pair in pairs])
+        ax.set_ylabel("Test CTR [ps]")
+        ax.set_xlabel("Model family / waveform window")
+        ax.set_title(title)
+        ax.legend(ncols=3)
+        _finish(ax, cfg)
+        return _save(fig, path)
+
 def grouped_bar(labels, series, path, cfg, *, ylabel, title):
     style = cfg["bar"]
     width = max(
