@@ -1001,7 +1001,7 @@ def _select_local_events(predictions, targets, events_per_group=2, extreme_margi
     return selected, improvement, median_prediction
 
 
-LOCAL_PLOT_VERSION = 13
+LOCAL_PLOT_VERSION = 14
 
 
 def _detector_difference(values):
@@ -1125,7 +1125,8 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
                       window_starts=None, window_scores=None, window_samples=None,
                       attribution_method="TSHAP",
                       positive_window_scores=None, negative_window_scores=None,
-                      separate_detector_importance=False):
+                      separate_detector_importance=False,
+                      highlight_time_ranges_ns=None):
     """Plot the shared detector-waveform and temporal-attribution local layout.
 
     TSHAP uses one paired score; linear SHAP may supply separate detector scores.
@@ -1249,11 +1250,21 @@ def _plot_local_event(path, *, time_ps, waveform_mv, dataset_mean_difference_mv,
         ax.set_xlabel("Waveform time (ns)")
         ax.grid(True, alpha=0.22, linewidth=0.6)
         ax.legend(loc="best", fontsize=9)
+    # Visual reference only: preserve the signal and attribution data unchanged.
+    # The middle difference panel is deliberately excluded from the shading.
+    if highlight_time_ranges_ns:
+        importance_axes = axes[1:] if separate_detector_importance else axes[-1:]
+        for shaded_ax in (axes[0], *importance_axes):
+            for start_ns, end_ns in highlight_time_ranges_ns:
+                shaded_ax.axvspan(
+                    float(start_ns), float(end_ns), color="0.75",
+                    alpha=0.25, linewidth=0, zorder=0,
+                )
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
 def _refresh_local_presentation(
     destination, *, waveform_transform, led_threshold_mv, baseline_window_ns,
-    dataset, mode, seed
+    dataset, mode, seed, window_name=None
 ):
     """Refresh plots from cached attributions and a cached dataset-mean waveform."""
     summary_path = destination / "summary.json"
@@ -1333,6 +1344,7 @@ def _refresh_local_presentation(
             prediction_ps=float(predictions[i]),
             improvement_ps=float(improvements[i]),
             led_threshold_mv=threshold,
+            highlight_time_ranges_ns=((-1.5, 2.0),) if str(window_name).lower() == "wide" else None,
         )
         plot_names.append(plot_name)
 
@@ -1997,6 +2009,7 @@ def explain_tshap_local(
                     dataset=blind,
                     mode=config["mode"],
                     seed=int(seed),
+                    window_name=config.get("window_name"),
                 )
                 if logger:
                     logger.info("TSHAP local | cache hit | %s", destination)
@@ -2166,6 +2179,7 @@ def explain_tshap_local(
                             window_starts=window_starts,
                             window_scores=local_scores[i],
                             window_samples=window_samples,
+                            highlight_time_ranges_ns=((-1.5, 2.0),) if str(config.get("window_name", "")).lower() == "wide" else None,
                         )
                         plot_names.append(plot_name)
                         writer.writerow([
