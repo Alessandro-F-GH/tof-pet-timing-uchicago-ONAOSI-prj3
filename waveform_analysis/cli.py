@@ -118,6 +118,10 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--step-ns", type=float, default=1.0)
     scan.add_argument("--width-ns", type=float, default=None,
                       help="Fixed-window width in ns (default: same as --step-ns)")
+    scan.add_argument("--progressive-ends-ns", nargs="+", type=float,
+                      help="Explicit increasing progressive upper limits in ns; replaces uniform spacing")
+    scan.add_argument("--scan-kind", choices=("both", "progressive", "fixed"),
+                      default="both", help="Run both scans or just one")
     scan.add_argument("--seed", type=int)
     scan.add_argument("--overwrite", action="store_true")
     tshap = sub.add_parser("explain-tshap", help="TSHAP temporal explanations from frozen saved models")
@@ -266,7 +270,8 @@ def main() -> None:
         for output in scan_linear_windows(
             args.results, mode=args.mode, cache_root=args.cache_root,
             output_root=args.output_root, step_ns=args.step_ns,
-            width_ns=args.width_ns, seed=args.seed,
+            width_ns=args.width_ns, progressive_ends_ns=args.progressive_ends_ns,
+            scan_kind=args.scan_kind, seed=args.seed,
             overwrite=args.overwrite, logger=logger,
         ):
             print(output)
