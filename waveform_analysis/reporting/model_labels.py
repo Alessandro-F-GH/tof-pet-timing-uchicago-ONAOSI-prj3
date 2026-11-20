@@ -9,6 +9,8 @@ MODEL_LABELS: dict[str, tuple[str, str]] = {
     "shared_hydra": ("S-HYD", "Shared Hydra + ridge"),
     "direct_rdst": ("D-RDST", "Direct dilated shapelets + ridge"),
     "shared_rdst": ("S-RDST", "Shared dilated shapelets + ridge"),
+    "direct_decision_tree_regressor": ("D-DT", "Direct decision tree"),
+    "shared_decision_tree_regressor": ("S-DT", "Shared-input decision tree"),
     "direct_mlp": ("D-MLP", "Direct dense MLP"),
     "independent_cnn1d": ("D-CNN", "Independent temporal CNN"),
     "onishi_cnn": ("D-ONI", "Onishi-inspired paired CNN"),
