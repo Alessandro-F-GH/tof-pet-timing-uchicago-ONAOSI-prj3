@@ -6,6 +6,7 @@ import numpy as np
 from waveform_analysis.core.io import atomic_json, write_csv
 from waveform_analysis.reporting.plotting import (
     blind_metric_bar,
+    paired_formulation_ctr_bar,
     blind_residual_boxplot,
     grouped_bar,
     heatmap,
@@ -256,118 +257,90 @@ def _scatters(group, directory, cfg):
         )
 
 
-def _windows(runs, root, cfg):
-    for mode in sorted({r["manifest"]["mode"] for r in runs}):
-        mr = [r for r in runs if r["manifest"]["mode"] == mode]
-        windows = sorted({r["manifest"].get("window_name") for r in mr})
-        directory = (
-            root / "plots" / ("energy" if mode == "energy_to_energy" else "timing")
-        )
-        for stale in directory.glob("windows_*"):
-            stale.unlink()
-        if len(windows) < 2:
+def _paired_family(model_name):
+    """Stable family key, including legacy names with non-matching prefixes."""
+    aliases = {
+        "direct_mlp": ("mlp", "direct"),
+        "antisymmetric_mlp": ("mlp", "shared"),
+        "independent_cnn1d": ("cnn1d", "direct"),
+        "shared_cnn1d": ("cnn1d", "shared"),
+    }
+    if model_name in aliases:
+        return aliases[model_name]
+    for form in ("direct", "shared"):
+        prefix = f"{form}_"
+        if model_name.startswith(prefix):
+            return model_name[len(prefix):], form
+    return None
+
+
+def _paired_formulation_rows(runs, mode):
+    """Return only families represented by both formulations in a given window."""
+    from waveform_analysis.reporting.model_labels import model_label
+
+    grouped = {}
+    for run in runs:
+        manifest = run["manifest"]
+        if manifest["mode"] != mode:
             continue
-        for model in sorted(
-            {r["manifest"]["model"] for r in mr}
-        ):
-            model_runs = sorted(
-                [r for r in mr if r["manifest"]["model"] == model],
-                key=lambda r: str(r["manifest"].get("window_name")),
-            )
-            for metric in ("ctr", "rmse"):
-                grouped_bar(
-                    [str(r["manifest"].get("window_name")) for r in model_runs],
-                    [
-                        {
-                            "label": model,
-                            "values": [r["blind"][f"{metric}_ps"] for r in model_runs],
-                            "errors": [
-                                r["bootstrap"][f"{metric}_bootstrap_std_ps"]
-                                for r in model_runs
-                            ],
-                        }
-                    ],
-                    output_path(directory, f"windows_{model}_{metric}", cfg),
-                    cfg,
-                    ylabel=f"Blind {metric.upper()} [ps]",
-                    title=f"{model}: all waveform windows",
-                )
-        for metric in ("ctr", "rmse"):
-            labels = []
-            values = {"shared": [], "direct": []}
-            errors = {"shared": [], "direct": []}
-            for window in windows:
-                wr = [r for r in mr if r["manifest"].get("window_name") == window]
-                selected = {}
-                for form in ("shared", "direct"):
-                    candidates = [
-                        r
-                        for r in wr
-                        if r["manifest"]["estimator_formulation"] == form
-                    ]
-                    if candidates:
-                        selection_metric = str(
-                            candidates[0]["best"]["selection_metric"]
-                        )
-                        selected[form] = min(
-                            candidates,
-                            key=lambda r: float(
-                                r["best"][f"validation_{selection_metric}_mean_ps"]
-                            ),
-                        )
-                labels.append(
-                    str(window)
-                    + "\n"
-                    + " ".join(
-                        f"{f[0].upper()}:{selected[f]['manifest']['model']}"
-                        for f in ("shared", "direct")
-                        if f in selected
-                    )
-                )
-                for form in ("shared", "direct"):
-                    run = selected.get(form)
-                    values[form].append(
-                        float(run["blind"][f"{metric}_ps"]) if run else np.nan
-                    )
-                    errors[form].append(
-                        float(run["bootstrap"][f"{metric}_bootstrap_std_ps"])
-                        if run
-                        else np.nan
-                    )
-            led_values = []
-            led_errors = []
-            for window in windows:
-                wr = [run for run in mr if run["manifest"].get("window_name") == window]
-                if wr:
-                    led_values.append(float(wr[0]["blind"][f"led_{metric}_ps"]))
-                    led_errors.append(0.0)
-                else:
-                    led_values.append(np.nan)
-                    led_errors.append(np.nan)
-            series = [
-                {
-                    "label": cfg["formulations"][f]["label"],
-                    "values": values[f],
-                    "errors": errors[f],
+        identity = _paired_family(manifest["model"])
+        if identity is None:
+            continue
+        family, form = identity
+        if manifest["estimator_formulation"] != form:
+            # Do not silently use a model under the wrong formulation.
+            continue
+        key = (family, str(manifest.get("window_name")))
+        grouped.setdefault(key, {})[form] = run
+
+    pairs = []
+    for (family, window), forms in sorted(grouped.items()):
+        if set(forms) != {"direct", "shared"}:
+            continue
+        code = model_label(forms["shared"]["manifest"]["model"])[0]
+        code = code[2:] if code.startswith("S-") else code
+        pairs.append({
+            "code": code,
+            "window": window,
+            **{
+                form: {
+                    "ctr_ps": float(forms[form]["blind"]["ctr_ps"]),
+                    "ctr_std_ps": float(forms[form]["bootstrap"]["ctr_bootstrap_std_ps"]),
                 }
-                for f in ("shared", "direct")
-                if np.any(np.isfinite(values[f]))
-            ]
-            series.append(
-                {
-                    "label": cfg["reference"]["label"],
-                    "values": led_values,
-                    "errors": led_errors,
-                }
-            )
-            grouped_bar(
-                labels,
-                series,
-                output_path(directory, f"windows_{metric}", cfg),
-                cfg,
-                ylabel=f"Blind {metric.upper()} [ps]",
-                title=f"Waveform-window comparison — winners selected by development CV {metric.upper()}",
-            )
+                for form in ("direct", "shared")
+            },
+        })
+    return pairs
+
+
+def _windows(runs, root, cfg):
+    """One paired CTR chart per mode, replacing legacy window-comparison plots."""
+    for mode in ("energy_to_energy", "timing_to_timing"):
+        directory = root / "plots" / ("energy" if mode == "energy_to_energy" else "timing")
+        # Remove old all-window charts and superseded paired-formulation plots,
+        # including alternative formats from earlier report generations.
+        for pattern in ("windows_*", "paired_formulations_ctr.*"):
+            for stale in directory.glob(pattern):
+                if stale.is_file():
+                    stale.unlink()
+
+        pairs = _paired_formulation_rows(runs, mode)
+        if not pairs:
+            continue
+        wide = [
+            r for r in runs
+            if r["manifest"]["mode"] == mode
+            and r["manifest"].get("window_name") == "wide"
+        ]
+        led_value = float(wide[0]["blind"]["led_ctr_ps"]) if wide else None
+        paired_formulation_ctr_bar(
+            pairs,
+            output_path(directory, "paired_formulations_ctr", cfg),
+            cfg,
+            led_value=led_value,
+            title=f"{'Energy' if mode == 'energy_to_energy' else 'Timing'}: Direct vs Shared — test CTR",
+        )
+
 
 
 def _read_matrix(path):
@@ -554,7 +527,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             ],
             "plot_regeneration_requires_training": False,
             "pairwise_difference_convention": "metric(row)-metric(column); negative means row model is better",
-            "window_winner_source": "development_cv_only",
+            "window_comparison_plot": "paired_formulations_ctr",
         },
     )
     if logger:
