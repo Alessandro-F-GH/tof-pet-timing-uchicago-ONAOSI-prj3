@@ -298,39 +298,5 @@ def test_global_linear_shap_plot_has_no_difference_panel(tmp_path, shared, windo
     assert path.is_file()
     assert "Mean detector waveforms" in names
     assert not any("difference" in title.lower() for title in names)
-    assert len(names) == (3 if shared else 4)
-    assert "Net signed Linear SHAP — detector pair" in names
+    assert len(names) == (2 if shared else 3)
     assert spans == ([(-1.5, 2.0)] * len(names) if window_name == "wide" else [])
-
-
-@pytest.mark.parametrize("shared", [False, True])
-def test_global_net_signed_panel_sums_both_detector_contributions(tmp_path, shared):
-    import matplotlib
-    matplotlib.use("Agg")
-    from matplotlib.axes import Axes
-    from unittest.mock import patch
-    from waveform_analysis.engine.linear_shap import _plot_global_linear_shap
-
-    actual = []
-    original_bar = Axes.bar
-
-    def capture_bar(self, x, height, *args, **kwargs):
-        if kwargs.get("label") == "Net signed SHAP (detector sum)":
-            actual.extend(np.asarray(height, dtype=float).tolist())
-        return original_bar(self, x, height, *args, **kwargs)
-
-    positive = np.array([[5.0, 3.0]]) if shared else np.array([[5.0, 3.0], [7.0, 2.0]])
-    negative = np.array([[-2.0, -4.0]]) if shared else np.array([[-2.0, -4.0], [-1.0, -3.0]])
-    with patch.object(Axes, "bar", capture_bar):
-        _plot_global_linear_shap(
-            tmp_path / "signed.pdf",
-            time_ps=np.linspace(-2000, 6000, 16),
-            mean_waveform_mv=np.ones((2, 16)),
-            starts=np.array([0, 8]), group_samples=8,
-            mean_positive_ps=positive,
-            mean_negative_ps=negative,
-            model_name="shared_linear_ridge" if shared else "direct_linear_ridge",
-            n_events=12, window_name="wide",
-        )
-    np.testing.assert_allclose(actual, (positive + negative).sum(axis=0))
-    assert (tmp_path / "signed.pdf").is_file()
