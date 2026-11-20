@@ -24,6 +24,20 @@ def test_default_fixed_windows_are_nonoverlapping_and_progressive():
         assert first[2] == second[1]
 
 
+def test_onishi_progressive_anchor_and_full_wide_fixed_scan():
+    windows = temporal_windows(
+        -2.0, 5.0, 1.0, progressive_start_ns=-1.5,
+        progressive_initial_end_ns=2.0,
+    )
+    progressive = [row for row in windows if row[0] == "progressive"]
+    fixed = [row for row in windows if row[0] == "fixed"]
+    assert progressive[0] == ("progressive", -1.5, 2.0)
+    assert progressive[-1] == ("progressive", -1.5, 5.0)
+    assert fixed[0] == ("fixed", -2.0, -1.0)
+    assert fixed[-1] == ("fixed", 4.0, 5.0)
+    assert len(fixed) == 7
+
+
 def test_explicit_width_overrides_default_without_changing_step():
     fixed = [x for x in temporal_windows(0, 5, 1, 2.0) if x[0] == "fixed"]
     assert len(fixed) == 4
@@ -66,7 +80,14 @@ def test_shared_difference_uses_only_requested_columns():
 
 
 def test_alpha_selection_is_based_on_development_only(monkeypatch):
-    # Use RMSE here to avoid fit-histogram requirements for tiny synthetic data.
+    # Only replace the metric estimator for a small synthetic population;
+    # all CV, model fitting and parameter selection remain real.
+    from waveform_analysis.engine import linear_window_scan
+    def fake_metrics(residuals, fit_cfg, *, seed):
+        values = np.asarray(residuals, dtype=np.float64)
+        score = float(np.sqrt(np.mean(values ** 2)))
+        return {"rmse_ps": score, "ctr_ps": score}
+    monkeypatch.setattr(linear_window_scan, "metric_values", fake_metrics)
     rng = np.random.default_rng(19)
     n = 72
     x = rng.normal(size=(n, 5)).astype(np.float32)
