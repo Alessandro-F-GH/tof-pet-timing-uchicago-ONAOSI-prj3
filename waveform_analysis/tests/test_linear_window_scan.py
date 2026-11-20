@@ -112,3 +112,43 @@ def test_scan_elapsed_label():
     assert _elapsed_label(0) == "0m00s"
     assert _elapsed_label(85) == "1m25s"
     assert _elapsed_label(3705) == "1h01m45s"
+
+
+def test_explicit_progressive_ends_replace_uniform_scan():
+    windows = temporal_windows(
+        -2, 50, 1, progressive_start_ns=-1.5,
+        progressive_initial_end_ns=2,
+        progressive_ends_ns=[2, 3.5, 6, 10, 20, 50],
+        scan_kind="progressive",
+    )
+    assert windows == [
+        ("progressive", -1.5, 2.0),
+        ("progressive", -1.5, 3.5),
+        ("progressive", -1.5, 6.0),
+        ("progressive", -1.5, 10.0),
+        ("progressive", -1.5, 20.0),
+        ("progressive", -1.5, 50.0),
+    ]
+
+
+@pytest.mark.parametrize("ends", [
+    [], [2, 2], [5, 4], [1.5, 3], [2, 51],
+    [2, float("nan")], [2, float("inf")],
+])
+def test_invalid_explicit_progressive_ends_rejected(ends):
+    with pytest.raises(ValueError, match="Progressive ends"):
+        temporal_windows(-2, 50, 1,
+                         progressive_start_ns=-1.5,
+                         progressive_initial_end_ns=2,
+                         progressive_ends_ns=ends, scan_kind="progressive")
+
+
+def test_cli_custom_progressive_limits():
+    from waveform_analysis.cli import _parser
+    args = _parser().parse_args([
+        "scan-linear-window", "--results", "results",
+        "--scan-kind", "progressive", "--progressive-ends-ns",
+        "2", "4", "8", "15", "50",
+    ])
+    assert args.scan_kind == "progressive"
+    assert args.progressive_ends_ns == [2., 4., 8., 15., 50.]
