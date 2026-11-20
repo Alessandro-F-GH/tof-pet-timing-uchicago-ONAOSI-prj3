@@ -1,7 +1,7 @@
-"""Exact interventional local Linear SHAP for saved direct/shared Ridge models.
+"""Exact interventional local and global Linear SHAP for saved Ridge models.
 
-Uses the Development mean as background, the existing TSHAP local-event
-selection, and its common waveform/window-attribution plot. Never retrains.
+Uses the complete Development mean as the fixed background; explanations are
+computed on blind waveforms without retraining.
 """
 from __future__ import annotations
 
@@ -297,6 +297,274 @@ def explain_linear_shap_local(
         outputs.append(destination)
         if logger:
             logger.info("Linear SHAP local | %s | %d events | %s", name, len(records), destination)
+    if not matched:
+        raise ValueError("No matching saved Ridge runs found")
+    return outputs
+
+
+def _random_blind_indices(n_events, max_events, seed):
+    """Uniform, seeded sampling of the prepared blind population without replacement."""
+    if isinstance(max_events, bool) or not isinstance(max_events, int) or max_events < 1:
+        raise ValueError("max_events must be a positive integer")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed must be an integer")
+    if n_events < 1:
+        raise ValueError("Blind dataset contains no prepared events")
+    return np.sort(
+        np.random.default_rng(seed).choice(
+            n_events, size=min(max_events, n_events), replace=False
+        )
+    )
+
+
+def _global_mean_contributions(phi, group_samples, *, shared):
+    """Event-wise sign separation, then averaging, in ps per event."""
+    starts, positive, negative = grouped_contributions(phi, group_samples)
+    if shared:
+        # Sum detectors only AFTER splitting per-sample signs, as in local SHAP.
+        positive = positive.sum(axis=1, keepdims=True)
+        negative = negative.sum(axis=1, keepdims=True)
+    return starts, positive.mean(axis=0), negative.mean(axis=0)
+
+
+def _plot_global_linear_shap(
+    path, *, time_ps, mean_waveform_mv, starts, group_samples,
+    mean_positive_ps, mean_negative_ps, model_name, n_events, window_name,
+):
+    """Global counterpart of local Linear SHAP: waveforms + signed importance."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    time_ps = np.asarray(time_ps, dtype=np.float64)
+    time_ns = time_ps / 1000.0
+    means = np.asarray(mean_waveform_mv, dtype=np.float64)
+    positive = np.asarray(mean_positive_ps, dtype=np.float64)
+    negative = np.asarray(mean_negative_ps, dtype=np.float64)
+    starts = np.asarray(starts, dtype=np.int64)
+    shared = model_name == "shared_linear_ridge"
+    n_panels = 2 if shared else 3
+    expected = (n_panels - 1, starts.size)
+    if means.shape != (2, time_ps.size) or positive.shape != expected or negative.shape != expected:
+        raise ValueError("Global Linear SHAP waveform or contribution dimensions are inconsistent")
+    if time_ps.size < 2 or not np.all(np.diff(time_ps) > 0):
+        raise ValueError("Global Linear SHAP requires an increasing waveform time grid")
+    if not all(np.all(np.isfinite(a)) for a in (time_ps, means, positive, negative)):
+        raise ValueError("Global Linear SHAP plot contains nonfinite data")
+
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(12.5, 3.1 + 2.4 * (n_panels - 1)),
+        sharex=True, constrained_layout=True,
+        gridspec_kw={"height_ratios": [1.0] + [1.05] * (n_panels - 1)},
+    )
+    fig.suptitle(
+        f"Global Linear SHAP — {model_name.replace('_', ' ').title()}"
+        f" | {n_events} random blind events", fontsize=11,
+    )
+    axes[0].plot(time_ns, means[0], linewidth=1.15, label="Detector 1")
+    axes[0].plot(time_ns, means[1], linewidth=1.15, label="Detector 2")
+    axes[0].set_title("Mean detector waveforms")
+    axes[0].set_ylabel("Amplitude (mV)")
+    axes[0].grid(True, alpha=0.22, linewidth=0.6)
+    axes[0].legend(loc="best", fontsize=9)
+
+    dt_ns = float(np.median(np.diff(time_ns)))
+    widths = np.minimum(int(group_samples), time_ns.size - starts)
+    centers = time_ns[starts] + 0.5 * (widths - 1) * dt_ns
+    widths_ns = widths * dt_ns
+    for channel in range(n_panels - 1):
+        ax = axes[channel + 1]
+        ax.bar(centers, positive[channel], width=0.9 * widths_ns,
+               color="#4c78a8", label="Mean positive SHAP")
+        ax.bar(centers, negative[channel], width=0.9 * widths_ns,
+               color="#e45756", label="Mean negative SHAP")
+        ax.axhline(0.0, color="0.4", linewidth=0.7)
+        ax.set_title(
+            "Pair Linear SHAP" if shared
+            else f"Detector {channel + 1} Linear SHAP"
+        )
+        ax.set_ylabel("Mean contribution (ps/event)")
+        ax.grid(True, alpha=0.22, linewidth=0.6)
+        ax.legend(loc="best", fontsize=9)
+    axes[-1].set_xlabel("Waveform time (ns)")
+    if str(window_name).lower() == "wide":
+        for ax in axes:
+            ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.25, linewidth=0, zorder=0)
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def explain_linear_shap_global(
+    results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
+    cache_root=None, output_root=None, max_events=256, seed=42,
+    group_samples=8, overwrite=False, logger=None,
+):
+    """Average exact Ridge SHAP contributions over random prepared blind events.
+
+    The background is the complete Development mean. Every eligible blind event
+    is equally likely to be sampled; no prediction/error-based selection occurs.
+    """
+    if isinstance(group_samples, bool) or not isinstance(group_samples, int) or group_samples < 1:
+        raise ValueError("group_samples must be a positive integer")
+    _random_blind_indices(1, max_events, seed)  # Validate settings before I/O.
+    allowed = set(models) if models is not None else RIDGE_NAMES
+    if not allowed.issubset(RIDGE_NAMES):
+        raise ValueError(f"Linear SHAP requires Ridge models: {sorted(allowed - RIDGE_NAMES)}")
+    runs, source = local._tshap_run_inputs(results, model_dir)
+    selected_window = local._effective_tshap_window(ml_window, model_dir=model_dir)
+    output_root = (
+        Path(output_root).expanduser().resolve() if output_root is not None
+        else Path.cwd().resolve() / "xai"
+    )
+    if output_root.is_relative_to(source):
+        raise ValueError("XAI output-root must be outside the results directory")
+    lookup = PreparedCacheLookup()
+    outputs = []
+    matched = 0
+    for run in runs:
+        name = run["manifest"]["model"]
+        if name not in allowed:
+            continue
+        directory = Path(run["directory"])
+        config = resolve_run_config(directory)
+        local._apply_tshap_cache(config, cache_root=cache_root)
+        if (not local._matches_tshap_window(config, selected_window)
+                or not local._matches_tshap_mode(config, mode)):
+            continue
+        matched += 1
+        destination = (
+            output_root / batch_root(directory).name
+            / directory.relative_to(batch_root(directory)) / "linear_shap_global"
+        )
+        settings = {
+            "max_events": max_events, "seed": seed, "group_samples": group_samples,
+        }
+        if (destination / "summary.json").is_file() and not overwrite:
+            old = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
+            if (old.get("plot_version") == 1
+                    and old.get("settings") == settings
+                    and all((destination / filename).is_file() for filename in (
+                        "global_importance.pdf", "global_attributions.npz",
+                        "global_importance.csv",
+                    ))):
+                outputs.append(destination)
+                if logger:
+                    logger.info("Linear SHAP global | existing output | %s", destination)
+                continue
+
+        spec = get_model(name)
+        store = RunStore(directory)
+        if not saved_model_complete(spec, store.model_dir):
+            raise FileNotFoundError(f"Saved Ridge model missing: {store.model_dir}")
+        fitted = load_fitted_model(spec, store.model_dir, run["best"]["parameters"], config)
+        development = lookup.find("development", config, run["manifest"])
+        blind = lookup.find("blind", config, run["manifest"])
+        mask = np.asarray(fitted.sample_mask, dtype=bool)
+        mean_pair = development_mean(development, config["mode"], mask)
+        indices = _random_blind_indices(blind.n_events, max_events, seed)
+        waveforms = np.asarray(
+            waveform_view(blind, config["mode"], indices).materialize(), np.float64
+        )
+        family = mode_family(config["mode"])
+        full_time = np.asarray(getattr(blind, f"{family}_time_ps"), np.float64)
+        if mask.shape != (full_time.size,):
+            raise ValueError("Stored fitted sample mask does not match prepared time grid")
+        time_ps = full_time[mask]
+        waveforms = waveforms[:, :, mask]
+        regressor = fitted.artifact.regressor
+        phi, baseline_prediction, reconstructed = linear_attributions(
+            waveforms, mean_pair, regressor.coef_,
+            shared=(name == "shared_linear_ridge"),
+            intercept=float(regressor.intercept_),
+        )
+        # Clipping is a post-model pipeline operation: explain the unbounded
+        # linear estimator; verify its clipped output against saved blind results.
+        saved, _ = _aligned_blind_predictions(store, blind)
+        replay = predict_indices(spec, fitted, blind, config["mode"], indices)
+        limit = fitted.output_max_abs_ps
+        bounded = np.clip(reconstructed, -limit, limit) if limit is not None else reconstructed
+        if not np.allclose(bounded, saved[indices], atol=0.05, rtol=1e-5):
+            raise ValueError("Global Linear SHAP disagrees with saved blind predictions")
+        if not np.allclose(bounded, replay, atol=1e-7, rtol=1e-7):
+            raise ValueError("Global Linear SHAP disagrees with model inference")
+
+        normalization = getattr(blind, f"{family}_transform")
+        if normalization is None:
+            raise ValueError("Missing fitted waveform normalization")
+        mean_waveform_mv = np.asarray(
+            normalization.inverse(waveforms).mean(axis=0), np.float64
+        )
+        starts, positive, negative = _global_mean_contributions(
+            phi, int(group_samples), shared=(name == "shared_linear_ridge"),
+        )
+        # Write only after the model, waveform grid and prediction checks pass.
+        destination.mkdir(parents=True, exist_ok=True)
+        _plot_global_linear_shap(
+            destination / "global_importance.pdf",
+            time_ps=time_ps, mean_waveform_mv=mean_waveform_mv,
+            starts=starts, group_samples=group_samples,
+            mean_positive_ps=positive, mean_negative_ps=negative,
+            model_name=name, n_events=len(indices),
+            window_name=config["window_name"],
+        )
+        np.savez_compressed(
+            destination / "global_attributions.npz",
+            dataset_index=indices,
+            event_id=np.asarray(blind.event_index[indices], dtype=np.int64),
+            time_ps=time_ps,
+            mean_waveform_mv=mean_waveform_mv,
+            background_mean_normalized=mean_pair,
+            group_starts=starts,
+            mean_positive_contribution_ps=positive,
+            mean_negative_contribution_ps=negative,
+            mean_signed_contribution_ps=positive + negative,
+            baseline_prediction_ps=np.asarray(baseline_prediction),
+            mean_unbounded_prediction_ps=np.asarray(reconstructed.mean()),
+            n_clipped_events=np.asarray(np.count_nonzero(np.abs(reconstructed - bounded) > 1e-7)),
+        )
+        dt = float(np.median(np.diff(time_ps)))
+        with (destination / "global_importance.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as stream:
+            writer = csv.writer(stream)
+            writer.writerow([
+                "detector", "start_ns", "end_ns",
+                "mean_positive_ps", "mean_negative_ps", "mean_signed_ps",
+            ])
+            for channel in range(positive.shape[0]):
+                for group, start in enumerate(starts):
+                    end = min(int(start) + group_samples, time_ps.size)
+                    writer.writerow([
+                        "pair" if name == "shared_linear_ridge" else f"detector_{channel + 1}",
+                        float(time_ps[start] / 1000),
+                        float((time_ps[start] + (end - start) * dt) / 1000),
+                        float(positive[channel, group]),
+                        float(negative[channel, group]),
+                        float(positive[channel, group] + negative[channel, group]),
+                    ])
+        atomic_json(destination / "summary.json", {
+            "method": "exact_interventional_linear_shap_global",
+            "plot_version": 1,
+            "model": name,
+            "mode": config["mode"],
+            "window": config["window_name"],
+            "background": "complete_prepared_development_mean",
+            "population": "prepared_blind_events",
+            "selection": "uniform_random_without_replacement_no_quality_selection",
+            "aggregation": "sum_positive_negative_per_event_then_mean_across_events",
+            "contribution_units": "ps_per_event",
+            "explained_prediction": "unbounded_linear_regressor_before_pipeline_clipping",
+            "n_clipped_events": int(np.count_nonzero(np.abs(reconstructed - bounded) > 1e-7)),
+            "n_explained_events": int(len(indices)),
+            "settings": settings,
+            "plots": ["global_importance.pdf"],
+        })
+        outputs.append(destination)
+        if logger:
+            logger.info(
+                "Linear SHAP global | %s | %d random blind events | %s",
+                name, len(indices), destination,
+            )
     if not matched:
         raise ValueError("No matching saved Ridge runs found")
     return outputs
