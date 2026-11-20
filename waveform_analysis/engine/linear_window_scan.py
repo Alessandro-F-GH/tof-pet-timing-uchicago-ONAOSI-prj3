@@ -449,8 +449,12 @@ def scan_linear_windows(
                 mode_name, computed_count, total, cache_hits, empty_count,
             )
         for kind in ("progressive", "fixed"):
+            plot_path = destination / f"{kind}_ctr.pdf"
+            if not any(row["kind"] == kind for row in rows):
+                plot_path.unlink(missing_ok=True)
+                continue
             _plot_curve(
-                rows, kind, destination / f"{kind}_ctr.pdf",
+                rows, kind, plot_path,
                 led_ctr=led_ctr, full_ctr=full_ctr,
             )
         with (destination / "window_scan.csv").open(
