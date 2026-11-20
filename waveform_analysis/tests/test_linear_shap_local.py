@@ -29,11 +29,62 @@ def test_exact_linear_attributions_reconstruct_prediction(shared):
 
 
 def test_grouped_signed_contributions_keep_partial_tail():
-    phi = np.arange(30, dtype=float).reshape(1, 2, 15)
-    starts, grouped = grouped_contributions(phi, 8)
-    np.testing.assert_array_equal(starts, [0, 8])
-    assert grouped.shape == (1, 2, 2)
-    np.testing.assert_allclose(grouped.sum(axis=-1), phi.sum(axis=-1))
+    phi = np.array([[[2., -5., 4., -1., 7.],
+                     [-3., 6., -2., 8., -9.]]])
+    starts, positive, negative = grouped_contributions(phi, 3)
+    np.testing.assert_array_equal(starts, [0, 3])
+    assert positive.shape == negative.shape == (1, 2, 2)
+    np.testing.assert_allclose(positive[0], [[6., 7.], [6., 8.]])
+    np.testing.assert_allclose(negative[0], [[-5., -1.], [-5., -9.]])
+    assert np.all(positive >= 0)
+    assert np.all(negative <= 0)
+    np.testing.assert_allclose((positive + negative).sum(axis=-1), phi.sum(axis=-1))
+
+
+def test_grouping_does_not_cancel_opposite_signs():
+    phi = np.array([[[4.0, -4.0], [-7.0, 7.0]]])
+    starts, positive, negative = grouped_contributions(phi, 2)
+    np.testing.assert_array_equal(starts, [0])
+    np.testing.assert_allclose(positive[0, :, 0], [4., 7.])
+    np.testing.assert_allclose(negative[0, :, 0], [-4., -7.])
+
+
+def test_local_linear_plot_shows_separate_detector_panels_without_difference(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.axes import Axes
+    from unittest.mock import patch
+    from waveform_analysis.engine.tshap_explainer import _plot_local_event
+
+    seen = []
+    old_title = Axes.set_title
+
+    def record_title(self, label, *args, **kwargs):
+        seen.append(label)
+        return old_title(self, label, *args, **kwargs)
+
+    with patch.object(Axes, "set_title", record_title):
+        _plot_local_event(
+            tmp_path / "direct.pdf",
+            time_ps=np.arange(10, dtype=float) * 12.5,
+            waveform_mv=np.ones((2, 10)),
+            dataset_mean_difference_mv=np.zeros(10),
+            led_baseline_mv=None,
+            attribution=np.zeros((2, 10)),
+            group="typical", event_id=10,
+            target_ps=2.0, prediction_ps=1.0,
+            improvement_ps=1.0, led_threshold_mv=5.0,
+            window_starts=np.array([0, 5]),
+            window_samples=5,
+            positive_window_scores=np.ones((2, 2)),
+            negative_window_scores=-np.ones((2, 2)),
+            attribution_method="Linear SHAP",
+            separate_detector_importance=True,
+        )
+    assert (tmp_path / "direct.pdf").is_file()
+    assert "Detector 1 Linear SHAP" in seen
+    assert "Detector 2 Linear SHAP" in seen
+    assert not any("difference" in title.lower() for title in seen)
 
 
 def test_invalid_feature_shapes_are_rejected():
