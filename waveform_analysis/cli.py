@@ -89,6 +89,24 @@ def _parser() -> argparse.ArgumentParser:
     linear_local.add_argument("--extreme-margin", type=float, default=0.05)
     linear_local.add_argument("--group-samples", type=int, default=8)
     linear_local.add_argument("--overwrite", action="store_true")
+    linear_global = sub.add_parser(
+        "explain-linear-shap-global",
+        help="Mean exact Linear SHAP over randomly sampled blind events",
+    )
+    linear_global_source = linear_global.add_mutually_exclusive_group(required=True)
+    linear_global_source.add_argument("--results", type=Path)
+    linear_global_source.add_argument("--model-dir", type=Path)
+    linear_global.add_argument("--models", nargs="+", choices=(
+        "direct_linear_ridge", "shared_linear_ridge",
+    ))
+    linear_global.add_argument("--windows", nargs="+", choices=("onishi", "wide", "all"))
+    linear_global.add_argument("--mode", choices=("energy", "timing"))
+    linear_global.add_argument("--cache-root", type=Path)
+    linear_global.add_argument("--output-root", type=Path)
+    linear_global.add_argument("--max-events", type=int, default=256)
+    linear_global.add_argument("--seed", type=int, default=42)
+    linear_global.add_argument("--group-samples", type=int, default=8)
+    linear_global.add_argument("--overwrite", action="store_true")
     tshap = sub.add_parser("explain-tshap", help="TSHAP temporal explanations from frozen saved models")
     tshap_source = tshap.add_mutually_exclusive_group(required=True)
     tshap_source.add_argument("--results", type=Path,
@@ -213,6 +231,18 @@ def main() -> None:
             cache_root=args.cache_root, output_root=args.output_root,
             events_per_group=args.events_per_group,
             extreme_margin=args.extreme_margin,
+            group_samples=args.group_samples, overwrite=args.overwrite,
+            logger=logger,
+        ):
+            print(output)
+        return
+    if args.command == "explain-linear-shap-global":
+        from .engine.linear_shap import explain_linear_shap_global
+        for output in explain_linear_shap_global(
+            args.results, model_dir=args.model_dir, models=args.models,
+            ml_window=args.windows, mode=args.mode,
+            cache_root=args.cache_root, output_root=args.output_root,
+            max_events=args.max_events, seed=args.seed,
             group_samples=args.group_samples, overwrite=args.overwrite,
             logger=logger,
         ):
