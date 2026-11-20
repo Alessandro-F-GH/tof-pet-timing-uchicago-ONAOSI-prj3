@@ -87,6 +87,45 @@ def test_local_linear_plot_shows_separate_detector_panels_without_difference(tmp
     assert not any("difference" in title.lower() for title in seen)
 
 
+def test_shared_linear_and_original_tshap_keep_difference_panel(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from matplotlib.axes import Axes
+    from unittest.mock import patch
+    from waveform_analysis.engine.tshap_explainer import _plot_local_event
+
+    for method in ("shared", "tshap"):
+        titles = []
+        original = Axes.set_title
+
+        def record(self, value, *args, **kwargs):
+            titles.append(value)
+            return original(self, value, *args, **kwargs)
+
+        kwargs = dict(
+            path=tmp_path / f"{method}.pdf",
+            time_ps=np.arange(10, dtype=float) * 12.5,
+            waveform_mv=np.ones((2, 10)),
+            dataset_mean_difference_mv=np.zeros(10),
+            led_baseline_mv=None,
+            attribution=np.zeros((2, 10)),
+            group="typical", event_id=22,
+            target_ps=3.0, prediction_ps=2.0, improvement_ps=1.0,
+            led_threshold_mv=5.0,
+            window_starts=np.array([0, 5]), window_samples=5,
+        )
+        if method == "shared":
+            kwargs["positive_window_scores"] = np.array([[1., 2.]])
+            kwargs["negative_window_scores"] = np.array([[-2., -1.]])
+            kwargs["attribution_method"] = "Linear SHAP"
+        else:
+            kwargs["window_scores"] = np.array([[2., -1.]])
+        with patch.object(Axes, "set_title", record):
+            _plot_local_event(**kwargs)
+        assert (tmp_path / f"{method}.pdf").is_file()
+        assert "Detector difference relative to dataset mean" in titles
+
+
 def test_invalid_feature_shapes_are_rejected():
     with pytest.raises(ValueError, match="coefficient"):
         linear_attributions(np.ones((1, 2, 7)), np.ones((2, 7)),
