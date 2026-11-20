@@ -54,6 +54,100 @@ def export_blind_metric_table(
     return path
 
 
+def export_ranked_ctr_summary(
+    path: Path, group: list[dict[str, Any]], *, mode: str, window: str,
+) -> Path:
+    """Rank persisted CV/test scores by blind CTR, with separate LED reference."""
+    import csv
+    from waveform_analysis.reporting.model_labels import model_label
+
+    def number(value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return "---"
+        return f"{value:.1f}" if np.isfinite(value) else "---"
+
+    def with_uncertainty(mean, sigma):
+        a, b = number(mean), number(sigma)
+        return "$" + a + r" \pm " + b + "$" if a != "---" and b != "---" else "---"
+
+    ranked = sorted(
+        group,
+        key=lambda r: (
+            not np.isfinite(float(r["blind"]["ctr_ps"])),
+            float(r["blind"]["ctr_ps"]) if np.isfinite(float(r["blind"]["ctr_ps"])) else float("inf"),
+            r["manifest"]["model"],
+        ),
+    )
+    if not ranked:
+        raise ValueError("Cannot export empty CTR summary")
+    # LED fold reference metrics were computed on the development population
+    # during the original CV; this reads them without any model fitting.
+    led_cv = None
+    for run in ranked:
+        source = Path(run["directory"]) / "tables" / "folds.csv"
+        if not source.is_file():
+            continue
+        with source.open("r", encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        selected = str(run["best"]["candidate_id"])
+        folds = [r for r in rows if r.get("candidate_id") == selected
+                 and r.get("led_ctr_ps") not in (None, "")]
+        if len(folds) != int(run["best"]["folds"]):
+            continue
+        folds.sort(key=lambda r: int(r["fold_id"]))
+        values = np.asarray([float(r["led_ctr_ps"]) for r in folds], dtype=float)
+        if np.all(np.isfinite(values)):
+            led_cv = values
+            break
+
+    led = ranked[0]
+    if led_cv is not None:
+        led_cv_cell = with_uncertainty(
+            np.mean(led_cv), np.std(led_cv, ddof=1) if len(led_cv) > 1 else 0.0
+        )
+    else:
+        led_cv_cell = "---"
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\small",
+        r"\begin{tabular}{lccc}",
+        r"\toprule",
+        r"Model & CV CTR [ps] & Test CTR [ps] & Test RMSE [ps] \\",
+        r"\midrule",
+        "LED & " + led_cv_cell + " & "
+        + with_uncertainty(led["blind"]["led_ctr_ps"],
+                           led["bootstrap"].get("led_ctr_bootstrap_std_ps"))
+        + " & " + number(led["blind"]["led_rmse_ps"]) + r" \\",
+        r"\midrule",
+    ]
+    for run in ranked:
+        best, blind, bootstrap = run["best"], run["blind"], run["bootstrap"]
+        lines.append(
+            escape_latex(model_label(run["manifest"]["model"])[0]) + " & "
+            + with_uncertainty(best["validation_ctr_mean_ps"], best["validation_ctr_std_ps"])
+            + " & " + with_uncertainty(blind["ctr_ps"], bootstrap["ctr_bootstrap_std_ps"])
+            + " & " + number(blind["rmse_ps"]) + r" \\"
+        )
+    label_mode = re.sub(r"[^a-zA-Z0-9-]", "-", mode)
+    label_window = re.sub(r"[^a-zA-Z0-9-]", "-", window)
+    lines.extend([
+        r"\bottomrule", r"\end{tabular}",
+        r"\caption{Development CV and independent test performance for "
+        + escape_latex(mode) + " waveforms, " + escape_latex(window)
+        + " window. CV uncertainties are fold-to-fold standard deviations; "
+        + "test CTR uncertainties are blind-event bootstrap standard deviations. "
+        + "Models are ordered by test CTR; LED is the uncorrected reference.}",
+        r"\label{tab:ctr-summary-" + label_mode + "-" + label_window + "}",
+        r"\end{table}",
+    ])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def population_metadata(dataset: Any, source: str) -> dict[str, Any]:
     """Snapshot a prepared population; no training or prediction is performed."""
     manifest = dataset.manifest
