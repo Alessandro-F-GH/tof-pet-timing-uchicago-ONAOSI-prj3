@@ -107,6 +107,19 @@ def _parser() -> argparse.ArgumentParser:
     linear_global.add_argument("--seed", type=int, default=42)
     linear_global.add_argument("--group-samples", type=int, default=8)
     linear_global.add_argument("--overwrite", action="store_true")
+    scan = sub.add_parser(
+        "scan-linear-window",
+        help="Development-CV refits of shared Ridge on progressive and nonoverlapping time windows",
+    )
+    scan.add_argument("--results", type=Path, required=True)
+    scan.add_argument("--mode", choices=("energy", "timing"))
+    scan.add_argument("--cache-root", type=Path)
+    scan.add_argument("--output-root", type=Path, default=Path("xai/linear/window_scan"))
+    scan.add_argument("--step-ns", type=float, default=1.0)
+    scan.add_argument("--width-ns", type=float, default=None,
+                      help="Fixed-window width in ns (default: same as --step-ns)")
+    scan.add_argument("--seed", type=int)
+    scan.add_argument("--overwrite", action="store_true")
     tshap = sub.add_parser("explain-tshap", help="TSHAP temporal explanations from frozen saved models")
     tshap_source = tshap.add_mutually_exclusive_group(required=True)
     tshap_source.add_argument("--results", type=Path,
@@ -245,6 +258,16 @@ def main() -> None:
             max_events=args.max_events, seed=args.seed,
             group_samples=args.group_samples, overwrite=args.overwrite,
             logger=logger,
+        ):
+            print(output)
+        return
+    if args.command == "scan-linear-window":
+        from .engine.linear_window_scan import scan_linear_windows
+        for output in scan_linear_windows(
+            args.results, mode=args.mode, cache_root=args.cache_root,
+            output_root=args.output_root, step_ns=args.step_ns,
+            width_ns=args.width_ns, seed=args.seed,
+            overwrite=args.overwrite, logger=logger,
         ):
             print(output)
         return
