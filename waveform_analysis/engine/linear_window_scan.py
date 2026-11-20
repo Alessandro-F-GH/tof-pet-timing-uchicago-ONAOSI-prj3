@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
 
 import numpy as np
 
-from waveform_analysis.core.io import atomic_json, canonical_hash
+from waveform_analysis.core.io import canonical_hash
 from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.results import discover_runs, resolve_run_config
 from waveform_analysis.data.splits import make_cv_split
@@ -225,6 +227,89 @@ def _plot_curve(rows, kind, path, *, led_ctr, full_ctr):
     plt.close(fig)
 
 
+
+SCAN_FIELDS = (
+    "identity", "kind", "start_ns", "end_ns", "n_samples",
+    "ridge_alpha", "cv_score_ps", "ctr_ps", "ctr_bootstrap_std_ps",
+    "led_ctr_ps", "n_events_test",
+)
+
+
+def _window_key(kind, left, right):
+    return (str(kind), round(float(left), 8), round(float(right), 8))
+
+
+def _read_scan_csv(path):
+    if not path.is_file():
+        return {}
+    with path.open("r", newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        if not set(SCAN_FIELDS).issubset(reader.fieldnames or ()):
+            # Old summary CSV predates resumable, identity-checked rows.
+            return {}
+        results = {}
+        for row in reader:
+            for field in ("start_ns", "end_ns", "ridge_alpha", "cv_score_ps",
+                          "ctr_ps", "ctr_bootstrap_std_ps", "led_ctr_ps"):
+                row[field] = float(row[field])
+            for field in ("n_samples", "n_events_test"):
+                row[field] = int(row[field])
+            results[_window_key(row["kind"], row["start_ns"], row["end_ns"])] = row
+        return results
+
+
+def _write_scan_csv(path, rows):
+    """Atomically persist *all* completed windows after every successful refit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", newline="", encoding="utf-8", dir=path.parent,
+            prefix=".window_scan_", suffix=".csv", delete=False,
+        ) as stream:
+            tmp_path = Path(stream.name)
+            writer = csv.DictWriter(stream, fieldnames=SCAN_FIELDS)
+            writer.writeheader()
+            for key in sorted(rows):
+                writer.writerow({field: rows[key][field] for field in SCAN_FIELDS})
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+def _migrate_legacy_scan(destination, identity, scientific_settings):
+    """Import compatible per-window JSON checkpoints, then remove old files."""
+    old_settings_path = destination / "settings.json"
+    if not old_settings_path.is_file():
+        return {}
+    previous = json.loads(old_settings_path.read_text(encoding="utf-8"))
+    selection_keys = {"step_ns", "width_ns", "progressive_ends_ns", "scan_kind"}
+    old_scientific = {
+        key: value for key, value in previous.items()
+        if key not in selection_keys and key != "identity"
+    }
+    if canonical_hash(old_scientific) != canonical_hash(scientific_settings):
+        return {}
+    previous_identity = previous.get("identity")
+    imported = {}
+    for kind in ("progressive", "fixed"):
+        for path in destination.glob(f"{kind}_*.json"):
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("identity") not in (identity, previous_identity):
+                continue
+            row["identity"] = identity
+            imported[_window_key(row["kind"], row["start_ns"], row["end_ns"])] = row
+    return imported
+
+
+def _remove_legacy_files(destination):
+    (destination / "settings.json").unlink(missing_ok=True)
+    for kind in ("progressive", "fixed"):
+        for path in destination.glob(f"{kind}_*.json"):
+            path.unlink()
+
+
 def scan_linear_windows(
     results, *, mode=None, cache_root=None, output_root="xai/linear/window_scan",
     step_ns=1.0, width_ns=None, progressive_ends_ns=None,
@@ -312,18 +397,34 @@ def scan_linear_windows(
             if key not in selection_keys
         }
         identity = canonical_hash(scientific_settings)
-        manifest_path = destination / "settings.json"
-        previous_identity = None
-        if manifest_path.exists() and not overwrite:
-            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-            previous_scientific = {
-                key: value for key, value in previous.items()
-                if key not in selection_keys and key != "identity"
+        # One CSV is both human-readable summary and resumable checkpoint.
+        # Earlier per-window JSON outputs can be migrated without any refit.
+        summary_path = destination / "window_scan.csv"
+        persisted = _read_scan_csv(summary_path)
+        legacy = _migrate_legacy_scan(destination, identity, scientific_settings)
+        for key, row in legacy.items():
+            persisted.setdefault(key, row)
+        incompatible = [
+            key for key, row in persisted.items() if row["identity"] != identity
+        ]
+        if incompatible and not overwrite:
+            raise ValueError(
+                "Stored window results use different scientific settings; "
+                "use --overwrite to recalculate with current settings"
+            )
+        if incompatible:
+            persisted = {
+                key: row for key, row in persisted.items()
+                if row["identity"] == identity
             }
-            if canonical_hash(previous_scientific) != identity:
-                raise ValueError("Existing scan has different scientific settings; use --overwrite")
-            previous_identity = previous.get("identity")
-        atomic_json(manifest_path, {"identity": identity, **settings})
+        if legacy:
+            _write_scan_csv(summary_path, persisted)
+            _remove_legacy_files(destination)
+            if logger:
+                logger.info(
+                    "WINDOW SCAN MIGRATION | %d legacy JSON windows consolidated into %s",
+                    len(legacy), summary_path,
+                )
 
         limit = float(cfg["ml_output"]["max_abs_ps"])
         full_ctr = float(run["blind"]["ctr_ps"])
@@ -355,8 +456,7 @@ def scan_linear_windows(
                     logger.info("WINDOW SCAN PHASE | %s | %s", mode_name, kind.upper())
                 previous_kind = kind
             label = f"{mode_name} | {position}/{total} | {kind} [{left:g}, {right:g}] ns"
-            filename = f"{kind}_{left:.4f}_{right:.4f}.json"
-            path = destination / filename
+            key = _window_key(kind, left, right)
             indices = selected_indices(
                 full_time, frozen, left, right,
                 last_edge=(abs(right - end_ns) < 1e-9),
@@ -366,21 +466,17 @@ def scan_linear_windows(
                 if logger:
                     logger.warning("WINDOW SKIP | %s | no samples after frozen mask", label)
                 continue
-            if path.exists() and not overwrite:
-                row = json.loads(path.read_text(encoding="utf-8"))
-                if row.get("identity") in (identity, previous_identity):
-                    if row.get("identity") != identity:
-                        row["identity"] = identity
-                        atomic_json(path, row)
-                    cache_hits += 1
-                    rows.append(row)
-                    if logger:
-                        logger.info(
-                            "WINDOW CACHE HIT | %s | CTR=%.2f +/- %.2f ps | alpha=%g",
-                            label, row["ctr_ps"], row["ctr_bootstrap_std_ps"],
-                            row["ridge_alpha"],
-                        )
-                    continue
+            if key in persisted and not overwrite:
+                row = persisted[key]
+                cache_hits += 1
+                rows.append(row)
+                if logger:
+                    logger.info(
+                        "WINDOW CACHE HIT | %s | CTR=%.2f +/- %.2f ps | alpha=%g",
+                        label, row["ctr_ps"], row["ctr_bootstrap_std_ps"],
+                        row["ridge_alpha"],
+                    )
+                continue
 
             window_start = time.monotonic()
             if logger:
@@ -423,7 +519,8 @@ def scan_linear_windows(
                 "led_ctr_ps": float(stats["led_ctr_ps"]),
                 "n_events_test": int(y_test.size),
             }
-            atomic_json(path, row)
+            persisted[key] = row
+            _write_scan_csv(summary_path, persisted)
             rows.append(row)
             window_seconds = time.monotonic() - window_start
             computed_seconds += window_seconds
@@ -457,15 +554,8 @@ def scan_linear_windows(
                 rows, kind, plot_path,
                 led_ctr=led_ctr, full_ctr=full_ctr,
             )
-        with (destination / "window_scan.csv").open(
-            "w", newline="", encoding="utf-8",
-        ) as stream:
-            fields = ["kind", "start_ns", "end_ns", "n_samples",
-                      "ridge_alpha", "cv_score_ps", "ctr_ps",
-                      "ctr_bootstrap_std_ps", "led_ctr_ps", "n_events_test"]
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows({key: row[key] for key in fields} for row in rows)
+        _write_scan_csv(summary_path, persisted)
+        _remove_legacy_files(destination)
         outputs.append(destination)
         if logger:
             logger.info(
