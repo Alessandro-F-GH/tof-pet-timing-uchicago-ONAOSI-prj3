@@ -303,11 +303,26 @@ def scan_linear_windows(
             "development_identity": dev.manifest["analysis_protocol_identity"],
             "test_identity": test.manifest["analysis_protocol_identity"],
         }
-        identity = canonical_hash(settings)
+        # Selection geometry must not invalidate a refit for an unchanged
+        # temporal interval. In particular, new lists of progressive upper
+        # limits may reuse all previously completed matching windows.
+        selection_keys = {"step_ns", "width_ns", "progressive_ends_ns", "scan_kind"}
+        scientific_settings = {
+            key: value for key, value in settings.items()
+            if key not in selection_keys
+        }
+        identity = canonical_hash(scientific_settings)
         manifest_path = destination / "settings.json"
+        previous_identity = None
         if manifest_path.exists() and not overwrite:
-            if json.loads(manifest_path.read_text(encoding="utf-8")).get("identity") != identity:
-                raise ValueError("Existing scan has different settings; use --overwrite")
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+            previous_scientific = {
+                key: value for key, value in previous.items()
+                if key not in selection_keys and key != "identity"
+            }
+            if canonical_hash(previous_scientific) != identity:
+                raise ValueError("Existing scan has different scientific settings; use --overwrite")
+            previous_identity = previous.get("identity")
         atomic_json(manifest_path, {"identity": identity, **settings})
 
         limit = float(cfg["ml_output"]["max_abs_ps"])
@@ -353,7 +368,10 @@ def scan_linear_windows(
                 continue
             if path.exists() and not overwrite:
                 row = json.loads(path.read_text(encoding="utf-8"))
-                if row.get("identity") == identity:
+                if row.get("identity") in (identity, previous_identity):
+                    if row.get("identity") != identity:
+                        row["identity"] = identity
+                        atomic_json(path, row)
                     cache_hits += 1
                     rows.append(row)
                     if logger:
