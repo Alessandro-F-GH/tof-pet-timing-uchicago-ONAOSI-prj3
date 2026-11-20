@@ -517,7 +517,15 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 mode=mode_name, window=str(window),
                 report_id=root_config.get("results", {}).get("folder", root.name),
             )
-            blind_metric_bar(rows, output_path(plot_dir, f"blind_{metric}", cfg), cfg,
+            metric_plot = (plot_dir / "blind_ctr.pdf" if metric == "ctr"
+                           else output_path(plot_dir, f"blind_{metric}", cfg))
+            if metric == "ctr":
+                # Do not leave an obsolete PNG (or other old format) alongside
+                # the publication-ready PDF when regenerating a report.
+                for stale in plot_dir.glob("blind_ctr.*"):
+                    if stale != metric_plot:
+                        stale.unlink()
+            blind_metric_bar(rows, metric_plot, cfg,
                              metric=metric, led_value=led_value)
         _scatters(group, plot_dir, cfg)
         payload_by_model = {run["manifest"]["model"]: payload
