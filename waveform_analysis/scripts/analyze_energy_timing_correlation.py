@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
@@ -20,6 +21,64 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import chi2
+
+
+def log(stage, message):
+    """Immediate, human-readable progress reports for long blind analyses."""
+    stamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{stamp} | {stage:<13} | {message}", flush=True)
+
+
+def fmt(value, digits=4):
+    return "n/a" if value is None else f"{value:.{digits}f}"
+
+
+def fmt_ci(values, digits=4):
+    if values is None:
+        return "[n/a]"
+    return f"[{values[0]:.{digits}f}, {values[1]:.{digits}f}]"
+
+
+def log_metrics(label, stats):
+    log("STATISTICS", f"{label}: n={stats['n']:,}, "
+        f"rho={fmt(stats['rho'])} "
+        f"CI95={fmt_ci(stats.get('rho_ci95'))}, "
+        f"Cov={fmt(stats['covariance_ps2'], 2)} ps^2 "
+        f"CI95={fmt_ci(stats.get('covariance_ps2_ci95'), 2)}, "
+        f"sigma_E={fmt(stats['sigma_energy_ps'], 2)} ps, "
+        f"sigma_T={fmt(stats['sigma_timing_ps'], 2)} ps")
+
+
+def log_board_summary(board, summary):
+    """Print the same measurements already recorded in machine-readable JSON."""
+    for state in ("led", "ml"):
+        entry = summary["states"][state]
+        low, high = entry["fences"]["low_ps"], entry["fences"]["high_ps"]
+        counts = entry["counts"]
+        log("IQR", f"{board} {state.upper()}: "
+            f"E=[{low[0]:.2f},{high[0]:.2f}] ps; "
+            f"T=[{low[1]:.2f},{high[1]:.2f}] ps")
+        log("OUTLIERS", f"{board} {state.upper()}: "
+            f"{counts['outliers']:,}/{summary['matched']:,} "
+            f"({100*entry['outlier_rate']:.3f}%); "
+            f"E-only={counts['energy_only']:,}, "
+            f"T-only={counts['timing_only']:,}, both={counts['both']:,}")
+        for group in ("core", "outliers"):
+            log_metrics(f"{board} {state.upper()} {group}", entry["groups"][group])
+        tails = entry["groups"]["outliers"]
+        log("VARIANCE", f"{board} {state.upper()}: tails explain "
+            f"{100*tails['variance_share_energy']:.2f}% E and "
+            f"{100*tails['variance_share_timing']:.2f}% T of full centered SS")
+        rates = [v["rate"] for v in entry["acquisition_bins"]]
+        test = entry["homogeneity_test"]
+        log("ACQUISITION", f"{board} {state.upper()}: outlier rate by event-id bin "
+            f"min={100*min(rates):.3f}%, max={100*max(rates):.3f}%; "
+            f"chi2={fmt(test['chi2'], 2)}, p={fmt(test['p_value'], 5)}"
+            " (exploratory)")
+    core = summary["model_outputs_core"]
+    log("MODEL OUTPUT", f"{board}: joint LED/ML core={core['n']:,} events; "
+        f"excluded={core['n_excluded']:,}")
+    log_metrics(f"{board} corrections E vs T (joint core)", core)
 
 
 def read_predictions(run):
@@ -100,16 +159,20 @@ def variance_contribution(points, mask):
     return (ss[mask].sum(axis=0)/denominator).tolist()
 
 
-def bootstrap_metrics(points, draws, rng):
+def bootstrap_metrics(points, draws, rng, *, label=None):
     """Percentile CI conditional on fixed group membership."""
     if len(points)<4:
         return {"rho_ci95":None, "covariance_ps2_ci95":None}
     result = np.empty((draws,2))
+    if label is not None:
+        log("BOOTSTRAP", f"{label}: {draws} resamples on {len(points):,} events")
     for j in range(draws):
         sample = points[rng.integers(0,len(points),size=len(points))]
         d = moments(sample)
         result[j] = [d["rho"] if d["rho"] is not None else np.nan,
                      d["covariance_ps2"]]
+        if label is not None and (j + 1) in {draws // 2, draws}:
+            log("BOOTSTRAP", f"{label}: {j+1}/{draws} resamples")
     return {
         key:[float(v) for v in np.quantile(result[:,i][np.isfinite(result[:,i])],
                                             [0.025,0.975])]
@@ -148,11 +211,13 @@ def event_bins(ids, flags, bins):
                  "warning":"Exploratory: assumes independent event labels; does not establish full stationarity."}
 
 
-def summarize_board(data, k, bins, draws, rng):
+def summarize_board(data, k, bins, draws, rng, *, board=None):
     led,ml,pred,ids=(data[x] for x in ("led","ml","prediction","event_id"))
     states = {}
     masks = {}
     for name,points in (("led",led),("ml",ml)):
+        if board is not None:
+            log("ANALYSIS", f"{board} {name.upper()}: computing Tukey fences and statistics")
         fences, channel_flags = tukey(points,k)
         outliers = channel_flags.any(axis=1)
         masks[name] = outliers
@@ -166,7 +231,9 @@ def summarize_board(data, k, bins, draws, rng):
         for group,mask in categories.items():
             stats = moments(points[mask])
             if group in ("core","outliers"):
-                stats.update(bootstrap_metrics(points[mask], draws, rng))
+                stats.update(bootstrap_metrics(
+                    points[mask], draws, rng,
+                    label=f"{board} {name.upper()} {group}" if board is not None else None))
             groups[group] = stats
         groups["outliers"]["variance_share_energy"] = variance_contribution(points,outliers)[0]
         groups["outliers"]["variance_share_timing"] = variance_contribution(points,outliers)[1]
@@ -182,7 +249,9 @@ def summarize_board(data, k, bins, draws, rng):
     # this single, common cohort is not defined by the magnitude of corrections.
     common_core = ~(masks["led"]|masks["ml"])
     predictions = moments(pred[common_core])
-    predictions.update(bootstrap_metrics(pred[common_core], draws, rng))
+    predictions.update(bootstrap_metrics(
+        pred[common_core], draws, rng,
+        label=f"{board} paired ML outputs (joint core)" if board is not None else None))
     predictions["selection"] = "intersection of LED and ML IQR cores"
     predictions["n_excluded"] = int((~common_core).sum())
     return {"matched":data["matched"],
@@ -195,6 +264,7 @@ def paired_differences(uc,fbk,uc_data,fbk_data,uc_masks,fbk_masks,
     """Independent-board bootstrap CIs, conditioning on selected groups."""
     rows = []
     for state in ("led","ml"):
+        log("BOARD COMPARE", f"{state.upper()}: comparing core, outliers, rates, and variance shares")
         a,b=uc_data[state],fbk_data[state]
         ma,mb=uc_masks[state],fbk_masks[state]
         for group,sa,sb in (("core",~ma,~mb),("outliers",ma,mb)):
@@ -202,6 +272,8 @@ def paired_differences(uc,fbk,uc_data,fbk_data,uc_masks,fbk_masks,
             va,vb=moments(pa),moments(pb)
             for metric in ("rho","covariance_ps2"):
                 if va[metric] is None or vb[metric] is None:continue
+                log("BOOTSTRAP", f"UC - FBK {state.upper()} {group} {metric}: "
+                    f"{draws} paired-board resamples")
                 samples=[]
                 for _ in range(draws):
                     xa=pa[rng.integers(len(pa),size=len(pa))]
@@ -227,18 +299,25 @@ def paired_differences(uc,fbk,uc_data,fbk_data,uc_masks,fbk_masks,
             # between-population location and frequency uncertainty.
             observed=[uc,fbk]
             delta=[]
-            for _ in range(draws):
+            log("BOOTSTRAP", f"UC - FBK {state.upper()} outlier variance share "
+                f"{channel}: {draws} resamples")
+            for draw in range(draws):
                 vals=[]
                 for board,mask,points in ((uc,ma,a),(fbk,mb,b)):
                     ix=rng.integers(len(points),size=len(points))
                     vals.append(variance_contribution(points[ix],mask[ix])[0 if channel=="energy" else 1])
                 delta.append(vals[0]-vals[1])
+                if (draw+1) in {draws//4, draws//2, 3*draws//4, draws}:
+                    log("BOOTSTRAP", f"{state.upper()} variance share {channel}: "
+                        f"{draw+1}/{draws}")
             va=uc["states"][state]["groups"]["outliers"][field]
             vb=fbk["states"][state]["groups"]["outliers"][field]
             rows.append({"state":state,"group":"outliers","metric":field,
                 "UC":va,"FBK":vb,"UC_minus_FBK":va-vb,
                 "ci95":np.quantile(delta,[.025,.975]).tolist()})
     a,b=uc_data["prediction"][uc_core],fbk_data["prediction"][fbk_core]
+    log("BOARD COMPARE", f"Model output correlations: UC core n={len(a):,}, "
+        f"FBK core n={len(b):,}")
     for metric in ("rho","covariance_ps2"):
         va,vb=moments(a)[metric],moments(b)[metric]
         if va is None or vb is None:continue
@@ -315,22 +394,42 @@ def main(argv=None):
     args=p.parse_args(argv)
     if args.bootstrap<20 or args.acquisition_bins<2:
         p.error("--bootstrap >= 20 and --acquisition-bins >= 2 required")
+    log("START", f"Extreme Tukey IQR: {args.iqr_multiplier:g}x IQR; "
+        f"bootstrap={args.bootstrap}, event-id bins={args.acquisition_bins}, "
+        f"seed={args.seed}")
+    log("METHOD", "LED and ML use separate IQR cuts; correlation/covariance are "
+        "reported for cores and outliers separately (no global mixture).")
+    log("METHOD", "ML model-output correlations use the intersection of the "
+        "LED and ML cores. 95% bootstrap intervals condition on fixed group masks.")
     rng=np.random.default_rng(args.seed)
     results,raw,flags,cores={}, {}, {}, {}
     for name in ("UC","FBK"):
         key=name.lower()
-        raw[name]=paired_board(getattr(args,key+"_energy_run"),
-                               getattr(args,key+"_timing_run"))
+        energy_run = getattr(args,key+"_energy_run")
+        timing_run = getattr(args,key+"_timing_run")
+        log("LOAD", f"{name} Energy: {Path(energy_run) / 'artifacts' / 'predictions.npz'}")
+        log("LOAD", f"{name} Timing: {Path(timing_run) / 'artifacts' / 'predictions.npz'}")
+        raw[name]=paired_board(energy_run, timing_run)
+        log("MATCH", f"{name}: {raw[name]['matched']:,} shared event IDs "
+            f"(E={raw[name]['energy_events']:,}, T={raw[name]['timing_events']:,}); "
+            "aligned by ID, sorted ascending")
         results[name],flags[name],cores[name]=summarize_board(
-            raw[name],args.iqr_multiplier,args.acquisition_bins,args.bootstrap,rng)
-        print(f"{name} | paired={results[name]['matched']:,} | "
-              f"LED outliers={results[name]['states']['led']['counts']['outliers']:,} | "
-              f"ML outliers={results[name]['states']['ml']['counts']['outliers']:,} | "
-              f"joint core={results[name]['model_outputs_core']['n']:,}",flush=True)
+            raw[name],args.iqr_multiplier,args.acquisition_bins,args.bootstrap,rng,board=name)
+        log_board_summary(name, results[name])
+    log("BOARD COMPARE", "Starting independent-board difference bootstrap")
     diffs=paired_differences(results["UC"],results["FBK"],
                              raw["UC"],raw["FBK"],flags["UC"],flags["FBK"],
                              cores["UC"],cores["FBK"],args.bootstrap,rng)
+    log("BOARD COMPARE", f"Finished {len(diffs)} UC - FBK comparisons")
+    for row in diffs:
+        unit = "%" if row["metric"] in ("outlier_rate", "variance_share_energy", "variance_share_timing") else (" ps^2" if row["metric"] == "covariance_ps2" else "")
+        scale = 100 if unit == "%" else 1
+        ci = None if row["ci95"] is None else [v*scale for v in row["ci95"]]
+        log("UC - FBK", f"{row['state']} {row['group']} {row['metric']}: "
+            f"UC={fmt(row['UC']*scale)}, FBK={fmt(row['FBK']*scale)}, "
+            f"delta={fmt(row['UC_minus_FBK']*scale)}{unit}, CI95={fmt_ci(ci)}")
     out=args.output_dir.expanduser().resolve()
+    log("SAVE", f"Writing tables and plots under {out}")
     out.mkdir(parents=True,exist_ok=True)
     for name in ("UC","FBK"):
         folder=out/name
@@ -357,7 +456,8 @@ def main(argv=None):
         "board_differences":diffs,
         "boards":results,
     },indent=2,default=_json),encoding="utf-8")
-    print(f"Results: {out}",flush=True)
+    log("COMPLETE", f"Results: {out} | UC/summary.json, FBK/summary.json, "
+        "board_differences.csv, summary.json, scatterplots and acquisition-order plots")
 
 
 if __name__=="__main__":
