@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import binomtest, kstest, chi2
 
-from waveform_analysis.scripts.plot_residual_correlation_percentiles import _read
+from waveform_analysis.scripts.analyze_energy_timing_correlation import read_predictions
 from waveform_analysis.signal.metrics import fit_ctr_ps, direct_fwhm_from_histogram
 from utils_fit.binning import fixed_width_histogram_edges
 
@@ -141,9 +141,9 @@ def run(energy_run,timing_run,cache_root,output,*,
         gate,inner_values,outer,core_width,bin_ps,coarse_bins,alpha):
     if not (0<core_width<min(inner_values) and max(inner_values)<outer<=gate):
         raise ValueError("Need 0<core_width<min(sideband starts)<outer<=gate")
-    root=cache_root/"artifact_store"
-    energy=_read(energy_run,root)
-    timing=_read(timing_run,root)
+    # Canonical saved predictions are run-local, independent of old artifact caches.
+    energy=read_predictions(energy_run)
+    timing=read_predictions(timing_run)
     ids,ei,ti=np.intersect1d(energy[0],timing[0],return_indices=True,assume_unique=True)
     if len(ids)<100:
         raise ValueError("Not enough common blind predictions")
