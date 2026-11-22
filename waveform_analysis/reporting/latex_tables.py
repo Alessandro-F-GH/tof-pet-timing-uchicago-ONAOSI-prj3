@@ -24,7 +24,7 @@ MODES = {"energy_to_energy": "Energy", "timing_to_timing": "Timing"}
 
 def export_blind_metric_table(
     path: Path, rows: list[dict[str, Any]], led_value: float, *, mode: str, window: str,
-    report_id: str, metric: str,
+    report_id: str, metric: str, mt_value: float | None = None,
 ) -> Path:
     """Export ranked blind metrics with stable codes matching the companion plot.
 
@@ -49,6 +49,10 @@ def export_blind_metric_table(
                   rf"\caption{{Blind {metric.upper()} for {escape_latex(mode)} waveforms, window {escape_latex(window)}, in ascending {metric.upper()} order. Codes match the companion bar chart; uncertainties are blind-event bootstrap standard deviations.}}",
                   rf"\label{{tab:blind-{metric}-{re.sub(r'[^a-zA-Z0-9-]', '-', report_id)}-{mode}-{re.sub(r'[^a-zA-Z0-9-]', '-', window)}}}",
                   r"\end{table*}"])
+    if mt_value is not None:
+        # Keep the deterministic reference outside the ranked ML rows.
+        reference_line = rf"MT & Multi-threshold reference & & {number(mt_value)} \\\\"
+        lines.insert(lines.index(r"\bottomrule"), reference_line)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
