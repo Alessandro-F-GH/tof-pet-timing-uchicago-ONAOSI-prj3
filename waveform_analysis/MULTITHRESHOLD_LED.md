@@ -1,5 +1,59 @@
 # Multi-threshold leading-edge reference
 
+## Fixed multithreshold energy baseline in filtered batch reports
+
+The filtered UC/FBK batch configurations now enable the optional
+`multithreshold_reference` setting. Unlike this document's standalone
+development-optimized experiment, the batch reference uses a **fixed**
+set of `[10,20,30,40,50]` mV crossing levels, with no target-guided
+threshold selection. The only development-label-dependent operation is
+a single global zero-mean residual offset. Blind uses that frozen offset.
+
+The reference runs **once per energy window** on the same existing
+prepared waveform cache used by ML. It is not registered as a model and
+does not participate in model CV, ranking, or ensembles. Results are saved
+under `<batch-root>/references/energy/<window>/` as `summary.json`,
+`development_predictions.npz`, `blind_predictions.npz`, and
+`blind_bootstrap.npz`. A fingerprint prevents stale reference reuse.
+No ROOT preprocessing is performed by this step.
+
+The energy report presents LED and MT as **two horizontal reference
+lines** in the blind CTR and RMSE bar charts. It also adds MT to the
+LaTeX reference section, and saves
+`report/tables/energy/<window>/multithreshold_vs_ml.csv` containing
+paired, event-ID-matched improvement `MT - ML` and bootstrap standard
+deviation. Positive improvement denotes a lower ML error. MT coverage
+is stored in its standalone reference summary. Metrics in the horizontal
+line refer to the **finite MT population**; paired comparisons always
+use finite common events, rather than claiming they share the full ML
+population.
+
+Configuration (at the batch JSON top level):
+
+```json
+"multithreshold_reference": {
+  "enabled": true,
+  "thresholds_mV": [10, 20, 30, 40, 50],
+  "baseline_window_ns": [-1.4, -1.0],
+  "crossing_window_ns": [-0.8, 1.8],
+  "minimum_coverage": 0.9,
+  "chunk_size": 128
+}
+```
+
+To regenerate the reference, run the existing batch command with the
+same `--cache-root` as ML; complete model runs can be retained.
+Report-only commands read the persisted reference without reloading
+the prepared waveform cache. Disable the reference in the batch
+configuration to return to LED-only reports.
+
+**Scope:** energy_to_energy only. This is target-independent per-event
+pickoff with development-offset calibration; it is not equivalent to a
+fully calibration-free or fully unsupervised experimental protocol.
+
+---
+
+
 The standalone CFD experiment was removed. The library's pre-existing
 `waveform_analysis.signal.timing.cfd_times_ps` is untouched because other code
 may still use it.
