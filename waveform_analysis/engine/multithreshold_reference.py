@@ -115,7 +115,7 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
     baseline_window = config["preprocessing"]["selection"]["baseline_window_ns"]
     destination = reference_directory(root, config["window_name"])
     fingerprint = canonical_hash({
-        "version": 3, "method": "native_control_selected_multithreshold",
+        "version": 4, "method": "native_control_selected_multithreshold",
         "options": options, "seed": seed, "bootstrap_resamples": bootstrap_resamples,
         "control_native_fingerprint": native_control.manifest["fingerprint"],
         "development_native_fingerprint": native_development.manifest["fingerprint"],
