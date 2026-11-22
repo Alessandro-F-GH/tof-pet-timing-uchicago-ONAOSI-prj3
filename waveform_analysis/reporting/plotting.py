@@ -485,7 +485,7 @@ def scatter_with_labels(
 
 def blind_metric_bar(
     rows: list[dict[str, Any]], path: str | Path, cfg: dict[str, Any], *,
-    metric: str, led_value: float,
+    metric: str, led_value: float, mt_value: float | None = None,
 ) -> Path:
     """Plot performance-ranked persisted timing metrics with bootstrap errors.
 
@@ -521,6 +521,13 @@ def blind_metric_bar(
         handles.append(ax.axhline(
             led_value, color=cfg["reference"]["color"], linestyle="--",
             label=cfg["reference"]["label"]))
+        if mt_value is not None:
+            if not np.isfinite(mt_value):
+                raise ValueError("Multi-threshold reference metric must be finite")
+            handles.append(ax.axhline(
+                mt_value, color=cfg.get("multithreshold_reference", {}).get("color", "#009E73"),
+                linestyle=cfg.get("multithreshold_reference", {}).get("linestyle", ":"),
+                label="Multi-threshold reference"))
         lower, upper = ax.get_ylim()
         ax.set_ylim(lower, upper + (upper - lower) * float(style.get("headroom_fraction", 0.25)))
         ax.set_xticks(range(len(rows)), [row["code"] for row in rows])
