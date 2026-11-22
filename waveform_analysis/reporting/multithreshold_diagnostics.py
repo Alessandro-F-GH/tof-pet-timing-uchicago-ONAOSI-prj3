@@ -138,3 +138,101 @@ def save_coverage_diagnostic(destination, dataset, raw, diagnostics, options, *,
         plot.unlink(missing_ok=True)
     atomic_json(destination / "coverage_failure_summary.json", summary)
     return summary
+
+
+def save_native_coverage_diagnostic(
+        destination, prepared, native, native_positions, raw, diagnostics,
+        *, baseline_window_ns, role="blind"):
+    """Show first MT-invalid native event with its absolute time and crossings."""
+    from waveform_analysis.signal.baseline import baseline_level_mV
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    target = np.asarray(model_target(prepared, "energy_to_energy"), float)
+    valid = np.isfinite(raw) & np.isfinite(target)
+    crossing = np.asarray(diagnostics["crossing_times_ps"], float)
+    intercept = np.asarray(diagnostics["intercept_ps"], float)
+    if (crossing.shape[0] != len(target)
+            or intercept.shape != (len(target), 2, 1)):
+        raise ValueError("Native MT diagnostic dimensions disagree")
+    reasons = np.full(len(target), "valid", dtype="<U32")
+    reasons[~np.isfinite(target)] = "invalid_target"
+    missing = ~np.isfinite(crossing).all(axis=(1, 2))
+    reasons[(reasons == "valid") & missing] = "missing_threshold_crossing"
+    monotonic = (np.diff(crossing, axis=2) > 0).all(axis=(1, 2))
+    reasons[(reasons == "valid") & ~monotonic] = "nonmonotonic_crossings"
+    reasons[(reasons == "valid") & ~np.isfinite(intercept).all(axis=(1, 2))] = "invalid_linear_fit"
+    reasons[(reasons == "valid") & ~np.isfinite(raw)] = "invalid_correction"
+    if np.any((reasons == "valid") != valid):
+        raise AssertionError("Diagnostic reasons differ from MT coverage")
+    excluded = np.flatnonzero(~valid)
+    summary = {
+        "role": role,
+        "total_events": int(len(target)),
+        "valid_events": int(valid.sum()),
+        "excluded_events": int(excluded.size),
+        "failure_counts": {
+            reason: int(np.count_nonzero(reasons == reason))
+            for reason in ("invalid_target", "missing_threshold_crossing",
+                           "nonmonotonic_crossings", "invalid_linear_fit",
+                           "invalid_correction")
+        },
+        "example": None,
+    }
+    image = destination / "coverage_failure_example.png"
+    if excluded.size:
+        i = int(excluded[0])
+        source = int(native_positions[i])
+        levels = np.asarray(diagnostics["crossing_levels_mV"], float)
+        times = crossing[i]  # acquisition timestamps in ps
+        fig, axes = plt.subplots(2, 1, figsize=(9, 7), constrained_layout=True)
+        for detector, ax in enumerate(axes):
+            signal = np.asarray(native.energy_windows_mV[source, detector], float)
+            start = float(native.energy_window_start_time_s[source, detector])
+            dt = float(native.energy_sample_interval_s[source, detector])
+            grid_ps = (start + np.arange(signal.size, dtype=float) * dt) * 1e12
+            baseline = baseline_level_mV(
+                signal, dt,
+                float(native.manifest["materialized_window_ns"]["before"]),
+                baseline_window_ns,
+            )
+            baseline_signal = signal - baseline
+            # Display relative time only for numerical stability of axes:
+            # all annotations retain the same native acquisition clock.
+            local_zero_ps = grid_ps[0]
+            ax.plot((grid_ps - local_zero_ps) / 1000., baseline_signal,
+                    linewidth=1.25, color="#2874A6", label="Native filtered energy")
+            for k, level in enumerate(levels):
+                color = plt.get_cmap("tab10")(k % 10)
+                ax.axhline(float(level), color=color, linestyle=":", alpha=.65,
+                           label=f"{level:g} mV")
+                if np.isfinite(times[detector, k]):
+                    ax.scatter((times[detector, k] - local_zero_ps) / 1000.,
+                               float(level), s=45, color=color, edgecolors="black",
+                               linewidth=.3, zorder=4)
+            t0 = float(intercept[i, detector, 0])
+            if np.isfinite(t0):
+                ax.axvline((t0 - local_zero_ps) / 1000., color="#D95F02",
+                           linestyle="-.", label="MT t0")
+            ax.set_ylabel(f"Detector {detector+1} [mV]")
+            ax.grid(alpha=.2)
+            ax.legend(fontsize=8, ncol=3)
+            rising_start = int(native.energy_rising_start[source, detector])
+            rising_stop = int(native.energy_rising_stop[source, detector])
+            ax.set_xlim(max(0, rising_start - 70)*dt*1e9,
+                        min(signal.size-1, rising_stop + 60)*dt*1e9)
+        axes[-1].set_xlabel("Time from native materialized window start [ns]")
+        fig.suptitle(
+            f"Blind native MT excluded event {int(prepared.event_index[i])} | "
+            f"reason: {reasons[i]}")
+        fig.savefig(image, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+        summary["example"] = {
+            "event_id": int(prepared.event_index[i]),
+            "native_row": source,
+            "reason": str(reasons[i]),
+            "plot": image.name,
+        }
+    else:
+        image.unlink(missing_ok=True)
+    atomic_json(destination / "coverage_failure_summary.json", summary)
+    return summary
