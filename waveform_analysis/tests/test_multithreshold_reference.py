@@ -13,7 +13,7 @@ from waveform_analysis.reporting import plotting
 
 def test_fixed_reference_defaults_and_config_validation():
     config = normalize_reference({"enabled": True})
-    assert config["thresholds_mV"] == [20., 30., 50., 100.]
+    assert config["thresholds_mV"] == [30., 50., 100.]
     assert config["baseline_window_ns"] == [-1.4, -1.0]
     assert not normalize_reference({})["enabled"]
     for invalid in (
@@ -82,3 +82,23 @@ def test_thresholds_to_100_mv_are_batch_opt_in():
         (20., 30., 50., 100.),)
     with pytest.raises(ValueError):
         validate_threshold_sets([(20, 30, 50, 100)])
+
+
+def test_led_crossings_need_not_be_close_to_zero():
+    """Regression for an otherwise valid pair with LED offsets >2.5 samples."""
+    from waveform_analysis.engine.multithreshold_led import multithreshold_corrections
+    grid = np.arange(-40, 81, dtype=float) * 10.  # ps
+    signals = np.zeros((1, 2, grid.size), dtype=float)
+    # LED=30 mV at t=+100 ps for detector 1 and t=-100 ps for detector 2.
+    # All 30/50/100 mV crossings are inside the allowed rising-edge window.
+    signals[0, 0] = np.maximum(0., grid + 50.) / 500.
+    signals[0, 1] = np.maximum(0., grid + 250.) / 500.
+    corrected, diag = multithreshold_corrections(
+        signals, grid, threshold_sets=[(30., 50., 100.)],
+        baseline_indices=[0, 1], led_threshold_mV=30.,
+        physical_scale_mV=[500., 500.],
+        crossing_window_ns=(-.3, .7), maximum_threshold_mV=100.,
+    )
+    assert np.isfinite(corrected[0, 0])
+    assert np.isfinite(diag["led_crossing_ps"]).all()
+    assert np.max(np.abs(diag["led_crossing_ps"])) > 25.
