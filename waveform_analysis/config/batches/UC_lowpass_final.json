@@ -122,7 +122,6 @@
   "multithreshold_reference": {
     "enabled": true,
     "thresholds_mV": [
-      20,
       30,
       50,
       100
