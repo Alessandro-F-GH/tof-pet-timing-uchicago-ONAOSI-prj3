@@ -87,3 +87,17 @@ def test_missing_threshold_nan_does_not_emit_fabricated_prediction():
         physical_scale_mV=[300., 300.], crossing_window_ns=(-.1, .2))
     assert np.isfinite(corr[0, 0])
     assert np.isnan(corr[1, 0])
+
+
+
+def test_curved_rise_intercept_after_first_crossing_is_valid():
+    # This is the detector-1 pattern from an excluded native MT waveform.
+    # Intercept extrapolation after the first crossing is not a failed OLS fit.
+    levels = np.array([10., 30., 100.])
+    crossings = np.array([[[5000., 5400., 5900.],
+                           [5000., 5200., 5650.]]])
+    intercept, slope, fit_rmse = linear_pickoff(crossings, levels)
+    assert intercept[0, 0] >= crossings[0, 0, 0]
+    assert np.isfinite(intercept).all()
+    assert (slope > 0).all()
+    assert np.isfinite(fit_rmse).all()
