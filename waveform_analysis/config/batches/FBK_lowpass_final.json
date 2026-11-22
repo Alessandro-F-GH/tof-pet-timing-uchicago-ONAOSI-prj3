@@ -47,7 +47,7 @@
   },
   "results": {
     "root": "results",
-    "folder": "FBK/filtered_2GHz_order5_benchmark"
+    "folder": "FBK/filtered_benchmark"
   },
   "save_model": true,
   "protocol": {
