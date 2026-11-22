@@ -5,7 +5,7 @@
 The filtered UC/FBK batch configurations now enable the optional
 `multithreshold_reference` setting. Unlike this document's standalone
 development-optimized experiment, the batch reference uses a **fixed**
-set of `[10,20,30,40,50]` mV crossing levels, with no target-guided
+set of `[20,30,50,100]` mV crossing levels, with no target-guided
 threshold selection. The only development-label-dependent operation is
 a single global zero-mean residual offset. Blind uses that frozen offset.
 
@@ -23,7 +23,15 @@ LaTeX reference section, and saves
 `report/tables/energy/<window>/multithreshold_vs_ml.csv` containing
 paired, event-ID-matched improvement `MT - ML` and bootstrap standard
 deviation. Positive improvement denotes a lower ML error. MT coverage
-is stored in its standalone reference summary. Metrics in the horizontal
+is stored in its standalone reference summary.
+
+On each new computation, the Blind reference also writes
+`coverage_failure_example.png` (a two-detector signal with physical mV
+thresholds and crossing markers) and `coverage_failure_summary.json` with
+mutually exclusive exclusion counts. If all events are valid, the example PNG
+is absent. The fixed reference deliberately permits a maximum of 100 mV;
+the separate standalone threshold scan still defaults to a 50 mV maximum.
+ Metrics in the horizontal
 line refer to the **finite MT population**; paired comparisons always
 use finite common events, rather than claiming they share the full ML
 population.
@@ -33,7 +41,7 @@ Configuration (at the batch JSON top level):
 ```json
 "multithreshold_reference": {
   "enabled": true,
-  "thresholds_mV": [10, 20, 30, 40, 50],
+  "thresholds_mV": [20, 30, 50, 100],
   "baseline_window_ns": [-1.4, -1.0],
   "crossing_window_ns": [-0.8, 1.8],
   "minimum_coverage": 0.9,
