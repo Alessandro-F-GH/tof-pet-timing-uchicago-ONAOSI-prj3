@@ -13,15 +13,13 @@ from waveform_analysis.reporting import plotting
 
 def test_fixed_reference_defaults_and_config_validation():
     config = normalize_reference({"enabled": True})
-    assert config["thresholds_mV"] == [30., 50., 100.]
-    assert config["baseline_window_ns"] == [-1.4, -1.0]
+    assert config["candidate_levels_mV"] == [10., 20., 30., 50., 100.]
     assert not normalize_reference({})["enabled"]
     for invalid in (
-        {"thresholds_mV": [10, 20]},
-        {"thresholds_mV": [10, 20, 101]},
-        {"thresholds_mV": [20, 10, 30]},
+        {"candidate_levels_mV": [10, 20]},
+        {"candidate_levels_mV": [10, 20, 30, 50, 101]},
+        {"candidate_levels_mV": [20, 10, 30, 50, 100]},
         {"minimum_coverage": 1.1},
-        {"baseline_window_ns": [0, 0]},
         {"enabled": "yes"},
         {"unknown_key": 2},
     ):
@@ -102,3 +100,59 @@ def test_led_crossings_need_not_be_close_to_zero():
     assert np.isfinite(corrected[0, 0])
     assert np.isfinite(diag["led_crossing_ps"]).all()
     assert np.max(np.abs(diag["led_crossing_ps"])) > 25.
+
+
+def test_native_control_candidates_and_event_order():
+    from waveform_analysis.engine.multithreshold_native import (
+        threshold_combinations, native_positions)
+    from types import SimpleNamespace
+    groups = threshold_combinations()
+    assert len(groups) == 10
+    assert groups[0] == (10., 20., 30.)
+    assert groups[-1] == (30., 50., 100.)
+    native = SimpleNamespace(event_index=np.array([13, 7, 10], np.int64))
+    np.testing.assert_array_equal(native_positions(native, [10, 13]), [2, 0])
+    with pytest.raises(ValueError, match="misses"):
+        native_positions(native, [10, 11])
+
+
+def test_native_pickoff_control_freezes_best_candidate(monkeypatch):
+    from waveform_analysis.engine import multithreshold_native as native
+    from types import SimpleNamespace
+    waves = SimpleNamespace(n_events=20)
+    groups = native.threshold_combinations()
+    targets = np.linspace(-30., 30., 20)
+    saved = np.repeat(targets[:, None], 10, axis=1)
+    saved[:, 1] = 0.
+    saved[0, 1] = np.nan
+    monkeypatch.setattr(native, "candidate_pickoffs",
+                        lambda *args, **kwargs: (saved, None))
+    monkeypatch.setattr(native, "metric_values",
+                        lambda values, fit, seed: {"ctr_ps": float(np.std(values))})
+    choice, scan = native.select_control_thresholds(
+        waves, {"histogram_bin_width_ps": 10.},
+        levels=[10, 20, 30, 50, 100], minimum_coverage=.90,
+        seed=3, baseline_window_ns=(-2., -1.), true_tof_ps=0.)
+    assert choice["thresholds_mV"] == list(groups[1])
+    assert choice["coverage"] == pytest.approx(.95)
+    assert len(scan) == 10
+
+
+def test_native_predictions_keep_original_led_target(tmp_path):
+    from waveform_analysis.engine.multithreshold_reference import _save_predictions
+    from types import SimpleNamespace
+    prepared = SimpleNamespace(
+        event_index=np.array([7, 9]),
+        energy_target_ps=np.array([14., -3.]),
+        manifest={"event_population_identity": "pop",
+                  "analysis_protocol_identity": "protocol"})
+    valid, residual, target = _save_predictions(
+        tmp_path / "native.npz", prepared, np.array([111., np.nan]),
+        control_offset_ps=10., true_tof_ps=1.,
+        thresholds_mV=(10., 20., 30.), role="blind")
+    np.testing.assert_array_equal(valid, [True, False])
+    assert residual[0] == pytest.approx(100.)
+    with np.load(tmp_path / "native.npz") as saved:
+        assert saved["prediction_ps"][0] == pytest.approx(14. - 100.)
+        assert saved["corrected_ps"][0] == pytest.approx(100.)
+        assert np.isnan(saved["corrected_ps"][1])
