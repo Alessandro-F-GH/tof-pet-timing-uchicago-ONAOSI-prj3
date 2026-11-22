@@ -378,6 +378,13 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
     root = Path(result_root).resolve()
     cfg = load_plot_config(root)
     root_config = _json(root / "config.json")
+    mt_settings_path = root / "references" / "settings.json"
+    mt_settings = _json(mt_settings_path) if mt_settings_path.is_file() else {"enabled": False, "fingerprints": {}}
+    if mt_settings.get("enabled"):
+        for window, fingerprint in mt_settings["fingerprints"].items():
+            reference = load_reference(root, window)
+            if reference is None or reference["fingerprint"] != fingerprint:
+                raise ValueError(f"Missing or stale multithreshold reference for {window}")
     runs = collect_runs(root)
     excluded = set(exclude_models)
     known = {r["manifest"]["model"] for r in runs} | set(
@@ -480,8 +487,12 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 cfg,
                 title=f"Paired blind Δ {metric.upper()} (row − column) [ps]",
             )
-        mt = load_reference(root, window) if mode == "energy_to_energy" else None
+        mt = (load_reference(root, window) if mode == "energy_to_energy"
+              and mt_settings.get("enabled") else None)
         mt_metrics = mt["blind"]["metrics"] if mt is not None else None
+        if mt is None:
+            for stale in ("multithreshold_vs_ml.csv", "multithreshold_reference.json"):
+                (table_dir / stale).unlink(missing_ok=True)
         if mt is not None:
             paired_mt = compare_models(
                 root, window, group, seed=seed,
@@ -492,6 +503,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
         export_ranked_ctr_summary(
             table_dir / "ctr_summary.tex", group,
             mode=mode_name, window=str(window),
+            mt_metrics=mt_metrics,
         )
         for metric in ("ctr", "rmse"):
             rows = _blind_metric_rows(group, metric)
@@ -537,6 +549,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "blind_boxplot_version": 1,
             "ensemble_ctr_version": 1,
             "multithreshold_reference_version": 1,
+            "multithreshold_reference_fingerprints": mt_settings.get("fingerprints", {}) if mt_settings.get("enabled") else {},
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables
             ],
