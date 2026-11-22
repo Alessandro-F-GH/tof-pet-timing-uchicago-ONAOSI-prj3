@@ -16,16 +16,19 @@ from __future__ import annotations
 import numpy as np
 
 
-def validate_threshold_sets(threshold_sets):
+def validate_threshold_sets(threshold_sets, *, maximum_mV=50.):
+    maximum_mV = float(maximum_mV)
+    if not np.isfinite(maximum_mV) or maximum_mV <= 0:
+        raise ValueError('maximum_mV must be positive and finite')
     result = []
     for group in threshold_sets:
         x = np.asarray(group, dtype=np.float64)
         if (x.ndim != 1 or x.size < 3 or not np.isfinite(x).all()
-                or np.any(x <= 0) or np.any(x > 50)
+                or np.any(x <= 0) or np.any(x > maximum_mV)
                 or np.any(np.diff(x) <= 0)):
             raise ValueError(
                 "Each threshold set requires >=3 strictly increasing, "
-                "positive absolute thresholds in mV, never above 50 mV")
+                f"positive absolute thresholds in mV, never above {maximum_mV:g} mV")
         result.append(tuple(float(v) for v in x))
     if not result or len(set(result)) != len(result):
         raise ValueError("Threshold sets must be nonempty and distinct")
@@ -105,7 +108,7 @@ def linear_pickoff(crossing_times_ps, thresholds_mV):
 def multithreshold_corrections(
     waves, time_ps, *, threshold_sets, baseline_indices,
     led_threshold_mV, physical_scale_mV, crossing_window_ns=(-1.0, 2.0),
-    chunk_size=128,
+    chunk_size=128, maximum_threshold_mV=50.,
 ):
     """Corrections [event, threshold_set] and fit diagnostics from prepared waves.
 
@@ -115,7 +118,7 @@ def multithreshold_corrections(
     Only samples in crossing_window_ns are searched. Unavailable crossing
     remains NaN, never replaced by a sentinel time.
     """
-    groups = validate_threshold_sets(threshold_sets)
+    groups = validate_threshold_sets(threshold_sets, maximum_mV=maximum_threshold_mV)
     grid = np.asarray(time_ps, np.float64)
     bidx = np.asarray(baseline_indices, np.int64)
     scales = np.asarray(physical_scale_mV, np.float64).reshape(-1)
@@ -173,4 +176,5 @@ def multithreshold_corrections(
         "slope_ps_per_mV": slopes,
         "fit_rmse_ps": fit_rmse,
         "crossing_levels_mV": np.asarray(levels, np.float64),
+        "crossing_times_ps": all_crossings,
     }
