@@ -412,7 +412,7 @@ def load_batch_config(
     missing = required - set(raw)
     if missing:
         raise ConfigError(f"Missing batch fields: {sorted(missing)}")
-    extra = set(raw) - required - {"save_model", "plot_config"}
+    extra = set(raw) - required - {"save_model", "plot_config", "multithreshold_reference"}
     if extra:
         raise ConfigError(f"Unsupported batch fields: {sorted(extra)}")
 
@@ -424,6 +424,8 @@ def load_batch_config(
     _validate_dataset_compatibility(
         datasets["control"], datasets["development"], datasets["blind"]
     )
+    from waveform_analysis.engine.multithreshold_reference import normalize_reference
+    multithreshold_reference = normalize_reference(raw.get("multithreshold_reference"))
     results = _results(raw["results"], root)
     plot_path = (
         _relative(source, raw.get("plot_config", DEFAULT_PLOT_CONFIG))
@@ -459,6 +461,7 @@ def load_batch_config(
         "ml_output": copy.deepcopy(protocol["ml_output"]),
         "runtime": _runtime(protocol.get("runtime")),
         "xai": _xai(protocol.get("xai")),
+        "multithreshold_reference": multithreshold_reference,
     }
     preprocessing = _preprocessing(source, protocol["preprocessing_config"], root)
 
