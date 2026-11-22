@@ -227,6 +227,7 @@ def run_batch(batch, *, logger=None):
                       (mode, type(exc).__name__, exc), flush=True)
                 raise
         mt_options = batch.protocol.get("multithreshold_reference", {})
+        reference_fingerprints = {}
         if mt_options.get("enabled", False):
             from waveform_analysis.engine.multithreshold_reference import run_reference
             energy_by_window = {}
@@ -240,9 +241,14 @@ def run_batch(batch, *, logger=None):
                     seed=int(batch.protocol["seed"]),
                     bootstrap_resamples=int(batch.protocol["bootstrap"]["n_resamples"]),
                 )
+                reference_fingerprints[window] = summary["fingerprint"]
                 print("BATCH MT REFERENCE | window=%s | blind CTR=%.3f ps | coverage=%.2f%%" %
                       (window, summary["blind"]["metrics"]["ctr_ps"],
                        100 * summary["blind"]["coverage"]), flush=True)
+        atomic_json(Path(batch.output_dir) / "references" / "settings.json", {
+            "enabled": bool(mt_options.get("enabled", False)),
+            "fingerprints": reference_fingerprints,
+        })
         from waveform_analysis.reporting.report import generate_report
         from waveform_analysis.reporting.latex_tables import DATASET_TABLE_VERSION
         from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
@@ -256,9 +262,13 @@ def run_batch(batch, *, logger=None):
             and (_read_json(report_manifest) or {}).get("development_distribution_version")
             == DEVELOPMENT_DISTRIBUTION_VERSION
             and (_read_json(report_manifest) or {}).get("blind_boxplot_version") == 1
+            and (_read_json(report_manifest) or {}).get("multithreshold_reference_fingerprints", {}) == reference_fingerprints
             and (
                 not mt_options.get("enabled", False)
-                or (_read_json(report_manifest) or {}).get("multithreshold_reference_version") == 1
+                or (
+                    (_read_json(report_manifest) or {}).get("multithreshold_reference_version") == 1
+                    and (_read_json(report_manifest) or {}).get("multithreshold_reference_fingerprints") == reference_fingerprints
+                )
             )
         ):
             generate_report(
