@@ -535,11 +535,19 @@ def blind_metric_bar(
         ax.set_xlabel(f"Model (ascending blind {metric.upper()})")
         if metric != "ctr":
             ax.set_title("Blind root mean squared error")
+        if metric == "ctr" and mt_value is not None:
+            # Keep the CTR chart compact but explicitly identify both
+            # horizontal reference values; otherwise MT looks absent.
+            ax.legend(
+                handles=handles[-2:],
+                labels=[f"LED: {led_value:.1f} ps", f"MT: {mt_value:.1f} ps"],
+                loc="upper right", fontsize="small", framealpha=0.90,
+            )
+        else:
             ax.legend(
                 handles=handles, loc=style.get("legend_location", "upper left"),
                 bbox_to_anchor=style.get("legend_anchor", [1.02, 1.0]),
             )
-        # Blind CTR is publication-ready: no title or side legend.
         _finish(ax, cfg)
         return _save(fig, path)
 
