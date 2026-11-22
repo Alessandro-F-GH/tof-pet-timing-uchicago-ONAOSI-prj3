@@ -1,8 +1,7 @@
-"""Fixed, target-independent multi-threshold reference for energy batch reports.
+"""Control-selected multi-threshold reference on native filtered energy waves.
 
-A reference is produced once per energy window from the same persisted prepared
-cache as the ML models. No threshold search or ML model inference is performed.
-Only the scalar offset is calibrated on development labels (as for LED).
+Thresholds and global timing offset are selected/fitted once on Control.
+Development/Blind use frozen values, independently of ML model fitting.
 """
 from __future__ import annotations
 
@@ -16,20 +15,17 @@ from waveform_analysis.data.prepared_cache import PreparedCacheLookup
 from waveform_analysis.data.results import read_run, resolve_run_config
 from waveform_analysis.data.view import model_target
 from waveform_analysis.data.splits import semantic_seed
-from waveform_analysis.engine.multithreshold_led import (
-    multithreshold_corrections, validate_threshold_sets,
+from waveform_analysis.engine.multithreshold_native import (
+    CANDIDATE_LEVELS_MV, load_native_energy, select_control_thresholds,
+    frozen_native_pickoff,
 )
 from waveform_analysis.reporting.stats import (
     metric_values, blind_event_bootstrap, paired_model_bootstrap,
 )
-from waveform_analysis.scripts.plot_conditional_target_heatmaps import baseline_indices
-
 
 DEFAULT_REFERENCE = {
     "enabled": False,
-    "thresholds_mV": [30., 50., 100.],
-    "baseline_window_ns": [-1.4, -1.0],
-    "crossing_window_ns": [-0.8, 1.8],
+    "candidate_levels_mV": list(CANDIDATE_LEVELS_MV),
     "minimum_coverage": 0.90,
     "chunk_size": 128,
 }
@@ -48,13 +44,9 @@ def normalize_reference(value):
     if not isinstance(result["enabled"], bool):
         raise ConfigError("multithreshold_reference.enabled must be boolean")
     try:
-        groups = validate_threshold_sets([result["thresholds_mV"]], maximum_mV=100.)
-        result["thresholds_mV"] = list(groups[0])
-        for name in ("baseline_window_ns", "crossing_window_ns"):
-            pair = tuple(float(v) for v in result[name])
-            if len(pair) != 2 or not np.all(np.isfinite(pair)) or pair[0] >= pair[1]:
-                raise ValueError(f"{name} must have two increasing finite endpoints")
-            result[name] = list(pair)
+        from waveform_analysis.engine.multithreshold_native import threshold_combinations
+        groups = threshold_combinations(result["candidate_levels_mV"])
+        result["candidate_levels_mV"] = list(sorted({v for group in groups for v in group}))
         coverage = float(result["minimum_coverage"])
         if not 0 < coverage <= 1:
             raise ValueError("minimum_coverage must be within (0,1]")
@@ -71,29 +63,6 @@ def reference_directory(root, window):
     return Path(root) / "references" / "energy" / str(window)
 
 
-def _calculate(dataset, options):
-    waves = dataset.energy_windows
-    grid = np.asarray(dataset.energy_time_ps, np.float64)
-    transform = dataset.energy_transform
-    if waves is None or transform is None:
-        raise ValueError("Missing energy prepared waveform or transform")
-    if waves.shape != (dataset.n_events, 2, grid.size):
-        raise ValueError("Prepared energy waveform shape mismatch")
-    bidx = baseline_indices(grid, *options["baseline_window_ns"])
-    scale = np.asarray(transform.maximum - transform.minimum, np.float64).reshape(2, -1)
-    if scale.shape != (2, 1):
-        raise ValueError("Expected one physical amplitude scale per detector")
-    correction, diagnostics = multithreshold_corrections(
-        waves, grid, threshold_sets=[options["thresholds_mV"]],
-        baseline_indices=bidx,
-        led_threshold_mV=float(dataset.manifest["fixed_led_threshold_mV"]),
-        physical_scale_mV=scale[:, 0],
-        crossing_window_ns=options["crossing_window_ns"],
-        chunk_size=options["chunk_size"], maximum_threshold_mV=100.,
-    )
-    return correction[:, 0], diagnostics
-
-
 def _check_protocol(dev, blind):
     for key in ("control_mode_fingerprint", "target_definition"):
         if dev.manifest[key] != blind.manifest[key]:
@@ -103,26 +72,33 @@ def _check_protocol(dev, blind):
             raise ValueError(f"MT development/blind mismatch: {key}")
 
 
-def _save_predictions(path, dataset, raw, offset, options, role):
+def _save_predictions(path, dataset, raw_delta_ps, *, control_offset_ps,
+                      true_tof_ps, thresholds_mV, role):
+    """Express native MT timing as an ML-style correction to the frozen LED."""
     target = np.asarray(model_target(dataset, "energy_to_energy"), np.float64)
+    raw = np.asarray(raw_delta_ps, np.float64)
     valid = np.isfinite(raw) & np.isfinite(target)
-    prediction = np.asarray(raw, np.float64) + offset
-    prediction[~valid] = np.nan
+    # The MT residual is native t0_1-t0_2 minus true TOF and CONTROL offset.
+    mt_residual = raw - float(true_tof_ps) - float(control_offset_ps)
+    # RunStore's prediction convention is LED target - corrected residual.
+    correction = target - mt_residual
+    correction[~valid] = np.nan
+    residual = target - correction
     np.savez_compressed(
         path, event_id=np.asarray(dataset.event_index, np.int64),
-        prediction_ps=prediction, corrected_ps=target-prediction,
+        prediction_ps=correction, corrected_ps=residual,
         led_residual_ps=target, valid=valid,
-        thresholds_mV=np.asarray(options["thresholds_mV"], np.float64),
-        development_offset_ps=np.asarray(offset),
+        thresholds_mV=np.asarray(thresholds_mV, np.float64),
+        control_offset_ps=np.asarray(control_offset_ps),
         dataset_role=np.asarray(role),
         event_population_identity=np.asarray(dataset.manifest["event_population_identity"]),
         analysis_protocol_identity=np.asarray(dataset.manifest["analysis_protocol_identity"]),
     )
-    return valid, target-prediction, target
+    return valid, residual, target
 
 
 def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
-    """Compute or reuse an independent energy reference without altering ML results."""
+    """Reuse ML populations; select/freeze MT entirely on native Control."""
     run = Path(reference_run)
     config = resolve_run_config(run)
     if config["mode"] != "energy_to_energy":
@@ -132,17 +108,24 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
     dev = loader.find("development", config, manifest)
     blind = loader.find("blind", config, manifest)
     _check_protocol(dev, blind)
+
+    native_control = load_native_energy(config, "control")
+    native_development = load_native_energy(config, "development")
+    native_blind = load_native_energy(config, "blind")
+    baseline_window = config["preprocessing"]["selection"]["baseline_window_ns"]
     destination = reference_directory(root, config["window_name"])
     fingerprint = canonical_hash({
-        "version": 2, "options": options, "seed": seed,
-        "bootstrap_resamples": bootstrap_resamples,
-        "cache_development": str(dev.directory),
-        "cache_blind": str(blind.directory),
+        "version": 3, "method": "native_control_selected_multithreshold",
+        "options": options, "seed": seed, "bootstrap_resamples": bootstrap_resamples,
+        "control_native_fingerprint": native_control.manifest["fingerprint"],
+        "development_native_fingerprint": native_development.manifest["fingerprint"],
+        "blind_native_fingerprint": native_blind.manifest["fingerprint"],
+        "control_true_tof_ps": config["control"]["true_tof_ps"],
         "dev_protocol": dev.manifest["analysis_protocol_identity"],
         "blind_protocol": blind.manifest["analysis_protocol_identity"],
         "dev_population": dev.manifest["event_population_identity"],
         "blind_population": blind.manifest["event_population_identity"],
-        "fit": config["fit"],
+        "fit": config["fit"], "baseline_window_ns": baseline_window,
     })
     summary_path = destination / "summary.json"
     if summary_path.is_file():
@@ -151,30 +134,50 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
             all((destination / f"{role}_predictions.npz").is_file()
                 for role in ("development", "blind"))):
             return existing
+
     destination.mkdir(parents=True, exist_ok=True)
-    raw_dev, _ = _calculate(dev, options)
-    y_dev = np.asarray(model_target(dev, "energy_to_energy"), np.float64)
-    good = np.isfinite(raw_dev) & np.isfinite(y_dev)
-    dev_coverage = float(good.mean())
-    if good.sum() < 5 or dev_coverage < options["minimum_coverage"]:
-        raise ValueError(f"MT development coverage {dev_coverage:.2%} below minimum")
-    # Fixed calibration only: zero-mean residual on development. No target-guided
-    # threshold optimization, event filtering, or blind adjustment.
-    offset = float(np.mean(y_dev[good] - raw_dev[good]))
-    valid_dev, resid_dev, _ = _save_predictions(
-        destination / "development_predictions.npz", dev, raw_dev, offset,
-        options, "development")
-    dev_metrics = metric_values(resid_dev[valid_dev], config["fit"],
-                                seed=semantic_seed(seed, "mt-reference", "dev"))
-    raw_blind, diagnostics_blind = _calculate(blind, options)
-    valid_blind, residual, led = _save_predictions(
-        destination / "blind_predictions.npz", blind, raw_blind, offset,
-        options, "blind")
-    from waveform_analysis.reporting.multithreshold_diagnostics import save_coverage_diagnostic
-    coverage_diagnostic = save_coverage_diagnostic(
-        destination, blind, raw_blind, diagnostics_blind, options,
-        role="blind",
+    choice, scan = select_control_thresholds(
+        native_control, config["fit"], levels=options["candidate_levels_mV"],
+        minimum_coverage=options["minimum_coverage"],
+        seed=semantic_seed(seed, "mt-control", "selection"),
+        baseline_window_ns=baseline_window,
+        true_tof_ps=float(config["control"]["true_tof_ps"]),
     )
+    write_csv(destination / "control_threshold_scan.csv", [
+        {**{k: v for k, v in row.items() if k != "thresholds_mV"},
+         "thresholds_mV": ",".join(f"{v:g}" for v in row["thresholds_mV"])}
+        for row in scan
+    ])
+    thresholds = choice["thresholds_mV"]
+    control_offset = float(choice["offset_ps"])
+    true_tof_dev = float(config["development"]["true_tof_ps"])
+    true_tof_blind = float(config["blind"]["true_tof_ps"])
+
+    raw_dev, _, _ = frozen_native_pickoff(
+        native_development, dev, thresholds, baseline_window_ns=baseline_window)
+    valid_dev, resid_dev, _ = _save_predictions(
+        destination / "development_predictions.npz", dev, raw_dev,
+        control_offset_ps=control_offset, true_tof_ps=true_tof_dev,
+        thresholds_mV=thresholds, role="development")
+    coverage_dev = float(valid_dev.mean())
+    if valid_dev.sum() < 5 or coverage_dev < options["minimum_coverage"]:
+        raise ValueError(f"MT development coverage {coverage_dev:.2%} below minimum")
+    dev_metrics = metric_values(
+        resid_dev[valid_dev], config["fit"],
+        seed=semantic_seed(seed, "mt-reference", "development"))
+
+    raw_blind, diagnostics, native_indices = frozen_native_pickoff(
+        native_blind, blind, thresholds, baseline_window_ns=baseline_window)
+    valid_blind, residual, led = _save_predictions(
+        destination / "blind_predictions.npz", blind, raw_blind,
+        control_offset_ps=control_offset, true_tof_ps=true_tof_blind,
+        thresholds_mV=thresholds, role="blind")
+
+    from waveform_analysis.reporting.multithreshold_diagnostics import save_native_coverage_diagnostic
+    diagnostic = save_native_coverage_diagnostic(
+        destination, blind, native_blind, native_indices, raw_blind,
+        diagnostics, baseline_window_ns=baseline_window, role="blind")
+
     coverage = float(valid_blind.mean())
     if valid_blind.sum() < 5 or coverage < options["minimum_coverage"]:
         raise ValueError(f"MT blind coverage {coverage:.2%} below minimum")
@@ -184,20 +187,29 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
         seed=semantic_seed(seed, "mt-reference", "blind"))
     np.savez_compressed(destination / "blind_bootstrap.npz", **draws)
     summary = {
-        "method": "fixed_prepared_multithreshold_led", "fingerprint": fingerprint,
+        "method": "native_control_selected_multithreshold", "fingerprint": fingerprint,
         "mode": "energy_to_energy", "window": config["window_name"],
-        "thresholds_mV": options["thresholds_mV"],
-        "baseline_window_ns": options["baseline_window_ns"],
-        "crossing_window_ns": options["crossing_window_ns"],
-        "offset_calibration": "development_residual_mean_only",
-        "development_offset_ps": offset,
+        "candidate_levels_mV": options["candidate_levels_mV"],
+        "thresholds_mV": thresholds,
+        "selection_fit_role": "control",
+        "control_selection": choice,
+        "control_threshold_scan": "control_threshold_scan.csv",
+        "baseline_window_ns": baseline_window,
+        "offset_calibration": "control_native_mean_residual",
+        "control_offset_ps": control_offset,
         "development": {"total": int(dev.n_events), "valid": int(valid_dev.sum()),
-                        "coverage": dev_coverage, "metrics": dev_metrics},
+                        "coverage": coverage_dev, "metrics": dev_metrics},
         "blind": {"total": int(blind.n_events), "valid": int(valid_blind.sum()),
                   "coverage": coverage, "metrics": bootstrap},
-        "coverage_diagnostic": coverage_diagnostic,
-        "source_prepared_cache": {"development": str(dev.directory),
-                                  "blind": str(blind.directory)},
+        "coverage_diagnostic": diagnostic,
+        "source_native_cache": {
+            "control": str(native_control.directory),
+            "development": str(native_development.directory),
+            "blind": str(native_blind.directory),
+        },
+        "source_prepared_cache": {
+            "development": str(dev.directory), "blind": str(blind.directory),
+        },
     }
     atomic_json(summary_path, summary)
     return summary
@@ -209,7 +221,7 @@ def load_reference(root, window):
     if not summary_file.is_file():
         return None
     summary = json.loads(summary_file.read_text(encoding="utf-8"))
-    if summary.get("method") != "fixed_prepared_multithreshold_led":
+    if summary.get("method") != "native_control_selected_multithreshold":
         raise ValueError(f"Unexpected multithreshold reference in {directory}")
     if not (directory / "blind_predictions.npz").is_file():
         raise FileNotFoundError(f"Missing MT blind predictions: {directory}")
