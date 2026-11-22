@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 
 import numpy as np
 
@@ -114,3 +116,13 @@ def bootstrap_draw_indices(n_events: int, rng: np.random.Generator) -> np.ndarra
     if n_events < 1:
         raise ValueError("bootstrap requires at least one event")
     return rng.integers(0, n_events, size=n_events, dtype=np.int64)
+
+
+def semantic_seed(base_seed: int, *labels: object) -> int:
+    """Stable uint32 RNG seed for independent, reproducible analysis stages.
+
+    Python's built-in hash is process-randomized; use SHA-256 instead.
+    Does not modify the CV or bootstrap sampling algorithm.
+    """
+    payload = json.dumps([int(base_seed), *map(str, labels)], separators=(",", ":"))
+    return int.from_bytes(hashlib.sha256(payload.encode("utf-8")).digest()[:4], "big")
