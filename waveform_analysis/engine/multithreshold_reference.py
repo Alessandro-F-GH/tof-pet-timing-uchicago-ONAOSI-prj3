@@ -27,7 +27,7 @@ from waveform_analysis.scripts.plot_conditional_target_heatmaps import baseline_
 
 DEFAULT_REFERENCE = {
     "enabled": False,
-    "thresholds_mV": [20., 30., 50., 100.],
+    "thresholds_mV": [30., 50., 100.],
     "baseline_window_ns": [-1.4, -1.0],
     "crossing_window_ns": [-0.8, 1.8],
     "minimum_coverage": 0.90,
