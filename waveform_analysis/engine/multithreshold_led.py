@@ -98,7 +98,10 @@ def linear_pickoff(crossing_times_ps, thresholds_mV):
     intercept = safe.mean(axis=2) - slope * float(levels.mean())
     predicted = intercept[..., None] + slope[..., None] * levels
     fit_rmse = np.sqrt(np.mean((safe - predicted) ** 2, axis=2))
-    valid &= (slope > 0) & (intercept < crossings[:, :, 0])
+    # OLS intercept is an extrapolation, not necessarily a physical onset:
+    # curved yet monotonic rises may yield t0 >= the lowest threshold crossing.
+    # Reject only nonfinite/nonnumeric fits and nonpositive slopes.
+    valid &= np.isfinite(slope) & np.isfinite(intercept) & np.isfinite(fit_rmse) & (slope > 0)
     intercept[~valid] = np.nan
     slope[~valid] = np.nan
     fit_rmse[~valid] = np.nan
