@@ -13,12 +13,12 @@ from waveform_analysis.reporting import plotting
 
 def test_fixed_reference_defaults_and_config_validation():
     config = normalize_reference({"enabled": True})
-    assert config["thresholds_mV"] == [10., 20., 30., 40., 50.]
+    assert config["thresholds_mV"] == [20., 30., 50., 100.]
     assert config["baseline_window_ns"] == [-1.4, -1.0]
     assert not normalize_reference({})["enabled"]
     for invalid in (
         {"thresholds_mV": [10, 20]},
-        {"thresholds_mV": [10, 20, 55]},
+        {"thresholds_mV": [10, 20, 101]},
         {"thresholds_mV": [20, 10, 30]},
         {"minimum_coverage": 1.1},
         {"baseline_window_ns": [0, 0]},
@@ -58,3 +58,27 @@ def test_mt_reference_is_line_not_model_bar(tmp_path, monkeypatch):
     assert "Multi-threshold reference" in reference
     np.testing.assert_allclose(reference["Multi-threshold reference"].get_ydata(),
                                [125., 125.])
+
+
+def test_crossing_diagnostics_classify_missing_and_valid():
+    from waveform_analysis.reporting.multithreshold_diagnostics import _failure_reasons
+    crossings = np.array([
+        [[1., 2., 3., 4.], [1., 2., 3., 4.]],
+        [[1., 2., np.nan, 4.], [1., 2., 3., 4.]],
+    ])
+    diag = {
+        "crossing_times_ps": crossings,
+        "led_crossing_ps": np.zeros((2, 2)),
+        "intercept_ps": np.zeros((2, 2, 1)),
+    }
+    reason = _failure_reasons(np.array([1., np.nan]),
+                              np.array([0., 0.]), diag)
+    assert reason.tolist() == ["valid", "missing_threshold_crossing"]
+
+
+def test_thresholds_to_100_mv_are_batch_opt_in():
+    from waveform_analysis.engine.multithreshold_led import validate_threshold_sets
+    assert validate_threshold_sets([(20, 30, 50, 100)], maximum_mV=100.) == (
+        (20., 30., 50., 100.),)
+    with pytest.raises(ValueError):
+        validate_threshold_sets([(20, 30, 50, 100)])
