@@ -226,6 +226,23 @@ def run_batch(batch, *, logger=None):
                 print("BATCH PREPROCESSING FAILED | mode=%s | role=blind | error=%s: %s" %
                       (mode, type(exc).__name__, exc), flush=True)
                 raise
+        mt_options = batch.protocol.get("multithreshold_reference", {})
+        if mt_options.get("enabled", False):
+            from waveform_analysis.engine.multithreshold_reference import run_reference
+            energy_by_window = {}
+            for item in plan["studies"]:
+                config = item["config"]
+                if config["mode"] == "energy_to_energy":
+                    energy_by_window.setdefault(config["window_name"], config["output_dir"])
+            for window, reference_run in sorted(energy_by_window.items()):
+                summary = run_reference(
+                    reference_run, batch.output_dir, mt_options,
+                    seed=int(batch.protocol["seed"]),
+                    bootstrap_resamples=int(batch.protocol["bootstrap"]["n_resamples"]),
+                )
+                print("BATCH MT REFERENCE | window=%s | blind CTR=%.3f ps | coverage=%.2f%%" %
+                      (window, summary["blind"]["metrics"]["ctr_ps"],
+                       100 * summary["blind"]["coverage"]), flush=True)
         from waveform_analysis.reporting.report import generate_report
         from waveform_analysis.reporting.latex_tables import DATASET_TABLE_VERSION
         from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
@@ -239,6 +256,10 @@ def run_batch(batch, *, logger=None):
             and (_read_json(report_manifest) or {}).get("development_distribution_version")
             == DEVELOPMENT_DISTRIBUTION_VERSION
             and (_read_json(report_manifest) or {}).get("blind_boxplot_version") == 1
+            and (
+                not mt_options.get("enabled", False)
+                or (_read_json(report_manifest) or {}).get("multithreshold_reference_version") == 1
+            )
         ):
             generate_report(
                 batch.output_dir,
