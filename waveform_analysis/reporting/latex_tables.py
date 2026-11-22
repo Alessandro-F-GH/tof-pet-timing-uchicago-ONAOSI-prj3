@@ -60,6 +60,7 @@ def export_blind_metric_table(
 
 def export_ranked_ctr_summary(
     path: Path, group: list[dict[str, Any]], *, mode: str, window: str,
+    mt_metrics: dict | None = None,
 ) -> Path:
     """Rank persisted CV/test scores by blind CTR, with separate LED reference."""
     import csv
@@ -127,6 +128,12 @@ def export_ranked_ctr_summary(
         + " & " + number(led["blind"]["led_rmse_ps"]) + r" \\",
         r"\midrule",
     ]
+    if mt_metrics is not None:
+        lines.append(
+            "MT (fixed) & --- & "
+            + with_uncertainty(mt_metrics["ctr_ps"], mt_metrics["ctr_bootstrap_std_ps"])
+            + " & " + number(mt_metrics["rmse_ps"]) + r" \\\\"
+        )
     for run in ranked:
         best, blind, bootstrap = run["best"], run["blind"], run["bootstrap"]
         lines.append(
@@ -143,7 +150,8 @@ def export_ranked_ctr_summary(
         + escape_latex(mode) + " waveforms, " + escape_latex(window)
         + " window. CV uncertainties are fold-to-fold standard deviations; "
         + "test CTR uncertainties are blind-event bootstrap standard deviations. "
-        + "Models are ordered by test CTR; LED is the uncorrected reference.}",
+        + "Models are ordered by test CTR; LED is the uncorrected reference; "
+        + "MT is a deterministic fixed-threshold reference when available.}",
         r"\label{tab:ctr-summary-" + label_mode + "-" + label_window + "}",
         r"\end{table}",
     ])
