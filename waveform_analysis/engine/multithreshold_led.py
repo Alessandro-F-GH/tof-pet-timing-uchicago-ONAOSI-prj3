@@ -150,10 +150,10 @@ def multithreshold_corrections(
         t = grid[idx]
         led_level = baseline + float(led_threshold_mV) / scales[None, :]
         led_cross = interpolate_upward_crossing(rising, led_level, t)
-        # The prepared anchor is the nearest sample to the native LED pickoff.
-        # Reject a distinct, unrelated crossing far from the anchor at zero.
-        tolerance = 2.5 * float(np.max(np.diff(grid)))
-        led_cross[np.abs(led_cross) > tolerance] = np.nan
+        # The prepared LED-relative grid does not guarantee that both detector
+        # crossings occur within a few samples of zero. Rejecting crossings
+        # by |t| would impose a timing-dependent event selection. Validity is
+        # determined by the rising-edge crossing inside the configured window.
         led[start:end] = led_cross
         for k, mv in enumerate(levels):
             absolute_level = baseline + float(mv) / scales[None, :]
