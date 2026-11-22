@@ -32,6 +32,9 @@ from waveform_analysis.reporting.latex_tables import (
 from waveform_analysis.reporting.model_labels import model_label
 from waveform_analysis.reporting.metric_rows import blind_metric_rows as _blind_metric_rows
 from waveform_analysis.engine.diagnostics import DEVELOPMENT_DISTRIBUTION_VERSION
+from waveform_analysis.engine.multithreshold_reference import (
+    load_reference, compare_models,
+)
 
 
 def _json(path):
@@ -477,6 +480,15 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 cfg,
                 title=f"Paired blind Δ {metric.upper()} (row − column) [ps]",
             )
+        mt = load_reference(root, window) if mode == "energy_to_energy" else None
+        mt_metrics = mt["blind"]["metrics"] if mt is not None else None
+        if mt is not None:
+            paired_mt = compare_models(
+                root, window, group, seed=seed,
+                n_resamples=int(root_config["settings"]["bootstrap"]["n_resamples"]),
+            )
+            write_csv(table_dir / "multithreshold_vs_ml.csv", paired_mt)
+            atomic_json(table_dir / "multithreshold_reference.json", mt)
         export_ranked_ctr_summary(
             table_dir / "ctr_summary.tex", group,
             mode=mode_name, window=str(window),
@@ -489,6 +501,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 table_dir / f"blind_{metric}.tex", rows, led_value, metric=metric,
                 mode=mode_name, window=str(window),
                 report_id=root_config.get("results", {}).get("folder", root.name),
+                mt_value=float(mt_metrics[f"{metric}_ps"]) if mt_metrics else None,
             )
             metric_plot = (plot_dir / "blind_ctr.pdf" if metric == "ctr"
                            else output_path(plot_dir, f"blind_{metric}", cfg))
@@ -499,7 +512,8 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                     if stale != metric_plot:
                         stale.unlink()
             blind_metric_bar(rows, metric_plot, cfg,
-                             metric=metric, led_value=led_value)
+                             metric=metric, led_value=led_value,
+                             mt_value=float(mt_metrics[f"{metric}_ps"]) if mt_metrics else None)
         _scatters(group, plot_dir, cfg)
         payload_by_model = {run["manifest"]["model"]: payload
                             for run, payload in zip(group, payloads)}
@@ -522,6 +536,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "development_distribution_version": DEVELOPMENT_DISTRIBUTION_VERSION,
             "blind_boxplot_version": 1,
             "ensemble_ctr_version": 1,
+            "multithreshold_reference_version": 1,
             "dataset_tables": [
                 str(path.relative_to(report)) for path in dataset_tables
             ],
