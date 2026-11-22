@@ -242,12 +242,13 @@ def run_batch(batch, *, logger=None):
                     bootstrap_resamples=int(batch.protocol["bootstrap"]["n_resamples"]),
                 )
                 reference_fingerprints[window] = summary["fingerprint"]
-                print("BATCH MT CONTROL SELECTED | window=%s | thresholds=%s mV | control CTR=%.3f ps | control coverage=%.2f%%" %
-                      (window, summary["thresholds_mV"],
-                       summary["control_selection"]["ctr_ps"],
-                       100 * summary["control_selection"]["coverage"]), flush=True)
-                print("BATCH MT REFERENCE | window=%s | blind CTR=%.3f ps | coverage=%.2f%%" %
-                      (window, summary["blind"]["metrics"]["ctr_ps"],
+                metrics = summary["blind"]["metrics"]
+                print("BATCH MT REFERENCE | window=%s | thresholds=%s mV | "
+                      "blind MT CTR=%.3f ps | blind LED CTR=%.3f ps | "
+                      "LED-MT=%.3f ps | coverage=%.2f%% (paired events)" %
+                      (window, summary["thresholds_mV"], metrics["ctr_ps"],
+                       metrics["led_ctr_ps"],
+                       metrics["led_ctr_ps"] - metrics["ctr_ps"],
                        100 * summary["blind"]["coverage"]), flush=True)
         atomic_json(Path(batch.output_dir) / "references" / "settings.json", {
             "enabled": bool(mt_options.get("enabled", False)),
