@@ -27,7 +27,7 @@ from waveform_analysis.scripts.plot_conditional_target_heatmaps import baseline_
 
 DEFAULT_REFERENCE = {
     "enabled": False,
-    "thresholds_mV": [10., 20., 30., 40., 50.],
+    "thresholds_mV": [20., 30., 50., 100.],
     "baseline_window_ns": [-1.4, -1.0],
     "crossing_window_ns": [-0.8, 1.8],
     "minimum_coverage": 0.90,
@@ -48,7 +48,7 @@ def normalize_reference(value):
     if not isinstance(result["enabled"], bool):
         raise ConfigError("multithreshold_reference.enabled must be boolean")
     try:
-        groups = validate_threshold_sets([result["thresholds_mV"]])
+        groups = validate_threshold_sets([result["thresholds_mV"]], maximum_mV=100.)
         result["thresholds_mV"] = list(groups[0])
         for name in ("baseline_window_ns", "crossing_window_ns"):
             pair = tuple(float(v) for v in result[name])
@@ -89,7 +89,7 @@ def _calculate(dataset, options):
         led_threshold_mV=float(dataset.manifest["fixed_led_threshold_mV"]),
         physical_scale_mV=scale[:, 0],
         crossing_window_ns=options["crossing_window_ns"],
-        chunk_size=options["chunk_size"],
+        chunk_size=options["chunk_size"], maximum_threshold_mV=100.,
     )
     return correction[:, 0], diagnostics
 
@@ -134,7 +134,7 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
     _check_protocol(dev, blind)
     destination = reference_directory(root, config["window_name"])
     fingerprint = canonical_hash({
-        "version": 1, "options": options, "seed": seed,
+        "version": 2, "options": options, "seed": seed,
         "bootstrap_resamples": bootstrap_resamples,
         "cache_development": str(dev.directory),
         "cache_blind": str(blind.directory),
@@ -166,10 +166,15 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
         options, "development")
     dev_metrics = metric_values(resid_dev[valid_dev], config["fit"],
                                 seed=semantic_seed(seed, "mt-reference", "dev"))
-    raw_blind, _ = _calculate(blind, options)
+    raw_blind, diagnostics_blind = _calculate(blind, options)
     valid_blind, residual, led = _save_predictions(
         destination / "blind_predictions.npz", blind, raw_blind, offset,
         options, "blind")
+    from waveform_analysis.reporting.multithreshold_diagnostics import save_coverage_diagnostic
+    coverage_diagnostic = save_coverage_diagnostic(
+        destination, blind, raw_blind, diagnostics_blind, options,
+        role="blind",
+    )
     coverage = float(valid_blind.mean())
     if valid_blind.sum() < 5 or coverage < options["minimum_coverage"]:
         raise ValueError(f"MT blind coverage {coverage:.2%} below minimum")
@@ -190,6 +195,7 @@ def run_reference(reference_run, root, options, *, seed, bootstrap_resamples):
                         "coverage": dev_coverage, "metrics": dev_metrics},
         "blind": {"total": int(blind.n_events), "valid": int(valid_blind.sum()),
                   "coverage": coverage, "metrics": bootstrap},
+        "coverage_diagnostic": coverage_diagnostic,
         "source_prepared_cache": {"development": str(dev.directory),
                                   "blind": str(blind.directory)},
     }
