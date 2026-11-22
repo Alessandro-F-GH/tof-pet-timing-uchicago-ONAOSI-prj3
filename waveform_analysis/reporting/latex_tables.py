@@ -51,7 +51,7 @@ def export_blind_metric_table(
                   r"\end{table*}"])
     if mt_value is not None:
         # Keep the deterministic reference outside the ranked ML rows.
-        reference_line = rf"MT & Multi-threshold reference & & {number(mt_value)} \\\\"
+        reference_line = rf"MT & Multi-threshold reference & & {number(mt_value)} \\"
         lines.insert(lines.index(r"\bottomrule"), reference_line)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
