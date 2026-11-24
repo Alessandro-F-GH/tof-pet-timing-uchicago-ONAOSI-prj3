@@ -129,9 +129,11 @@ def _parser() -> argparse.ArgumentParser:
     deletion.add_argument("--chunk-size", type=int, default=256)
     deletion.add_argument("--max-events", type=int,
                           help="Optional first-N test events for a quick validation")
-    deletion.add_argument("--step-groups", type=int, default=1,
+    deletion.add_argument("--step-groups", type=int, default=8,
                           help="Evaluate CTR every N removed groups")
     deletion.add_argument("--random-permutations", type=int, default=5)
+    deletion.add_argument("--bootstrap-resamples", type=int, default=30,
+                          help="Paired event-bootstrap CTR resamples per evaluated step")
     deletion.add_argument("--seed", type=int, default=42)
     deletion.add_argument("--overwrite", action="store_true")
     scan = sub.add_parser(
@@ -302,6 +304,7 @@ def main() -> None:
             chunk_size=args.chunk_size, max_events=args.max_events,
             step_groups=args.step_groups,
             random_permutations=args.random_permutations,
+            bootstrap_resamples=args.bootstrap_resamples,
             seed=args.seed, overwrite=args.overwrite, logger=logger,
         ):
             print(output)
