@@ -198,10 +198,10 @@ retraining on remaining time regions. Existing global rankings were derived
 from a test subset, so their reuse on the full test set is descriptive rather
 than an independently validated attribution ranking. Event-bootstrap CTR uncertainty is computed at each reported SHAP deletion
 step using paired event resamples. Both SHAP curves have +/- one-bootstrap-
-standard-deviation bands in muted blue. The random baseline is shown as a
-single gray mean curve without an uncertainty band; random orderings do not
-undergo bootstrapping. The LED reference appears in muted red with a bootstrap
-band. The plot is styled for academic reports. Use
+standard-deviation bands: descending is solid muted blue and ascending is
+solid muted teal. The random baseline is a dashed gray mean curve without an
+uncertainty band; random orderings do not undergo bootstrapping. The LED
+reference is dark gray and dotted, without a displayed uncertainty band. The plot is styled for academic reports. Use
 `--bootstrap-resamples 30` (default) to control uncertainty precision,
 `--step-groups 8` (default) to control evaluation density, and
 `--overwrite` to regenerate previously completed deletion outputs. For
