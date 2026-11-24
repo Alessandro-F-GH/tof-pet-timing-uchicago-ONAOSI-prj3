@@ -218,21 +218,22 @@ def _evaluate_order(unbounded, contributions, order, *, target, fit, seed, limit
 
 
 def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
-    """Muted academic CTR plot: bootstrapped SHAP, unbanded random mean.
+    """Academic CTR plot: distinct solid SHAP curves with bootstrap bands.
 
-    SHAP curves show +/- 1 event-bootstrap standard deviation. The random
-    baseline is the mean across orderings without an uncertainty band.
+    The random baseline is a dashed gray mean without a band, and LED is a
+    dark-gray dotted reference without a displayed uncertainty band.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8.3, 4.8))
-    shap_color = "#1f4e79"    # Muted academic blue
-    led_color = "#a33b36"    # Muted academic red for LED reference
+    descending_color = "#1f4e79"  # Muted blue
+    ascending_color = "#2a7f62"   # Muted teal
+    led_color = "0.20"             # Dark gray
     lines = (
-        ("shap_descending", "SHAP descending", shap_color, "-", 2.0, 0.14),
-        ("shap_ascending", "SHAP ascending", shap_color, "-.", 1.7, 0.10),
+        ("shap_descending", "SHAP descending", descending_color, "-", 2.0, 0.10),
+        ("shap_ascending", "SHAP ascending", ascending_color, "-", 2.0, 0.10),
     )
     for key, label, color, style, linewidth, alpha in lines:
         subset = sorted(
@@ -267,12 +268,8 @@ def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
         ax.plot(100 * positions, avg, color="0.45", linestyle="--",
                 linewidth=1.6, label="Random deletion (mean)")
 
-    ax.axhline(led_ctr, color=led_color, linestyle=":", linewidth=2.0,
+    ax.axhline(led_ctr, color=led_color, linestyle=":", linewidth=1.8,
                label="LED reference")
-    if led_ctr_bootstrap_std > 0:
-        ax.axhspan(led_ctr - led_ctr_bootstrap_std,
-                   led_ctr + led_ctr_bootstrap_std,
-                   facecolor=led_color, alpha=0.11, linewidth=0)
     ax.set_xlabel("Removed temporal regions (%)")
     ax.set_ylabel("CTR (ps)")
     ax.set_xlim(0, 100)
