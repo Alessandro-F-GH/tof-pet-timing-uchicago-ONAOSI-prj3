@@ -196,8 +196,16 @@ and reuse the original fitted CTR routine at each reported deletion step.
 Deletion here means *mean replacement in the already trained model*, not
 retraining on remaining time regions. Existing global rankings were derived
 from a test subset, so their reuse on the full test set is descriptive rather
-than an independently validated attribution ranking. Full bootstrap uncertainty
-is not computed at each deletion step.
+than an independently validated attribution ranking. Event-bootstrap CTR uncertainty is computed at each reported deletion step
+using paired event resamples. Both SHAP curves have +/- one-bootstrap-standard-
+deviation bands, and the random baseline combines the event-bootstrap
+variance with the variability between random deletion orderings. The plot
+uses a restrained grayscale palette suitable for academic reports. Use
+`--bootstrap-resamples 30` (default) to control uncertainty precision,
+`--step-groups 8` (default) to control evaluation density, and
+`--overwrite` to regenerate previously completed deletion outputs. For
+higher-resolution final figures use `--step-groups 1`, bearing in mind
+that every plotted step incurs the CTR fit and bootstrap cost.
 
 ## Development
 
