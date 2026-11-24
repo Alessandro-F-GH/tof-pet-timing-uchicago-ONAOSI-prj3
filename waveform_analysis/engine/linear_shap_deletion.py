@@ -26,6 +26,7 @@ from waveform_analysis.engine.train import (
 )
 from waveform_analysis.models import get_model
 from waveform_analysis.reporting.stats import metric_values
+from waveform_analysis.data.splits import bootstrap_draw_indices
 
 
 def _npz_for_run(run_directory, *, global_npz, global_root):
@@ -173,8 +174,25 @@ def deletion_predictions(unbounded_prediction, contributions, order, *, limit=No
     )
 
 
+def _bootstrap_ctr(residual, fit, *, seed, bootstrap_indices):
+    """Conditional event-bootstrap CTR uncertainty; fitted model stays frozen.
+
+    The identical event resamples are reused at every deletion point and for
+    every ordering. The central CTR always uses the full unresampled test set.
+    """
+    if not bootstrap_indices:
+        return 0.0
+    values = np.array([
+        metric_values(residual[idx], fit, seed=seed)["ctr_ps"]
+        for idx in bootstrap_indices
+    ], dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Non-finite CTR from deletion bootstrap")
+    return float(np.std(values, ddof=1))
+
+
 def _evaluate_order(unbounded, contributions, order, *, target, fit, seed, limit,
-                    ordering, step_groups, original_ctr):
+                    ordering, step_groups, original_ctr, bootstrap_indices=()):
     n_groups = contributions.shape[1]
     steps = sorted(set([0, n_groups] + list(range(step_groups, n_groups, step_groups))))
     removed = np.zeros(len(unbounded), dtype=np.float64)
@@ -186,57 +204,101 @@ def _evaluate_order(unbounded, contributions, order, *, target, fit, seed, limit
             continue
         residual = target - _clip(unbounded - removed, limit)
         metrics = metric_values(residual, fit, seed=seed)
+        uncertainty = _bootstrap_ctr(
+            residual, fit, seed=seed, bootstrap_indices=bootstrap_indices
+        )
         rows.append({
             "ordering": ordering, "n_removed": step, "n_groups": n_groups,
             "fraction_removed": step / n_groups,
-            "ctr_ps": metrics["ctr_ps"], "rmse_ps": metrics["rmse_ps"],
+            "ctr_ps": metrics["ctr_ps"], "ctr_bootstrap_std_ps": uncertainty,
+            "rmse_ps": metrics["rmse_ps"],
             "delta_ctr_ps": metrics["ctr_ps"] - original_ctr,
         })
     return rows
 
 
-def _plot_curves(path, rows, *, led_ctr, title):
+def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
+    """Academic grayscale CTR plot with event-bootstrap uncertainty bands.
+
+    SHAP bands: +/- 1 event-bootstrap standard deviation. The random band
+    additionally includes variation between deletion order permutations.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(8.5, 5))
-    for label, display in (
-        ("shap_descending", "SHAP: most important first"),
-        ("shap_ascending", "SHAP: least important first"),
-    ):
-        subset = [r for r in rows if r["ordering"] == label]
-        ax.plot([100 * r["fraction_removed"] for r in subset],
-                [r["ctr_ps"] for r in subset], label=display, linewidth=1.8)
-    random_names = sorted({r["ordering"] for r in rows if r["ordering"].startswith("random_")})
+    fig, ax = plt.subplots(figsize=(8.3, 4.8))
+    lines = (
+        ("shap_descending", "SHAP descending", "0.12", "-", 2.0, 0.14),
+        ("shap_ascending", "SHAP ascending", "0.48", "-.", 1.7, 0.12),
+    )
+    for key, label, color, style, linewidth, alpha in lines:
+        subset = sorted(
+            (r for r in rows if r["ordering"] == key),
+            key=lambda r: r["n_removed"],
+        )
+        x = 100 * np.array([r["fraction_removed"] for r in subset])
+        y = np.array([r["ctr_ps"] for r in subset])
+        error = np.array([r["ctr_bootstrap_std_ps"] for r in subset])
+        ax.plot(x, y, color=color, linestyle=style, linewidth=linewidth, label=label)
+        ax.fill_between(x, y - error, y + error, color=color,
+                        alpha=alpha, linewidth=0)
+
+    random_names = sorted({
+        r["ordering"] for r in rows if r["ordering"].startswith("random_")
+    })
     if random_names:
-        matrix = np.array([
-            [r["ctr_ps"] for r in rows if r["ordering"] == name]
+        subsets = [
+            sorted((r for r in rows if r["ordering"] == name),
+                   key=lambda r: r["n_removed"])
             for name in random_names
-        ], dtype=float)
-        positions = [
-            100 * r["fraction_removed"]
-            for r in rows if r["ordering"] == random_names[0]
         ]
+        positions = np.array(
+            [r["fraction_removed"] for r in subsets[0]], dtype=float
+        )
+        if any(not np.array_equal(
+            positions, [r["fraction_removed"] for r in subset]
+        ) for subset in subsets[1:]):
+            raise ValueError("Random deletion curves have different x coordinates")
+        matrix = np.array([[r["ctr_ps"] for r in subset] for subset in subsets])
+        boot_std = np.array([
+            [r["ctr_bootstrap_std_ps"] for r in subset] for subset in subsets
+        ])
         avg = matrix.mean(axis=0)
-        std = matrix.std(axis=0, ddof=1) if len(random_names) > 1 else np.zeros_like(avg)
-        ax.plot(positions, avg, label="Random order (mean)", linestyle="--")
-        ax.fill_between(positions, avg - std, avg + std, alpha=0.2)
-    ax.axhline(led_ctr, color="0.35", linestyle=":", label="LED")
-    ax.set(xlabel="Regions replaced by Development mean (%)",
-           ylabel="Test CTR (ps)", title=title, xlim=(0, 100))
-    ax.grid(alpha=0.2)
-    ax.legend()
+        # Total descriptive spread: event-level bootstrap variance within each
+        # ordering + variation of mean CTR between random orderings.
+        order_var = matrix.var(axis=0, ddof=1) if len(subsets) > 1 else np.zeros_like(avg)
+        band = np.sqrt(np.mean(boot_std ** 2, axis=0) + order_var)
+        ax.plot(100 * positions, avg, color="0.30", linestyle="--",
+                linewidth=1.7, label="Random deletion (mean)")
+        ax.fill_between(100 * positions, avg - band, avg + band,
+                        color="0.45", alpha=0.11, linewidth=0)
+
+    ax.axhline(led_ctr, color="0.62", linestyle=":", linewidth=1.3,
+               label="LED reference")
+    if led_ctr_bootstrap_std > 0:
+        ax.axhspan(led_ctr - led_ctr_bootstrap_std,
+                   led_ctr + led_ctr_bootstrap_std,
+                   facecolor="0.7", alpha=0.10, linewidth=0)
+    ax.set_xlabel("Removed temporal regions (%)")
+    ax.set_ylabel("CTR (ps)")
+    ax.set_xlim(0, 100)
+    ax.set_title(title, fontsize=11, fontweight="normal")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(axis="y", color="0.85", linewidth=0.6)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
-    fig.savefig(path)
+    fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
 def run_linear_shap_deletion(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
     cache_root=None, global_npz=None, global_root=None, output_root=None,
-    chunk_size=256, max_events=None, step_groups=1, random_permutations=5,
-    seed=42, overwrite=False, logger=None,
+    chunk_size=256, max_events=None, step_groups=8, random_permutations=5,
+    bootstrap_resamples=30, seed=42, overwrite=False, logger=None,
 ):
     """Evaluate mean-replacement deletion on the saved blind population."""
     if (global_npz is None) == (global_root is None):
@@ -247,6 +309,8 @@ def run_linear_shap_deletion(
         raise ValueError("chunk_size, step_groups and random_permutations must be positive")
     if max_events is not None and max_events < 5:
         raise ValueError("max_events must be >= 5")
+    if isinstance(bootstrap_resamples, bool) or int(bootstrap_resamples) != bootstrap_resamples or bootstrap_resamples < 2:
+        raise ValueError("bootstrap_resamples must be an integer >= 2")
     allowed = set(models) if models is not None else RIDGE_NAMES
     if not allowed or not allowed.issubset(RIDGE_NAMES):
         raise ValueError("Deletion requires direct_linear_ridge or shared_linear_ridge")
@@ -279,7 +343,7 @@ def run_linear_shap_deletion(
         settings = {
             "global_npz": str(npz), "chunk_size": chunk_size, "max_events": max_events,
             "step_groups": step_groups, "random_permutations": random_permutations,
-            "seed": seed,
+            "bootstrap_resamples": bootstrap_resamples, "seed": seed,
         }
         if (destination / "summary.json").is_file() and not overwrite:
             prior = json.loads((destination / "summary.json").read_text(encoding="utf-8"))
@@ -338,12 +402,23 @@ def run_linear_shap_deletion(
             (f"random_{i + 1:02d}", rng.permutation(len(desc)))
             for i in range(random_permutations)
         ]
+        # Identical paired event resamples across every step and permutation.
+        bootstrap_rng = np.random.default_rng(seed)
+        bootstrap_indices = [
+            bootstrap_draw_indices(n, bootstrap_rng)
+            for _ in range(bootstrap_resamples)
+        ]
+        led_std = _bootstrap_ctr(
+            target[:n], cfg["fit"], seed=seed_used,
+            bootstrap_indices=bootstrap_indices,
+        )
         rows = []
         for label, order in orders:
             rows.extend(_evaluate_order(
                 unbounded, contributions, order, target=target[:n],
                 fit=cfg["fit"], seed=seed_used, limit=fitted.output_max_abs_ps,
                 ordering=label, step_groups=step_groups, original_ctr=original_ctr,
+                bootstrap_indices=bootstrap_indices,
             ))
         last = next(r for r in rows if r["ordering"] == "shap_descending"
                     and r["n_removed"] == len(desc))
@@ -390,6 +465,7 @@ def run_linear_shap_deletion(
                 ])
         _plot_curves(
             destination / "deletion_curve.pdf", rows, led_ctr=led_ctr,
+            led_ctr_bootstrap_std=led_std,
             title=f"{batch_root(directory).parent.name} | {family} | {name}",
         )
         atomic_json(destination / "summary.json", {
@@ -406,10 +482,17 @@ def run_linear_shap_deletion(
             "evaluation_population": "saved_blind_test_events",
             "overlap_warning": "Saved global rankings were estimated on a subset of the test population.",
             "original_ctr_ps": original_ctr, "led_ctr_ps": led_ctr,
+            "led_ctr_bootstrap_std_ps": led_std,
+            "uncertainty": {
+                "shap_curves": "event_bootstrap_std_1sigma",
+                "random_curve": "sqrt(mean_bootstrap_variance_plus_between_permutation_variance)",
+                "paired_event_resamples_across_all_steps": True,
+                "n_resamples": bootstrap_resamples,
+            },
             "full_deletion_ctr_ps": last["ctr_ps"],
             "background": "complete_prepared_development_mean_from_saved_npz",
             "prediction": "unbounded_Ridge_minus_signed_SHAP_then_pipeline_clipping",
-            "no_refit": True, "metrics": "original_fit_ctr_ps_no_bootstrap_per_step",
+            "no_refit": True, "metrics": "original_fit_ctr_ps_with_event_bootstrap_std_per_step",
             "settings": settings,
         })
         outputs.append(destination)
