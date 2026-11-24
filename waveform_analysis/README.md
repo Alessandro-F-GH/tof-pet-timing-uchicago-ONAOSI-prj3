@@ -167,10 +167,16 @@ Run a single saved Wide shared-Ridge model (PowerShell example):
 python -m waveform_analysis.cli benchmark-linear-shap-deletion `
   --model-dir "waveform_analysis/results/UC/filtered_benchmark/energy/wide/shared_linear_ridge" `
   --global-npz "xai/UC/linear/global/filtered_benchmark/energy/wide/shared_linear_ridge/linear_shap_global/global_attributions.npz" `
-  --cache-root UC_lowpass_rebuilt `
   --output-root xai/linear_deletion `
   --random-permutations 5
 ```
+
+Do **not** specify `--cache-root` when the prepared cache remains at the
+location saved by the original batch. The command automatically recovers
+`preprocessing.cache_dir` from the selected saved run (the batch's
+`config.json`). Supplying `--cache-root` deliberately **overrides**
+that recorded location; only use it if you have moved the prepared
+cache, and pass the directory containing `preprocessing/`.
 
 Adjust the model directory to the actual saved result root; the global NPZ
 must correspond to the *same* model, mode, observation window and time grid.
