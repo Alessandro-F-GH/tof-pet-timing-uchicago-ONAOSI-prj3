@@ -151,6 +151,48 @@ not exact Shapley values of individual time samples.
 
 Source-domain diagnostics (FFT, acquisition phase and filtering sensitivity) remain available in `scripts/`.
 
+### Global Linear SHAP deletion benchmark
+
+Use the existing `global_attributions.npz` produced by
+`explain-linear-shap-global` to rank fixed temporal groups. The benchmark
+reuses the saved Development mean and fitted Ridge model; **no model is refitted**.
+For shared Ridge, deletion replaces the corresponding temporal group in *both*
+detectors, matching the combined-pair global SHAP attribution. Direct Ridge
+ranks detector-specific groups. Ranking strength is mean positive SHAP plus
+the absolute mean negative SHAP, without premature sign cancellation.
+
+Run a single saved Wide shared-Ridge model (PowerShell example):
+
+```powershell
+python -m waveform_analysis.cli benchmark-linear-shap-deletion `
+  --model-dir "waveform_analysis/results/UC/filtered_benchmark/energy/wide/shared_linear_ridge" `
+  --global-npz "xai/UC/linear/global/filtered_benchmark/energy/wide/shared_linear_ridge/linear_shap_global/global_attributions.npz" `
+  --cache-root UC_lowpass_rebuilt `
+  --output-root xai/linear_deletion `
+  --random-permutations 5
+```
+
+Adjust the model directory to the actual saved result root; the global NPZ
+must correspond to the *same* model, mode, observation window and time grid.
+To evaluate all matched runs under a saved filtered benchmark, use `--results`
+with `--global-root` pointing to a directory containing the existing
+per-model SHAP outputs. Optional `--mode energy|timing`, `--models
+shared_linear_ridge`, `--windows wide`, `--step-groups 2`, and
+`--max-events 1000` restrict the workload. Default evaluation uses the
+entire saved blind population, including an exact replay check of the original
+predictions. The run produces `deletion_metrics.csv`, `region_ranking.csv`,
+`deletion_curve.pdf` and `summary.json`.
+
+Deleted contributions are subtracted from the **unbounded** linear prediction;
+the original output clipping is applied only afterward. Curves compare
+descending SHAP importance, ascending SHAP importance and random permutations,
+and reuse the original fitted CTR routine at each reported deletion step.
+Deletion here means *mean replacement in the already trained model*, not
+retraining on remaining time regions. Existing global rankings were derived
+from a test subset, so their reuse on the full test set is descriptive rather
+than an independently validated attribution ranking. Full bootstrap uncertainty
+is not computed at each deletion step.
+
 ## Development
 
 ```bash
