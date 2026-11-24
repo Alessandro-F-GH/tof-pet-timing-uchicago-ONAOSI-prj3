@@ -218,10 +218,10 @@ def _evaluate_order(unbounded, contributions, order, *, target, fit, seed, limit
 
 
 def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
-    """Academic grayscale CTR plot with event-bootstrap uncertainty bands.
+    """Muted academic CTR plot: bootstrapped SHAP, unbanded random mean.
 
-    SHAP bands: +/- 1 event-bootstrap standard deviation. The random band
-    additionally includes variation between deletion order permutations.
+    SHAP curves show +/- 1 event-bootstrap standard deviation. The random
+    baseline is the mean across orderings without an uncertainty band.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -229,7 +229,7 @@ def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
 
     fig, ax = plt.subplots(figsize=(8.3, 4.8))
     shap_color = "#1f4e79"    # Muted academic blue
-    random_color = "#8b3a3a"  # Muted academic red
+    led_color = "#a33b36"    # Muted academic red for LED reference
     lines = (
         ("shap_descending", "SHAP descending", shap_color, "-", 2.0, 0.14),
         ("shap_ascending", "SHAP ascending", shap_color, "-.", 1.7, 0.10),
@@ -263,25 +263,16 @@ def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
         ) for subset in subsets[1:]):
             raise ValueError("Random deletion curves have different x coordinates")
         matrix = np.array([[r["ctr_ps"] for r in subset] for subset in subsets])
-        boot_std = np.array([
-            [r["ctr_bootstrap_std_ps"] for r in subset] for subset in subsets
-        ])
         avg = matrix.mean(axis=0)
-        # Total descriptive spread: event-level bootstrap variance within each
-        # ordering + variation of mean CTR between random orderings.
-        order_var = matrix.var(axis=0, ddof=1) if len(subsets) > 1 else np.zeros_like(avg)
-        band = np.sqrt(np.mean(boot_std ** 2, axis=0) + order_var)
-        ax.plot(100 * positions, avg, color=random_color, linestyle="--",
-                linewidth=1.7, label="Random deletion (mean)")
-        ax.fill_between(100 * positions, avg - band, avg + band,
-                        color=random_color, alpha=0.10, linewidth=0)
+        ax.plot(100 * positions, avg, color="0.45", linestyle="--",
+                linewidth=1.6, label="Random deletion (mean)")
 
-    ax.axhline(led_ctr, color="0.62", linestyle=":", linewidth=1.3,
+    ax.axhline(led_ctr, color=led_color, linestyle=":", linewidth=2.0,
                label="LED reference")
     if led_ctr_bootstrap_std > 0:
         ax.axhspan(led_ctr - led_ctr_bootstrap_std,
                    led_ctr + led_ctr_bootstrap_std,
-                   facecolor="0.7", alpha=0.10, linewidth=0)
+                   facecolor=led_color, alpha=0.11, linewidth=0)
     ax.set_xlabel("Removed temporal regions (%)")
     ax.set_ylabel("CTR (ps)")
     ax.set_xlim(0, 100)
@@ -420,7 +411,9 @@ def run_linear_shap_deletion(
                 unbounded, contributions, order, target=target[:n],
                 fit=cfg["fit"], seed=seed_used, limit=fitted.output_max_abs_ps,
                 ordering=label, step_groups=step_groups, original_ctr=original_ctr,
-                bootstrap_indices=bootstrap_indices,
+                bootstrap_indices=(
+                    () if label.startswith("random_") else bootstrap_indices
+                ),
             ))
         last = next(r for r in rows if r["ordering"] == "shap_descending"
                     and r["n_removed"] == len(desc))
@@ -487,14 +480,15 @@ def run_linear_shap_deletion(
             "led_ctr_bootstrap_std_ps": led_std,
             "uncertainty": {
                 "shap_curves": "event_bootstrap_std_1sigma",
-                "random_curve": "sqrt(mean_bootstrap_variance_plus_between_permutation_variance)",
+                "random_curve": "mean_of_random_permutations_no_uncertainty_band",
                 "paired_event_resamples_across_all_steps": True,
                 "n_resamples": bootstrap_resamples,
             },
             "full_deletion_ctr_ps": last["ctr_ps"],
             "background": "complete_prepared_development_mean_from_saved_npz",
             "prediction": "unbounded_Ridge_minus_signed_SHAP_then_pipeline_clipping",
-            "no_refit": True, "metrics": "original_fit_ctr_ps_with_event_bootstrap_std_per_step",
+            "no_refit": True,
+            "metrics": "original_fit_ctr_ps_with_event_bootstrap_std_for_shap_orderings_only",
             "settings": settings,
         })
         outputs.append(destination)
