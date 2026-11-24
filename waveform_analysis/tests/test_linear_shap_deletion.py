@@ -57,3 +57,33 @@ def test_clipping_is_applied_after_subtracting_attributions():
 def test_invalid_order_is_rejected():
     with pytest.raises(ValueError, match="ordering"):
         deletion_predictions(np.zeros(2), np.ones((2, 3)), [0, 0, 2])
+
+
+def test_bootstrap_deletion_uncertainty_is_reproducible(monkeypatch):
+    from waveform_analysis.engine import linear_shap_deletion as deletion
+    from waveform_analysis.data.splits import bootstrap_draw_indices
+
+    def fake_metrics(residual, fit, *, seed):
+        return {"ctr_ps": float(np.std(residual)), "rmse_ps": float(np.sqrt(np.mean(residual ** 2)))}
+
+    monkeypatch.setattr(deletion, "metric_values", fake_metrics)
+    rng = np.random.default_rng(42)
+    draws = [bootstrap_draw_indices(40, rng) for _ in range(8)]
+    target = np.linspace(-8.0, 9.0, 40)
+    unbounded = np.sin(np.arange(40) / 7)
+    contributions = np.column_stack((0.5 * unbounded, -0.1 * unbounded))
+    first = deletion._evaluate_order(
+        unbounded, contributions, np.array([0, 1]),
+        target=target, fit={}, seed=42, limit=None,
+        ordering="shap_descending", step_groups=1, original_ctr=1.0,
+        bootstrap_indices=draws,
+    )
+    second = deletion._evaluate_order(
+        unbounded, contributions, np.array([0, 1]),
+        target=target, fit={}, seed=42, limit=None,
+        ordering="shap_descending", step_groups=1, original_ctr=1.0,
+        bootstrap_indices=draws,
+    )
+    assert first == second
+    assert all(np.isfinite(item["ctr_bootstrap_std_ps"]) for item in first)
+    assert all(item["ctr_bootstrap_std_ps"] > 0 for item in first)
