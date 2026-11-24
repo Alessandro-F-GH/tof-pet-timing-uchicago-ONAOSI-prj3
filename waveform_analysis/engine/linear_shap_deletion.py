@@ -228,9 +228,11 @@ def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8.3, 4.8))
+    shap_color = "#1f4e79"    # Muted academic blue
+    random_color = "#8b3a3a"  # Muted academic red
     lines = (
-        ("shap_descending", "SHAP descending", "0.12", "-", 2.0, 0.14),
-        ("shap_ascending", "SHAP ascending", "0.48", "-.", 1.7, 0.12),
+        ("shap_descending", "SHAP descending", shap_color, "-", 2.0, 0.14),
+        ("shap_ascending", "SHAP ascending", shap_color, "-.", 1.7, 0.10),
     )
     for key, label, color, style, linewidth, alpha in lines:
         subset = sorted(
@@ -269,10 +271,10 @@ def _plot_curves(path, rows, *, led_ctr, led_ctr_bootstrap_std, title):
         # ordering + variation of mean CTR between random orderings.
         order_var = matrix.var(axis=0, ddof=1) if len(subsets) > 1 else np.zeros_like(avg)
         band = np.sqrt(np.mean(boot_std ** 2, axis=0) + order_var)
-        ax.plot(100 * positions, avg, color="0.30", linestyle="--",
+        ax.plot(100 * positions, avg, color=random_color, linestyle="--",
                 linewidth=1.7, label="Random deletion (mean)")
         ax.fill_between(100 * positions, avg - band, avg + band,
-                        color="0.45", alpha=0.11, linewidth=0)
+                        color=random_color, alpha=0.10, linewidth=0)
 
     ax.axhline(led_ctr, color="0.62", linestyle=":", linewidth=1.3,
                label="LED reference")
