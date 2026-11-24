@@ -107,6 +107,33 @@ def _parser() -> argparse.ArgumentParser:
     linear_global.add_argument("--seed", type=int, default=42)
     linear_global.add_argument("--group-samples", type=int, default=8)
     linear_global.add_argument("--overwrite", action="store_true")
+    deletion = sub.add_parser(
+        "benchmark-linear-shap-deletion",
+        help="Mean-replacement deletion CTR benchmark using saved global Linear SHAP rankings",
+    )
+    deletion_source = deletion.add_mutually_exclusive_group(required=True)
+    deletion_source.add_argument("--results", type=Path)
+    deletion_source.add_argument("--model-dir", type=Path)
+    deletion_global = deletion.add_mutually_exclusive_group(required=True)
+    deletion_global.add_argument("--global-npz", type=Path,
+                                 help="Existing global_attributions.npz for a single saved model")
+    deletion_global.add_argument("--global-root", type=Path,
+                                 help="Root containing saved global Linear SHAP outputs")
+    deletion.add_argument("--models", nargs="+", choices=(
+        "direct_linear_ridge", "shared_linear_ridge",
+    ))
+    deletion.add_argument("--windows", nargs="+", choices=("onishi", "wide", "all"))
+    deletion.add_argument("--mode", choices=("energy", "timing"))
+    deletion.add_argument("--cache-root", type=Path)
+    deletion.add_argument("--output-root", type=Path)
+    deletion.add_argument("--chunk-size", type=int, default=256)
+    deletion.add_argument("--max-events", type=int,
+                          help="Optional first-N test events for a quick validation")
+    deletion.add_argument("--step-groups", type=int, default=1,
+                          help="Evaluate CTR every N removed groups")
+    deletion.add_argument("--random-permutations", type=int, default=5)
+    deletion.add_argument("--seed", type=int, default=42)
+    deletion.add_argument("--overwrite", action="store_true")
     scan = sub.add_parser(
         "scan-linear-window",
         help="Development-CV refits of shared Ridge on progressive and nonoverlapping time windows",
@@ -262,6 +289,20 @@ def main() -> None:
             max_events=args.max_events, seed=args.seed,
             group_samples=args.group_samples, overwrite=args.overwrite,
             logger=logger,
+        ):
+            print(output)
+        return
+    if args.command == "benchmark-linear-shap-deletion":
+        from .engine.linear_shap_deletion import run_linear_shap_deletion
+        for output in run_linear_shap_deletion(
+            args.results, model_dir=args.model_dir, models=args.models,
+            ml_window=args.windows, mode=args.mode,
+            cache_root=args.cache_root, global_npz=args.global_npz,
+            global_root=args.global_root, output_root=args.output_root,
+            chunk_size=args.chunk_size, max_events=args.max_events,
+            step_groups=args.step_groups,
+            random_permutations=args.random_permutations,
+            seed=args.seed, overwrite=args.overwrite, logger=logger,
         ):
             print(output)
         return
