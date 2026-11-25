@@ -211,12 +211,16 @@ def _plot_curve(rows, kind, path, *, led_ctr, full_ctr):
     y = [row["ctr_ps"] for row in data]
     e = [row["ctr_bootstrap_std_ps"] for row in data]
     fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
-    ax.errorbar(x, y, yerr=e, fmt="-o", markersize=3, linewidth=1.25,
-                capsize=2, label="Shared Ridge (test CTR)")
-    ax.axhline(led_ctr, color="0.4", linestyle="--", label="LED (wide)")
+    ax.errorbar(
+        x, y, yerr=e,
+        fmt="o" if kind == "fixed" else "-o",
+        markersize=3, linewidth=1.25, capsize=2,
+        label="Shared Ridge",
+    )
+    ax.axhline(led_ctr, color="0.4", linestyle="--", label="LED")
     if full_ctr is not None:
         ax.axhline(full_ctr, color="#009E73", linestyle=":",
-                   label="Saved full-wide shared Ridge")
+                   label="Full-window shared Ridge")
     ax.set_xlabel("Window end (ns)" if kind == "progressive" else "Window center (ns)")
     ax.set_ylabel("Test CTR (ps)")
     ax.set_title("Progressive temporal expansion" if kind == "progressive"
