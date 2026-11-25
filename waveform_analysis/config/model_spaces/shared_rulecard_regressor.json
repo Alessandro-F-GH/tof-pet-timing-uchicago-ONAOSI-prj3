@@ -1,0 +1,50 @@
+{
+  "model": "shared_rulecard_regressor",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "learning_rate": {
+      "type": "categorical",
+      "choices": [
+        0.1,
+        0.3
+      ]
+    },
+    "max_n_iter": {
+      "type": "fixed",
+      "value": 20
+    },
+    "patience": {
+      "type": "fixed",
+      "value": 4
+    },
+    "val_size": {
+      "type": "fixed",
+      "value": 0.15
+    },
+    "max_depth": {
+      "type": "categorical",
+      "choices": [
+        2,
+        3
+      ]
+    },
+    "min_samples_leaf": {
+      "type": "fixed",
+      "value": 30
+    },
+    "top_k_features": {
+      "type": "fixed",
+      "value": 8
+    },
+    "include_pairs": {
+      "type": "fixed",
+      "value": true
+    }
+  },
+  "diagnostics": {
+    "detector_swap": true
+  },
+  "verbose": false
+}

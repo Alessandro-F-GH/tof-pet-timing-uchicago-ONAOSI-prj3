@@ -102,7 +102,9 @@
       "direct_multirocket",
       "direct_mlp",
       "direct_decision_tree_regressor",
-      "shared_decision_tree_regressor"
+      "shared_decision_tree_regressor",
+      "direct_rulecard_regressor",
+      "shared_rulecard_regressor"
     ],
     "modes": [
       "energy_to_energy",
