@@ -26,6 +26,10 @@ class RegistryTests(unittest.TestCase):
                 "shared_hydra",
                 "direct_rdst",
                 "shared_rdst",
+                "direct_decision_tree_regressor",
+                "shared_decision_tree_regressor",
+                "direct_rulecard_regressor",
+                "shared_rulecard_regressor",
             },
         )
 
