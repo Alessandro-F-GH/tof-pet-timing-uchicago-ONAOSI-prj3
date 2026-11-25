@@ -29,6 +29,7 @@ class RegistryTests(unittest.TestCase):
                 "direct_decision_tree_regressor",
                 "shared_decision_tree_regressor",
                 "direct_rulecard_regressor",
+                "direct_lightgbm_regressor",
                 "shared_rulecard_regressor",
             },
         )

@@ -9,6 +9,7 @@ _MODULES = {
     'independent_cnn1d': 'neural.independent_cnn1d',
     'shared_cnn1d': 'neural.shared_cnn1d',
     'onishi_cnn': 'neural.onishi_cnn',
+    'direct_lightgbm_regressor': 'tree.direct_lightgbm_regressor',
     **{f'{form}_{family}': f'{kind}.{form}_{family}'
        for family, kind in [('linear_ridge', 'linear'), ('minirocket', 'kernel'),
                             ('rdst', 'kernel'), ('hydra', 'kernel'), ('multirocket', 'kernel'),

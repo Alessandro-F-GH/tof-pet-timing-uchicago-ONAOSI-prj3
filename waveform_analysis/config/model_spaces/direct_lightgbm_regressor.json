@@ -1,0 +1,45 @@
+{
+  "model": "direct_lightgbm_regressor",
+  "optimization": {
+    "strategy": "grid"
+  },
+  "parameters": {
+    "n_estimators": {
+      "type": "fixed",
+      "value": 300
+    },
+    "learning_rate": {
+      "type": "fixed",
+      "value": 0.05
+    },
+    "num_leaves": {
+      "type": "categorical",
+      "choices": [
+        15,
+        31
+      ]
+    },
+    "max_depth": {
+      "type": "fixed",
+      "value": -1
+    },
+    "min_child_samples": {
+      "type": "categorical",
+      "choices": [
+        20,
+        100
+      ]
+    },
+    "reg_lambda": {
+      "type": "categorical",
+      "choices": [
+        0,
+        1
+      ]
+    }
+  },
+  "diagnostics": {
+    "detector_swap": true
+  },
+  "verbose": false
+}
