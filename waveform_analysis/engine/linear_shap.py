@@ -331,68 +331,13 @@ def _plot_global_linear_shap(
     path, *, time_ps, mean_waveform_mv, starts, group_samples,
     mean_positive_ps, mean_negative_ps, model_name, n_events, window_name,
 ):
-    """Global counterpart of local Linear SHAP: waveforms + signed importance."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    time_ps = np.asarray(time_ps, dtype=np.float64)
-    time_ns = time_ps / 1000.0
-    means = np.asarray(mean_waveform_mv, dtype=np.float64)
-    positive = np.asarray(mean_positive_ps, dtype=np.float64)
-    negative = np.asarray(mean_negative_ps, dtype=np.float64)
-    starts = np.asarray(starts, dtype=np.int64)
-    shared = model_name == "shared_linear_ridge"
-    n_panels = 2 if shared else 3
-    expected = (n_panels - 1, starts.size)
-    if means.shape != (2, time_ps.size) or positive.shape != expected or negative.shape != expected:
-        raise ValueError("Global Linear SHAP waveform or contribution dimensions are inconsistent")
-    if time_ps.size < 2 or not np.all(np.diff(time_ps) > 0):
-        raise ValueError("Global Linear SHAP requires an increasing waveform time grid")
-    if not all(np.all(np.isfinite(a)) for a in (time_ps, means, positive, negative)):
-        raise ValueError("Global Linear SHAP plot contains nonfinite data")
-
-    fig, axes = plt.subplots(
-        n_panels, 1, figsize=(12.5, 3.1 + 2.4 * (n_panels - 1)),
-        sharex=True, constrained_layout=True,
-        gridspec_kw={"height_ratios": [1.0] + [1.05] * (n_panels - 1)},
+    from waveform_analysis.reporting.attribution_plots import plot_global_attributions
+    plot_global_attributions(
+        Path(path).parent, time_ps=time_ps, mean_waveform_mv=mean_waveform_mv,
+        window_starts=starts, window_samples=group_samples,
+        mean_positive_ps=mean_positive_ps, mean_negative_ps=mean_negative_ps,
+        method_name="Linear SHAP", model_name=model_name, window_name=window_name,
     )
-    fig.suptitle(
-        f"Global Linear SHAP — {model_name.replace('_', ' ').title()}"
-        f" | {n_events} random test events", fontsize=11,
-    )
-    axes[0].plot(time_ns, means[0], linewidth=1.15, label="Detector 1")
-    axes[0].plot(time_ns, means[1], linewidth=1.15, label="Detector 2")
-    axes[0].set_title("Mean detector waveforms")
-    axes[0].set_ylabel("Amplitude (mV)")
-    axes[0].grid(True, alpha=0.22, linewidth=0.6)
-    axes[0].legend(loc="best", fontsize=9)
-
-    dt_ns = float(np.median(np.diff(time_ns)))
-    widths = np.minimum(int(group_samples), time_ns.size - starts)
-    centers = time_ns[starts] + 0.5 * (widths - 1) * dt_ns
-    widths_ns = widths * dt_ns
-    for channel in range(n_panels - 1):
-        ax = axes[channel + 1]
-        ax.bar(centers, positive[channel], width=0.9 * widths_ns,
-               color="#4c78a8", label="Mean positive SHAP")
-        ax.bar(centers, negative[channel], width=0.9 * widths_ns,
-               color="#e45756", label="Mean negative SHAP")
-        ax.axhline(0.0, color="0.4", linewidth=0.7)
-        ax.set_title(
-            "Pair Linear SHAP" if shared
-            else f"Detector {channel + 1} Linear SHAP"
-        )
-        ax.set_ylabel("Mean contribution (ps/event)")
-        ax.grid(True, alpha=0.22, linewidth=0.6)
-        ax.legend(loc="best", fontsize=9)
-    axes[-1].set_xlabel("Waveform time (ns)")
-    if str(window_name).lower() == "wide":
-        for ax in axes:
-            ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.25, linewidth=0, zorder=0)
-    fig.savefig(path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-
 
 def explain_linear_shap_global(
     results=None, *, model_dir=None, models=None, ml_window=None, mode=None,
@@ -447,6 +392,11 @@ def explain_linear_shap_global(
                         "global_importance.pdf", "global_attributions.npz",
                         "global_importance.csv",
                     ))):
+                from waveform_analysis.reporting.attribution_plots import PLOT_STYLE
+                from waveform_analysis.reporting.attribution_artifacts import render_saved
+                if (old.get("global_plot", {}).get("style") != PLOT_STYLE
+                        or not (destination / "global_importance.png").is_file()):
+                    render_saved(destination)
                 outputs.append(destination)
                 if logger:
                     logger.info("Linear SHAP global | existing output | %s", destination)
@@ -542,7 +492,9 @@ def explain_linear_shap_global(
                         float(negative[channel, group]),
                         float(positive[channel, group] + negative[channel, group]),
                     ])
+        from waveform_analysis.reporting.attribution_plots import plot_metadata
         atomic_json(destination / "summary.json", {
+            "global_plot": plot_metadata(),
             "method": "exact_interventional_linear_shap_global",
             "plot_version": 3,
             "model": name,
@@ -557,7 +509,7 @@ def explain_linear_shap_global(
             "n_clipped_events": int(np.count_nonzero(np.abs(reconstructed - bounded) > 1e-7)),
             "n_explained_events": int(len(indices)),
             "settings": settings,
-            "plots": ["global_importance.pdf"],
+            "plots": ["global_importance.pdf", "global_importance.png"],
         })
         outputs.append(destination)
         if logger:

@@ -10,6 +10,7 @@ import csv
 import json
 import os
 from pathlib import Path
+from waveform_analysis.reporting.attribution_plots import plot_metadata
 import shutil
 import tempfile
 from importlib.metadata import version
@@ -606,191 +607,14 @@ def _plot_global(
     window_samples, window_starts, signed_positive, signed_negative,
     std_waveform_mv=None,
 ):
-    """Plot both physical detector waveforms with one shared pair-importance curve."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap, PowerNorm
-    from matplotlib.cm import ScalarMappable
-    from matplotlib.ticker import MaxNLocator
+    from waveform_analysis.reporting.attribution_plots import plot_global_attributions
+    plot_global_attributions(
+        destination, time_ps=time_ps, mean_waveform_mv=mean_waveform_mv,
+        window_starts=window_starts, window_samples=window_samples,
+        mean_positive_ps=signed_positive, mean_negative_ps=signed_negative,
+        method_name="TSHAP", model_name=model_name, window_name=window_name,
+    )
 
-    with plt.rc_context({
-        "font.family": "serif",
-        "font.size": 8.5,
-        "axes.labelsize": 9,
-        "axes.titlesize": 9.5,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "axes.linewidth": 0.7,
-        "pdf.fonttype": 42,
-        "ps.fonttype": 42,
-    }):
-        time_ps = np.asarray(time_ps, dtype=np.float64)
-        time_ns = time_ps / 1000.0
-        pair_importance = np.asarray(pair_importance, dtype=np.float64)
-        mean_waveform_mv = np.asarray(mean_waveform_mv, dtype=np.float64)
-        std_waveform_mv = (
-            None if std_waveform_mv is None
-            else np.asarray(std_waveform_mv, dtype=np.float64)
-        )
-        expected_waveform_shape = (2, time_ps.size)
-        if time_ps.ndim != 1 or time_ps.size < 2 or not np.all(np.isfinite(time_ps)):
-            raise ValueError("Global TSHAP time grid must contain at least two finite samples")
-        time_steps = np.diff(time_ps)
-        if np.any(time_steps <= 0):
-            raise ValueError("Global TSHAP time grid must be strictly increasing")
-        dt_ps = float(np.median(time_steps))
-        if not np.allclose(time_steps, dt_ps, rtol=1e-5, atol=1e-3):
-            raise ValueError("Global TSHAP histogram requires a uniformly sampled time grid")
-        if isinstance(window_samples, bool) or int(window_samples) < 1:
-            raise ValueError("window_samples must be an integer >= 1")
-        window_samples = int(window_samples)
-        if pair_importance.shape != time_ps.shape:
-            raise ValueError("Pair importance must have one value per waveform sample")
-        if mean_waveform_mv.shape != expected_waveform_shape:
-            raise ValueError("Global physical waveforms must have shape [2 detectors, samples]")
-        if std_waveform_mv is not None and std_waveform_mv.shape != expected_waveform_shape:
-            raise ValueError("Global waveform standard deviation must have shape [2 detectors, samples]")
-        if not np.all(np.isfinite(pair_importance)) or np.any(pair_importance < 0):
-            raise ValueError("Pair importance must be finite and non-negative")
-        if not np.all(np.isfinite(mean_waveform_mv)):
-            raise ValueError("Global physical waveforms must be finite")
-        if std_waveform_mv is not None and (
-            not np.all(np.isfinite(std_waveform_mv)) or np.any(std_waveform_mv < 0)
-        ):
-            raise ValueError("Global waveform standard deviations must be finite and non-negative")
-
-        vmax = float(np.max(pair_importance))
-        if not np.isfinite(vmax) or vmax <= 0.0:
-            vmax = 1.0
-        norm = PowerNorm(gamma=1.6, vmin=0.0, vmax=vmax, clip=True)
-        cmap = LinearSegmentedColormap.from_list(
-            "neutral_to_saliency",
-            [
-                (0.00, "#b8b8b8"),
-                (0.06, "#4c78a8"),
-                (0.52, "#1f5f99"),
-                (1.00, "#f2d94e"),
-            ],
-            N=256,
-        )
-
-        fig = plt.figure(figsize=(12.2, 7.8), constrained_layout=True)
-        gs = fig.add_gridspec(
-            3, 2,
-            height_ratios=[1.0, 1.0, 0.62],
-            width_ratios=[1.0, 0.035],
-            hspace=0.025,
-            wspace=0.08,
-        )
-        ax_signal1 = fig.add_subplot(gs[0, 0])
-        ax_signal2 = fig.add_subplot(gs[1, 0], sharex=ax_signal1)
-        ax_pair_hist = fig.add_subplot(gs[2, 0], sharex=ax_signal1)
-        colorbar_ax = fig.add_subplot(gs[0:2, 1])
-        signal_axes = [ax_signal1, ax_signal2]
-        hist_axes = [ax_pair_hist]
-
-        title = f"Global TSHAP Pair Importance — {_format_global_model_name(model_name)}"
-        fig.suptitle(title, fontsize=12.5, y=1.015)
-        for ax in [*signal_axes, *hist_axes]:
-            ax.axvspan(-1.5, 2.0, color="0.75", alpha=0.25, linewidth=0, zorder=0)
-
-        if std_waveform_mv is None:
-            waveform_low = mean_waveform_mv
-            waveform_high = mean_waveform_mv
-        else:
-            waveform_low = mean_waveform_mv - std_waveform_mv
-            waveform_high = mean_waveform_mv + std_waveform_mv
-        low = float(np.min(waveform_low))
-        high = float(np.max(waveform_high))
-        span = high - low
-        y_margin = 0.06 * span if span > 0 else max(abs(high) * 0.06, 1.0)
-
-        for channel, ax in enumerate(signal_axes):
-            if std_waveform_mv is not None:
-                ax.fill_between(
-                    time_ns,
-                    mean_waveform_mv[channel] - std_waveform_mv[channel],
-                    mean_waveform_mv[channel] + std_waveform_mv[channel],
-                    color="#9ca3af",
-                    alpha=0.28,
-                    linewidth=0,
-                    zorder=1,
-                )
-            ax.plot(
-                time_ns, mean_waveform_mv[channel],
-                color="#d8dadd", linewidth=3.8, linestyle="solid", zorder=2,
-            )
-            _add_saliency_line(
-                ax, time_ns, mean_waveform_mv[channel], pair_importance,
-                norm=norm, cmap=cmap, linestyle="solid",
-            )
-            timing_channel = "timing" in str(mode).lower()
-            label_x = 0.982 if timing_channel else 0.018
-            label_ha = "right" if timing_channel else "left"
-            ax.text(
-                label_x, 0.965, f"Detector {channel + 1}",
-                transform=ax.transAxes, ha=label_ha, va="top",
-                fontsize=9.0, zorder=5,
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.6},
-            )
-            ax.set_ylabel("Amplitude (mV)")
-            ax.set_ylim(low - y_margin, high + y_margin)
-            ax.set_xlim(float(time_ns[0]), float(time_ns[-1]))
-            ax.set_axisbelow(True)
-            ax.grid(True, alpha=0.18, linewidth=0.5)
-            ax.tick_params(axis="x", labelbottom=False, length=3, width=0.6)
-            for spine in ax.spines.values():
-                spine.set_linewidth(0.7)
-
-        starts = np.asarray(window_starts, dtype=np.int64)
-        positive = np.asarray(signed_positive, dtype=np.float64)
-        negative = np.asarray(signed_negative, dtype=np.float64)
-        expected_scores = (1, starts.size)
-        if (
-            starts.ndim != 1 or starts.size == 0
-            or positive.shape != expected_scores or negative.shape != expected_scores
-            or np.any(starts < 0) or np.any(starts >= time_ps.size)
-            or not np.all(np.isfinite(positive)) or not np.all(np.isfinite(negative))
-        ):
-            raise ValueError("Global paired histogram requires one finite signed score per window")
-        _signed_histogram(
-            ax_pair_hist, time_ps, starts, window_samples,
-            positive[0], negative[0],
-        )
-        ax_pair_hist.set_ylabel("Pair contribution (ps)")
-        ax_pair_hist.set_title(
-            "Joint contributions (both detector signals occluded together)",
-            loc="left", fontsize=9.5,
-        )
-        ax_pair_hist.set_xlabel("Waveform time (ns)")
-        ax_pair_hist.tick_params(axis="both", length=3, width=0.6)
-        for spine in ax_pair_hist.spines.values():
-            spine.set_linewidth(0.7)
-
-        colorbar = fig.colorbar(
-            ScalarMappable(norm=norm, cmap=cmap),
-            cax=colorbar_ax,
-        )
-        tick_locator = MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10])
-        colorbar_ticks = tick_locator.tick_values(0.0, vmax)
-        colorbar_ticks = colorbar_ticks[
-            (colorbar_ticks >= 0.0) & (colorbar_ticks <= vmax + 1e-12)
-        ]
-        if colorbar_ticks.size == 0 or not np.isclose(colorbar_ticks[0], 0.0):
-            colorbar_ticks = np.insert(colorbar_ticks, 0, 0.0)
-        colorbar.set_ticks(colorbar_ticks)
-        colorbar.set_label("Absolute pair importance (ps/sample)", fontsize=9)
-        colorbar.ax.tick_params(labelsize=8, width=0.6, length=3)
-
-        destination = Path(destination)
-        fig.savefig(destination / "global_importance.png", dpi=240, bbox_inches="tight")
-        fig.savefig(
-            destination / "global_importance.pdf",
-            bbox_inches="tight",
-            metadata={"Title": title, "Creator": "Matplotlib"},
-        )
-        plt.close(fig)
 def _publish_directory(temporary, destination, overwrite):
     """Publish atomically on the same filesystem; restore an old result on failure."""
     if destination.exists() and not overwrite:
@@ -1386,103 +1210,40 @@ def _complete_local(destination, fingerprint, expected_events):
 
 
 def _refresh_presentation(destination):
-    """Regenerate pair-level CSV and plot from cached attributions, without model inference."""
+    from waveform_analysis.reporting.attribution_plots import PLOT_STYLE
+    from waveform_analysis.reporting.attribution_artifacts import render_saved
     destination = Path(destination)
     summary_path = destination / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    current_plot_files = (
-        "global_importance.png", "global_importance.pdf",
-        "global_importance.csv", "signed_window_importance.csv",
-    )
-    if (
-        summary.get("plot_version", 0) >= GLOBAL_PLOT_VERSION
-        and all((destination / name).is_file() for name in current_plot_files)
-    ):
+    if (summary.get("global_plot", {}).get("style") == PLOT_STYLE
+            and all((destination / name).is_file() for name in (
+                "global_importance.png", "global_importance.pdf",
+                "global_importance.csv", "signed_window_importance.csv"))):
         return True
-
-    with np.load(destination / "attributions.npz") as saved:
-        time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
-        window_maps = np.asarray(saved["window_attribution_ps"], dtype=np.float64)
-        raw_scores = np.asarray(saved["raw_window_scores_ps"], dtype=np.float64)
-        window_starts = np.asarray(saved["window_starts"], dtype=np.int64)
-        if "mean_waveform_mv" not in saved or "std_waveform_mv" not in saved:
+    with np.load(destination / "attributions.npz", allow_pickle=False) as saved:
+        if "mean_waveform_mv" not in saved:
             return False
-        mean_waveform_mv = np.asarray(saved["mean_waveform_mv"], dtype=np.float64)
-        std_waveform_mv = np.asarray(saved["std_waveform_mv"], dtype=np.float64)
-        roi_maps = (
-            np.asarray(saved["roi_attribution_ps"], dtype=np.float64)
-            if "roi_attribution_ps" in saved else None
-        )
-
-    if window_maps.ndim != 3 or window_maps.shape[1:] != (2, time_ps.size):
-        raise ValueError("Cached paired TSHAP attribution array must have shape [events, 2 detectors, samples]")
-    if raw_scores.ndim != 3 or raw_scores.shape[1:] != (1, len(window_starts)):
-        raise ValueError("Cached raw paired TSHAP scores must have shape [events, 1, windows]")
-    pair_importance = np.mean(np.abs(window_maps), axis=(0, 1))
-    roi_importance = (
-        np.mean(np.abs(roi_maps), axis=(0, 1)) if roi_maps is not None else None
-    )
-    signed_positive, signed_negative = _signed_means(raw_scores)
-    context = _global_plot_context(destination, summary)
-    _write_global_importance_csv(
-        destination, time_ps, pair_importance, roi_importance
-    )
-    _write_signed_csv(
-        destination, time_ps, window_starts, signed_positive, signed_negative,
-        context["window_samples"],
-    )
-    _plot_global(
-        destination, time_ps, pair_importance, mean_waveform_mv,
-        std_waveform_mv=std_waveform_mv,
-        model_name=context["model_name"],
-        mode=context["mode"],
-        window_name=context["window_name"],
-        board_name=context["board_name"],
-        n_events=context["n_events"] or len(window_maps),
-        window_samples=context["window_samples"],
-        window_starts=window_starts,
-        signed_positive=signed_positive,
-        signed_negative=signed_negative,
-    )
-
+        time_ps = np.asarray(saved["time_ps"], dtype=np.float64)
+        starts = np.asarray(saved["window_starts"], dtype=np.int64)
+        scores = np.asarray(saved["raw_window_scores_ps"], dtype=np.float64)
+        if scores.ndim == 2:
+            scores = scores[:, None, :]
+        if not (destination / "signed_window_importance.csv").is_file():
+            width = (int(saved["window_samples"].item()) if "window_samples" in saved
+                     else _global_plot_context(destination, summary)["window_samples"])
+            positive, negative = _signed_means(scores)
+            _write_signed_csv(destination, time_ps, starts, positive, negative, width)
+        if not (destination / "global_importance.csv").is_file():
+            pair = np.mean(np.abs(saved["window_attribution_ps"]), axis=(0, 1))
+            roi = (np.mean(np.abs(saved["roi_attribution_ps"]), axis=(0, 1))
+                   if "roi_attribution_ps" in saved else None)
+            _write_global_importance_csv(destination, time_ps, pair, roi)
+    render_saved(destination)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     summary["plot_version"] = GLOBAL_PLOT_VERSION
-    summary["board"] = context["board_name"]
-    summary["window_name"] = context["window_name"]
-    summary["attribution_units"] = (
-        "ps/sample (joint pair-level window score redistributed identically over both detector waveforms)"
-    )
-    summary["input_units"] = "mV (inverse of frozen prepared waveform normalization)"
-    summary["waveform_dispersion"] = (
-        "shaded mean +/- one population standard deviation (ddof=0) across explained blind events, in mV"
-    )
-    summary["importance_protocol"] = (
-        "two aggregated temporal features per window; both detector signals share one two-player Shapley score"
-    )
-    summary["global_importance_aggregation"] = {
-        "pair": "mean absolute two-player window Shapley values across explained blind events",
-        "signed_windows": "mean positive and negative parts of the single pair-level signed prediction difference",
-        "normalization": "importance values are unnormalized; both waveform colours use one shared PowerNorm(gamma=1.6) scale in ps/sample",
-    }
-    summary["tshap_window_samples"] = context["window_samples"]
-    summary["global_plot"] = {
-        "style": "mean physical detector waveforms with shaded +/-1 standard deviation bands and the same pair-level saliency on both signals",
-        "waveform_dispersion": "mean +/- one population standard deviation across explained blind events (mV)",
-        "layout": "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis",
-        "onishi_interval_ns": [-1.5, 2.0],
-        "importance_colour_scale": "one shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in ps/sample",
-        "histogram_colour": "#4c78a8",
-        "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
-        "histogram_bar_width_samples": context["window_samples"],
-        "importance_histogram": {
-            "bin_width_samples": context["window_samples"],
-            "bar_width_ns": float(context["window_samples"] * np.median(np.diff(time_ps)) / 1000.0),
-            "bar_height": "signed pair-level prediction difference for each jointly occluded temporal window",
-            "unit": "ps",
-        },
-        "detector_identity": "one pair-level importance curve displayed identically on both detector waveforms; no channel-specific importance is calculated",
-    }
     atomic_json(summary_path, summary)
     return True
+
 def _explanation_destination(output_root, run_directory):
     """Return one stable TSHAP directory per run; fingerprints belong in metadata only."""
     batch = batch_root(run_directory)
@@ -1807,38 +1568,17 @@ def explain_tshap(
                     ),
                     "cohort": "blind",
                     "input_units": "mV (inverse of frozen prepared waveform normalization)",
-                    "waveform_dispersion": (
-                        "shaded mean +/- one population standard deviation (ddof=0) across explained blind events, in mV"
-                    ),
+                    "waveform_dispersion": "not displayed in the unified global plot",
                     "sample_mask_window_filter": _sample_mask_window_summary(
                         sample_mask, len(time_ps), window_samples, stride_samples,
                         window_starts,
                     ),
                     "global_importance_aggregation": {
                         "pair": "mean absolute paired two-player Shapley score across blind events",
-                        "signed_windows": "mean positive and negative parts of the single pair-level signed prediction difference",
-                        "normalization": (
-                            "Importance values are unnormalized; both waveform colours use one shared "
-                            "PowerNorm(gamma=1.6) scale and the colourbar retains ps/sample units."
-                        ),
+                        "signed_windows": "mean positive and negative parts of the single pair-level signed window score",
+                        "normalization": "linear colour scale; absolute signed-window contributions in ps per window; original sample-wise exports unchanged",
                     },
-                    "global_plot": {
-                        "style": (
-                            "mean physical detector waveforms with shaded +/-1 standard deviation bands, "
-                            "saliency colouring and aligned signed-window histograms"
-                        ),
-                        "waveform_dispersion": (
-                            "mean +/- one population standard deviation across explained blind events (mV)"
-                        ),
-                        "layout": "three vertically stacked panels (detector 1 waveform, detector 2 waveform, single pair-importance histogram), with a common time axis",
-                        "onishi_interval_ns": [-1.5, 2.0],
-                        "importance_colour_scale": (
-                            "shared PowerNorm(gamma=1.6) across both detectors; colourbar ticks in ps/sample"
-                        ),
-                        "output_formats": ["PNG (240 dpi)", "PDF (vector)"],
-                        "histogram_bar_width_samples": int(window_samples),
-                        "detector_identity": "one pair-level importance curve displayed identically on both waveform panels; no channel-specific importance is calculated",
-                    },
+                    "global_plot": plot_metadata(),
                     "prediction_equivalence_max_error_ps": float(
                         np.max(np.abs(original - replay))
                     ),
