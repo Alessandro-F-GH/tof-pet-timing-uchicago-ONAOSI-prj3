@@ -329,14 +329,14 @@ def _global_mean_contributions(phi, group_samples, *, shared):
 
 def _plot_global_linear_shap(
     path, *, time_ps, mean_waveform_mv, starts, group_samples,
-    mean_positive_ps, mean_negative_ps, model_name, n_events, window_name,
+    mean_positive_ps, mean_negative_ps, model_name, n_events, window_name, mode=None,
 ):
     from waveform_analysis.reporting.attribution_plots import plot_global_attributions
     plot_global_attributions(
         Path(path).parent, time_ps=time_ps, mean_waveform_mv=mean_waveform_mv,
         window_starts=starts, window_samples=group_samples,
         mean_positive_ps=mean_positive_ps, mean_negative_ps=mean_negative_ps,
-        method_name="Linear SHAP", model_name=model_name, window_name=window_name,
+        method_name="Linear SHAP", model_name=model_name, window_name=window_name, mode=mode,
     )
 
 def explain_linear_shap_global(
@@ -455,7 +455,7 @@ def explain_linear_shap_global(
             starts=starts, group_samples=group_samples,
             mean_positive_ps=positive, mean_negative_ps=negative,
             model_name=name, n_events=len(indices),
-            window_name=config["window_name"],
+            window_name=config["window_name"], mode=config["mode"],
         )
         np.savez_compressed(
             destination / "global_attributions.npz",

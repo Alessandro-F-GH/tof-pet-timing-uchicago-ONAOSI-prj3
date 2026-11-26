@@ -2,7 +2,7 @@
 from pathlib import Path
 import numpy as np
 
-PLOT_STYLE = "signed-window-importance-v2-cividis"
+PLOT_STYLE = "signed-window-importance-v3-cividis-labels"
 
 def plot_metadata():
     return {"style": PLOT_STYLE, "importance": "abs(mean_positive)+abs(mean_negative), averaged across overlapping windows",
@@ -38,7 +38,7 @@ def plot_global_attributions(destination, *, time_ps, mean_waveform_mv, window_s
                              window_samples, mean_positive_ps, mean_negative_ps,
                              method_name, model_name, window_name, std_waveform_mv=None,
                              importance_vmax=None, contribution_ylim=None,
-                             waveform_ylim=None, time_xlim=None):
+                             waveform_ylim=None, time_xlim=None, mode=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -81,8 +81,9 @@ def plot_global_attributions(destination, *, time_ps, mean_waveform_mv, window_s
                 ax.add_collection(coll)
                 ax.set_ylim(waveform_ylim or (lo-margin,hi+margin))
                 ax.set_ylabel("Amplitude (mV)")
-                ax.text(.98,.95,f"Detector {k+1}",transform=ax.transAxes,
-                        ha="right",va="top",fontsize=11,
+                energy = str(mode).lower().startswith("energy")
+                ax.text(.98,.05 if energy else .95,f"Detector {k+1}",transform=ax.transAxes,
+                        ha="right",va="bottom" if energy else "top",fontsize=11,
                         bbox=dict(facecolor="white",edgecolor="none",alpha=.8))
             for k,ax in enumerate(axes[2:]):
                 for j,parts in enumerate(groups):

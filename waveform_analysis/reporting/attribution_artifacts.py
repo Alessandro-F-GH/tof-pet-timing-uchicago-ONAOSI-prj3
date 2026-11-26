@@ -25,7 +25,8 @@ def load_saved(directory):
                   window_starts=starts,window_samples=width,mean_positive_ps=p,
                   mean_negative_ps=n,method_name="Linear SHAP" if linear else "TSHAP",
                   model_name=summary.get("model",identity.get("model",summary.get("model_name",d.parent.name))),
-                  window_name=summary.get("window",summary.get("window_name",d.parent.parent.name)))
+                  window_name=summary.get("window",summary.get("window_name",d.parent.parent.name)),
+                  mode=summary.get("mode") or identity.get("mode") or d.parent.parent.parent.name)
         ids=a["event_id"] if "event_id" in a else None
     return args,summary,ids
 

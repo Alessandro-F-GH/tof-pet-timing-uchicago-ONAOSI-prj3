@@ -612,7 +612,7 @@ def _plot_global(
         destination, time_ps=time_ps, mean_waveform_mv=mean_waveform_mv,
         window_starts=window_starts, window_samples=window_samples,
         mean_positive_ps=signed_positive, mean_negative_ps=signed_negative,
-        method_name="TSHAP", model_name=model_name, window_name=window_name,
+        method_name="TSHAP", model_name=model_name, window_name=window_name, mode=mode,
     )
 
 def _publish_directory(temporary, destination, overwrite):
