@@ -2,7 +2,7 @@
 from pathlib import Path
 import numpy as np
 
-PLOT_STYLE = "signed-window-importance-v1"
+PLOT_STYLE = "signed-window-importance-v2-cividis"
 
 def plot_metadata():
     return {"style": PLOT_STYLE, "importance": "abs(mean_positive)+abs(mean_negative), averaged across overlapping windows",
@@ -43,7 +43,7 @@ def plot_global_attributions(destination, *, time_ps, mean_waveform_mv, window_s
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
-    from matplotlib.colors import LinearSegmentedColormap, Normalize
+    from matplotlib.colors import Normalize
     from matplotlib.cm import ScalarMappable
     t=np.asarray(time_ps,float)
     y=np.asarray(mean_waveform_mv,float)
@@ -53,7 +53,7 @@ def plot_global_attributions(destination, *, time_ps, mean_waveform_mv, window_s
         raise ValueError("Invalid mean waveforms")
     vmax=float(np.max(importance)) if importance_vmax is None else float(importance_vmax)
     norm=Normalize(0,vmax if vmax>0 else 1,clip=True)
-    cmap=LinearSegmentedColormap.from_list("importance",["#b8b8b8","#4c78a8","#1f5f99","#f2d94e"])
+    cmap=plt.get_cmap("cividis")
     with plt.rc_context({"font.family":"serif","font.size":10,"axes.labelsize":11,
                          "xtick.labelsize":10,"ytick.labelsize":10,"legend.fontsize":10,
                          "pdf.fonttype":42,"ps.fonttype":42}):
