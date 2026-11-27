@@ -135,6 +135,7 @@ def save_result(board, family, grid, context, args, style):
     threshold = args.energy_threshold_mv if family == "energy" else args.timing_threshold_mv
     means = context["mean"]
     np.savez_compressed(out / "grouped_tails.npz", time_ns=grid, mean_mV=means,
+                        difference_mV=means[:, 1, :] - means[:, 0, :],
                         counts=context["counts"],
                         prediction_bounds_ps=np.array([g["bounds_ps"] for g in context["groups"]]),
                         mean_prediction_ps=np.array([g["mean_prediction_ps"] for g in context["groups"]]))
@@ -146,28 +147,28 @@ def save_result(board, family, grid, context, args, style):
         "preprocessing": "ADC calibration only; no clipping or filtering",
         "groups": context["groups"],
     }, indent=2), encoding="utf-8")
-    colors = style["preprocessing"]["detector_colors"]
+    colors = ("#3b4cc0", "#444444", "#b40426")
+    difference = means[:, 1, :] - means[:, 0, :]
     for name, lo, hi in (("tail", args.tail_start_ns, args.tail_end_ns),
                          ("detail", args.zoom_start_ns, args.zoom_end_ns)):
         mask = (grid >= lo - 1e-9) & (grid <= hi + 1e-9)
         if mask.sum() < 2:
             raise ValueError("Plot interval contains fewer than two samples")
         with plot_context(style):
-            fig, axes = plt.subplots(3, 1, sharex=True, sharey=True,
-                                     figsize=(7.0, 5.2), constrained_layout=True)
-            for g, ax in enumerate(axes):
-                for d in range(2):
-                    ax.plot(grid[mask], means[g, d, mask], color=colors[d],
-                            lw=1.2, label=f"Detector {d+1}")
+            fig, ax = plt.subplots(figsize=(7.0, 3.4), constrained_layout=True)
+            for g, color in enumerate(colors):
                 info = context["groups"][g]
                 p0, p1 = info["percentiles"]
-                ax.set_title(f"P{p0}–P{p1} | Mean prediction: {info['mean_prediction_ps']:+.1f} ps")
-                ax.margins(x=0)
-                ax.grid(alpha=.2)
-            axes[1].set_ylabel("Amplitude [mV]")
-            axes[-1].set_xlabel("Time relative to LED [ns]")
-            axes[0].legend(loc="best")
-            fig.savefig(out / f"grouped_{name}.pdf", bbox_inches="tight")
+                label = (f"P{p0}–P{p1} | {info['mean_prediction_ps']:+.1f} ps"
+                         f" | n={info['n_used']}")
+                ax.plot(grid[mask], difference[g, mask], color=color,
+                        lw=1.5, label=label)
+            ax.set_ylabel("Detector 2 - Detector 1 [mV]")
+            ax.set_xlabel("Time relative to LED [ns]")
+            ax.grid(alpha=.2)
+            ax.margins(x=0)
+            ax.legend(loc="best")
+            fig.savefig(out / f"grouped_difference_{name}.pdf", bbox_inches="tight")
             plt.close(fig)
     print(f"{board} {family}: {context['groups']} | {out}", flush=True)
 
