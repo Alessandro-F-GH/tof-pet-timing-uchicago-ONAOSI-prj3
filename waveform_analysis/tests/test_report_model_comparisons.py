@@ -60,13 +60,13 @@ def report_inputs(tmp_path, monkeypatch):
         values = np.array([r["blind"]["ctr_ps"] for r in group])
         difference = values[:, None] - values[None, :]
         return ([r["manifest"]["model"] for r in group], difference,
-                np.ones_like(difference), np.full(difference.shape, 32))
+                difference * 0.8, np.ones_like(difference), np.full(difference.shape, 32))
 
     monkeypatch.setattr(engine, "_paired", paired)
     return tmp_path, runs, calls
 
 
-def test_sorted_matrices_cached_subset_and_removed_std(report_inputs):
+def test_sorted_matrices_cached_subset_and_sigma(report_inputs):
     root, runs, calls = report_inputs
     output = engine.generate_report(root)
     tables = output / "tables/timing/short"
@@ -78,7 +78,8 @@ def test_sorted_matrices_cached_subset_and_removed_std(report_inputs):
     assert engine._read_matrix(tables / "output_correlation.csv")[0] == expected
     assert calls == ["ctr", "rmse"]
     # Simulate outputs from an older reporting run, then filter the cached matrices.
-    (tables / "paired_ctr_std.csv").write_text("obsolete")
+    _, sigma_before = engine._read_matrix(tables / "paired_ctr_sigma.csv")
+    np.testing.assert_allclose(sigma_before, before * 0.8)
     plots = output / "plots/timing/short"
     (plots / "paired_ctr_std.png").write_text("obsolete")
     engine.generate_report(root, reuse_numeric=True, exclude_models=["independent_cnn1d"])
@@ -86,7 +87,9 @@ def test_sorted_matrices_cached_subset_and_removed_std(report_inputs):
     assert labels == [expected[i] for i in [0, 2, 3]]
     np.testing.assert_array_equal(subset, before[np.ix_([0, 2, 3], [0, 2, 3])])
     assert calls == ["ctr", "rmse"]  # no new bootstrap for a cached subset
-    assert not list(tables.glob("*_std.csv"))
+    assert (tables / "paired_ctr_std.csv").is_file()
+    _, sigma_subset = engine._read_matrix(tables / "paired_ctr_sigma.csv")
+    np.testing.assert_allclose(sigma_subset, sigma_before[np.ix_([0, 2, 3], [0, 2, 3])])
     assert not list(plots.glob("*_std.*"))
     ranked = engine._csv(tables / "blind_ctr.csv")
     assert [r["code"] for r in ranked] == ["D-MLP", "S-MLP", "S-CNN"]
@@ -252,3 +255,37 @@ def test_paired_formulation_plot_has_matching_colors_and_wide_led(tmp_path, monk
     baseline = next(line for line in ax.lines if line.get_label() == "LED (wide)")
     assert baseline.get_linestyle() == "--"
     np.testing.assert_array_equal(baseline.get_ydata(), [110., 110.])
+
+
+def test_paired_sigma_zero_variance_and_antisymmetry():
+    mean = np.array([[0., -12., 1.], [12., 0., 0.], [-1., 0., 0.]])
+    std = np.array([[0., 2., 0.], [2., 0., 1.], [0., 1., 0.]])
+    sigma = engine._paired_sigma(mean, std)
+    np.testing.assert_allclose(sigma, -sigma.T, equal_nan=True)
+    np.testing.assert_array_equal(np.diag(sigma), np.zeros(3))
+    assert sigma[0, 1] == -6.
+    assert np.isnan(sigma[0, 2])
+
+
+def test_paired_legacy_cache_recomputes(report_inputs):
+    root, _, calls = report_inputs
+    output = engine.generate_report(root)
+    tables = output / "tables/timing/short"
+    (tables / "paired_ctr_mean.csv").unlink()
+    (tables / "paired_ctr_std.csv").write_text("obsolete")
+    engine.generate_report(root, reuse_numeric=True)
+    assert calls == ["ctr", "rmse", "ctr"]
+
+
+def test_sigma_heatmap_saturates_colors_not_values(tmp_path, monkeypatch):
+    captured = []
+    def capture(fig, path):
+        captured.append(fig)
+        plt.close(fig)
+    monkeypatch.setattr(plotting, "_save", capture)
+    plotting.heatmap(np.array([[0., -12.], [12., 0.]]), ["A", "B"],
+                     tmp_path / "sigma.png", plot_config(), title="Sigma",
+                     symmetric_limit=5.)
+    ax = captured[0].axes[0]
+    assert ax.images[0].get_clim() == (-5., 5.)
+    assert {t.get_text() for t in ax.texts} == {"0.0", "-12.0", "12.0"}

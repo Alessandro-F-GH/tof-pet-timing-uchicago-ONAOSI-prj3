@@ -376,7 +376,7 @@ def render_run_plots(run, cfg):
 
 
 def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format=".1f",
-            absolute=False, colorbar_label=None):
+            absolute=False, colorbar_label=None, symmetric_limit=None):
     matrix = np.asarray(matrix, float)
     style = cfg["heatmap"]
     kwargs = {
@@ -388,6 +388,11 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
             vmin=float(style["correlation_limits"][0]),
             vmax=float(style["correlation_limits"][1]),
         )
+    elif symmetric_limit is not None:
+        limit = float(symmetric_limit)
+        if not np.isfinite(limit) or limit <= 0:
+            raise ValueError("symmetric_limit must be finite and positive")
+        kwargs.update(vmin=-limit, vmax=limit)
     elif not absolute and np.any(np.isfinite(matrix)):
         limit = float(np.nanmax(np.abs(matrix)))
         if limit > 0:
@@ -407,7 +412,7 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
         for i in range(matrix.shape[0]):
             for j in range(matrix.shape[1]):
                 if np.isfinite(matrix[i, j]):
-                    normalized = float(im.norm(matrix[i, j]))
+                    normalized = float(np.clip(im.norm(matrix[i, j]), 0.0, 1.0))
                     if absolute:
                         rgb = np.asarray(im.cmap(normalized)[:3])
                         light_text = float(rgb @ np.array([0.299, 0.587, 0.114])) < 0.5
@@ -424,7 +429,12 @@ def heatmap(matrix, labels, path, cfg, *, title, correlation=False, value_format
                         if light_text
                         else style.get("text_color", "#222222"),
                     )
-        colorbar = fig.colorbar(im, ax=ax)
+        extend = "neither"
+        if symmetric_limit is not None and not correlation and not absolute:
+            below = np.any(matrix < -symmetric_limit)
+            above = np.any(matrix > symmetric_limit)
+            extend = "both" if below and above else "min" if below else "max" if above else "neither"
+        colorbar = fig.colorbar(im, ax=ax, extend=extend)
         if colorbar_label is not None:
             colorbar.set_label(colorbar_label)
         return _save(fig, path)

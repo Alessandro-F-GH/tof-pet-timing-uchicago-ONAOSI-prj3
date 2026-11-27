@@ -206,6 +206,7 @@ def paired_model_bootstrap(
         "metric": metric,
         "n_matched": int(ids.size),
         "difference_ps": central,
+        "bootstrap_mean_ps": float(np.mean(differences)),
         "bootstrap_std_ps": _sample_std(differences),
     }
 

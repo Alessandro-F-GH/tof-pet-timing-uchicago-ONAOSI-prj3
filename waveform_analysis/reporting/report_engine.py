@@ -140,6 +140,7 @@ def _correlation(group):
 def _paired(group, payloads, metric, root_config, seed):
     labels = [r["manifest"]["model"] for r in group]
     central = np.zeros((len(group), len(group)))
+    mean = np.zeros_like(central)
     std = np.zeros_like(central)
     counts = np.zeros_like(central, dtype=int)
     fit = resolve_run_config(group[0]["directory"])["fit"]
@@ -160,9 +161,20 @@ def _paired(group, payloads, metric, root_config, seed):
             )
             central[i, j] = r["difference_ps"]
             central[j, i] = -r["difference_ps"]
+            mean[i, j] = r["bootstrap_mean_ps"]
+            mean[j, i] = -mean[i, j]
             std[i, j] = std[j, i] = r["bootstrap_std_ps"]
             counts[i, j] = counts[j, i] = r["n_matched"]
-    return labels, central, std, counts
+    return labels, central, mean, std, counts
+
+
+def _paired_sigma(mean, std):
+    """Standardized bootstrap differences; undefined off-diagonal ratios are NaN."""
+    sigma = np.full_like(mean, np.nan, dtype=float)
+    np.divide(mean, std, out=sigma,
+              where=np.isfinite(mean) & np.isfinite(std) & (std > 0))
+    np.fill_diagonal(sigma, 0.0)
+    return sigma
 
 
 def _ensemble_ctr(group, payloads, seed):
@@ -447,35 +459,50 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
         )
         for metric in ("ctr", "rmse"):
             central_path = table_dir / f"paired_{metric}.csv"
+            mean_path = table_dir / f"paired_{metric}_mean.csv"
             std_path = table_dir / f"paired_{metric}_std.csv"
             count_path = table_dir / f"paired_{metric}_n.csv"
-            if (
-                reuse_numeric
-                and central_path.is_file()
-                and count_path.is_file()
-            ):
-                labels, central = _read_matrix(central_path)
-                count_labels, counts = _read_matrix(count_path)
-                can_reuse = set(ordered).issubset(labels) and count_labels == labels
-            else:
-                can_reuse = False
+            paths = (central_path, mean_path, std_path, count_path)
+            can_reuse = False
+            if reuse_numeric and all(path.is_file() for path in paths):
+                try:
+                    cached = [_read_matrix(path) for path in paths]
+                    labels = cached[0][0]
+                    can_reuse = (
+                        set(ordered).issubset(labels)
+                        and all(names == labels and matrix.shape == (len(labels), len(labels))
+                                for names, matrix in cached)
+                    )
+                    if can_reuse:
+                        central, mean, std, counts = [matrix for _, matrix in cached]
+                except (ValueError, KeyError, TypeError):
+                    can_reuse = False
             if not can_reuse:
-                labels, central, _, counts = _paired(
+                labels, central, mean, std, counts = _paired(
                     group, payloads, metric, root_config, seed
                 )
-            central = _reorder_matrix(labels, central, ordered)
-            counts = _reorder_matrix(labels, counts, ordered)
-            _matrix(central_path, ordered, central)
-            _matrix(count_path, ordered, counts)
-            std_path.unlink(missing_ok=True)
+            central, mean, std, counts = [
+                _reorder_matrix(labels, matrix, ordered)
+                for matrix in (central, mean, std, counts)
+            ]
+            for path, matrix in zip(paths, (central, mean, std, counts)):
+                _matrix(path, ordered, matrix)
+            sigma = _paired_sigma(mean, std)
+            _matrix(table_dir / f"paired_{metric}_sigma.csv", ordered, sigma)
+            plot_path = output_path(plot_dir, f"paired_{metric}", cfg)
+            for stale in plot_dir.glob(f"paired_{metric}.*"):
+                if stale != plot_path:
+                    stale.unlink()
             for stale in plot_dir.glob(f"paired_{metric}_std.*"):
                 stale.unlink()
             heatmap(
-                central,
+                sigma,
                 ordered,
-                output_path(plot_dir, f"paired_{metric}", cfg),
+                plot_path,
                 cfg,
-                title=f"Paired blind Δ {metric.upper()} (row − column) [ps]",
+                title=f"Paired bootstrap {metric.upper()} difference (row − column)",
+                colorbar_label="Bootstrap standard deviations [σ]",
+                symmetric_limit=5.0,
             )
         export_ranked_ctr_summary(
             table_dir / "ctr_summary.tex", group,
@@ -526,6 +553,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 str(path.relative_to(report)) for path in dataset_tables
             ],
             "plot_regeneration_requires_training": False,
+            "paired_bootstrap_plot": "bootstrap_mean_difference / bootstrap_sample_std; color limits ±5",
             "pairwise_difference_convention": "metric(row)-metric(column); negative means row model is better",
             "window_comparison_plot": "paired_formulations_ctr",
         },
