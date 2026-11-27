@@ -1,6 +1,7 @@
 """Plot coherent raw pre-pulse oscillations in fixed acquisition coordinates.
 
-No LED alignment, filtering, trigger selection, or phase rotation is applied.
+No LED alignment, trigger selection, or phase rotation is applied.
+A second figure uses the final batch low-pass filter on complete native traces.
 Each trace is ADC-calibrated, interpolated on the common acquisition-time grid,
 and centered by its own constant mean on that interval. The figure contains
 only the mean baseline for each detector, using all ROOT entries by default.
@@ -20,6 +21,7 @@ import uproot
 
 from waveform_analysis.data.root_io import iterate_energy_chunks
 from waveform_analysis.signal.pulses import decode_oriented
+from waveform_analysis.signal.filtering import filter_native_waveform
 from waveform_analysis.reporting.plotting import plot_context
 
 
@@ -51,7 +53,7 @@ def acquisition_grid(root, max_events, preamble_ns, duration_ns, start_ns=None):
     return start_ns + step * np.arange(n), step, (lower, upper), int(dt.shape[0])
 
 
-def fixed_segment(raw, gain, offset, t0_ns, dt_ns, grid):
+def fixed_segment(raw, gain, offset, t0_ns, dt_ns, grid, preprocessing=None):
     """Sample a fixed physical time interval, never shift an event by its pulse."""
     if len(raw) < 2:
         return None
@@ -60,30 +62,36 @@ def fixed_segment(raw, gain, offset, t0_ns, dt_ns, grid):
         return None
     lo = max(0, int(np.floor(x[0])))
     hi = min(len(raw), int(np.ceil(x[-1])) + 1)
-    y = decode_oriented(raw[lo:hi], gain, offset, 1)
+    if preprocessing is None:
+        y = decode_oriented(raw[lo:hi], gain, offset, 1)
+    else:
+        full = decode_oriented(raw, gain, offset, 1)
+        if not np.all(np.isfinite(full)):
+            return None
+        y = filter_native_waveform(full, dt_ns * 1e-9, preprocessing)[lo:hi]
     if not np.all(np.isfinite(y)):
         return None
     y = np.interp(x, np.arange(lo, hi), y)
     return y - np.mean(y)
 
 
-def aggregate(root, args, start_ns):
+def aggregate(root, args, start_ns, preprocessing):
     grid, dt, preamble, expected = acquisition_grid(
         root, args.max_events, args.preamble_ns, args.duration_ns, start_ns)
     # Fit the 2.5 GHz component in each raw segment, with an independent DC term.
     phase = 2 * np.pi * args.frequency_ghz * grid
     basis = np.column_stack((np.cos(phase), np.sin(phase), np.ones(grid.size)))
     projector = np.linalg.pinv(basis)
-    sums = np.zeros((4, grid.size))
-    coeff_sum = np.zeros(4, complex)
-    power_sum = np.zeros(4)
+    sums = np.zeros((2, 4, grid.size))
+    coeff_sum = np.zeros((2, 4), complex)
+    power_sum = np.zeros((2, 4))
     n = 0
     for chunk in iterate_energy_chunks(
         root, energy_channels_one_based=(1, 2), timing_channels_one_based=(3, 4),
         step_size=256, entry_stop=args.max_events,
     ):
         for row in range(len(chunk.event_index)):
-            traces = []
+            traces = [[], []]
             for prefix in ("", "timing_"):
                 samples = chunk.timing_samples if prefix else chunk.samples
                 gain = getattr(chunk, prefix + "vertical_gain_v_per_count")
@@ -91,14 +99,15 @@ def aggregate(root, args, start_ns):
                 t0 = getattr(chunk, prefix + "horizontal_offset_s")
                 interval = getattr(chunk, prefix + "horizontal_interval_s")
                 for d in range(2):
-                    trace = fixed_segment(samples[d][row], gain[row, d], offset[row, d],
-                                          t0[row, d] * 1e9, interval[row, d] * 1e9, grid)
-                    traces.append(trace)
-            if any(trace is None for trace in traces):
+                    for k, config in enumerate((None, preprocessing)):
+                        trace = fixed_segment(samples[d][row], gain[row, d], offset[row, d],
+                                              t0[row, d] * 1e9, interval[row, d] * 1e9, grid, config)
+                        traces[k].append(trace)
+            if any(trace is None for group in traces for trace in group):
                 continue
             traces = np.stack(traces)
             beta = traces @ projector.T
-            coeff = beta[:, 0] - 1j * beta[:, 1]
+            coeff = beta[..., 0] - 1j * beta[..., 1]
             sums += traces
             coeff_sum += coeff
             power_sum += np.abs(coeff)**2
@@ -109,8 +118,10 @@ def aggregate(root, args, start_ns):
     mean_coeff = coeff_sum / n
     rms_amp = np.sqrt(power_sum / n)
     coherent = np.divide(np.abs(mean_coeff)**2, power_sum / n,
-                         out=np.full(4, np.nan), where=power_sum > 0)
-    summary = {
+                         out=np.full_like(power_sum, np.nan), where=power_sum > 0)
+    summaries = []
+    for k in range(2):
+        summary = {
         "root_file": str(root), "n_examined": expected, "n_used": n,
         "n_skipped": expected - n, "sample_interval_ns": dt,
         "common_preamble_ns": list(preamble),
@@ -118,14 +129,16 @@ def aggregate(root, args, start_ns):
         "frequency_GHz": args.frequency_ghz,
         "channels": {
             str(ch + 1): {
-                "mean_waveform_oscillation_amplitude_mV": float(abs(mean_coeff[ch])),
-                "rms_individual_oscillation_amplitude_mV": float(rms_amp[ch]),
-                "coherent_power_fraction": float(coherent[ch]) if np.isfinite(coherent[ch]) else None,
-                "mean_waveform_peak_to_peak_mV": float(np.ptp(means[ch])),
+                "mean_waveform_oscillation_amplitude_mV": float(abs(mean_coeff[k, ch])),
+                "rms_individual_oscillation_amplitude_mV": float(rms_amp[k, ch]),
+                "coherent_power_fraction": float(coherent[k, ch]) if np.isfinite(coherent[k, ch]) else None,
+                "mean_waveform_peak_to_peak_mV": float(np.ptp(means[k, ch])),
             } for ch in range(4)
         },
     }
-    return grid, means, summary
+        summary["lowpass"] = preprocessing["lowpass"] if k else {"enabled": False}
+        summaries.append(summary)
+    return grid, means, summaries
 
 
 def main():
@@ -154,42 +167,53 @@ def main():
     for board, root, specific in (("UC", args.uc_root, args.uc_start_ns),
                                   ("FBK", args.fbk_root, args.fbk_start_ns)):
         start = args.start_ns if specific is None else specific
-        results[board] = aggregate(root, args, start)
+        config_path = Path(__file__).resolve().parents[1] / "config/preprocessing" / f"{board}_lowpass_2GHz.json"
+        preprocessing = json.loads(config_path.read_text(encoding="utf-8"))
+        results[board] = aggregate(root, args, start, preprocessing)
         print(board, json.dumps(results[board][2], indent=2), flush=True)
     colors = style["preprocessing"]["detector_colors"]
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with plot_context(style):
-        fig, axes = plt.subplots(2, 2, sharex="col", figsize=(7.4, 4.8),
-                                 constrained_layout=True)
-        for col, board in enumerate(("FBK", "UC")):
-            grid, means, summary = results[board]
-            for row, family in enumerate(("Energy", "Timing")):
-                ax = axes[row, col]
-                for d in range(2):
-                    ch = 2 * row + d
-                    ax.plot(grid, means[ch], color=colors[d], lw=1.5,
-                            label=f"Detector {d + 1}")
-                ax.set_title(f"{board} — {family}")
-                if row == 1:
-                    ax.set_xlabel("Acquisition time [ns]")
-                if col == 0:
-                    ax.set_ylabel("Amplitude [mV]")
-                ax.margins(x=0)
-                ax.grid(alpha=.2)
-                ax.legend(loc="best")
-        fig.savefig(args.output, bbox_inches="tight")
-        plt.close(fig)
-    # Keep numerical results for checking the figure and reproducing its caption.
-    summary = {"reference": "ROOT horizontal_offset_s + sample_index * horizontal_interval_s",
-               "preprocessing": "ADC calibration, fixed-grid linear interpolation, constant mean removal",
-               "boards": {board: data[2] for board, data in results.items()}}
-    args.output.with_suffix(".json").write_text(json.dumps(summary, indent=2, allow_nan=False),
-                                               encoding="utf-8")
-    np.savez_compressed(args.output.with_suffix(".npz"), **{
-        key: value for board, (grid, means, _) in results.items()
-        for key, value in ((f"{board}_time_ns", grid), (f"{board}_mean_mV", means))
-    })
-    print(f"Saved {args.output}", flush=True)
+    for k, destination in enumerate((args.output, args.output.with_name(
+            args.output.stem + "_filtered" + args.output.suffix))):
+        with plot_context(style):
+            fig, axes = plt.subplots(2, 2, sharex="col", figsize=(7.4, 4.8),
+                                     constrained_layout=True)
+            for col, board in enumerate(("FBK", "UC")):
+                grid, means, summaries = results[board]
+                for row, family in enumerate(("Energy", "Timing")):
+                    ax = axes[row, col]
+                    for d in range(2):
+                        ch = 2 * row + d
+                        ax.plot(grid, means[k, ch], color=colors[d], lw=1.5,
+                                label=f"Detector {d + 1}")
+                    # Identical amplitude limits in corresponding raw/filtered panels.
+                    values = means[:, 2 * row:2 * row + 2, :]
+                    lo, hi = float(values.min()), float(values.max())
+                    pad = max(0.05 * (hi - lo), 1e-9)
+                    ax.set_ylim(lo - pad, hi + pad)
+                    ax.set_title(f"{board} — {family}")
+                    if row == 1:
+                        ax.set_xlabel("Acquisition time [ns]")
+                    if col == 0:
+                        ax.set_ylabel("Amplitude [mV]")
+                    ax.margins(x=0)
+                    ax.grid(alpha=.2)
+                    ax.legend(loc="best")
+            fig.savefig(destination, bbox_inches="tight")
+            plt.close(fig)
+        summary = {
+            "reference": "ROOT horizontal_offset_s + sample_index * horizontal_interval_s",
+            "preprocessing": ("ADC calibration, full native waveform low-pass, fixed-grid linear interpolation, constant mean removal"
+                              if k else "ADC calibration, fixed-grid linear interpolation, constant mean removal"),
+            "boards": {board: data[2][k] for board, data in results.items()},
+        }
+        destination.with_suffix(".json").write_text(json.dumps(summary, indent=2, allow_nan=False),
+                                                    encoding="utf-8")
+        np.savez_compressed(destination.with_suffix(".npz"), **{
+            key: value for board, (grid, means, _) in results.items()
+            for key, value in ((f"{board}_time_ns", grid), (f"{board}_mean_mV", means[k]))
+        })
+        print(f"Saved {destination}", flush=True)
 
 
 if __name__ == "__main__":
