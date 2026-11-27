@@ -57,7 +57,7 @@ def report_inputs(tmp_path, monkeypatch):
 
     def paired(group, payloads, metric, config, seed):
         calls.append(metric)
-        values = np.array([r["blind"]["ctr_ps"] for r in group])
+        values = np.array([r["blind"][f"{metric}_ps"] for r in group])
         difference = values[:, None] - values[None, :]
         return ([r["manifest"]["model"] for r in group], difference,
                 difference * 0.8, np.ones_like(difference), np.full(difference.shape, 32))
@@ -289,3 +289,29 @@ def test_sigma_heatmap_saturates_colors_not_values(tmp_path, monkeypatch):
     ax = captured[0].axes[0]
     assert ax.images[0].get_clim() == (-5., 5.)
     assert {t.get_text() for t in ax.texts} == {"0.0", "-12.0", "12.0"}
+
+
+def test_paired_matrices_rank_by_own_blind_metric(report_inputs, monkeypatch):
+    root, runs, calls = report_inputs
+    # Deliberately break the coincidence between CTR ranking and alphabetical order.
+    runs[0]["blind"]["ctr_ps"] = 80.
+    captured = {}
+    def capture(matrix, labels, path, cfg, **kwargs):
+        captured[Path(path).stem] = (list(labels), np.array(matrix))
+    monkeypatch.setattr(engine, "heatmap", capture)
+    output = engine.generate_report(root)
+    tables = output / "tables/timing/short"
+    for metric in ("ctr", "rmse"):
+        ranked = sorted(runs, key=lambda r: (r["blind"][f"{metric}_ps"], r["manifest"]["model"]))
+        expected = [r["manifest"]["model"] for r in ranked]
+        values = np.array([r["blind"][f"{metric}_ps"] for r in ranked])
+        for suffix in ("", "_mean", "_std", "_sigma", "_n"):
+            labels, matrix = engine._read_matrix(tables / f"paired_{metric}{suffix}.csv")
+            assert labels == expected
+        labels, sigma = captured[f"paired_{metric}"]
+        assert labels == expected
+        np.testing.assert_allclose(sigma, (values[:, None] - values[None, :]) * 0.8)
+    engine.generate_report(root, reuse_numeric=True)
+    assert calls == ["ctr", "rmse"]
+    assert engine._read_matrix(tables / "output_correlation.csv")[0] == [
+        "direct_mlp", "independent_cnn1d", "antisymmetric_mlp", "shared_cnn1d"]

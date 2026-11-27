@@ -458,6 +458,15 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             absolute=True, colorbar_label="CTR [ps] (lower is better)",
         )
         for metric in ("ctr", "rmse"):
+            paired_order = [
+                run["manifest"]["model"]
+                for run in sorted(group, key=lambda run: (
+                    not np.isfinite(float(run["blind"][f"{metric}_ps"])),
+                    float(run["blind"][f"{metric}_ps"])
+                    if np.isfinite(float(run["blind"][f"{metric}_ps"])) else np.inf,
+                    run["manifest"]["model"],
+                ))
+            ]
             central_path = table_dir / f"paired_{metric}.csv"
             mean_path = table_dir / f"paired_{metric}_mean.csv"
             std_path = table_dir / f"paired_{metric}_std.csv"
@@ -469,7 +478,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                     cached = [_read_matrix(path) for path in paths]
                     labels = cached[0][0]
                     can_reuse = (
-                        set(ordered).issubset(labels)
+                        set(paired_order).issubset(labels)
                         and all(names == labels and matrix.shape == (len(labels), len(labels))
                                 for names, matrix in cached)
                     )
@@ -482,13 +491,13 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                     group, payloads, metric, root_config, seed
                 )
             central, mean, std, counts = [
-                _reorder_matrix(labels, matrix, ordered)
+                _reorder_matrix(labels, matrix, paired_order)
                 for matrix in (central, mean, std, counts)
             ]
             for path, matrix in zip(paths, (central, mean, std, counts)):
-                _matrix(path, ordered, matrix)
+                _matrix(path, paired_order, matrix)
             sigma = _paired_sigma(mean, std)
-            _matrix(table_dir / f"paired_{metric}_sigma.csv", ordered, sigma)
+            _matrix(table_dir / f"paired_{metric}_sigma.csv", paired_order, sigma)
             plot_path = output_path(plot_dir, f"paired_{metric}", cfg)
             for stale in plot_dir.glob(f"paired_{metric}.*"):
                 if stale != plot_path:
@@ -497,7 +506,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
                 stale.unlink()
             heatmap(
                 sigma,
-                ordered,
+                paired_order,
                 plot_path,
                 cfg,
                 title=f"Paired bootstrap {metric.upper()} difference (row − column)",
@@ -545,6 +554,7 @@ def generate_report(result_root, *, logger=None, reuse_numeric=False, exclude_mo
             "runs": len(runs),
             "excluded_models": sorted(excluded),
             "matrix_order": "direct_then_shared_alphabetical",
+            "paired_matrix_order": "ascending_blind_metric_then_model_name; nonfinite_last",
             "dataset_table_version": DATASET_TABLE_VERSION,
             "development_distribution_version": DEVELOPMENT_DISTRIBUTION_VERSION,
             "blind_boxplot_version": 1,
