@@ -159,17 +159,21 @@ def main():
     colors = style["preprocessing"]["detector_colors"]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with plot_context(style):
-        fig, axes = plt.subplots(2, 2, figsize=(7.4, 4.8), constrained_layout=True)
-        for row, (board, (grid, means, summary)) in enumerate(results.items()):
-            for col, family in enumerate(("Energy", "Timing")):
+        fig, axes = plt.subplots(2, 2, sharex="col", figsize=(7.4, 4.8),
+                                 constrained_layout=True)
+        for col, board in enumerate(("FBK", "UC")):
+            grid, means, summary = results[board]
+            for row, family in enumerate(("Energy", "Timing")):
                 ax = axes[row, col]
                 for d in range(2):
-                    ch = 2 * col + d
+                    ch = 2 * row + d
                     ax.plot(grid, means[ch], color=colors[d], lw=1.5,
                             label=f"Detector {d + 1}")
                 ax.set_title(f"{board} — {family}")
-                ax.set_xlabel("Acquisition time [ns]")
-                ax.set_ylabel("Amplitude [mV]")
+                if row == 1:
+                    ax.set_xlabel("Acquisition time [ns]")
+                if col == 0:
+                    ax.set_ylabel("Amplitude [mV]")
                 ax.margins(x=0)
                 ax.grid(alpha=.2)
                 ax.legend(loc="best")
