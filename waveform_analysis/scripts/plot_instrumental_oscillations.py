@@ -4,7 +4,9 @@ No LED alignment, trigger selection, or phase rotation is applied.
 A second figure uses the final batch low-pass filter on complete native traces.
 Each trace is ADC-calibrated, interpolated on the common acquisition-time grid,
 and centered by its own constant mean on that interval. The figure contains
-only the mean baseline for each detector, using all ROOT entries by default.
+the mean baseline for each detector, using all ROOT entries by default.
+Additional figures show relative phase distributions and frequency-dependent
+phase locking on the same unaligned raw baseline interval.
 """
 from __future__ import annotations
 
@@ -85,6 +87,41 @@ def aggregate(root, args, start_ns, preprocessing):
     sums = np.zeros((2, 4, grid.size))
     coeff_sum = np.zeros((2, 4), complex)
     power_sum = np.zeros((2, 4))
+    # Use a Hann-tapered, detrended projection for phase diagnostics,
+    # consistent with analyze_raw_preamble_fft. Dense frequencies are
+    # evaluations of the same finite-window transform, not independent bins.
+    frequencies = np.linspace(1.5, 3.5, 81)
+    frequencies = np.unique(np.append(frequencies, args.frequency_ghz))
+    target_index = int(np.argmin(abs(frequencies - args.frequency_ghz)))
+    t = grid - grid[0]
+    taper = np.hanning(grid.size)
+    kernel = np.exp(-2j * np.pi * t[:, None] * frequencies[None, :])
+    kernel *= taper[:, None] * (2 / taper.sum())
+    trend = np.column_stack((np.ones(t.size), t))
+    kernel -= trend @ (np.linalg.pinv(trend) @ kernel)
+    phase_sum = np.zeros((2, frequencies.size), complex)
+    phase_count = np.zeros((2, frequencies.size), dtype=np.int64)
+    cross_sum = np.zeros_like(phase_sum)
+    pair_power = np.zeros((2, 2, frequencies.size))
+    phase_samples = [[], []]
+    phase_buffer = []
+    def accumulate_phase():
+        if not phase_buffer:
+            return
+        c = np.stack(phase_buffer) @ kernel
+        a, b = c[:, (0, 2), :], c[:, (1, 3), :]
+        cross = b * a.conj()
+        valid = (abs(a) > 1e-12) & (abs(b) > 1e-12)
+        unit = np.divide(cross, abs(cross), out=np.zeros_like(cross), where=valid)
+        phase_sum[:] += unit.sum(axis=0)
+        phase_count[:] += valid.sum(axis=0)
+        cross_sum[:] += cross.sum(axis=0)
+        pair_power[:, 0] += (abs(a)**2).sum(axis=0)
+        pair_power[:, 1] += (abs(b)**2).sum(axis=0)
+        for family in range(2):
+            phase_samples[family].extend(np.angle(cross[:, family, target_index][
+                valid[:, family, target_index]]).tolist())
+        phase_buffer.clear()
     n = 0
     for chunk in iterate_energy_chunks(
         root, energy_channels_one_based=(1, 2), timing_channels_one_based=(3, 4),
@@ -111,7 +148,11 @@ def aggregate(root, args, start_ns, preprocessing):
             sums += traces
             coeff_sum += coeff
             power_sum += np.abs(coeff)**2
+            phase_buffer.append(traces[0])
+            if len(phase_buffer) >= 256:
+                accumulate_phase()
             n += 1
+    accumulate_phase()
     if n < 2:
         raise ValueError(f"{root}: fewer than two complete raw events")
     means = sums / n
@@ -138,7 +179,15 @@ def aggregate(root, args, start_ns, preprocessing):
     }
         summary["lowpass"] = preprocessing["lowpass"] if k else {"enabled": False}
         summaries.append(summary)
-    return grid, means, summaries
+    locking = np.divide(abs(phase_sum), phase_count,
+                        out=np.full(phase_count.shape, np.nan), where=phase_count > 0)
+    denominator = pair_power[:, 0] * pair_power[:, 1]
+    coherence = np.divide(abs(cross_sum)**2, denominator,
+                          out=np.full_like(denominator, np.nan), where=denominator > 0)
+    diagnostics = dict(frequencies=frequencies, locking=locking, coherence=coherence,
+                       phase_samples=phase_samples, target_index=target_index,
+                       phase_count=phase_count)
+    return grid, means, summaries, diagnostics
 
 
 def main():
@@ -179,7 +228,7 @@ def main():
             fig, axes = plt.subplots(2, 2, sharex="col", figsize=(7.4, 4.8),
                                      constrained_layout=True)
             for col, board in enumerate(("FBK", "UC")):
-                grid, means, summaries = results[board]
+                grid, means, summaries, _ = results[board]
                 for row, family in enumerate(("Energy", "Timing")):
                     ax = axes[row, col]
                     for d in range(2):
@@ -210,10 +259,83 @@ def main():
         destination.with_suffix(".json").write_text(json.dumps(summary, indent=2, allow_nan=False),
                                                     encoding="utf-8")
         np.savez_compressed(destination.with_suffix(".npz"), **{
-            key: value for board, (grid, means, _) in results.items()
+            key: value for board, (grid, means, _, _) in results.items()
             for key, value in ((f"{board}_time_ns", grid), (f"{board}_mean_mV", means[k]))
         })
         print(f"Saved {destination}", flush=True)
+
+    # Relative phase diagnostics are computed on the unfiltered traces.
+    phase_summary = {}
+    phase_arrays = {}
+    with plot_context(style):
+        fig, axes = plt.subplots(2, 2, sharex=True, sharey=True,
+                                 figsize=(7.4, 4.8), constrained_layout=True)
+        for col, board in enumerate(("FBK", "UC")):
+            diag = results[board][3]
+            idx = diag["target_index"]
+            phase_summary[board] = {}
+            phase_arrays[f"{board}_frequency_GHz"] = diag["frequencies"]
+            phase_arrays[f"{board}_PLV"] = diag["locking"]
+            phase_arrays[f"{board}_complex_coherence"] = diag["coherence"]
+            for row, family in enumerate(("Energy", "Timing")):
+                ax = axes[row, col]
+                angles = np.asarray(diag["phase_samples"][row])
+                degrees = np.degrees(angles)
+                phase_arrays[f"{board}_{family}_phase_deg"] = degrees
+                R = diag["locking"][row, idx]
+                coh = diag["coherence"][row, idx]
+                mean = np.degrees(np.angle(np.mean(np.exp(1j * angles)))) if angles.size else np.nan
+                phase_summary[board][family] = {
+                    "n": int(angles.size), "R": float(R) if np.isfinite(R) else None,
+                    "mean_delta_deg": float(mean) if np.isfinite(mean) else None,
+                    "complex_coherence": float(coh) if np.isfinite(coh) else None,
+                }
+                bins = np.linspace(-180, 180, 37)
+                if degrees.size:
+                    ax.hist(degrees, bins=bins, weights=np.ones(degrees.size)/degrees.size,
+                            histtype="step", color=colors[0], linewidth=1.5)
+                ax.axhline(1/36, color="0.5", linestyle="--", linewidth=1)
+                ax.text(.03, .95, f"R = {R:.3f}", transform=ax.transAxes,
+                        va="top", ha="left")
+                ax.set_title(f"{board} — {family}")
+                ax.set_xlim(-180, 180)
+                ax.set_xticks([-180, -90, 0, 90, 180])
+                if row == 1:
+                    ax.set_xlabel(r"Relative phase [deg]")
+                if col == 0:
+                    ax.set_ylabel("Fraction of events")
+        phase_path = args.output.with_name(args.output.stem + "_relative_phase" + args.output.suffix)
+        fig.savefig(phase_path, bbox_inches="tight")
+        plt.close(fig)
+        fig, axes = plt.subplots(2, 2, sharex=True, sharey=True,
+                                 figsize=(7.4, 4.8), constrained_layout=True)
+        for col, board in enumerate(("FBK", "UC")):
+            diag = results[board][3]
+            for row, family in enumerate(("Energy", "Timing")):
+                ax = axes[row, col]
+                ax.plot(diag["frequencies"], diag["locking"][row], color=colors[0], label="PLV")
+                ax.plot(diag["frequencies"], diag["coherence"][row], color=colors[1],
+                        linestyle="--", label="Complex coherence (squared)")
+                ax.axvline(args.frequency_ghz, color="0.5", linestyle=":", linewidth=1)
+                ax.set_title(f"{board} — {family}")
+                ax.set_ylim(0, 1)
+                if row == 1:
+                    ax.set_xlabel("Frequency [GHz]")
+                if col == 0:
+                    ax.set_ylabel("Coherence")
+                ax.legend(loc="best")
+        scan_path = args.output.with_name(args.output.stem + "_phase_coherence" + args.output.suffix)
+        fig.savefig(scan_path, bbox_inches="tight")
+        plt.close(fig)
+    phase_path.with_suffix(".json").write_text(json.dumps({
+        "frequency_GHz": args.frequency_ghz,
+        "duration_ns": args.duration_ns,
+        "phase_convention": "detector 2 minus detector 1",
+        "method": "linear detrending, Hann taper, complex Fourier projection on fixed acquisition-time grid",
+        "boards": phase_summary,
+    }, indent=2, allow_nan=False), encoding="utf-8")
+    np.savez_compressed(phase_path.with_suffix(".npz"), **phase_arrays)
+    print(f"Saved {phase_path} and {scan_path}", flush=True)
 
 
 if __name__ == "__main__":
