@@ -2,7 +2,8 @@
 
 No LED alignment, filtering, trigger selection, or phase rotation is applied.
 Each trace is ADC-calibrated, interpolated on the common acquisition-time grid,
-and centered by its own constant mean on that interval.
+and centered by its own constant mean on that interval. The figure contains
+only the mean baseline for each detector, using all ROOT entries by default.
 """
 from __future__ import annotations
 
@@ -76,7 +77,6 @@ def aggregate(root, args, start_ns):
     sums = np.zeros((4, grid.size))
     coeff_sum = np.zeros(4, complex)
     power_sum = np.zeros(4)
-    examples = []
     n = 0
     for chunk in iterate_energy_chunks(
         root, energy_channels_one_based=(1, 2), timing_channels_one_based=(3, 4),
@@ -102,8 +102,6 @@ def aggregate(root, args, start_ns):
             sums += traces
             coeff_sum += coeff
             power_sum += np.abs(coeff)**2
-            if len(examples) < args.examples:
-                examples.append(traces)
             n += 1
     if n < 2:
         raise ValueError(f"{root}: fewer than two complete raw events")
@@ -127,51 +125,49 @@ def aggregate(root, args, start_ns):
             } for ch in range(4)
         },
     }
-    return grid, means, examples, summary
+    return grid, means, summary
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--uc-root", type=Path, default=Path("processed_data/10-03/48V-R0.root"))
-    p.add_argument("--fbk-root", type=Path, default=Path("processed_data/10-05/48V-R0.root"))
+    data_root = Path(__file__).resolve().parents[1] / "processed_data"
+    p.add_argument("--uc-root", type=Path, default=data_root / "10-03/48V-R0.root")
+    p.add_argument("--fbk-root", type=Path, default=data_root / "10-05/48V-R0.root")
     p.add_argument("--output", type=Path, default=Path("fig/results/instrumental_oscillations.pdf"))
-    p.add_argument("--max-events", type=int, default=10000)
+    p.add_argument("--max-events", type=int, default=None,
+                   help="Optional entry limit for diagnostic runs; default: all events")
     p.add_argument("--preamble-ns", type=float, default=10.)
     p.add_argument("--duration-ns", type=float, default=4.)
     p.add_argument("--start-ns", type=float, help="Common acquisition-time start for both boards")
     p.add_argument("--uc-start-ns", type=float, help="Override start for UC only")
     p.add_argument("--fbk-start-ns", type=float, help="Override start for FBK only")
     p.add_argument("--frequency-ghz", type=float, default=2.5)
-    p.add_argument("--examples", type=int, default=0,
-                   help="Number of individual raw traces to overlay per channel")
     p.add_argument("--plot-config", type=Path,
                    default=Path(__file__).resolve().parents[1] / "config/plots/default.json")
     args = p.parse_args()
-    if args.max_events < 2 or args.examples < 0 or not (
+    if (args.max_events is not None and args.max_events < 2) or not (
         0 < args.duration_ns < args.preamble_ns and args.frequency_ghz > 0
     ):
-        p.error("Require >=2 events, nonnegative examples, positive frequency and 0 < duration < preamble")
+        p.error("Require >=2 events, positive frequency and 0 < duration < preamble")
     style = json.loads(args.plot_config.read_text(encoding="utf-8"))
     results = {}
     for board, root, specific in (("UC", args.uc_root, args.uc_start_ns),
                                   ("FBK", args.fbk_root, args.fbk_start_ns)):
         start = args.start_ns if specific is None else specific
         results[board] = aggregate(root, args, start)
-        print(board, json.dumps(results[board][3], indent=2), flush=True)
+        print(board, json.dumps(results[board][2], indent=2), flush=True)
     colors = style["preprocessing"]["detector_colors"]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with plot_context(style):
         fig, axes = plt.subplots(2, 2, figsize=(7.4, 4.8), constrained_layout=True)
-        for row, (board, (grid, means, examples, summary)) in enumerate(results.items()):
+        for row, (board, (grid, means, summary)) in enumerate(results.items()):
             for col, family in enumerate(("Energy", "Timing")):
                 ax = axes[row, col]
                 for d in range(2):
                     ch = 2 * col + d
-                    for example in examples:
-                        ax.plot(grid, example[ch], color=colors[d], alpha=.10, lw=.5)
                     ax.plot(grid, means[ch], color=colors[d], lw=1.5,
                             label=f"Detector {d + 1}")
-                ax.set_title(f"{board} — {family} ({summary['n_used']:,} events)")
+                ax.set_title(f"{board} — {family}")
                 ax.set_xlabel("Acquisition time [ns]")
                 ax.set_ylabel("Amplitude [mV]")
                 ax.margins(x=0)
@@ -182,11 +178,11 @@ def main():
     # Keep numerical results for checking the figure and reproducing its caption.
     summary = {"reference": "ROOT horizontal_offset_s + sample_index * horizontal_interval_s",
                "preprocessing": "ADC calibration, fixed-grid linear interpolation, constant mean removal",
-               "boards": {board: data[3] for board, data in results.items()}}
+               "boards": {board: data[2] for board, data in results.items()}}
     args.output.with_suffix(".json").write_text(json.dumps(summary, indent=2, allow_nan=False),
                                                encoding="utf-8")
     np.savez_compressed(args.output.with_suffix(".npz"), **{
-        key: value for board, (grid, means, _, _) in results.items()
+        key: value for board, (grid, means, _) in results.items()
         for key, value in ((f"{board}_time_ns", grid), (f"{board}_mean_mV", means))
     })
     print(f"Saved {args.output}", flush=True)
